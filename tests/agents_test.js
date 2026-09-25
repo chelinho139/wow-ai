@@ -14,7 +14,7 @@ const A = require('../bridge/agents');
 const SYS = 'The user is talking to you from inside World of Warcraft';
 
 test('agent ids, display names and the legacy Claude config keys', () => {
-  assert.deepEqual(A.agentIds(), ['claude', 'codex', 'grok']);
+  assert.deepEqual(A.agentIds(), ['claude', 'codex', 'grok', 'agy', 'hermes']);
   assert.equal(A.normalizeAgent(' Codex '), 'codex');
   assert.equal(A.normalizeAgent('gemini'), null);
   assert.equal(A.normalizeAgent(''), null);
@@ -62,6 +62,63 @@ test('Codex: exec --json in the chat folder, sandbox from permissionMode, resume
   assert.ok(fresh.stdin.startsWith('[Context from the WoW AI bridge'));
   assert.equal(A.AGENTS.codex.input({ prompt: 'fix it', system: 'FULL', systemShort: 'SHORT', resume: 't' }).stdin, A.contextBlock('SHORT') + 'fix it');
   assert.equal(A.AGENTS.codex.input({ prompt: 'fix it', system: '', systemShort: '', resume: '' }).stdin, 'fix it');
+  assert.deepEqual(A.AGENTS.codex.args({ cfg: {}, resume: '', cwd: 'x', images: ['a.png', 'b.png'] }).slice(-5), ['-i', 'a.png', '-i', 'b.png', '-']);
+});
+
+test('Antigravity arguments and captured stream parser', () => {
+  const input = { cfg: {}, resume: '', cwd: 'C:\\work', prompt: 'PONG', system: SYS, systemShort: 'short' };
+  const accept = A.AGENTS.agy.args({ ...input, cfg: { permissionMode: 'acceptEdits' } });
+  assert.equal(accept[0], `-p=${A.contextBlock(SYS)}PONG`);
+  assert.ok(accept.includes('--add-dir') && accept.includes('C:\\work'));
+  assert.ok(accept.includes('--mode') && accept.includes('accept-edits') && accept.includes('--disable-slash-commands'));
+  const readOnly = A.AGENTS.agy.args({ ...input, cfg: { permissionMode: 'default' } });
+  assert.ok(readOnly.includes('plan') && !readOnly.includes('--disable-slash-commands'));
+  const bypass = A.AGENTS.agy.args({ ...input, cfg: { permissionMode: 'bypassPermissions' } });
+  assert.ok(bypass.includes('--dangerously-skip-permissions'));
+  const resume = A.AGENTS.agy.args({ ...input, resume: 'conv-1', systemShort: 'short' });
+  assert.ok(resume.includes('--conversation') && resume.includes('conv-1'));
+  const events = fs.readFileSync(path.join(__dirname, 'fixtures/agents/agy-tools.jsonl'), 'utf8').trim().split(/\r?\n/).map(JSON.parse);
+  const p = A.agyParser();
+  let last;
+  for (const ev of events) last = p.feed(ev);
+  assert.equal(last.session, '6d560884-a06c-4b29-a675-4d3201dea093');
+  assert.equal(last.done.text.includes('HELLO'), true);
+  const pong = A.agyParser();
+  const lines = fs.readFileSync(path.join(__dirname, 'fixtures/agents/agy-pong.jsonl'), 'utf8').trim().split(/\r?\n/).map(JSON.parse);
+  const parsed = lines.map(ev => pong.feed(ev));
+  assert.equal(parsed[0].session, 'ad79f5cc-2c0a-445c-a918-a0fbd7929859');
+  assert.equal(parsed.find(row => row.done).done.text.trim(), 'PONG');
+  assert.deepEqual(parsed[1].progress, []);
+  const resumed = fs.readFileSync(path.join(__dirname, 'fixtures/agents/agy-resume.jsonl'), 'utf8').trim().split(/\r?\n/).map(JSON.parse);
+  const rp = A.agyParser();
+  const results = resumed.map(ev => rp.feed(ev));
+  assert.equal(results[0].session, '6d560884-a06c-4b29-a675-4d3201dea093');
+  assert.equal(results[results.length - 1].done.text.trim(), 'HELLO');
+});
+
+test('Hermes command modes, image forwarding and plain text completion', () => {
+  const args = A.AGENTS.hermes.args({ cfg: { permissionMode: 'acceptEdits', model: 'm' }, cwd: 'C:\\work', resume: 's1', images: ['a.png'] });
+  assert.deepEqual(args, ['chat', '--query-file', '-', '-Q', '--in', 'C:\\work', '--source', 'tool', '--resume', 's1', '-m', 'm', '--image', 'a.png']);
+  for (const permissionMode of ['default', 'acceptEdits', 'bypassPermissions']) {
+    assert.ok(!A.AGENTS.hermes.args({ cfg: { permissionMode }, cwd: '.', resume: '' }).includes('--yolo'));
+  }
+  const p = A.hermesParser();
+  assert.deepEqual(p.finish({ stdout: fs.readFileSync(path.join(__dirname, 'fixtures/agents/hermes-pong.stdout'), 'utf8'),
+    stderr: fs.readFileSync(path.join(__dirname, 'fixtures/agents/hermes-pong.stderr'), 'utf8'), code: 0 }),
+  { session: '20260925_134414_e62607', done: { text: 'PONG', error: false } });
+});
+
+test('agy review fixes: hermes stderr errors, yolo spellings, flag-like images, agy arg bound', () => {
+  const p = A.hermesParser();
+  assert.deepEqual(p.finish({ stdout: '', stderr: '\x1b[2mSession_ID: abc\x1b[0m\nError: model not found\n', code: 1 }),
+    { session: 'abc', done: { text: 'Error: model not found', error: true } });
+  const extra = ['--yolo', '-y', '--yolo=1', '--max-turns', '3'];
+  const args = A.AGENTS.hermes.args({ cfg: { extraArgs: extra }, cwd: '.', resume: '', images: ['--yolo'] });
+  assert.deepEqual(args.slice(-2), ['--max-turns', '3']);
+  assert.ok(!args.some(x => /yolo|^-y$/.test(x)) && !args.includes('--image'));
+  assert.ok(!A.AGENTS.codex.args({ cfg: {}, resume: '', cwd: 'x', images: ['-bad'] }).includes('-bad'));
+  const agy = A.AGENTS.agy.args({ cfg: {}, cwd: '.', resume: '', prompt: 'p'.repeat(30000), system: 's'.repeat(40000) });
+  assert.ok(agy[0].length <= 24100, `agy -p argument is ${agy[0].length} chars`);
 });
 
 test('Grok: streaming-json from a prompt file, dontAsk plus translated allow rules, resume and the system prompt', () => {
@@ -249,6 +306,26 @@ test('resolveCommand: a configured script runs with this node, an npm .cmd shim 
     const shim = path.join(tmp, 'codex.cmd');
     fs.writeFileSync(shim, '@ECHO off\r\nSETLOCAL\r\nCALL :find_dp0\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js" %*\r\n');
     assert.deepEqual(A.unwrapShim(shim, A.AGENTS.codex), { file: process.execPath, args: [path.join(bin, 'codex.js')], found: true });
+    assert.deepEqual(A.resolveCommand('codex', { path: shim }), { file: process.execPath, args: [path.join(bin, 'codex.js')], found: true });
+    // Current npm shims mention "%dp0%\node.exe" before the script.
+    const realShim = path.join(tmp, 'codex2.cmd');
+    fs.writeFileSync(realShim, 'IF EXIST "%dp0%\\node.exe" (\r\n  SET "_prog=%dp0%\\node.exe"\r\n)\r\n"%_prog%"  "%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js" %*\r\n');
+    assert.deepEqual(A.unwrapShim(realShim, A.AGENTS.codex), { file: process.execPath, args: [path.join(bin, 'codex.js')], found: true });
+    // Other generators write %~dp0 and .bat launchers.
+    const batShim = path.join(tmp, 'codex3.bat');
+    fs.writeFileSync(batShim, '@node "%~dp0\\node_modules\\@openai\\codex\\bin\\codex.js" %*\r\n');
+    assert.deepEqual(A.resolveCommand('codex', { path: batShim }), { file: process.execPath, args: [path.join(bin, 'codex.js')], found: true });
+    const oldPath = process.env.CODEX_BIN;
+    try {
+      process.env.CODEX_BIN = path.join(tmp, 'codex.exe');
+      fs.writeFileSync(process.env.CODEX_BIN, '');
+      assert.deepEqual(A.resolveCommand('codex', {}), { file: process.env.CODEX_BIN, args: [], found: true });
+      process.env.CODEX_BIN = shim;
+      assert.deepEqual(A.resolveCommand('codex', {}), { file: process.execPath, args: [path.join(bin, 'codex.js')], found: true });
+    } finally {
+      if (oldPath === undefined) delete process.env.CODEX_BIN;
+      else process.env.CODEX_BIN = oldPath;
+    }
     // With the platform package present, the native exe is spawned directly.
     const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
     const triple = process.arch === 'arm64' ? 'aarch64-pc-windows-msvc' : 'x86_64-pc-windows-msvc';

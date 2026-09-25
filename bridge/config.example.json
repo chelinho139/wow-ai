@@ -49,6 +49,18 @@
       "networkAccess": false,
       "extraArgs": []
     },
+    "agy": {
+      "path": "",
+      "model": "",
+      "permissionMode": "acceptEdits",
+      "extraArgs": []
+    },
+    "hermes": {
+      "path": "",
+      "model": "",
+      "permissionMode": "acceptEdits",
+      "extraArgs": []
+    },
     "grok": {
       "path": "",
       "model": "",

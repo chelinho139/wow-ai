@@ -17,10 +17,10 @@ The bridge reads `config.json` once at start. Restart it after editing, except f
 
 | Key | Default | Meaning |
 |---|---|---|
-| `agent` | `"claude"` | The agent for chats that have not picked one with `/wow-ai agent`. One of `claude`, `codex`, `grok`; the bridge refuses to start on anything else. |
+| `agent` | `"claude"` | The agent for chats that have not picked one with `/wow-ai agent`. One of `claude`, `codex`, `grok`, `agy`, `hermes`; the bridge refuses to start on anything else. |
 | `agents.<id>` | one block per agent | That agent's settings, below. A missing block means the defaults. |
 
-Keys under `agents.claude`, `agents.codex` and `agents.grok` (what each one means per agent is spelled out in [AGENTS.md](AGENTS.md)):
+Keys under `agents.claude`, `agents.codex`, `agents.grok`, `agents.agy` and `agents.hermes` (what each one means per agent is spelled out in [AGENTS.md](AGENTS.md)):
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -28,7 +28,7 @@ Keys under `agents.claude`, `agents.codex` and `agents.grok` (what each one mean
 | `allowedTools` | git, npm, npx, node, python, pip, pytest, ls, dir, WebSearch, WebFetch | Rules in Claude Code's syntax: `Bash(git:*)` allows any command starting with `git`, `WebSearch` a tool. Passed to Claude as `--allowedTools`, translated to Grok's `--allow` globs, ignored by Codex. The **Allow & retry** button in game appends rules here permanently. |
 | `deniedTools` | `[]` | Rules the agent may never use, same syntax. Claude: `--disallowedTools`; Grok: `--deny`, which wins over everything, `bypassPermissions` included; ignored by Codex. |
 | `model` | `""` | Passed to the CLI (`--model` / `-m`) when non-empty. Empty uses the CLI's default. |
-| `path` | `""` | Full path to the executable. Empty means: look in the installer's folder, then `PATH`, then npm's launcher. A `.js` path is run with the bridge's Node. |
+| `path` | `""` | Full path to the executable. Empty means: look in the installer's folder, then (for Codex) `CODEX_BIN`, then `PATH`, then npm's launcher. A `.js` path is run with the bridge's Node. |
 | `extraArgs` | `[]` | More command-line arguments, added verbatim (before Codex's `resume` subcommand). |
 | `networkAccess` (codex only) | `false` | `true` lets commands inside Codex's `workspace-write` sandbox reach the network (`-c sandbox_workspace_write.network_access=true`). |
 

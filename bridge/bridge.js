@@ -540,12 +540,15 @@ function runJob(job) {
   const system = P.systemPrompt(ctx, primer());
   const systemShort = P.systemPrompt(ctx, '');
   const promptFile = path.join(TMP_DIR, `prompt-${job.id}-${Date.now().toString(36)}.txt`);
-  const input = agent.input({ prompt: job.text, system, systemShort, resume });
+  const input = agent.input({ prompt: job.text, system, systemShort, resume, cfg: acfg });
   if (input.promptFile !== undefined) {
     try { fs.mkdirSync(TMP_DIR, { recursive: true }); fs.writeFileSync(promptFile, input.promptFile); }
     catch (e) { finish(job, 'error', `Could not write the prompt file ${promptFile}: ${e.message}`); return; }
   }
-  const args = [...cmd.args, ...agent.args({ cfg: acfg, resume, cwd, system, systemShort, promptFile })];
+  const args = [...cmd.args, ...agent.args({
+    cfg: acfg, resume, cwd, system, systemShort, promptFile,
+    prompt: job.text, timeoutMs: cfg.timeoutMs,
+  })];
   const env = agent.env({ ...process.env });
   // Where this run's tools append map commands (docs/MAP.md); any agent can use it.
   try {
@@ -568,6 +571,7 @@ function runJob(job) {
   const notes = [];        // bridge remarks appended to the reply
   let stderr = '';
   let buffer = '';
+  let stdoutText = '';
   let parserError = false;
 
   const pushProgress = (line) => {
@@ -576,6 +580,8 @@ function runJob(job) {
     beat(job);
     publish(key, { chat: job.chat, id: job.id, status: 'working', text: progress.join('\n'), cwd, session: sessionId, agent: agentId }, false);
   };
+  if (agent.stream === 'text') pushProgress('hermes is working (no live progress)');
+  if (input.note) notes.push(input.note);
   // Long thinking stretches produce no tool events; keep the heartbeat alive anyway.
   const keepalive = setInterval(() => beat(job), 45000);
 
@@ -606,6 +612,10 @@ function runJob(job) {
   };
 
   child.stdout.on('data', (chunk) => {
+    if (agent.stream === 'text') {
+      stdoutText += chunk.toString('utf8');
+      return;
+    }
     buffer += chunk.toString('utf8');
     let nl;
     while ((nl = buffer.indexOf('\n')) >= 0) {
@@ -634,6 +644,16 @@ function runJob(job) {
 
   child.on('close', (code) => {
     cleanup();
+    if (agent.stream === 'text') {
+      try {
+        const r = parser.finish({ stdout: stdoutText, stderr, code });
+        if (r && r.session) sessionId = r.session;
+        if (r && r.done) result = r.done;
+        if (r && Array.isArray(r.notes)) notes.push(...r.notes);
+      } catch (err) {
+        result = { text: `${agent.name} output parser failed: ${err.message}`, error: true };
+      }
+    }
     if (buffer.trim()) handleLine(buffer.trim());
     if (sessionId) {
       state.sessions[skey] = sessionId;

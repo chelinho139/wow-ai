@@ -276,6 +276,56 @@ function grokParser() {
   };
 }
 
+function agyParser() {
+  let response = '';
+  return {
+    feed(ev) {
+      const out = empty();
+      if (ev.event === 'init' && ev.conversation_id) out.session = ev.conversation_id;
+      if (ev.event === 'step_update' && ev.step_update) {
+        const step = ev.step_update;
+        if (step.step_type === 'tool' && step.state === 'ACTIVE') {
+          const params = (step.tool_info && step.tool_info.parameters) || {};
+          const name = step.tool_name || '';
+          const file = params.AbsolutePath || params.TargetFile || params.file_path || params.path || '';
+          const base = file ? baseName(file) : '';
+          const commands = {
+            view_file: `read ${base}`, write_to_file: `edit ${base}`, replace_file_content: `edit ${base}`,
+            multi_replace_file_content: `edit ${base}`, sed_file: `edit ${base}`,
+            run_command: `$ ${params.CommandLine || ''}`, grep_search: `grep: ${params.Query || ''}`,
+            list_dir: `ls ${base || params.DirectoryPath || ''}`, search_web: `search: ${params.query || params.Query || ''}`,
+            read_url_content: `fetch ${params.url || params.Url || ''}`,
+          };
+          if (commands[name]) out.progress.push(commands[name]);
+          else if (name) out.progress.push(name);
+        } else if (step.step_type === 'agent_response' && step.text_delta) {
+          response += step.text_delta;
+        }
+      } else if (ev.event === 'result') {
+        const result = ev.result || {};
+        if (result.conversation_id) out.session = result.conversation_id;
+        const ok = result.status === 'SUCCESS';
+        out.done = { text: String(result.response || response), error: !ok };
+        if (!ok) out.notes.push(`agy status: ${result.status || 'unknown'}`);
+      }
+      return out;
+    },
+  };
+}
+
+function hermesParser() {
+  return {
+    feed() { return empty(); },
+    finish({ stdout, stderr, code }) {
+      const err = String(stderr || '').replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
+      const session = /session_id:\s*(\S+)/i.exec(err);
+      let text = String(stdout || '').trim();
+      if (!text && code !== 0) text = err.replace(/^.*session_id:.*$/gim, '').trim().slice(-2000);
+      return { session: session ? session[1] : '', done: { text, error: code !== 0 } };
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // The table
 // ---------------------------------------------------------------------------
@@ -307,7 +357,10 @@ const AGENTS = {
       if (system) a.push('--append-system-prompt', system);
       return a.concat(Array.isArray(cfg.extraArgs) ? cfg.extraArgs : []);
     },
-    input: ({ prompt }) => ({ stdin: prompt }),
+    input: ({ prompt, images }) => {
+      const attached = images && images.length ? `\n\nAttached screenshots: ${images.join(', ')} — read them with your Read tool` : '';
+      return { stdin: prompt + attached };
+    },
     env: (env) => { delete env.CLAUDECODE; return env; }, // a bridge started from inside Claude Code can still launch it
     parser: claudeParser,
   },
@@ -317,8 +370,9 @@ const AGENTS = {
     install: 'npm install -g @openai/codex, then run `codex` once and log in',
     windowsPaths: () => [],
     posixPaths: () => [],
+    envPath: 'CODEX_BIN',
     npmPackage: '@openai/codex',
-    args({ cfg, resume, cwd }) {
+    args({ cfg, resume, cwd, images }) {
       const a = [];
       if (cfg.networkAccess) a.push('-c', 'sandbox_workspace_write.network_access=true');
       a.push('exec', '--json', '--skip-git-repo-check', '-C', cwd);
@@ -328,12 +382,14 @@ const AGENTS = {
       if (cfg.model) a.push('-m', cfg.model);
       a.push(...(Array.isArray(cfg.extraArgs) ? cfg.extraArgs : []));
       if (resume) a.push('resume', resume);
+      for (const image of images || []) if (!String(image).startsWith('-')) a.push('-i', image);
       a.push('-'); // the prompt comes on stdin
       return a;
     },
-    input: ({ prompt, system, systemShort, resume }) => {
+    input: ({ prompt, system, systemShort, resume, images }) => {
       const ctx = resume ? systemShort : system;
-      return { stdin: (ctx ? contextBlock(ctx) : '') + prompt };
+      const attached = images && images.length ? `\n\nAttached screenshots: ${images.join(', ')} — read them with your Read tool.` : '';
+      return { stdin: (ctx ? contextBlock(ctx) : '') + prompt + attached };
     },
     env: (env) => env,
     parser: codexParser,
@@ -368,9 +424,57 @@ const AGENTS = {
       if (system) a.push('--append-system-prompt', system);
       return a.concat(Array.isArray(cfg.extraArgs) ? cfg.extraArgs : []);
     },
-    input: ({ prompt }) => ({ promptFile: prompt }),
+    input: ({ prompt, images }) => {
+      const attached = images && images.length ? `\n\nAttached screenshots: ${images.join(', ')} — read them with your Read tool.` : '';
+      return { promptFile: prompt + attached };
+    },
     env: (env) => { env.GROK_DISABLE_AUTOUPDATER = '1'; return env; },
     parser: grokParser,
+  },
+  agy: {
+    name: 'Antigravity', command: 'agy',
+    install: 'Install Google Antigravity CLI (agy) and run `agy` once to log in.',
+    windowsPaths: () => [path.join(process.env.LOCALAPPDATA || '', 'agy', 'bin', 'agy.exe')],
+    posixPaths: () => [],
+    args({ cfg, resume, cwd, prompt, system, systemShort, timeoutMs }) {
+      const text = String(prompt || '');
+      const note = '\n[User prompt truncated to fit the agy command line.]';
+      const context = contextBlock(resume ? systemShort || '' : system || '').slice(0, 12000);
+      const available = Math.max(0, 24000 - context.length - note.length);
+      const bounded = text.length > available ? text.slice(0, available) + note : text;
+      const a = [`-p=${context}${bounded}`, '--output-format', 'stream-json', '--add-dir', cwd,
+        '--print-timeout', `${Math.max(1, Math.ceil((timeoutMs || 1800000) / 1000))}s`];
+      const mode = cfg.permissionMode || 'acceptEdits';
+      if (mode === 'acceptEdits') a.push('--mode', 'accept-edits', '--disable-slash-commands');
+      else if (mode === 'default') a.push('--mode', 'plan');
+      else a.push('--dangerously-skip-permissions', '--disable-slash-commands');
+      if (resume) a.push('--conversation', resume);
+      if (cfg.model) a.push('--model', cfg.model);
+      return a.concat(Array.isArray(cfg.extraArgs) ? cfg.extraArgs : []);
+    },
+    input: () => ({}), env: env => env, parser: agyParser,
+  },
+  hermes: {
+    name: 'Hermes', command: 'hermes',
+    install: 'Install Hermes Agent and run `hermes setup` once.',
+    windowsPaths: () => [], posixPaths: () => [],
+    stream: 'text',
+    args({ cfg, resume, cwd, images }) {
+      const a = ['chat', '--query-file', '-', '-Q', '--in', cwd, '--source', 'tool'];
+      if (resume) a.push('--resume', resume);
+      if (cfg.model) a.push('-m', cfg.model);
+      if (images && images.length && !String(images[0]).startsWith('-')) a.push('--image', images[0]);
+      // R1: hermes never runs with --yolo from the bridge, even via extraArgs.
+      return a.concat(Array.isArray(cfg.extraArgs) ? cfg.extraArgs.filter(x => !/^(-y|--yolo)(=.*)?$/.test(String(x))) : []);
+    },
+    input: ({ prompt, system, systemShort, resume, images, cfg }) => {
+      const ctx = resume ? systemShort : system;
+      let text = (ctx ? contextBlock(ctx) : '') + prompt;
+      if (images && images.length > 1) text += `\n\nAdditional attached screenshot paths: ${images.slice(1).join(', ')}`;
+      const note = cfg && cfg.permissionMode === 'bypassPermissions' ? 'hermes never runs with --yolo from the bridge' : '';
+      return { stdin: text, note };
+    },
+    env: env => env, parser: hermesParser,
   },
 };
 
@@ -429,7 +533,8 @@ function fromPath(p) {
 function unwrapShim(shim, agent) {
   let src;
   try { src = fs.readFileSync(shim, 'utf8'); } catch { return null; }
-  const m = /"%dp0%\\([^"]+)"/.exec(src);
+  // npm shims also mention "%dp0%\node.exe"; the launcher is the .js one.
+  const m = [...src.matchAll(/"%~?dp0%?\\([^"]+)"/g)].find(x => /\.[cm]?js$/i.test(x[1]));
   if (!m) return null;
   const script = path.resolve(path.dirname(shim), m[1].split('\\').join(path.sep));
   if (!exists(script)) return null;
@@ -461,9 +566,19 @@ function resolveCommand(id, cfg = {}) {
   const A = AGENTS[id];
   if (!A) return { file: id, args: [], found: false, note: `unknown agent "${id}"` };
   if (cfg.path) {
+    if (/\.(cmd|bat)$/i.test(cfg.path)) {
+      const r = unwrapShim(cfg.path, A);
+      if (r) return r;
+      return { file: cfg.path, args: [], found: false, note: `agents.${id}.path in config.json points at ${cfg.path}, which could not be unwrapped` };
+    }
     const r = fromPath(cfg.path);
     if (!r.found) r.note = `agents.${id}.path in config.json points at ${cfg.path}, which does not exist`;
     return r;
+  }
+  if (A.envPath && process.env[A.envPath]) {
+    const p = process.env[A.envPath];
+    const r = /\.(cmd|bat)$/i.test(p) ? unwrapShim(p, A) : fromPath(p);
+    if (r && r.found) return r;
   }
   if (process.platform !== 'win32') {
     for (const p of A.posixPaths()) if (exists(p)) return { file: p, args: [], found: true };
@@ -483,6 +598,6 @@ function resolveCommand(id, cfg = {}) {
 module.exports = {
   AGENTS, DEFAULT_AGENT, agentIds, normalizeAgent, displayName, agentConfig,
   grokRules, snippet, contextBlock,
-  claudeParser, codexParser, grokParser, codexItemLine, grokCall, grokRefusal, shellInner,
+  claudeParser, codexParser, grokParser, agyParser, hermesParser, codexItemLine, grokCall, grokRefusal, shellInner,
   resolveCommand, unwrapShim, nativeNextTo,
 };

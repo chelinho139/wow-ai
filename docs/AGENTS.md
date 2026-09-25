@@ -22,10 +22,12 @@ Every agent's block in `config.json` has the same keys, and the bridge maps them
 | `allowedTools` | Rules in Claude Code's syntax: `WebSearch` allows a tool, `Bash(git:*)` any command starting with `git`, `Bash(npm test)` that exact command. The **Allow & retry** button appends to this list. Ignored by Codex. |
 | `deniedTools` | Rules the agent may never use, same syntax. Claude gets them as `--disallowedTools`, Grok as `--deny` (which wins over everything, `bypassPermissions` included). Ignored by Codex. |
 | `model` | Passed through to the CLI when non-empty. |
-| `path` | The executable, when the bridge can't find it on its own. A `.js` path is run with the bridge's own Node. |
+| `path` | The executable, when the bridge can't find it on its own. A `.js` path is run with the bridge's own Node; a Windows `.cmd` npm shim is unwrapped. |
 | `extraArgs` | Anything else to put on the command line, verbatim. |
 
 How each one finds its executable on Windows: a configured `path`; else the installer's folder (`%UserProfile%\.local\bin\claude.exe`, `%UserProfile%\.grok\bin\grok.exe`); else `<name>.exe` on the `PATH`; else npm's `<name>.cmd` launcher, which the bridge unwraps (Node can't spawn `.cmd` files, and going through `cmd.exe` would mangle a system prompt) into the script it runs or the native binary next to it.
+
+Codex also checks `CODEX_BIN` before searching `PATH`, so a newer launcher can override an older `codex.exe` earlier on `PATH`.
 
 ## Claude Code
 
@@ -54,6 +56,20 @@ How each one finds its executable on Windows: a configured `path`; else the inst
 - **Progress:** `tool_call` events by their `toolName` (`run_terminal_command` → `$ npm test`, `read_file` → `read main.rs`, `write`/`search_replace` → `edit b.lua`, `grep`, `list_dir` → `ls src`, `web_search`, `web_fetch`, `spawn_subagent` → `agent: …`; anything else by its ACP `kind`, then its name), `thought` chunks as one `~ …` line, and each stretch of `text` before a tool call as a snippet. The reply is the text streamed after the last tool call (or the last text there was, when the turn ends on a tool call). A `stopReason` other than `end_turn` is noted in the reply.
 - **Context:** the game context and primer go in with `--append-system-prompt` (Grok accepts Claude Code's flag names), on every run. Grok also reads `AGENTS.md`, `CLAUDE.md` and `.grok/rules/` in the chat's folder on its own.
 
+## Google Antigravity CLI
+
+- **Install:** Install Google Antigravity CLI (agy) and run `agy` once to log in. On Windows the bridge checks `%LOCALAPPDATA%\agy\bin\agy.exe`.
+- **Command line:** `agy -p=<prompt> --output-format stream-json --add-dir <folder> --print-timeout <seconds>s [--conversation <id>] [--model <m>] ...`. The prompt must be attached to `-p=`. The bridge sets both the process cwd and `--add-dir` to the chat folder.
+- **Permissions:** `acceptEdits` uses `--mode accept-edits --disable-slash-commands`; `default` uses `--mode plan`; `bypassPermissions` uses `--dangerously-skip-permissions --disable-slash-commands`.
+- **Session and progress:** the `conversation_id` from `init` is resumed with `--conversation`. Active tool steps become progress lines, and `result` supplies the final reply. The context block goes at the top of the prompt. When needed, the user prompt is truncated to keep context under the Windows command-line limit.
+
+## Hermes Agent
+
+- **Install:** Install Hermes Agent and run `hermes setup` once.
+- **Command line:** `hermes chat --query-file - -Q --in <folder> --source tool [--resume <id>] [-m <model>] [--image <path>]`; the prompt is sent on stdin. Hermes writes plain reply text to stdout and `session_id: <id>` to stderr.
+- **Permissions:** `acceptEdits` is the default. `bypassPermissions` falls back to default; the bridge never passes `--yolo` and appends a note to the reply.
+- **Images and context:** the first image is passed with `--image`; additional paths are included in the prompt. The context block goes at the top of the prompt.
+
 ## Known limits
 
 - One agent CLI can only be as headless as it is. If an agent hangs waiting for something interactive (a first-run login, an update prompt), the run ends when `timeoutMs` (30 minutes) expires; run the CLI by hand once on the bridge PC to get past it.
@@ -71,7 +87,7 @@ builds a sandbox with a 5-slot pool and runs the bridge with `--inject`, which p
 
 ## Adding an agent
 
-1. An entry in `AGENTS` in `bridge/agents.js`: `name`, `command`, `install` (one line telling the user what to do), `windowsPaths`/`posixPaths` (where its installer puts it), `npmPackage` if it ships one, `args(…)` (the command line for a run: folder, resume id, permissions, model, system prompt), `input(…)` (the prompt on `stdin` or in a `promptFile`), `env(…)` (the bridge then adds `WOW_AI_MAP_FILE` for the map layers, see [MAP.md](MAP.md)), and a `parser()` whose `feed(event)` returns progress lines, the session id, denied rules, notes and the final `done`.
+1. An entry in `AGENTS` in `bridge/agents.js`: `name`, `command`, `install` (one line telling the user what to do), `windowsPaths`/`posixPaths` (where its installer puts it), `npmPackage` if it ships one, `args(…)` (the command line for a run: folder, resume id, permissions, model, system prompt), `input(…)` (the prompt on `stdin` or in a `promptFile`), `env(…)` (the bridge then adds `WOW_AI_MAP_FILE` for the map layers, see [MAP.md](MAP.md)), and a `parser()` whose `feed(event)` returns progress lines, the session id, denied rules, notes and the final `done`. Plain-text CLIs may declare `stream: 'text'` and implement `parser().finish({ stdout, stderr, code })`.
 2. A block under `agents` in `bridge/config.example.json`, and the same keys documented in `docs/CONFIGURATION.md`.
 3. A section on this page, and the id in the README's table and the addon's `AGENT_NAMES` (only for its display name; unknown ids are capitalized).
 4. Tests in `tests/agents_test.js`: the arguments for each permission mode, and a sample of the CLI's real stream through the parser.
