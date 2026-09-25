@@ -204,6 +204,16 @@ const MAP_HINT = [
   'x and y are map percent on the map with that uiMapID (the context gives the player\'s current one). kind is one of ore, herb, quest, turnin, kill, loot, object, explore, npc, trainer, vendor, dungeon, flight, poi. Only mark the map when asked for a route, marks or locations; say in the reply what you drew.',
 ];
 
+// How the agent hands the player a ready-made macro (see "Macros" below).
+const MACRO_HINT = [
+  'When the player asks for a macro, write each one as a fenced block whose language tag is wowmacro followed by the macro name (at most 16 characters), and the macro text inside, one command per line, at most 255 characters in total. Start it with #showtooltip when it casts something. After the name you may add icon=<icon fileID or file name, e.g. Ability_Warrior_Charge> and scope=character for a per-character macro (the default is an account macro). Example:',
+  '```wowmacro Charge',
+  '#showtooltip',
+  '/cast [combat] Intercept; Charge',
+  '```',
+  'The addon shows the player a button that creates the macro (or updates one with the same name) and puts it on their cursor. Explain outside the block what it does. Avoid /run and /script unless asked; the player is warned about them.',
+];
+
 function systemPrompt(ctx, primer) {
   const lines = [...REPLY_FORMAT];
   const text = String(ctx || '').trim();
@@ -214,7 +224,9 @@ function systemPrompt(ctx, primer) {
       '',
       'Use this when the request is about the game or the character (questions, macros, addon code, gear advice); ignore it when the task is unrelated. Items, spells or quests the player shift-clicked into a message appear as [Name] in the text, with their tooltip in a "Linked from the game" block at the end of the message.',
       '',
-      ...MAP_HINT);
+      ...MAP_HINT,
+      '',
+      ...MACRO_HINT);
   }
   const ref = text ? String(primer || '').trim() : '';
   if (ref) {
@@ -317,6 +329,7 @@ function luaTable(globalName, records, opts = {}) {
     if (Array.isArray(r.denied) && r.denied.length) {
       lines.push(`\t\t\tdenied = { ${r.denied.map(luaStr).join(', ')} },`);
     }
+    if (Array.isArray(r.macros) && r.macros.length) lines.push(luaMacros(r.macros));
     lines.push('\t\t},');
   }
   lines.push('\t},');
@@ -474,6 +487,65 @@ const SILENT_WAV = (() => {
   return b;
 })();
 
+// ---------------------------------------------------------------------------
+// Macros
+// ---------------------------------------------------------------------------
+//
+// A reply can carry ready-made macros in ```wowmacro <Name> [icon=..] [scope=character]
+// blocks. The bridge validates them and sends them as `macros` on the reply record;
+// the addon offers a button that creates or updates each one. The block itself is
+// replaced by a readable plain-text version, since the window doesn't render markdown.
+
+const MACRO_LIMITS = { name: 16, body: 255, perReply: 6 };
+const MACRO_DEFAULT_ICON = 134400; // the question mark: with #showtooltip the game shows the spell's icon
+const MACRO_RE = /```wowmacro([^\n]*)\n([\s\S]*?)```/g;
+const RISKY_MACRO_RE = /^\s*\/(run|script|click|console|dump)\b/im;
+
+// The first `max` characters (not bytes) of s, never splitting a character.
+const firstChars = (s, max) => Array.from(s).slice(0, max).join('');
+
+function parseMacroHeader(rest) {
+  let name = String(rest || '');
+  let icon = null, scope = 'account';
+  name = name.replace(/\bicon\s*=\s*("?)([^\s"]+)\1/i, (_, q, v) => { icon = v; return ' '; });
+  name = name.replace(/\bscope\s*=\s*("?)(\w+)\1/i, (_, q, v) => { scope = /^char/i.test(v) ? 'character' : 'account'; return ' '; });
+  name = name.replace(/\bname\s*=\s*"([^"]*)"/i, (_, v) => ` ${v} `);
+  return { name, icon, scope };
+}
+
+// { text, macros, notes }: text with each block made readable; invalid macros
+// stay visible but get no button, with the reason in notes.
+function extractMacros(text) {
+  const macros = [], notes = [];
+  const out = String(text ?? '').replace(MACRO_RE, (_, header, rawBody) => {
+    const h = parseMacroHeader(header);
+    // Blizzard strips double quotes from macro names; | would start an escape sequence.
+    const name = firstChars(h.name.replace(/["|\x00-\x1f\x7f]/g, '').replace(/\s+/g, ' ').trim(), MACRO_LIMITS.name);
+    const body = String(rawBody).replace(/\r/g, '').split('\n').map(l => l.replace(/\s+$/, '')).join('\n').replace(/^\n+|\n+$/g, '');
+    const readable = `Macro "${name || '?'}":\n${body}`;
+    const bytes = Buffer.byteLength(body, 'utf8');
+    if (!name) { notes.push('a macro without a name was not offered as a button'); return readable; }
+    if (!body) { notes.push(`macro "${name}" is empty`); return readable; }
+    if (bytes > MACRO_LIMITS.body) { notes.push(`macro "${name}" is ${bytes} bytes, over the game's ${MACRO_LIMITS.body}; not offered as a button`); return readable; }
+    if (macros.length >= MACRO_LIMITS.perReply) { notes.push(`only the first ${MACRO_LIMITS.perReply} macros get a button`); return readable; }
+    let icon = null;
+    if (h.icon && /^\d{1,9}$/.test(h.icon)) icon = Number(h.icon);
+    else if (h.icon && /^[A-Za-z0-9_]{1,64}$/.test(h.icon)) icon = h.icon;
+    macros.push({ name, body, icon, char: h.scope === 'character', risky: RISKY_MACRO_RE.test(body) });
+    return readable;
+  });
+  return { text: out, macros, notes: [...new Set(notes)] };
+}
+
+// The summary is printed into the game chat: macro blocks have no place there.
+function stripMacroBlocks(text) {
+  return String(text ?? '').replace(MACRO_RE, '').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function luaMacros(macros) {
+  return `\t\t\tmacros = { ${macros.map(m => `{ name = ${luaStr(m.name)}, body = ${luaStr(m.body)}, icon = ${m.icon == null ? 'nil' : typeof m.icon === 'number' ? m.icon : luaStr(m.icon)}, char = ${m.char ? 'true' : 'false'}, risky = ${m.risky ? 'true' : 'false'} }`).join(', ')} },`;
+}
+
 module.exports = {
   fromHex, pad3, slotNumber, chatKey, sessKey,
   alreadyHandled, markHandled, pruneStale, MONTH_MS,
@@ -482,4 +554,5 @@ module.exports = {
   ruleFor, describeToolUse,
   luaStr, luaTable, SILENT_WAV,
   MAP_LIMITS, validateMapCommand, newMap, applyMapCommands, extractMapBlocks, parseMapFile, luaMap,
+  MACRO_LIMITS, MACRO_DEFAULT_ICON, extractMacros, stripMacroBlocks, luaMacros,
 };
