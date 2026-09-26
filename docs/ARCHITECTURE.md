@@ -69,7 +69,7 @@ The bridge doesn't know which slot the game will load next, so every publish wri
 WoWAI_SlotData = {
   ts = "...", now = <bridge epoch seconds>, cwd = "<the bridge's default folder>",
   agent = "claude", agents = { "claude", "codex", "grok" },   -- the default agent, and the ones the bridge knows
-  replies = { { chat = "...", id = 12, status = "working"|"done"|"error", text = "...", cwd = "...", session = "<agent session id>", agent = "codex", denied = { "WebSearch" } }, … },
+  replies = { { chat = "...", id = 12, status = "working"|"done"|"error", text = "...", cwd = "...", session = "<agent session id>", agent = "codex", denied = { "WebSearch" }, macros = { { name = "Charge", body = "#showtooltip\n/cast Charge", icon = nil, char = false, risky = false } } }, … },
   map = { epoch = "...", version = 3, layers = { … } },  -- the agent's map layers (docs/MAP.md): for a while after they change and after every hello
   restore = { token = "...", chats = { … } },   -- only right after a saved-data reset
 }

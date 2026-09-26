@@ -29,7 +29,7 @@
     "setup": "node setup.js",
     "start": "node bridge/supervisor.js",
     "slots": "node bridge/install-slots.js",
-    "test": "node tests/order_check.js && node --test tests/bridge_test.js tests/agents_test.js tests/restore_test.js tests/addon_test.js tests/map_test.js tests/map_addon_test.js && node tests/codec_test.js",
+    "test": "node tests/order_check.js && node --test tests/bridge_test.js tests/agents_test.js tests/restore_test.js tests/addon_test.js tests/map_test.js tests/map_addon_test.js tests/macro_test.js tests/quest_state_test.js && node tests/codec_test.js",
     "test:live": "node tests/inject_test.js",
     "probe": "python3 bridge/capture_x11.py --probe bridge/probe.png"
   },

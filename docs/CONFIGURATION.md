@@ -98,6 +98,7 @@ Exit codes: `0` normal, `1` the injected or one-shot job failed, `2` config miss
 | `GROK_DISABLE_AUTOUPDATER` | Set to `1` for Grok runs, so a headless run never stops for an update. |
 | `GROK_HOME` | Honoured when looking for `grok.exe` (`<GROK_HOME>\bin`); Grok's own setting. |
 | `WOW_AI_MAP_FILE` | Set by the bridge for each run, whatever the agent: a file where the agent's tools append map commands, one JSON object per line (see [MAP.md](MAP.md)). |
+| `WOW_AI_GAME_STATE` | Set by the bridge for each run that has game context: `bridge/gamestate.json`, with the character, position, XP, professions, quest log with each objective's progress, and every completed quest (saved history plus what was turned in since login). |
 
 ## Which folder the agent works in
 
@@ -121,6 +122,7 @@ All of these are gitignored.
 | `bridge/state.json` | Agent session ids per chat, the folder and the agent each session ran with, handled message ids per addon session token, the presence counter, and the latest game context the addon sent (`context`). Delete it to forget all sessions. |
 | `bridge/transcripts.json` | The last 200 messages of every chat, with the agent that wrote each reply, so the addon can recover its chats after the client wipes saved data. |
 | `bridge/mapjobs/` | One map command file per running job (`WOW_AI_MAP_FILE`), read and deleted when the job ends. Map layers themselves live in `state.json` (`map`). |
+| `bridge/gamestate.json` | The game state for the agent's tools (`WOW_AI_GAME_STATE`), rewritten before each run. Completed quests per character are kept in `state.json` (`questsDone`), from the addon's saved data. |
 | `bridge/bridge.log` | Everything printed to the console, with timestamps. Grows without bound; delete it whenever you like. |
 | `bridge/tmp/` | Prompt files for agents that read the prompt from disk (Grok). Each is deleted when its run ends. |
 

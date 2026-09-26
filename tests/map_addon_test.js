@@ -215,3 +215,94 @@ test('/wow-ai map hide, show, nav and stop', () => {
   assert.equal(vm.evaluate('WoWAINavigator.shown'), 'false');
   vm.run('SlashCmdList.WOWAIMAP("")'); // status never errors
 });
+
+// ---------------------------------------------------------------------------
+// Quest steps: the navigator follows the game, not the distance
+// ---------------------------------------------------------------------------
+
+const QUEST_API = `
+STUB.qlog, STUB.flagged = {}, {}
+C_QuestLog = C_QuestLog or {}
+C_QuestLog.GetLogIndexForQuestID = function(q) return STUB.qlog[q] and 1 or nil end
+C_QuestLog.IsQuestFlaggedCompleted = function(q) return STUB.flagged[q] == true end
+C_QuestLog.IsComplete = function(q) return STUB.qlog[q] and STUB.qlog[q].complete == true end
+C_QuestLog.ReadyForTurnIn = function(q) return false end
+C_QuestLog.GetQuestObjectives = function(q) return STUB.qlog[q] and STUB.qlog[q].objectives or {} end
+`;
+const ZHEVRA = `{ epoch = "q1", version = 1, layers = { { name = "guide", title = "Leveling", ordered = true, points = {
+  { 1432, 50, 40, "1. accept The Zhevra", "quest", q = 845, step = "accept" },
+  { 1432, 60, 50, "2. loot Zhevra Hooves [The Zhevra]", "loot", q = 845, step = "objective", obj = "Zhevra Hooves" },
+  { 1432, 50, 40, "3. turn in The Zhevra", "turnin", q = 845, step = "turnin" },
+  { 1432, 55, 70, "4. Copper Vein", "ore" } } } } }`;
+const navIndex = vm => vm.evaluate('WoWAIMapDB.nav and WoWAIMapDB.nav.index');
+
+test('quest steps move on when the game reports them done', () => {
+  const vm = newVM();
+  vm.run(QUEST_API);
+  vm.run(`WoWAIMap.Sync(${ZHEVRA})`);
+  assert.equal(navIndex(vm), '1');
+  // Accepting: the event's own id counts even before the log shows it.
+  vm.run('STUB.FireEvent("QUEST_ACCEPTED", 845); STUB.RunTimers()');
+  assert.equal(navIndex(vm), '2');
+  // Hunting: not done at 2/4, done at 4/4 ("count first" text on this client).
+  vm.run('STUB.qlog[845] = { objectives = { { text = "2/4 Zhevra Hooves", finished = false } } }; STUB.FireEvent("QUEST_LOG_UPDATE"); STUB.RunTimers()');
+  assert.equal(navIndex(vm), '2');
+  vm.run('STUB.qlog[845].objectives[1] = { text = "4/4 Zhevra Hooves", finished = true }; STUB.FireEvent("QUEST_LOG_UPDATE"); STUB.RunTimers()');
+  assert.equal(navIndex(vm), '3');
+  assert.match(vm.evaluate('STUB.prints[#STUB.prints]'), /done: 2\. loot Zhevra Hooves.*Next: 3\. turn in/);
+  // Done steps leave the world map: only the turn-in (current) and the ore stop remain.
+  vm.run('STUB.shownMap = 1432; WoWAIMap.Refresh()');
+  assert.deepEqual(shownPins(vm).map(p => p.split(',')[2]), ['3', '4']);
+  // Turning in: straight from the event (the completed flag lags behind it).
+  vm.run('STUB.qlog[845] = nil; STUB.FireEvent("QUEST_TURNED_IN", 845); STUB.RunTimers()');
+  assert.equal(navIndex(vm), '4', 'on to the next, non-quest stop');
+});
+
+test('being at a quest stop is not doing it; plain stops still advance on arrival', () => {
+  const vm = newVM();
+  vm.run(QUEST_API);
+  vm.run(`WoWAIMap.Sync(${ZHEVRA})`);
+  vm.run('STUB.posX, STUB.posY = 0.5, 0.4; WoWAIMap.UpdateNavigator()'); // standing on stop 1
+  assert.equal(navIndex(vm), '1');
+  assert.match(vm.evaluate('WoWAINavigator.text.text'), /here: accept it/);
+  vm.run('WoWAIMap.Navigate("guide", 4); WoWAIMapDB.nav.manual = nil; STUB.posX, STUB.posY = 0.55, 0.7; WoWAIMap.UpdateNavigator()');
+  assert.equal(vm.evaluate('WoWAIMapDB.nav'), null, 'the last, plain stop finished the route');
+});
+
+test('several steps already done are skipped in one jump, with one message', () => {
+  const vm = newVM();
+  vm.run(QUEST_API);
+  vm.run('STUB.flagged[845] = true');
+  const before = Number(vm.evaluate('#STUB.prints'));
+  vm.run(`WoWAIMap.Sync(${ZHEVRA})`);
+  assert.equal(navIndex(vm), '4');
+  const msgs = Number(vm.evaluate('#STUB.prints')) - before;
+  assert.equal(msgs, 2, 'the layer notice and one "done (+2 more)" line');
+  assert.match(vm.evaluate('STUB.prints[#STUB.prints]'), /\(\+2 more\)/);
+});
+
+test('an objective whose text does not match is never skipped on a guess', () => {
+  const vm = newVM();
+  vm.run(QUEST_API);
+  vm.run(`WoWAIMap.Sync(${ZHEVRA})`);
+  vm.run('STUB.FireEvent("QUEST_ACCEPTED", 845); STUB.qlog[845] = { objectives = { { text = "Zhevra Runner slain: 3/3", finished = true }, { text = "0/4 Something Else", finished = false } } }; STUB.FireEvent("QUEST_LOG_UPDATE"); STUB.RunTimers()');
+  assert.equal(navIndex(vm), '2');
+  // The whole quest complete still counts.
+  vm.run('STUB.qlog[845].complete = true; STUB.FireEvent("QUEST_LOG_UPDATE"); STUB.RunTimers()');
+  assert.equal(navIndex(vm), '3');
+});
+
+test('a stop the player picks stays, even if done; going back is never undone', () => {
+  const vm = newVM();
+  vm.run(QUEST_API);
+  vm.run(`WoWAIMap.Sync(${ZHEVRA})`);
+  vm.run('STUB.FireEvent("QUEST_ACCEPTED", 845); STUB.RunTimers()');
+  assert.equal(navIndex(vm), '2');
+  vm.run('WoWAIMap.Command("prev")');
+  vm.run('STUB.FireEvent("QUEST_LOG_UPDATE"); STUB.RunTimers()');
+  assert.equal(navIndex(vm), '1', 'prev sticks although accepting is done');
+  vm.run('WoWAIMap.Command("nav guide 1"); STUB.FireEvent("QUEST_LOG_UPDATE"); STUB.RunTimers()');
+  assert.equal(navIndex(vm), '1');
+  vm.run('WoWAIMap.Command("next"); STUB.FireEvent("QUEST_LOG_UPDATE"); STUB.RunTimers()');
+  assert.equal(navIndex(vm), '2', 'moving forward hands control back to the game');
+});

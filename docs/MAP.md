@@ -12,6 +12,8 @@ The agent can mark your world map. What it draws are **layers**: a named list of
    {"op":"clearall"}
    ```
 
+   A point that is a quest step can also say which quest and which step: `"q":855,"step":"accept"`, `"step":"objective","obj":"Centaur Bracers"` (the objective's item or creature name) or `"step":"turnin"`. The navigator then moves on when the game reports that step done (see below).
+
    The agent can also put a few marks in its reply inside a ```` ```wowmap ```` block; the bridge takes the block out of the text. The system prompt that goes with the game context explains both ways, so any agent can draw without extra tooling: `set` replaces a layer, `clear` removes one, `clearall` removes them all; `kind` is one of `ore`, `herb`, `quest`, `turnin`, `kill`, `loot`, `object`, `explore`, `npc`, `trainer`, `vendor`, `dungeon`, `flight`, `poi`.
 2. When the run ends the bridge validates the commands (`protocol.js`: sanitized labels, coordinates clamped to 0-100, at most 400 points per layer, 1500 in total, 12 layers with the oldest dropped first), applies them to the layers it keeps in `state.json`, and bumps a version number. The reply gets a `[bridge] map: ...` line saying what changed.
 3. The next slot files carry the whole set (`map = { epoch, version, layers }`) for three minutes after a change (on progress publishes only while the set is small), and again after every hello. The addon replaces its copy when the version is newer (or the bridge's state was reset). A mark can't be applied twice, and a client that lost its saved data gets the layers back when it says hello.
@@ -19,7 +21,10 @@ The agent can mark your world map. What it draws are **layers**: a named list of
 ## In game
 
 - **World map:** pins for every visible layer on the map you are looking at, projected onto continent maps too. Hover for the label; click a pin to navigate to it.
-- **Navigator:** a small frame with an arrow and the distance in yards to the current stop of the route. It starts on a route as soon as one arrives (unless you are already following another one), advances when you get within 12 yards, and wraps around on loops. Drag it to move it; right-click skips a stop. It shows "no position here" in instances, where the game gives addons no coordinates.
+- **Navigator:** a small frame with an arrow and the distance in yards to the current stop of the route. It starts on a route as soon as one arrives (unless you are already following another one) and wraps around on loops. Drag it to move it; right-click skips a stop. It shows "no position here" in instances, where the game gives addons no coordinates.
+  - **Plain stops** (ore, marks) advance when you get within 12 yards.
+  - **Quest steps** advance when the game says they are done: the quest is in your log (accept), the objective's line is finished or the whole quest is complete (objective), the quest is turned in (turn in). Being at the spot doesn't count; close to it the navigator says what's left ("here: accept it", "finish it", "turn it in"). Every step already done is skipped in one jump (also when a route arrives), with one chat line and a sound, and done steps leave the map. An objective is matched to its log line by name only; when that fails (custom text, another language) the stop waits for the whole quest to be complete rather than guess.
+  - A stop you pick yourself (`prev`, `nav <layer> <n>`, clicking a pin) is never skipped over; `next` hands control back to the game.
 - **Herb and ore nodes:** with a `WoWAI_Nodes` data addon installed (see below), every herb and ore spawn point of the zone on the world map, filtered to what your skill can gather.
 
 | Command | Does |

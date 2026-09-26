@@ -143,6 +143,47 @@ end
 -- World map drawing
 ---------------------------------------------------------------------------
 
+-- Quest steps. A route point can say which quest it belongs to and what the
+-- step is (accept, objective, turn in); the navigator moves on when the game
+-- reports that step done, instead of on arrival (being at the hunting spot is
+-- not having the hides). Only ever forward, and never over the player's own pick.
+local session = { accepted = {}, turnedIn = {} } -- from the events' own quest ids: the log lags behind them
+
+local function InLog(q)
+	local i = Try(C_QuestLog and C_QuestLog.GetLogIndexForQuestID, q)
+	return type(i) == "number" and i > 0
+end
+
+local function Flagged(q)
+	return Try(C_QuestLog and C_QuestLog.IsQuestFlaggedCompleted, q) == true
+end
+
+-- true = done, false = not yet, nil = not a quest step. `cache` holds each
+-- quest's objectives for one pass.
+local function StepDone(p, cache)
+	local q, step = p.q, p.step
+	if type(q) ~= "number" or not step then return nil end
+	if session.turnedIn[q] or Flagged(q) then return true end
+	if step == "turnin" then return false end
+	if step == "accept" then return session.accepted[q] == true or InLog(q) end
+	if not InLog(q) then return false end
+	if Try(C_QuestLog.IsComplete, q) or Try(C_QuestLog.ReadyForTurnIn, q) then return true end
+	-- The objective's own line, matched on its name (plain, case-insensitive). No
+	-- match (custom text, another language) means not done: a wrong skip is worse.
+	if type(p.obj) == "string" and p.obj ~= "" then
+		local objs = cache and cache[q]
+		if objs == nil then
+			objs = Try(C_QuestLog.GetQuestObjectives, q) or false
+			if cache then cache[q] = objs end
+		end
+		local needle = p.obj:lower()
+		for _, o in ipairs(objs or {}) do
+			if type(o.text) == "string" and o.text:lower():find(needle, 1, true) then return o.finished == true end
+		end
+	end
+	return false
+end
+
 local overlay
 local pins, pinCount = {}, 0
 local lines, lineCount = {}, 0
@@ -277,19 +318,24 @@ function M.Refresh()
 	overlay.drawnScale = CanvasScale()
 	DrawNodes(mapID, scale)
 	local nav = DB().nav
+	local cache = {}
 	for _, l in ipairs(Layers()) do
 		if not mdb.hidden[l.name] then
 			local prev, first
 			for i, p in ipairs(l.points) do
 				local x, y = Project(p[1], p[2] / 100, p[3] / 100, mapID)
 				local inside = x and x >= 0 and x <= 1 and y >= 0 and y <= 1
-				if inside then
+				local current = nav and nav.layer == l.name and nav.index == i
+				-- Quest steps already done leave the map (the one you picked stays).
+				local done = not current and StepDone(p, cache) == true
+				if done then
+					prev = nil
+				elseif inside then
 					local color = KIND_COLOR[p[5]] or KIND_COLOR.poi
 					if l.ordered and prev then AddLine(prev[1], prev[2], x, y, color, 2.5 * scale) end
 					pinCount = pinCount + 1
 					local b = pins[pinCount]
 					if not b then b = NewPin(PIN_SIZE); pins[pinCount] = b end
-					local current = nav and nav.layer == l.name and nav.index == i
 					b.dot:SetVertexColor(color[1], color[2], color[3], 1)
 					b.ring:SetVertexColor(current and 1 or 0, current and 1 or 0, current and 1 or 0, 0.9)
 					b.num:SetText(l.ordered and tostring(i) or "")
@@ -406,8 +452,10 @@ function M.UpdateNavigator()
 	local facing = Try(GetPlayerFacing)
 	if facing and bearing then nav.arrow:SetRotation(bearing - facing) else nav.arrow:SetRotation(0) end
 	if dist then
-		nav.text:SetText(string.format("%d yd  |cff888888%s|r", math.floor(dist + 0.5), l.title))
-		if dist <= ARRIVE_YARDS then
+		local wait = p.q and (p.step == "accept" and "accept it" or p.step == "turnin" and "turn it in" or "finish it") or nil
+		nav.text:SetText(string.format("%d yd  |cff888888%s|r", math.floor(dist + 0.5), (wait and dist <= ARRIVE_YARDS * 3) and ("here: " .. wait) or l.title))
+		-- Quest steps move on when the game says they're done (see AutoAdvance).
+		if dist <= ARRIVE_YARDS and not p.q then
 			Try(PlaySound, SOUNDKIT and SOUNDKIT.MAP_PING or 3175)
 			M.Step(1, true)
 		end
@@ -419,8 +467,10 @@ end
 function M.Navigate(layer, index)
 	local l = FindLayer(layer)
 	if not l then Print("no layer " .. tostring(layer)); return end
-	DB().nav = { layer = layer, index = math.max(1, math.min(index or 1, #l.points)) }
+	-- A stop the player picked stays put even if it's already done.
+	DB().nav = { layer = layer, index = math.max(1, math.min(index or 1, #l.points)), manual = index ~= nil or nil }
 	mdb.hidden[layer] = nil
+	if not index then M.AutoAdvance() end
 	M.UpdateNavigator()
 	M.Refresh()
 end
@@ -441,8 +491,57 @@ function M.Step(delta, arrived)
 		nexti = l.loop and #l.points or 1
 	end
 	mdb.nav.index = nexti
+	mdb.nav.manual = delta < 0 or nil
 	M.Refresh()
 	if not arrived then M.UpdateNavigator() end
+end
+
+-- Move past every done quest step from the current stop (bounded: a loop whose
+-- steps are all done must not spin). One message and one sound per jump.
+function M.AutoAdvance()
+	local n = mdb and mdb.nav
+	if not n or n.manual then return end
+	local l = FindLayer(n.layer)
+	if not l or #l.points == 0 then return end
+	local cache, i, moved = {}, n.index, 0
+	local first = l.points[i]
+	while moved < #l.points do
+		local p = l.points[i]
+		if not p or StepDone(p, cache) ~= true then break end
+		moved = moved + 1
+		if i >= #l.points then
+			if not l.loop then
+				Print("done: " .. (first and first[4] or "") .. ". Route finished: " .. (l.title or l.name))
+				Try(PlaySound, SOUNDKIT and SOUNDKIT.MAP_PING or 3175)
+				mdb.nav = nil
+				M.UpdateNavigator()
+				M.Refresh()
+				return
+			end
+			i = 1
+		else
+			i = i + 1
+		end
+	end
+	if moved == 0 then return end
+	n.index = i
+	Print("done: " .. (first and first[4] or "") .. (moved > 1 and (" (+" .. (moved - 1) .. " more)") or "") .. ". Next: " .. (l.points[i][4] or ""))
+	Try(PlaySound, SOUNDKIT and SOUNDKIT.MAP_PING or 3175)
+	M.UpdateNavigator()
+	M.Refresh()
+end
+
+-- Quest events come in bursts; check once they settle (trailing edge).
+local advanceToken = 0
+local function ScheduleAdvance()
+	advanceToken = advanceToken + 1
+	local mine = advanceToken
+	C_Timer.After(0.4, function()
+		if mine == advanceToken then
+			M.AutoAdvance()
+			M.Refresh()
+		end
+	end)
 end
 
 function M.Stop()
@@ -488,6 +587,8 @@ function M.Sync(m)
 			mdb.nav = { layer = l.name, index = 1 }
 		end
 	end
+	-- A route built a moment ago may already have steps done since.
+	M.AutoAdvance()
 	M.UpdateNavigator()
 	M.Refresh()
 end
@@ -541,7 +642,17 @@ local ev = CreateFrame("Frame")
 ev:RegisterEvent("ADDON_LOADED")
 ev:RegisterEvent("PLAYER_LOGIN")
 ev:RegisterEvent("SKILL_LINES_CHANGED")
+ev:RegisterEvent("QUEST_ACCEPTED")
+ev:RegisterEvent("QUEST_TURNED_IN")
+ev:RegisterEvent("QUEST_REMOVED")
+ev:RegisterEvent("QUEST_LOG_UPDATE")
 ev:SetScript("OnEvent", function(_, event, arg1)
+	if event == "QUEST_ACCEPTED" or event == "QUEST_TURNED_IN" or event == "QUEST_REMOVED" or event == "QUEST_LOG_UPDATE" then
+		if event == "QUEST_ACCEPTED" and type(arg1) == "number" then session.accepted[arg1] = true end
+		if event == "QUEST_TURNED_IN" and type(arg1) == "number" then session.turnedIn[arg1] = true end
+		if mdb and mdb.nav then ScheduleAdvance() end
+		return
+	end
 	if event == "ADDON_LOADED" and (arg1 == ADDON_NAME or arg1 == "Blizzard_WorldMap") then
 		DB()
 		SetupWorldMap()

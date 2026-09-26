@@ -141,9 +141,29 @@ The addon tells the agent which game and client you are on, your character (name
 
 Along with it, every run gets [docs/WOW-ADDON-PRIMER.md](docs/WOW-ADDON-PRIMER.md): a short reference on writing addons and macros for this client (TOC layout, sandbox rules, common frames and events, where to verify an API), so "write me an addon that..." works from any folder, not just this repo. Edit the file to suit your setup; the bridge re-reads it on every run. `"primerFile": ""` in the config drops it, and `/wow-ai context off` turns it off together with the character context.
 
+### Your quests, as they really are
+
+The agent always works from your actual quest state, so a leveling plan asked for mid-way doesn't send you after quests you already did or already have:
+
+- **The quest log with each objective's progress** (`4/8`, done, ready to turn in, failed) rides in the context with every message, so it is exactly what you had when you asked.
+- **Every quest the character has completed** (`C_QuestLog.GetAllCompletedQuestIDs`) is kept in the addon's saved data per character and read by the bridge whenever the game writes it (logout, `/reload`). Quests turned in since you logged in ride in the context, so the history is complete without waiting for a save. The first time, type `/reload` once so the bridge gets it; the context tells the agent while it's missing.
+- The bridge joins both into `bridge/gamestate.json` before each run and passes its path as `WOW_AI_GAME_STATE`, so the agent's tools can plan from it (turn-ins first, what's left of the quests you have, then new ones whose prerequisites you really met).
+
+On a route made of quest steps, the navigator follows the game: it moves on when you accept the quest, finish the objective or turn it in, not when you walk past the spot, and done steps leave the map (see [docs/MAP.md](docs/MAP.md)).
+
 ### Link items, spells and quests
 
 Click the input box, then **shift-click** an item in your bags, a spell in the spellbook, a quest in the log, or a link in the chat: it lands in your message the way it would in the game chat. When you send, each link becomes `[Name]` in the text and its tooltip (an item's stats, a spell's description) is attached below, so the agent sees what you see when hovering it. This works from the game chat box too (`/ai is this an upgrade? [Fine Longsword]`). Without a box focused, shift-click keeps its normal meaning.
+
+### Macros, ready to use
+
+Ask for a macro (*"a Charge macro that uses Intercept in combat"*, *"a mouseover heal"*) and the reply comes with a **Create macro: <name>** button under it. A click saves it (an account macro, or a character one if the agent says so) and puts it on your cursor: click an action bar slot to place it. It is also in `/macro` as usual.
+
+- A macro with that name already there? The button says **Update**, and it asks before replacing a different one of yours. `/wow-ai macro undo` brings back what was there (or removes the macro the button created).
+- Macros that run code (`/run`, `/script`, `/click`) are marked on the button and ask before being saved.
+- Nothing is saved in combat, and the addon never runs a macro: only your own click on the bar does.
+
+The agent writes each macro in a ```` ```wowmacro <Name> ```` block (optional `icon=` and `scope=character` after the name); the bridge checks the game's limits (name up to 16 characters, text up to 255 bytes) and keeps a readable copy in the reply. The buttons live with the message in the addon's saved data, so they don't come back after the beta wipes it (the macro text does).
 
 ### Map, routes and gathering nodes
 

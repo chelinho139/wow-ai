@@ -16,3 +16,4 @@ tests/tmp/
 bridge/probe.png
 bridge/mapjobs/
 __pycache__/
+bridge/gamestate.json

@@ -201,7 +201,18 @@ const MAP_HINT = [
   'You can mark the player\'s world map. Either append commands to the file named by the WOW_AI_MAP_FILE environment variable (one JSON object per line) or, for a few marks, end the reply with a fenced block whose language tag is wowmap containing them. Commands:',
   '{"op":"set","layer":"<name>","title":"<shown title>","ordered":true,"loop":false,"points":[{"m":<uiMapID>,"x":<0-100>,"y":<0-100>,"label":"<text>","kind":"quest"}]}  replaces that layer; "ordered" draws a numbered route with a navigator, "loop" closes it.',
   '{"op":"clear","layer":"<name>"} removes a layer; {"op":"clearall"} removes them all.',
+  'A point that is a quest step can add "q":<quest id> and "step":"accept"|"objective"|"turnin" (plus "obj":"<the objective\'s item or creature name>" for objectives): the navigator then moves on by itself when the game reports that step done.',
   'x and y are map percent on the map with that uiMapID (the context gives the player\'s current one). kind is one of ore, herb, quest, turnin, kill, loot, object, explore, npc, trainer, vendor, dungeon, flight, poi. Only mark the map when asked for a route, marks or locations; say in the reply what you drew.',
+];
+
+// How the agent hands the player a ready-made macro (see "Macros" below).
+const MACRO_HINT = [
+  'When the player asks for a macro, write each one as a fenced block whose language tag is wowmacro followed by the macro name (at most 16 characters), and the macro text inside, one command per line, at most 255 characters in total. Start it with #showtooltip when it casts something. After the name you may add icon=<icon fileID or file name, e.g. Ability_Warrior_Charge> and scope=character for a per-character macro (the default is an account macro). Example:',
+  '```wowmacro Charge',
+  '#showtooltip',
+  '/cast [combat] Intercept; Charge',
+  '```',
+  'The addon shows the player a button that creates the macro (or updates one with the same name) and puts it on their cursor. Explain outside the block what it does. Avoid /run and /script unless asked; the player is warned about them.',
 ];
 
 function systemPrompt(ctx, primer) {
@@ -214,7 +225,11 @@ function systemPrompt(ctx, primer) {
       '',
       'Use this when the request is about the game or the character (questions, macros, addon code, gear advice); ignore it when the task is unrelated. Items, spells or quests the player shift-clicked into a message appear as [Name] in the text, with their tooltip in a "Linked from the game" block at the end of the message.',
       '',
-      ...MAP_HINT);
+      ...MAP_HINT,
+      '',
+      ...MACRO_HINT,
+      '',
+      ...QUEST_HINT);
   }
   const ref = text ? String(primer || '').trim() : '';
   if (ref) {
@@ -317,6 +332,7 @@ function luaTable(globalName, records, opts = {}) {
     if (Array.isArray(r.denied) && r.denied.length) {
       lines.push(`\t\t\tdenied = { ${r.denied.map(luaStr).join(', ')} },`);
     }
+    if (Array.isArray(r.macros) && r.macros.length) lines.push(luaMacros(r.macros));
     lines.push('\t\t},');
   }
   lines.push('\t},');
@@ -354,6 +370,7 @@ function luaTable(globalName, records, opts = {}) {
 //    "points":[{"m":1432,"x":41.5,"y":47.8,"label":"1. Copper Vein","kind":"ore"}]}
 //   {"op":"clear","layer":"mining"}    {"op":"clearall"}
 
+const MAP_STEPS = new Set(['accept', 'objective', 'turnin']);
 const MAP_KINDS = new Set(['ore', 'herb', 'quest', 'turnin', 'kill', 'loot', 'object', 'explore', 'npc', 'trainer', 'vendor', 'dungeon', 'flight', 'poi']);
 const MAP_LIMITS = { layers: 12, pointsPerLayer: 400, totalPoints: 1500, label: 80, title: 80 };
 
@@ -374,10 +391,18 @@ function validateMapCommand(c, why = []) {
   for (const p of c.points.slice(0, MAP_LIMITS.pointsPerLayer)) {
     const m = Number(p && p.m), x = Number(p && p.x), y = Number(p && p.y);
     if (!Number.isInteger(m) || m <= 0 || m > 99999 || !Number.isFinite(x) || !Number.isFinite(y)) continue;
-    points.push({
+    const point = {
       m, x: Math.round(Math.min(100, Math.max(0, x)) * 100) / 100, y: Math.round(Math.min(100, Math.max(0, y)) * 100) / 100,
       label: cleanText(p.label, MAP_LIMITS.label), kind: MAP_KINDS.has(p.kind) ? p.kind : 'poi',
-    });
+    };
+    // A quest step: the navigator moves on when the game says it's done.
+    const q = Number(p.q);
+    if (Number.isInteger(q) && q > 0 && q < 1e7 && MAP_STEPS.has(p.step)) {
+      point.q = q;
+      point.step = p.step;
+      if (p.step === 'objective' && p.obj) point.obj = cleanText(p.obj, 40);
+    }
+    points.push(point);
   }
   if (c.points.length > MAP_LIMITS.pointsPerLayer) why.push(`layer ${layer}: kept the first ${MAP_LIMITS.pointsPerLayer} points`);
   if (points.length < c.points.slice(0, MAP_LIMITS.pointsPerLayer).length) why.push(`layer ${layer}: dropped invalid points`);
@@ -455,7 +480,10 @@ function luaMap(map) {
   const lines = ['\tmap = {', `\t\tepoch = ${luaStr(map.epoch)},`, `\t\tversion = ${Number(map.version) || 0},`, '\t\tlayers = {'];
   for (const [name, l] of Object.entries(map.layers || {})) {
     lines.push(`\t\t\t{ name = ${luaStr(name)}, title = ${luaStr(l.title)}, ordered = ${l.ordered ? 'true' : 'false'}, loop = ${l.loop ? 'true' : 'false'}, points = {`);
-    for (const p of l.points) lines.push(`\t\t\t\t{ ${p.m}, ${p.x}, ${p.y}, ${luaStr(p.label)}, ${luaStr(p.kind)} },`);
+    for (const p of l.points) {
+      const step = p.q ? `, q = ${p.q}, step = ${luaStr(p.step)}${p.obj ? `, obj = ${luaStr(p.obj)}` : ''}` : '';
+      lines.push(`\t\t\t\t{ ${p.m}, ${p.x}, ${p.y}, ${luaStr(p.label)}, ${luaStr(p.kind)}${step} },`);
+    }
     lines.push('\t\t\t} },');
   }
   lines.push('\t\t},', '\t},');
@@ -474,6 +502,194 @@ const SILENT_WAV = (() => {
   return b;
 })();
 
+// ---------------------------------------------------------------------------
+// Macros
+// ---------------------------------------------------------------------------
+//
+// A reply can carry ready-made macros in ```wowmacro <Name> [icon=..] [scope=character]
+// blocks. The bridge validates them and sends them as `macros` on the reply record;
+// the addon offers a button that creates or updates each one. The block itself is
+// replaced by a readable plain-text version, since the window doesn't render markdown.
+
+const MACRO_LIMITS = { name: 16, body: 255, perReply: 6 };
+const MACRO_DEFAULT_ICON = 134400; // the question mark: with #showtooltip the game shows the spell's icon
+const MACRO_RE = /```wowmacro([^\n]*)\n([\s\S]*?)```/g;
+const RISKY_MACRO_RE = /^\s*\/(run|script|click|console|dump)\b/im;
+
+// The first `max` characters (not bytes) of s, never splitting a character.
+const firstChars = (s, max) => Array.from(s).slice(0, max).join('');
+
+function parseMacroHeader(rest) {
+  let name = String(rest || '');
+  let icon = null, scope = 'account';
+  name = name.replace(/\bicon\s*=\s*("?)([^\s"]+)\1/i, (_, q, v) => { icon = v; return ' '; });
+  name = name.replace(/\bscope\s*=\s*("?)(\w+)\1/i, (_, q, v) => { scope = /^char/i.test(v) ? 'character' : 'account'; return ' '; });
+  name = name.replace(/\bname\s*=\s*"([^"]*)"/i, (_, v) => ` ${v} `);
+  return { name, icon, scope };
+}
+
+// { text, macros, notes }: text with each block made readable; invalid macros
+// stay visible but get no button, with the reason in notes.
+function extractMacros(text) {
+  const macros = [], notes = [];
+  const out = String(text ?? '').replace(MACRO_RE, (_, header, rawBody) => {
+    const h = parseMacroHeader(header);
+    // Blizzard strips double quotes from macro names; | would start an escape sequence.
+    const name = firstChars(h.name.replace(/["|\x00-\x1f\x7f]/g, '').replace(/\s+/g, ' ').trim(), MACRO_LIMITS.name);
+    const body = String(rawBody).replace(/\r/g, '').split('\n').map(l => l.replace(/\s+$/, '')).join('\n').replace(/^\n+|\n+$/g, '');
+    const readable = `Macro "${name || '?'}":\n${body}`;
+    const bytes = Buffer.byteLength(body, 'utf8');
+    if (!name) { notes.push('a macro without a name was not offered as a button'); return readable; }
+    if (!body) { notes.push(`macro "${name}" is empty`); return readable; }
+    if (bytes > MACRO_LIMITS.body) { notes.push(`macro "${name}" is ${bytes} bytes, over the game's ${MACRO_LIMITS.body}; not offered as a button`); return readable; }
+    if (macros.length >= MACRO_LIMITS.perReply) { notes.push(`only the first ${MACRO_LIMITS.perReply} macros get a button`); return readable; }
+    let icon = null;
+    if (h.icon && /^\d{1,9}$/.test(h.icon)) icon = Number(h.icon);
+    else if (h.icon && /^[A-Za-z0-9_]{1,64}$/.test(h.icon)) icon = h.icon;
+    macros.push({ name, body, icon, char: h.scope === 'character', risky: RISKY_MACRO_RE.test(body) });
+    return readable;
+  });
+  return { text: out, macros, notes: [...new Set(notes)] };
+}
+
+// The summary is printed into the game chat: macro blocks have no place there.
+function stripMacroBlocks(text) {
+  return String(text ?? '').replace(MACRO_RE, '').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function luaMacros(macros) {
+  return `\t\t\tmacros = { ${macros.map(m => `{ name = ${luaStr(m.name)}, body = ${luaStr(m.body)}, icon = ${m.icon == null ? 'nil' : typeof m.icon === 'number' ? m.icon : luaStr(m.icon)}, char = ${m.char ? 'true' : 'false'}, risky = ${m.risky ? 'true' : 'false'} }`).join(', ')} },`;
+}
+
+// ---------------------------------------------------------------------------
+// Quest state
+// ---------------------------------------------------------------------------
+//
+// The addon puts the quest log (each objective's progress) and the quests turned
+// in since login into the game context, and the character's full completed set
+// into its saved data (base-36 ranges, written on logout and /reload). The bridge
+// joins them into one game-state file for the agent's tools.
+
+const QUEST_HINT = [
+  'The "Quests" line of the context is the live quest log: quest id, then each objective as "<name> have/need" or "done"; "*" means ready to turn in, "!" means failed (abandon and take it again). The full game state, including every quest this character has completed, is the JSON file named by the WOW_AI_GAME_STATE environment variable: plan leveling from it and never send the player to pick up or do a quest that is completed or already in their log.',
+];
+
+// "1-5,7,9-c" (base 36) -> [1,2,3,4,5,7,9,10,11,12]
+function decodeRanges(s) {
+  const out = [];
+  for (const part of String(s || '').split(',')) {
+    if (!part) continue;
+    const [a, b] = part.split('-').map(x => parseInt(x, 36));
+    if (!Number.isFinite(a)) continue;
+    const end = Number.isFinite(b) ? b : a;
+    if (end - a > 100000) continue; // corrupt range: skip rather than blow up
+    for (let i = a; i <= end; i++) out.push(i);
+  }
+  return out;
+}
+
+function encodeRanges(ids) {
+  const s = [...new Set(ids)].sort((x, y) => x - y);
+  const parts = [];
+  for (let i = 0; i < s.length;) {
+    let j = i;
+    while (j + 1 < s.length && s[j + 1] === s[j] + 1) j++;
+    parts.push(j === i ? s[i].toString(36) : `${s[i].toString(36)}-${s[j].toString(36)}`);
+    i = j + 1;
+  }
+  return parts.join(',');
+}
+
+// The addon's saved data holds questsDone = { ["Name-Realm"] = { ids = "...", n = 57, at = <epoch> } }.
+function parseQuestsDone(src) {
+  const text = String(src || '');
+  const start = text.search(/\["questsDone"\]\s*=\s*\{/);
+  if (start < 0) return {};
+  let i = text.indexOf('{', start), depth = 0, end = -1;
+  for (; i < text.length; i++) {
+    if (text[i] === '{') depth++;
+    else if (text[i] === '}' && --depth === 0) { end = i; break; }
+  }
+  const block = text.slice(text.indexOf('{', start) + 1, end < 0 ? text.length : end);
+  const out = {};
+  for (const m of block.matchAll(/\["((?:[^"\\]|\\.)*)"\]\s*=\s*\{([^{}]*)\}/g)) {
+    const body = m[2];
+    const ids = (body.match(/\["ids"\]\s*=\s*"([0-9a-z,-]*)"/) || [])[1];
+    if (ids === undefined) continue;
+    out[m[1].replace(/\\(.)/g, '$1')] = {
+      ids: decodeRanges(ids),
+      at: Number((body.match(/\["at"\]\s*=\s*(\d+)/) || [])[1]) || 0,
+    };
+  }
+  return out;
+}
+
+const RACE_NAMES = ['Night Elf', 'Human', 'Dwarf', 'Gnome', 'Orc', 'Undead', 'Tauren', 'Troll', 'Blood Elf', 'Draenei', 'Goblin', 'Worgen', 'Pandaren'];
+
+// Everything the context says about the character and their quests.
+function parseGameContext(ctx) {
+  const text = String(ctx || '');
+  const line = re => { const m = text.match(re); return m ? m : null; };
+  const st = { character: null, level: null, race: null, class: null, faction: null, zone: null, position: null, professions: {}, quests: null, turnedIn: [], historyMissing: /Completed quest history: not on disk/.test(text) };
+  const ch = line(/^Character: (.+?)(?: on (.+?))?, level (\d+) (.+?)(?: \((\w+)\))?(?:, guild <.*>)?$/m);
+  if (ch) {
+    st.character = { name: ch[1], realm: ch[2] || '', key: `${ch[1]}-${ch[2] || ''}` };
+    st.level = Number(ch[3]);
+    const rc = ch[4];
+    const race = RACE_NAMES.find(r => rc.startsWith(r + ' '));
+    st.race = race || rc.split(' ')[0];
+    st.class = race ? rc.slice(race.length + 1) : rc.split(' ').slice(1).join(' ');
+    st.faction = ch[5] || null;
+  }
+  const xp = line(/XP: (\d+)\/(\d+)/);
+  if (xp) st.xp = { have: Number(xp[1]), need: Number(xp[2]) };
+  const loc = line(/^Location: (.+)$/m);
+  if (loc) st.zone = loc[1].split(' - ')[0];
+  const pos = line(/^Position: ([\d.]+), ([\d.]+)(?: on .+?)? \(map (\d+)\)$/m);
+  if (pos) st.position = { map: Number(pos[3]), x: Number(pos[1]), y: Number(pos[2]) };
+  const prof = line(/^Professions: (.+)$/m);
+  if (prof) for (const p of prof[1].split(', ')) {
+    const m = p.match(/^(.+?) (\d+)(?:\/(\d+))?$/);
+    if (m) st.professions[m[1]] = Number(m[2]);
+  }
+  const q = line(/^Quests \([^)]*\): (.+)$/m);
+  if (q) {
+    st.quests = [];
+    if (q[1] !== 'none') for (const e of q[1].split('; ')) {
+      const m = e.match(/^(\d+)([*!]?)(?: (.*))?$/);
+      if (!m) continue;
+      const entry = { id: Number(m[1]), status: m[2] === '*' ? 'complete' : m[2] === '!' ? 'failed' : 'active', objectives: [] };
+      for (const o of (m[3] || '').split(', ').filter(Boolean)) {
+        const om = o.match(/^(?:(.*?) )?(?:(\d+)\/(\d+)|(done))$/);
+        if (!om) continue;
+        entry.objectives.push(om[4] ? { name: om[1] || '', done: true } : { name: om[1] || '', have: Number(om[2]), need: Number(om[3]), done: Number(om[2]) >= Number(om[3]) });
+      }
+      st.quests.push(entry);
+    }
+  }
+  const ti = line(/^Turned in since login: ([\d,]+)$/m);
+  if (ti) st.turnedIn = ti[1].split(',').map(Number).filter(Number.isFinite);
+  return st;
+}
+
+// The file the agent's tools read: the parsed context plus the completed set
+// (saved data for this character, joined with what was turned in since login).
+function buildGameState(ctx, questsDone, ctxAt) {
+  const st = parseGameContext(ctx);
+  const saved = st.character && questsDone ? questsDone[st.character.key] : null;
+  const completed = new Set([...(saved ? saved.ids : []), ...st.turnedIn]);
+  return {
+    at: ctxAt ? new Date(ctxAt).toISOString() : null,
+    ...st,
+    completed: {
+      known: !!saved,
+      savedAt: saved && saved.at ? new Date(saved.at * 1000).toISOString() : null,
+      count: completed.size,
+      ids: [...completed].sort((a, b) => a - b),
+    },
+  };
+}
+
 module.exports = {
   fromHex, pad3, slotNumber, chatKey, sessKey,
   alreadyHandled, markHandled, pruneStale, MONTH_MS,
@@ -482,4 +698,6 @@ module.exports = {
   ruleFor, describeToolUse,
   luaStr, luaTable, SILENT_WAV,
   MAP_LIMITS, validateMapCommand, newMap, applyMapCommands, extractMapBlocks, parseMapFile, luaMap,
+  MACRO_LIMITS, MACRO_DEFAULT_ICON, extractMacros, stripMacroBlocks, luaMacros,
+  decodeRanges, encodeRanges, parseQuestsDone, parseGameContext, buildGameState,
 };

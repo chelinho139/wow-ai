@@ -248,8 +248,8 @@ local function InitDB()
 	end
 end
 
-local function AddHistory(chat, role, text, id, denied, agent)
-	table.insert(chat.history, { role = role, text = text, id = id, t = time(), denied = denied, agent = agent })
+local function AddHistory(chat, role, text, id, denied, agent, macros)
+	table.insert(chat.history, { role = role, text = text, id = id, t = time(), denied = denied, agent = agent, macros = macros })
 	while #chat.history > MAX_HISTORY do
 		table.remove(chat.history, 1)
 	end
@@ -710,7 +710,7 @@ local function ApplyReplies(replies)
 			MarkAcked(r.id)
 			local denied = type(r.denied) == "table" and #r.denied > 0 and r.denied or nil
 			if r.status == "done" then
-				Finish(c, "assistant", r.text or "", denied, r.agent, r.summary)
+				Finish(c, "assistant", r.text or "", denied, r.agent, r.summary, WoWAI.CleanMacros(r.macros))
 			elseif r.status == "error" then
 				Finish(c, "system", "Bridge error: " .. tostring(r.text), denied)
 			elseif r.status == "working" then
@@ -904,8 +904,8 @@ local function ProcessInbox()
 	if inbox.map and WoWAIMap then WoWAIMap.Sync(inbox.map) end
 end
 
-Finish = function(chat, role, text, denied, agent, summary)
-	AddHistory(chat, role, text, chat.pendingId, denied, agent)
+Finish = function(chat, role, text, denied, agent, summary, macros)
+	AddHistory(chat, role, text, chat.pendingId, denied, agent, macros)
 	chat.pendingId = nil
 	chat.progress = nil
 	if run.act then run.act[chat.id] = nil end
@@ -936,7 +936,7 @@ end
 -- are meaningless markup to the agent; their tooltips are what the player sees).
 -- Every game API here is optional: whatever the client lacks is left out.
 
-local CONTEXT_MAX = 900 -- bytes of context per record; the strip has ~3.2 KB for everything
+local CONTEXT_MAX = 1700 -- bytes of context per record; the strip has ~3.2 KB for everything
 local LINK_LINES_MAX = 30 -- tooltip lines kept per link
 local LINK_BYTES_MAX = 900 -- bytes kept per link
 
@@ -992,6 +992,129 @@ function WoWAI.SkillLines()
 		end
 	end
 	return out
+end
+
+---------------------------------------------------------------------------
+-- Quest state
+---------------------------------------------------------------------------
+
+-- What the agent needs to plan quests from where the player really is: every
+-- quest in the log with each objective's progress (in the context, so it always
+-- arrives with the message it informs), and the character's completed quests.
+-- The completed set can be thousands of ids, too big for the strip: it goes into
+-- saved data (the bridge reads the file on logout or /reload), plus an absolute
+-- list of quests turned in since login in the context. Their union is the full
+-- history, with no deltas that could be applied to the wrong base.
+
+local QUEST_LINE_MAX = 900 -- bytes of the "Quests:" line; objective names go first when it overflows
+
+local function CharKey()
+	local name, realm = Try(UnitName, "player"), Try(GetRealmName)
+	if not name then return nil end
+	return name .. "-" .. (realm or "")
+end
+
+local B36 = "0123456789abcdefghijklmnopqrstuvwxyz"
+local function ToBase36(n)
+	if n == 0 then return "0" end
+	local out = ""
+	while n > 0 do
+		local d = n % 36
+		out = B36:sub(d + 1, d + 1) .. out
+		n = math.floor(n / 36)
+	end
+	return out
+end
+
+-- Sorted ids as base-36 ranges: "1-5,7,9-c".
+function WoWAI.EncodeRanges(ids)
+	table.sort(ids)
+	local parts, i = {}, 1
+	while i <= #ids do
+		local j = i
+		while j < #ids and ids[j + 1] == ids[j] + 1 do j = j + 1 end
+		if ids[j] == ids[i] then parts[#parts + 1] = ToBase36(ids[i])
+		else parts[#parts + 1] = ToBase36(ids[i]) .. "-" .. ToBase36(ids[j]) end
+		i = j + 1
+	end
+	return table.concat(parts, ",")
+end
+
+local function CompletedQuestIDs()
+	local list = Try(C_QuestLog and C_QuestLog.GetAllCompletedQuestIDs)
+	if type(list) == "table" then return list end
+	local map = Try(GetQuestsCompleted)
+	if type(map) == "table" then
+		local out = {}
+		for id, done in pairs(map) do if done then out[#out + 1] = id end end
+		return out
+	end
+end
+
+-- Put the completed set in saved data (written to disk on logout and /reload).
+function WoWAI.SaveQuestHistory()
+	local key = CharKey()
+	local ids = key and CompletedQuestIDs()
+	if not ids then return end
+	db.questsDone = db.questsDone or {}
+	db.questsDone[key] = { ids = WoWAI.EncodeRanges(ids), n = #ids, at = time() }
+end
+
+local function Clean(s, max)
+	s = tostring(s or ""):gsub("[;,%c|]", " "):gsub("%s+", " ")
+	s = s:gsub("^%s+", ""):gsub("%s+$", "")
+	if #s > max then s = s:sub(1, max) end
+	return s
+end
+
+-- "Quests: 33 Tough Wolf Meat 4/8; 62*; 783!": id, then each objective as
+-- "<name> have/need" (or "done"), * = ready to turn in, ! = failed.
+local function QuestLogEntries(withNames)
+	local entries = {}
+	local n = Try(C_QuestLog and C_QuestLog.GetNumQuestLogEntries)
+	if type(n) ~= "number" then return nil end -- a client without the quest API: say nothing
+	for i = 1, math.min(n, 60) do
+		local info = Try(C_QuestLog.GetInfo, i)
+		local id = type(info) == "table" and not info.isHeader and info.questID
+		if type(id) == "number" and id > 0 then
+			local e = tostring(id)
+			if Try(C_QuestLog.IsFailed, id) then
+				e = e .. "!"
+			elseif Try(C_QuestLog.IsComplete, id) then
+				e = e .. "*"
+			else
+				local objs = {}
+				for _, o in ipairs(Try(C_QuestLog.GetQuestObjectives, id) or {}) do
+					-- "4/4 Zhevra Hooves" on this client, "Zhevra Hooves: 4/4" on older ones.
+					local bare = (o.text or ""):gsub("^%s*%d+%s*/%s*%d+%s*", ""):gsub(":?%s*%d+%s*/%s*%d+%s*$", "")
+					local name = withNames and Clean(bare, 20) or ""
+					local prog = o.finished and "done" or (tostring(o.numFulfilled or 0) .. "/" .. tostring(o.numRequired or 1))
+					objs[#objs + 1] = (name ~= "" and (name .. " ") or "") .. prog
+				end
+				if #objs > 0 then e = e .. " " .. table.concat(objs, ", ") end
+			end
+			entries[#entries + 1] = e
+		end
+	end
+	return entries
+end
+
+function WoWAI.QuestContextLines()
+	local lines = {}
+	local entries = QuestLogEntries(true)
+	if not entries then return lines end
+	local text = table.concat(entries, "; ")
+	if #text > QUEST_LINE_MAX then text = table.concat(QuestLogEntries(false), "; ") end
+	if #text > QUEST_LINE_MAX then text = text:sub(1, QUEST_LINE_MAX):gsub(";[^;]*$", "") .. "; ..." end
+	lines[#lines + 1] = "Quests (id, objectives, * ready to turn in, ! failed): " .. (text ~= "" and text or "none")
+	if run.turnedIn and #run.turnedIn > 0 then
+		lines[#lines + 1] = "Turned in since login: " .. table.concat(run.turnedIn, ",")
+	end
+	local key = CharKey()
+	if key and not run.historyOnDisk and CompletedQuestIDs() then
+		lines[#lines + 1] = "Completed quest history: not on disk yet (a /reload saves it for the bridge)"
+	end
+	return lines
 end
 
 function WoWAI.GameContext()
@@ -1084,27 +1207,9 @@ function WoWAI.GameContext()
 	end
 	if #parts > 0 then table.insert(lines, "Professions: " .. table.concat(parts, ", ")) end
 
-	-- Quest log ids (what is accepted, and which are done), so route planning can
-	-- skip pickups and turn-ins that no longer apply.
-	local quests = {}
-	local qn = Try(C_QuestLog and C_QuestLog.GetNumQuestLogEntries) or Try(GetNumQuestLogEntries)
-	if type(qn) == "number" then
-		for i = 1, math.min(qn, 40) do
-			local id, header, complete
-			local info = Try(C_QuestLog and C_QuestLog.GetInfo, i)
-			if type(info) == "table" then
-				id, header = info.questID, info.isHeader
-				complete = Try(C_QuestLog.IsComplete, id)
-			else
-				local _, _, _, isHeader, _, isComplete, _, qid = Try(GetQuestLogTitle, i)
-				id, header, complete = qid, isHeader, isComplete == 1 or isComplete == true
-			end
-			if not header and type(id) == "number" and id > 0 then
-				table.insert(quests, tostring(id) .. (complete and "*" or ""))
-			end
-		end
-	end
-	if #quests > 0 then table.insert(lines, "Quest log (id, * = ready to turn in): " .. table.concat(quests, ",")) end
+	-- The quest log with each objective's progress, what was turned in since
+	-- login, and whether the full completed history is on disk for the bridge.
+	for _, l in ipairs(WoWAI.QuestContextLines()) do table.insert(lines, l) end
 
 	local s = table.concat(lines, "\n"):gsub("[\30\31]", " ")
 	if #s > CONTEXT_MAX then s = s:sub(1, CONTEXT_MAX) end
@@ -1622,6 +1727,152 @@ function WoWAI.ConfirmDelete(id)
 end
 
 ---------------------------------------------------------------------------
+-- Macros
+---------------------------------------------------------------------------
+
+-- The agent can hand over ready-made macros (a ```wowmacro block the bridge turns
+-- into `macros` on the reply). Each gets a button under its message that creates
+-- the macro, or updates the one with that name, and puts it on the cursor to drop
+-- on an action bar. The addon never runs a macro; the player's own click does.
+
+local MACRO_ACCOUNT_MAX = (Constants and Constants.MacroConsts and Constants.MacroConsts.MAX_ACCOUNT_MACROS) or 120
+local MACRO_CHAR_MAX = (Constants and Constants.MacroConsts and Constants.MacroConsts.MAX_CHARACTER_MACROS) or 30
+local MACRO_DEFAULT_ICON = 134400 -- question mark: with #showtooltip the game shows the spell's icon
+
+local function MacroSay(msg)
+	print("|cff66ccff[WoW AI]|r " .. msg)
+end
+
+-- Only well-formed entries survive (the slot file is trusted, but not blindly).
+function WoWAI.CleanMacros(list)
+	if type(list) ~= "table" then return nil end
+	local out = {}
+	for _, m in ipairs(list) do
+		if type(m) == "table" and type(m.name) == "string" and m.name ~= "" and type(m.body) == "string" and m.body ~= "" then
+			out[#out + 1] = {
+				name = m.name, body = m.body, char = m.char == true, risky = m.risky == true,
+				icon = (type(m.icon) == "number" or type(m.icon) == "string") and m.icon or nil,
+			}
+		end
+	end
+	return #out > 0 and out or nil
+end
+
+-- The macro called `name` among account (1..120) or character (121..150) macros:
+-- the same name may exist in both, and only the requested kind counts.
+local function FindMacro(name, perCharacter)
+	local first = perCharacter and MACRO_ACCOUNT_MAX + 1 or 1
+	local last = perCharacter and MACRO_ACCOUNT_MAX + MACRO_CHAR_MAX or MACRO_ACCOUNT_MAX
+	for i = first, last do
+		local n, icon, body = Try(GetMacroInfo, i)
+		if n == name then return i, icon, body end
+	end
+end
+
+local function MacroIcon(icon)
+	if type(icon) == "number" then return icon end
+	if type(icon) == "string" then
+		local id = Try(GetFileIDFromPath, "Interface\\Icons\\" .. icon)
+		if type(id) == "number" and id > 0 then return id end
+		return icon -- CreateMacro also takes a texture name
+	end
+	return MACRO_DEFAULT_ICON
+end
+
+function WoWAI.MacroLabel(m)
+	local verb = FindMacro(m.name, m.char) and "Update" or "Create"
+	return verb .. " macro: " .. m.name .. (m.char and " (character)" or "") .. (m.risky and "  |cffff6060(runs code)|r" or "")
+end
+
+StaticPopupDialogs["WOWAI_MACRO"] = {
+	text = "%s",
+	button1 = OKAY,
+	button2 = CANCEL,
+	timeout = 0,
+	whileDead = true,
+	hideOnEscape = true,
+	OnAccept = function(dialog, data)
+		if data then WoWAI.InstallMacro(data, true) end
+	end,
+}
+
+-- Create or update macro `m` ({ name, body, icon, char, risky }). Asks first when it
+-- would replace a different macro of yours, or when it runs code (/run, /click...).
+function WoWAI.InstallMacro(m, confirmed)
+	if type(m) ~= "table" then return end
+	if InCombatLockdown() then
+		MacroSay("macros can't be changed in combat; click the button again afterwards.")
+		return
+	end
+	local index, _, oldBody = FindMacro(m.name, m.char)
+	if not confirmed then
+		local why = {}
+		if m.risky then table.insert(why, "This macro runs code or clicks buttons (/run, /script, /click). Only keep it if you trust what it does.") end
+		if index and oldBody ~= m.body then table.insert(why, "It replaces your existing macro \"" .. m.name .. "\" (/wow-ai macro undo brings the old one back).") end
+		if #why > 0 then
+			StaticPopup_Show("WOWAI_MACRO", table.concat(why, "\n\n") .. "\n\n" .. m.body, nil, m)
+			return
+		end
+	end
+	-- Blizzard's macro window saves its edit box into its selected macro when it
+	-- hides; close it first so that can't land on a macro we just moved.
+	if MacroFrame and MacroFrame:IsShown() then
+		Try(HideUIPanel, MacroFrame)
+		index, _, oldBody = FindMacro(m.name, m.char)
+	end
+	local ok, newIndex
+	if index then
+		local _, oldIcon = FindMacro(m.name, m.char)
+		ok, newIndex = pcall(EditMacro, index, m.name, m.icon ~= nil and MacroIcon(m.icon) or nil, m.body)
+		if ok and type(newIndex) == "number" then
+			db.macroUndo = { name = m.name, char = m.char, icon = oldIcon, body = oldBody }
+		end
+	else
+		local acc, chr = Try(GetNumMacros)
+		if m.char and type(chr) == "number" and chr >= MACRO_CHAR_MAX then
+			MacroSay("your character macros are full (" .. MACRO_CHAR_MAX .. "); delete one in /macro first.")
+			return
+		elseif not m.char and type(acc) == "number" and acc >= MACRO_ACCOUNT_MAX then
+			MacroSay("your account macros are full (" .. MACRO_ACCOUNT_MAX .. "); delete one in /macro first.")
+			return
+		end
+		ok, newIndex = pcall(CreateMacro, m.name, MacroIcon(m.icon), m.body, m.char)
+		if (not ok or type(newIndex) ~= "number") and m.icon ~= nil then
+			ok, newIndex = pcall(CreateMacro, m.name, MACRO_DEFAULT_ICON, m.body, m.char)
+		end
+		if ok and type(newIndex) == "number" then
+			db.macroUndo = { name = m.name, char = m.char, created = true }
+		end
+	end
+	if not ok or type(newIndex) ~= "number" then
+		MacroSay("could not save macro \"" .. m.name .. "\": " .. tostring(newIndex))
+		return
+	end
+	-- EditMacro may move the macro (names are sorted): pick up the index it returned.
+	Try(PickupMacro, newIndex)
+	MacroSay("macro \"" .. m.name .. "\" " .. (index and "updated" or "created") .. " and on your cursor: click an action bar slot to place it (it is also in /macro).")
+	WoWAI.Render()
+end
+
+function WoWAI.UndoMacro()
+	local u = db.macroUndo
+	if not u then MacroSay("nothing to undo."); return end
+	if InCombatLockdown() then MacroSay("macros can't be changed in combat."); return end
+	local index = FindMacro(u.name, u.char)
+	if not index then MacroSay("macro \"" .. u.name .. "\" is gone already."); db.macroUndo = nil; return end
+	if MacroFrame and MacroFrame:IsShown() then Try(HideUIPanel, MacroFrame); index = FindMacro(u.name, u.char) end
+	if u.created then
+		Try(DeleteMacro, index)
+		MacroSay("removed macro \"" .. u.name .. "\".")
+	else
+		Try(EditMacro, index, u.name, u.icon, u.body)
+		MacroSay("macro \"" .. u.name .. "\" is back to what it was.")
+	end
+	db.macroUndo = nil
+	WoWAI.Render()
+end
+
+---------------------------------------------------------------------------
 -- Rendering
 ---------------------------------------------------------------------------
 
@@ -1740,6 +1991,7 @@ local function GetBubble(i)
 		WoWAI.Allow(self.chatId, self.rules)
 	end)
 	b.allow:Hide()
+	b.macroBtns = {}
 	-- FontStrings can't be selected, so a click opens the message in the copy box.
 	b:EnableMouse(true)
 	b:SetScript("OnMouseUp", function(self, button)
@@ -1756,7 +2008,7 @@ function WoWAI.Render()
 		if not width or width < 80 then width = 400 end
 		ui.content:SetWidth(width)
 		local y, n = 0, 0
-		local function Place(role, text, when, dim, denied, agent)
+		local function Place(role, text, when, dim, denied, agent, macros)
 			n = n + 1
 			local b = GetBubble(n)
 			local st = ROLE_STYLE[role] or ROLE_STYLE.system
@@ -1787,6 +2039,33 @@ function WoWAI.Render()
 			else
 				b.allow:Hide()
 			end
+			-- One button per macro the agent handed over.
+			local shownMacros = 0
+			for k, m in ipairs(macros or {}) do
+				local mb = b.macroBtns[k]
+				if not mb then
+					mb = CreateFrame("Button", nil, b, "UIPanelButtonTemplate")
+					mb:SetHeight(22)
+					mb:SetScript("OnClick", function(self) WoWAI.InstallMacro(self.macro) end)
+					mb:SetScript("OnEnter", function(self)
+						GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+						GameTooltip:AddLine(self.macro.name)
+						GameTooltip:AddLine(self.macro.body, 1, 1, 1, true)
+						GameTooltip:Show()
+					end)
+					mb:SetScript("OnLeave", function() GameTooltip:Hide() end)
+					b.macroBtns[k] = mb
+				end
+				mb.macro = m
+				mb:SetText(WoWAI.MacroLabel(m))
+				mb:SetWidth(math.min(width - 24, math.max(160, mb:GetFontString():GetStringWidth() + 30)))
+				mb:ClearAllPoints()
+				mb:SetPoint("TOPLEFT", b.body, "BOTTOMLEFT", 0, -6 - extra)
+				mb:Show()
+				extra = extra + 28
+				shownMacros = k
+			end
+			for k = shownMacros + 1, #b.macroBtns do b.macroBtns[k]:Hide() end
 			b:SetHeight(6 + 12 + 4 + h + 8 + extra)
 			b:ClearAllPoints()
 			b:SetPoint("TOPLEFT", ui.content, "TOPLEFT", 0, -y)
@@ -1798,7 +2077,7 @@ function WoWAI.Render()
 		for i, m in ipairs(c.history) do
 			-- The Allow button only makes sense on the newest reply, and only while idle.
 			local denied = (i == last and not c.pendingId and type(m.denied) == "table" and #m.denied > 0) and m.denied or nil
-			Place(m.role, m.text, m.t and date("%H:%M", m.t) or "", false, denied, m.agent)
+			Place(m.role, m.text, m.t and date("%H:%M", m.t) or "", false, denied, m.agent, m.macros)
 		end
 		if c.pendingId then
 			local p = c.progress
@@ -2655,6 +2934,7 @@ local HELP = table.concat({
 	"/wow-ai reload                 reload now (also frees the slot pool)",
 	"/wow-ai cancel                 stop waiting on this chat's reply",
 	"/wow-ai copy                   open the last reply in a selectable box for Ctrl+C",
+	"/wow-ai macro undo             undo the last macro the agent's button created or changed",
 	"/wow-ai bind <key>             hotkey: checks for a reply while waiting, else toggles the window",
 	"/wow-ai auto on|off            reload-mode only: auto-reload on your next keypress after the interval",
 	"/wow-ai signal on|off          the cheap sound-file readiness check (off if it spams errors)",
@@ -2691,6 +2971,7 @@ local COMMAND_ARGS = {
 	chat = ChatArgument, chats = ChatArgument,
 	cd = true, new = true, rename = true,
 	map = true, -- /wow-ai map ...: Map.lua (layers, navigator, herb/ore nodes)
+	macro = { undo = true }, -- /wow-ai macro undo; "/ai macro for my warrior" still goes to the agent
 }
 
 local function IsCommand(cmd, rest)
@@ -2817,6 +3098,8 @@ SlashCmdList["WOWAI"] = function(msg)
 		WoWAI.ArmAutoRefresh()
 	elseif cmd == "hide" or cmd == "quit" then
 		WoWAI.Toggle(false)
+	elseif cmd == "macro" and rest == "undo" then
+		WoWAI.UndoMacro()
 	elseif cmd == "copy" then
 		for i = #c.history, 1, -1 do
 			if c.history[i].role == "assistant" then
@@ -2912,9 +3195,24 @@ local ev = CreateFrame("Frame")
 ev:RegisterEvent("ADDON_LOADED")
 ev:RegisterEvent("PLAYER_LOGIN")
 ev:RegisterEvent("PLAYER_REGEN_ENABLED")
+ev:RegisterEvent("UPDATE_MACROS")
+ev:RegisterEvent("QUEST_TURNED_IN")
+ev:RegisterEvent("PLAYER_LOGOUT")
 ev:RegisterEvent("CHAT_MSG_WHISPER")
 ev:RegisterEvent("CHAT_MSG_BN_WHISPER")
 ev:SetScript("OnEvent", function(self, event, arg1)
+	if event == "QUEST_TURNED_IN" then
+		-- Absolute list for this login, sent in the context; saved data gets the full set.
+		if type(arg1) == "number" then
+			run.turnedIn = run.turnedIn or {}
+			table.insert(run.turnedIn, arg1)
+		end
+		if db then WoWAI.SaveQuestHistory() end
+		return
+	elseif event == "PLAYER_LOGOUT" then
+		if db then WoWAI.SaveQuestHistory() end
+		return
+	end
 	if event == "ADDON_LOADED" then
 		if arg1 == ADDON_NAME then
 			InitDB()
@@ -2926,6 +3224,11 @@ ev:SetScript("OnEvent", function(self, event, arg1)
 		if not db then InitDB() end
 		BuildUI()
 		run = { outbound = {} }
+		-- Was this character's completed history already written to disk (a previous
+		-- logout or /reload)? If not, the context tells the agent it is missing.
+		local ckey = CharKey()
+		run.historyOnDisk = ckey ~= nil and type(db.questsDone) == "table" and db.questsDone[ckey] ~= nil
+		C_Timer.After(5, WoWAI.SaveQuestHistory)
 		SelfTestSignals()
 		ProcessInbox()
 		if AnyPending() then
@@ -2960,6 +3263,9 @@ ev:SetScript("OnEvent", function(self, event, arg1)
 		HookReplyCommand()
 		C_Timer.NewTicker(TICK_SECONDS, Tick)
 		C_Timer.After(3, WoWAI.SayHello)
+	elseif event == "UPDATE_MACROS" then
+		-- "Create" / "Update" on the macro buttons follows what exists now.
+		if ui.frame and ui.frame:IsShown() then WoWAI.Render() end
 	elseif event == "PLAYER_REGEN_ENABLED" then
 		if WoWAI.reloadAfterCombat then
 			WoWAI.reloadAfterCombat = nil
