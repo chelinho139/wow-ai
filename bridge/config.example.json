@@ -12,6 +12,7 @@
   "capture": {
     "enabled": true,
     "mode": "pixel",
+    "screenshotLevels": { "off": 0, "on": 60 },
     "processName": "WowB",
     "cellPx": 4,
     "cellsPerRow": 200,

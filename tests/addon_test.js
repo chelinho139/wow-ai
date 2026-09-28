@@ -40,14 +40,15 @@ function newVM() {
 
 // Read the strip the addon drew, exactly like capture.ps1: 3 bits per cell,
 // [C7 1A] [id] [len] [payload] [fletcher]. Returns { id, text } or null.
-function decodeStrip(vm) {
+function decodeStrip(vm, threshold = 0.5) {
   if (vm.evaluate('WoWAIStrip and WoWAIStrip.shown') !== 'true') return null;
   vm.run(`
     local parts = {}
+    local th = ${threshold}
     for _, t in ipairs(WoWAIStrip.textures) do
       if t.shown and t.color then
         local c, r = math.floor(t.x / 4), math.floor(-t.y / 4)
-        local v = (t.color[1] >= 0.5 and 4 or 0) + (t.color[2] >= 0.5 and 2 or 0) + (t.color[3] >= 0.5 and 1 or 0)
+        local v = (t.color[1] >= th and 4 or 0) + (t.color[2] >= th and 2 or 0) + (t.color[3] >= th and 1 or 0)
         parts[#parts + 1] = (r * ${CELLS_PER_ROW} + c) .. ":" .. v
       end
     end
@@ -69,8 +70,8 @@ function decodeStrip(vm) {
   return { id, text: Buffer.from(bytes.slice(6, 6 + len)).toString('utf8') };
 }
 
-function stripRecords(vm) {
-  const frame = decodeStrip(vm);
+function stripRecords(vm, threshold) {
+  const frame = decodeStrip(vm, threshold);
   if (!frame) return [];
   return frame.text.split('\x1E').map(r => {
     const p = r.split('\x1F');
@@ -860,4 +861,53 @@ test('screenshot transport: a remembered mode shoots the login hello, and a /rel
   vm.run('SlashCmdList.WOWAI("mode pixel")');
   assert.equal(vm.evaluate('STUB.cvars.screenshotFormat'), 'png');
   assert.equal(vm.evaluate('WoWAIDB.settings.shotFormatSaved'), 'tga');
+});
+
+// Strip colour levels, in 0..255 per channel, of every shown cell on the strip.
+function stripLevels(vm) {
+  vm.run(`local seen = {}
+    for _, t in ipairs(WoWAIStrip.textures) do
+      if t.shown and t.color then for k = 1, 3 do seen[math.floor(t.color[k] * 255 + 0.5)] = true end end
+    end
+    local out = {}
+    for lv in pairs(seen) do out[#out + 1] = lv end
+    table.sort(out)
+    RESULT = table.concat(out, ",")`);
+  return vm.evaluate('RESULT').split(',').filter(Boolean).map(Number);
+}
+
+test('screenshot transport: the strip is drawn at the levels the bridge asked for, and bright again in pixel mode', () => {
+  const vm = newVM();
+  login(vm);
+  vm.run('STUB.RunTimers()'); // SayHello, pixel-style: full primaries
+  assert.deepEqual(stripLevels(vm), [0, 255]);
+  nextSlot(vm, '{ now = time(), cwd = "", transport = "screenshot", strip = { on = 60, off = 0 }, replies = {} }');
+  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+  assert.equal(vm.evaluate('WoWAIDB.settings.stripLevels.on'), '60');
+  assert.equal(vm.evaluate('WoWAIStrip.shown'), 'true', 'the hello is being shot');
+  assert.deepEqual(stripLevels(vm), [0, 60], 'dark levels: the strip is drawn at 0 and 60 of 255');
+  // Reads back at the bridge's threshold (31), not at the pixel transport's (128).
+  assert.equal(stripRecords(vm, 31 / 255)[0].flags, 'h;c');
+  frames(vm, 2);
+  vm.run('STUB.FireEvent("SCREENSHOT_SUCCEEDED")');
+  // The bridge changes its levels: the next strip follows without a transport change.
+  nextSlot(vm, '{ now = time(), cwd = "", transport = "screenshot", strip = { on = 90, off = 10 }, replies = {} }');
+  vm.run('WoWAI.Connect(); STUB.now = STUB.now + 6; STUB.Tick()');
+  assert.equal(vm.evaluate('WoWAIDB.settings.stripLevels.on'), '90');
+  vm.run('WoWAI.Send("dark one")');
+  assert.deepEqual(stripLevels(vm), [10, 90]);
+  assert.ok(stripRecords(vm, 51 / 255).find(r => r.text === 'dark one'));
+  frames(vm, 2);
+  vm.run('STUB.FireEvent("SCREENSHOT_SUCCEEDED")');
+  // Unusable levels are ignored (bright), never trusted.
+  nextSlot(vm, '{ now = time(), cwd = "", transport = "screenshot", strip = { on = 5, off = 0 }, replies = {} }');
+  vm.run('WoWAI.Connect(); STUB.now = STUB.now + 6; STUB.Tick()');
+  assert.equal(vm.evaluate('WoWAIDB.settings.stripLevels'), null);
+  assert.deepEqual(stripLevels(vm), [0, 255]);
+  vm.run('STUB.FireEvent("SCREENSHOT_SUCCEEDED")');
+  // Back on a pixel-mode bridge the strip is bright whatever levels were remembered.
+  nextSlot(vm, '{ now = time(), cwd = "", transport = "pixel", replies = {} }');
+  vm.run('WoWAI.Connect(); STUB.now = STUB.now + 6; STUB.Tick()');
+  assert.equal(vm.evaluate('WoWAIStrip.shown'), 'true');
+  assert.deepEqual(stripLevels(vm), [0, 255]);
 });

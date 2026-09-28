@@ -347,9 +347,22 @@ local function HideStrip()
 	run.stripShown = nil
 end
 
+-- Levels a channel is drawn at, 0..1. Full primaries, except on the screenshot
+-- transport, where the bridge asked for two levels of its own (see StripLevels):
+-- a screenshot is bit-exact, so dark levels read as well as bright ones and the
+-- strip all but disappears.
+local function StripPalette()
+	local lv = db and db.settings.mode == "pixel" and db.settings.transport == "screenshot" and db.settings.stripLevels
+	if type(lv) == "table" and type(lv.on) == "number" and type(lv.off) == "number" then
+		return lv.on / 255, lv.off / 255
+	end
+	return 1, 0
+end
+
 local function ShowStrip(id, payload)
 	local cells = Codec.Encode(id % 65536, payload)
 	local s = EnsureStrip()
+	local on, off = StripPalette()
 	local rows = math.ceil(#cells / CELLS_PER_ROW)
 	local total = rows * CELLS_PER_ROW
 	for i = 1, total do
@@ -363,7 +376,7 @@ local function ShowStrip(id, payload)
 			cellPool[i] = t
 		end
 		local cr, cg, cb = Codec.CellColor(cells[i] or 0)
-		t:SetColorTexture(cr, cg, cb, 1)
+		t:SetColorTexture(off + cr * (on - off), off + cg * (on - off), off + cb * (on - off), 1)
 		t:Show()
 	end
 	for i = total + 1, #cellPool do
@@ -541,13 +554,28 @@ RefreshStrip = function()
 	for _, rec in ipairs(included) do rec.shot = gen end
 end
 
--- The bridge's slot files and Inbox.lua say which transport it listens on.
+-- The two levels the bridge wants the strip drawn at on the screenshot transport
+-- (`strip = { on, off }` in its slot files), sanity-checked and remembered.
+local function StripLevels(data)
+	local lv = type(data) == "table" and data.strip
+	if type(lv) ~= "table" or type(lv.on) ~= "number" or type(lv.off) ~= "number" then return nil end
+	local on, off = math.floor(lv.on), math.floor(lv.off)
+	if off < 0 or on > 255 or on - off < 8 then return nil end
+	return { on = on, off = off }
+end
+
+-- The bridge's slot files and Inbox.lua say which transport it listens on, and
+-- for the screenshot transport, which levels to draw the strip at.
 local function ApplyTransport(data)
 	if type(data) ~= "table" or type(data.transport) ~= "string" then return end
 	local t = data.transport
 	if t ~= "pixel" and t ~= "screenshot" then return end
-	if db.settings.transport == t then return end
+	local lv = StripLevels(data)
+	local cur = db.settings.stripLevels
+	local sameLevels = (lv == nil and cur == nil) or (lv ~= nil and cur ~= nil and lv.on == cur.on and lv.off == cur.off)
+	if db.settings.transport == t and sameLevels then return end
 	db.settings.transport = t
+	db.settings.stripLevels = lv
 	SyncScreenshotMode()
 	-- Whatever is still unacknowledged goes out again the new way.
 	for _, rec in pairs(run.outbound) do rec.shot = nil end
@@ -3209,6 +3237,7 @@ SlashCmdList["WOWAI"] = function(msg)
 			select(5, WoWAI.BridgeState()),
 			"mode: " .. s.mode .. ", session token: " .. tostring(db.session),
 			"transport: " .. tostring(s.transport or "pixel") .. (s.transport == "screenshot" and type(Screenshot) ~= "function" and " (Screenshot() missing: strip stays up)" or "")
+				.. (s.transport == "screenshot" and s.stripLevels and string.format(", strip levels %d/%d", s.stripLevels.off, s.stripLevels.on) or "")
 				.. (run.shotStats and string.format(", screenshots: %d taken, %d confirmed, %d failed, %d without event", run.shotStats.taken, run.shotStats.ok, run.shotStats.failed, run.shotStats.timeouts) or "")
 				.. (s.shotFormatSaved and (", screenshotFormat saved: " .. s.shotFormatSaved) or ""),
 		}

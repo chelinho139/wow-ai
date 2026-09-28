@@ -208,3 +208,16 @@ test('slot files name the outbound transport the bridge listens on, pixel unless
   assert.ok(shot.includes('\ttransport = "screenshot",'), shot);
   assert.ok(P.luaTable('WoWAI_Inbox', [], { transport: 'nope' }).includes('\ttransport = "pixel",'), 'garbage falls back to pixel in the file');
 });
+
+test('screenshot mode ships its strip levels; pixel mode never does', () => {
+  assert.deepEqual(P.screenshotLevels(undefined), { off: 0, on: 60, threshold: 31 });
+  assert.deepEqual(P.screenshotLevels({ off: 10, on: 90 }), { off: 10, on: 90, threshold: 51 });
+  assert.deepEqual(P.screenshotLevels({ off: 0, on: 255 }), { off: 0, on: 255, threshold: 128 }, 'the bright palette reads at the capture scripts\' threshold');
+  for (const bad of [{ off: 50, on: 55 }, { off: -1, on: 60 }, { off: 0, on: 300 }, { off: 'a', on: 60 }, { on: 4 }, 'x']) {
+    assert.deepEqual(P.screenshotLevels(bad), { off: 0, on: 60, threshold: 31 }, JSON.stringify(bad));
+  }
+  const shot = P.luaTable('WoWAI_SlotData', [], { transport: 'screenshot', levels: { off: 0, on: 60 } });
+  assert.ok(shot.includes('\tstrip = { on = 60, off = 0 },'), shot);
+  assert.ok(P.luaTable('WoWAI_SlotData', [], { transport: 'screenshot' }).includes('\tstrip = { on = 60, off = 0 },'), 'default levels when none are given');
+  assert.ok(!P.luaTable('WoWAI_SlotData', [], { transport: 'pixel', levels: { off: 0, on: 60 } }).includes('strip ='), 'pixel mode draws full primaries whatever the config says');
+});

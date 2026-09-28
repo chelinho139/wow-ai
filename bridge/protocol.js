@@ -311,9 +311,25 @@ function transportName(v) {
   return TRANSPORTS.includes(t) ? t : '';
 }
 
+// The strip's two levels per channel on the screenshot transport. A screenshot
+// is bit-exact, so "on" need not be 255: dark levels make the strip all but
+// invisible. The bridge reads with the threshold halfway between them. Anything
+// unusable falls back to the default; the pixel transport never uses these (it
+// draws full primaries and reads at 128, because a screen capture goes through
+// gamma and scaling).
+const DEFAULT_LEVELS = { off: 0, on: 60 };
+function screenshotLevels(raw) {
+  const r = raw && typeof raw === 'object' ? raw : {};
+  let off = Number.isInteger(r.off) ? r.off : DEFAULT_LEVELS.off;
+  let on = Number.isInteger(r.on) ? r.on : DEFAULT_LEVELS.on;
+  if (off < 0 || off > 255 || on < 0 || on > 255 || on - off < 8) ({ off, on } = DEFAULT_LEVELS);
+  return { off, on, threshold: Math.floor((off + on) / 2) + 1 };
+}
+
 function luaTable(globalName, records, opts = {}) {
   const now = opts.now || Date.now();
   const agents = Array.isArray(opts.agents) ? opts.agents : [];
+  const transport = transportName(opts.transport) || 'pixel';
   const lines = [
     '-- Written by the wow-ai bridge (bridge/bridge.js). Do not edit by hand.',
     `${globalName} = {`,
@@ -322,9 +338,13 @@ function luaTable(globalName, records, opts = {}) {
     `\tcwd = ${luaStr(opts.cwd || '')},`,
     `\tagent = ${luaStr(opts.agent || '')},`,
     `\tagents = { ${agents.map(luaStr).join(', ')} },`,
-    `\ttransport = ${luaStr(transportName(opts.transport) || 'pixel')},`,
+    `\ttransport = ${luaStr(transport)},`,
     '\treplies = {',
   ];
+  if (transport === 'screenshot') {
+    const lv = screenshotLevels(opts.levels);
+    lines.splice(lines.length - 1, 0, `\tstrip = { on = ${lv.on}, off = ${lv.off} },`);
+  }
   for (const r of records) {
     lines.push('\t\t{');
     lines.push(`\t\t\tchat = ${luaStr(r.chat || '')},`);
@@ -560,7 +580,7 @@ module.exports = {
   resolveCwd, sameFolder, baseName,
   parseFlags, jobsFromStrip, parseOutbox, systemPrompt, splitSummary,
   ruleFor, describeToolUse,
-  luaStr, luaTable, SILENT_WAV, TRANSPORTS, transportName,
+  luaStr, luaTable, SILENT_WAV, TRANSPORTS, transportName, DEFAULT_LEVELS, screenshotLevels,
   MAP_LIMITS, validateMapCommand, newMap, applyMapCommands, extractMapBlocks, parseMapFile, luaMap,
   MACRO_LIMITS, extractMacros, stripMacroBlocks, luaMacros,
 };

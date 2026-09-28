@@ -107,6 +107,9 @@ if (!TRANSPORT) {
   process.exit(2);
 }
 const SCREENSHOT_DIR = S.screenshotDir(cfg);
+// Screenshot mode draws the strip dark (capture.screenshotLevels) and reads it
+// with the threshold between the two levels; pixel mode stays bright and >= 128.
+const LEVELS = P.screenshotLevels(cap.screenshotLevels);
 // The game-side files. A config.json written for the addon's old name
 // (WoWClaude) still works: the paths are derived from addonDir instead.
 const INBOX_FILE = cfg.inboxFile && !/WoWClaude/.test(cfg.inboxFile) ? cfg.inboxFile : path.join(cfg.addonDir || '', 'WoWAI', 'Inbox.lua');
@@ -289,7 +292,7 @@ function takeMapCommands(job, text) {
 // Slot file / Inbox.lua body: see protocol.luaTable.
 function slotFile(globalName, records, urgent = true) {
   const map = Date.now() < mapShareUntil && (urgent || mapLuaSize() <= MAP_PROGRESS_MAX) ? state.map : null;
-  return P.luaTable(globalName, records, { cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), map, transport: TRANSPORT });
+  return P.luaTable(globalName, records, { cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), map, transport: TRANSPORT, levels: LEVELS });
 }
 
 function addonInstalled() {
@@ -783,7 +786,7 @@ function startCapture() {
 // there, so a retried shot doesn't pile up); one without a strip is the
 // player's own screenshot and stays. Files from before the bridge started are
 // never touched.
-const stripOptions = () => ({ cell: cap.cellPx, cells: cap.cellsPerRow, maxRows: cap.maxRows, threshold: 128 });
+const stripOptions = () => ({ cell: cap.cellPx, cells: cap.cellsPerRow, maxRows: cap.maxRows, threshold: LEVELS.threshold });
 let shotHint = null;
 function handleScreenshot(file) {
   let buf;
@@ -815,7 +818,7 @@ function startScreenshotWatch() {
     return;
   }
   S.watchScreenshots(SCREENSHOT_DIR, handleScreenshot, { log });
-  log(`screenshot transport: watching ${SCREENSHOT_DIR}`);
+  log(`screenshot transport: watching ${SCREENSHOT_DIR} (strip levels ${LEVELS.off}/${LEVELS.on}, threshold ${LEVELS.threshold})`);
 }
 
 function agentLine(id) {
@@ -833,7 +836,7 @@ function banner() {
   console.log(`  addons   : ${cfg.addonDir}`);
   console.log(`  addon    : ${addonInstalled() ? 'installed' : 'NOT INSTALLED - run: node setup.js, then restart WoW'}`);
   console.log(`  slots    : ${slotsInstalled() ? SLOTS + ' installed' : 'NOT INSTALLED - run: node setup.js (or node bridge/install-slots.js), then restart WoW'}`);
-  console.log(`  capture  : ${!cap.enabled ? 'off' : TRANSPORT === 'screenshot' ? 'screenshot mode (' + SCREENSHOT_DIR + ', ' + cap.cellsPerRow + 'x' + cap.maxRows + ' cells of ' + cap.cellPx + 'px)' : 'on (' + cap.processName + ', ' + cap.cellsPerRow + 'x' + cap.maxRows + ' cells of ' + cap.cellPx + 'px)'}`);
+  console.log(`  capture  : ${!cap.enabled ? 'off' : TRANSPORT === 'screenshot' ? 'screenshot mode (' + SCREENSHOT_DIR + ', ' + cap.cellsPerRow + 'x' + cap.maxRows + ' cells of ' + cap.cellPx + 'px, levels ' + LEVELS.off + '/' + LEVELS.on + ')' : 'on (' + cap.processName + ', ' + cap.cellsPerRow + 'x' + cap.maxRows + ' cells of ' + cap.cellPx + 'px)'}`);
   console.log(`  parallel : up to ${MAX_PARALLEL} chats at once`);
   console.log(`  fallback : ${SAVED_VARS}`);
   console.log(`  agent    : ${DEFAULT_AGENT} (default; chats pick their own with /wow-ai agent)`);
