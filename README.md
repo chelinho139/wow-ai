@@ -87,7 +87,9 @@ The bridge captures the game window through X11 (`bridge/capture_x11.py`, no pac
 
 ### macOS (native client)
 
-Same commands as Linux: `node setup.js --project <dir>` (it looks for the client under `/Applications/World of Warcraft` and `~/Applications/World of Warcraft`; pass `--wow "<client folder>"` otherwise), then `npm start`. The bridge captures the game window with `bridge/capture_mac.py`, which needs only python3: it finds the window through System Events and grabs its top-left corner with the built-in `screencapture`. The first run asks for two permissions in System Settings, **Automation** (System Events) and **Screen Recording**, for the terminal the bridge runs in. `npm run probe:mac` saves what the capture sees to `bridge/probe.png` and says whether it decoded the strip.
+Same commands as Linux: `node setup.js --project <dir>` (it looks for the client under `/Applications/World of Warcraft` and `~/Applications/World of Warcraft`; pass `--wow "<client folder>"` otherwise), then `npm start`. The bridge captures the game window with `bridge/capture_mac.py`, which needs only python3: it finds the window through System Events and grabs its top-left corner with the built-in `screencapture`. It needs two permissions in System Settings for the terminal the bridge runs in: **Automation** (System Events) and **Screen & System Audio Recording**. macOS does not always prompt for them — a missing Screen Recording permission just makes `screencapture` fail, so the bridge sees nothing and no message ever arrives. `setup.js` checks both and names whichever is missing; `npm run check:mac` re-runs that check on its own, and `npm run probe:mac` saves what the capture sees to `bridge/probe.png` and says whether it decoded the strip. Grant a permission, then quit and reopen the terminal: it only applies to a fresh launch.
+
+The strip decoder reads one image pixel per addon pixel, so the game window must be on a display that reports one device pixel per point. On a Retina display the capture comes back doubled and never decodes; `npm run check:mac` reports the scale it measured.
 
 ### Upgrading from wow-claude
 
