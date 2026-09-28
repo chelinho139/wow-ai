@@ -185,6 +185,7 @@ local function AddChat(name, cwd)
 		name = name or ("Chat " .. (#db.chats + 1)),
 		cwd = cwd or (current and current.cwd) or DEFAULT_CWD,
 		agent = (current and current.agent) or "",
+		plugin = (current and current.plugin) or "", -- "" = the bridge's default plugin
 		history = {},
 		unread = 0,
 		created = time(),
@@ -201,6 +202,8 @@ local function AnyPending()
 end
 
 local function InitDB()
+	-- Nothing saved yet: a first run, as opposed to an install from before some setting existed.
+	local fresh = WoWAIDB == nil or next(WoWAIDB) == nil
 	WoWAIDB = WoWAIDB or {}
 	db = WoWAIDB
 	db.settings = db.settings or {}
@@ -257,6 +260,18 @@ local function InitDB()
 			if m.role == "claude" then m.role, m.agent = "assistant", m.agent or "claude" end
 		end
 	end
+	-- Chats from before plugins existed were all coding chats and stay bound to
+	-- that plugin; chats made since follow the bridge's default ("" = its
+	-- default, "ask" unless its config says otherwise), like a fresh install.
+	if not s.pluginsV1 then
+		s.pluginsV1 = true
+		if not fresh then
+			for _, c in ipairs(db.chats) do
+				if not c.plugin or c.plugin == "" then c.plugin = "claude-code" end
+			end
+		end
+	end
+	for _, c in ipairs(db.chats) do c.plugin = c.plugin or "" end
 end
 
 local function AddHistory(chat, role, text, id, denied, agent, macros)
@@ -940,6 +955,7 @@ local function ImportRestore(r)
 				name = (rc.name and rc.name ~= "") and rc.name or ("Chat " .. (#db.chats + 1)),
 				cwd = rc.cwd or DEFAULT_CWD,
 				agent = "",
+				plugin = type(rc.plugin) == "string" and rc.plugin or "",
 				history = {},
 				unread = 0,
 				created = time(),
@@ -997,6 +1013,8 @@ local function TryLoadSlot(why)
 	if type(data) == "table" then
 		if type(data.agent) == "string" and data.agent ~= "" then run.bridgeAgent = data.agent end
 		if type(data.agents) == "table" and #data.agents > 0 then run.bridgeAgents = data.agents end
+		if type(data.plugin) == "string" and data.plugin ~= "" then run.bridgePlugin = data.plugin end
+		if type(data.plugins) == "table" and #data.plugins > 0 then run.bridgePlugins = data.plugins end
 		ApplyTransport(data)
 	end
 	local matched = ApplyReplies(type(data) == "table" and data.replies or nil)
@@ -1106,6 +1124,8 @@ local function ProcessInbox()
 	if type(inbox.cwd) == "string" and inbox.cwd ~= "" then run.bridgeCwd = inbox.cwd end
 	if type(inbox.agent) == "string" and inbox.agent ~= "" then run.bridgeAgent = inbox.agent end
 	if type(inbox.agents) == "table" and #inbox.agents > 0 then run.bridgeAgents = inbox.agents end
+	if type(inbox.plugin) == "string" and inbox.plugin ~= "" then run.bridgePlugin = inbox.plugin end
+	if type(inbox.plugins) == "table" and #inbox.plugins > 0 then run.bridgePlugins = inbox.plugins end
 	ApplyTransport(inbox)
 	ApplyReplies(inbox.replies)
 	if inbox.restore then ImportRestore(inbox.restore) end
@@ -1873,6 +1893,7 @@ function WoWAI.Send(text, allow, opts)
 	local tokens = {}
 	if c.resetNext then table.insert(tokens, "n") end
 	if c.agent and c.agent ~= "" then table.insert(tokens, "agent=" .. c.agent) end
+	if c.plugin and c.plugin ~= "" then table.insert(tokens, "plugin=" .. c.plugin) end
 	if db.settings.vision or (opts and opts.vision) then table.insert(tokens, "v") end
 	local allowHex
 	if type(allow) == "table" and #allow > 0 then
@@ -1890,6 +1911,7 @@ function WoWAI.Send(text, allow, opts)
 		cwd = ToHex(c.cwd),
 		ctx = ctx and ToHex(ctx) or nil,
 		agent = (c.agent and c.agent ~= "") and c.agent or nil,
+		plugin = (c.plugin and c.plugin ~= "") and c.plugin or nil,
 		allow = allowHex,
 		newSession = newSession,
 		t = time(),
@@ -1987,6 +2009,7 @@ function WoWAI.Resend()
 	if not text then return end
 	local tokens = {}
 	if c.agent and c.agent ~= "" then table.insert(tokens, "agent=" .. c.agent) end
+	if c.plugin and c.plugin ~= "" then table.insert(tokens, "plugin=" .. c.plugin) end
 	if db.settings.vision then table.insert(tokens, "v") end -- a resend is a fresh screenshot
 	run.outbound[c.pendingId] = { chat = c.id, cwd = c.cwd, flags = table.concat(tokens, ";"), name = c.name, text = text, sentAt = GetTime() }
 	run.sentAt = GetTime()

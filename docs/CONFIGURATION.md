@@ -38,10 +38,10 @@ A `config.json` from before agents existed kept Claude's settings at the top lev
 
 | Key | Default | Meaning |
 |---|---|---|
-| `plugins.default` | the first plugin the bridge registers | The plugin for chats that are not bound to one (`plugin=` flag). The bridge refuses to start on a name it does not have; `--help` lists them. |
-| `plugins.<id>` | `{}` | That plugin's own settings, if it has any. |
+| `plugins.default` | `"ask"` | The plugin for chats that are not bound to one (`plugin=` flag): `ask` (general in-game chat) or `claude-code` (an agent session in a folder). The bridge refuses to start on a name it does not have; `--help` lists them. |
+| `plugins.ask.cwd` | `""` | The scratch folder the `ask` plugin runs the agent in (it has no project). Empty = the per-user application data folder (`~/Library/Application Support/wow-ai/ask` on macOS, `%LOCALAPPDATA%\wow-ai\ask` on Windows, `~/.local/share/wow-ai/ask` on Linux), created on demand. |
 
-A `config.json` without a `plugins` block keeps working: the default applies.
+A `config.json` without a `plugins` block keeps working: the default applies. Chats made before plugins existed are bound to `claude-code` by the addon, so they behave as before whatever the default is.
 
 ## Runs
 

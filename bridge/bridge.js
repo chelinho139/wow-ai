@@ -44,8 +44,11 @@ const PL = require('./plugins'); // the plugin registry and routing (tests/plugi
 
 // The plugins this bridge has (docs/PLATFORM.md). Registration order is the
 // order match() is asked in, and the first one is the default unless
-// plugins.default in config.json says otherwise.
+// plugins.default in config.json says otherwise: "ask", general in-game chat,
+// so the product works for someone who does not code; "claude-code", an agent
+// session in a folder, what the bridge was before plugins.
 const registry = PL.createRegistry();
+registry.register(require('./plugins/ask'));
 registry.register(require('./plugins/claude-code'));
 
 const HERE = __dirname;
@@ -171,6 +174,7 @@ function noteMessage(job, role, text) {
   const c = transcripts.chats[job.chat] = transcripts.chats[job.chat] || { id: job.chat, name: '', cwd: job.cwd, messages: [] };
   if (job.name) c.name = job.name;
   if (job.cwd) c.cwd = job.cwd;
+  if (job.plugin) c.plugin = job.plugin;
   const m = { role, text: String(text ?? '').slice(0, 4000), id: job.id, t: Math.floor(Date.now() / 1000) };
   if (role === 'assistant' && job.agent) m.agent = job.agent;
   c.messages.push(m);
@@ -188,7 +192,8 @@ function maybeOfferRestore(job) {
     .filter(c => c.id !== job.chat && c.messages.length)
     .sort((a, b) => (b.updated || 0) - (a.updated || 0))
     .slice(0, 16)
-    .map(c => ({ id: c.id, name: c.name, cwd: c.cwd, messages: c.messages.slice(-40).map(m => ({ ...m, text: m.text.slice(0, 2000) })) }));
+    // A transcript from before plugins existed was a coding chat: it comes back bound to that.
+    .map(c => ({ id: c.id, name: c.name, cwd: c.cwd, plugin: c.plugin || 'claude-code', messages: c.messages.slice(-40).map(m => ({ ...m, text: m.text.slice(0, 2000) })) }));
   saveTranscripts();
   if (chats.length) {
     pendingRestore = { token: job.session, chats };
@@ -978,6 +983,7 @@ function banner() {
   console.log(`  parallel : up to ${MAX_PARALLEL} chats at once`);
   console.log(`  fallback : ${SAVED_VARS}`);
   console.log(`  plugins  : ${registry.all().map(p => p.id + (p.id === DEFAULT_PLUGIN ? ' (default)' : '')).join(', ')}  (chats pick their own with /wow-ai plugin)`);
+  for (const p of registry.all()) if (typeof p.banner === 'function') console.log(`  ${p.id.padEnd(9)}: ${p.banner(core.options(p.id))}`);
   console.log(`  agent    : ${DEFAULT_AGENT} (default; chats pick their own with /wow-ai agent)`);
   for (const id of A.agentIds()) console.log(`  ${id.padEnd(9)}: ${agentLine(id)}`);
   console.log(`  sessions : ${Object.keys(state.sessions).length} saved`);

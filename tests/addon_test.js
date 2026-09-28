@@ -1131,3 +1131,51 @@ test('whisper tabs: off by default; on, each chat is a tab, Enter there goes to 
   enter('ChatFrame1EditBox', '/w Claude ping');
   assert.equal(vm.num('STUB.serverSends'), 3, 'off: a whisper is the game\'s again');
 });
+
+test('plugins: a fresh install follows the bridge\'s default and sends no flag; chats from before plugins stay bound to claude-code; a new chat inherits; a restore brings the binding', () => {
+  // Fresh saved data: chat 1 is bound to nothing, so a message carries no plugin flag
+  // and the bridge routes it to its default (ask).
+  const vm = newVM();
+  login(vm);
+  assert.equal(vm.evaluate('WoWAIDB.chats[1].plugin'), '');
+  assert.equal(vm.evaluate('WoWAIDB.settings.pluginsV1'), 'true');
+  vm.run('STUB.RunTimers()');
+  nextSlot(vm, '{ now = time(), cwd = "", plugin = "ask", plugins = { "ask", "claude-code" }, replies = {} }');
+  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+  assert.equal(vm.evaluate('WoWAI.IsConnected()'), 'true');
+  vm.run('WoWAI.Send("what drops the sword")');
+  const rec = stripRecords(vm).find(r => r.text === 'what drops the sword');
+  assert.equal(rec.flags, '');
+  assert.equal(vm.evaluate('WoWAIDB.outbox.plugin'), null);
+  // A new chat inherits the binding of the chat it was made from, like the folder and the agent.
+  vm.run('WoWAI.NewChat("Second")');
+  assert.equal(vm.evaluate('WoWAIDB.chats[2].plugin'), '');
+  // A restored chat comes back with the plugin the bridge's transcript names.
+  const chatId = vm.evaluate('WoWAIDB.chats[1].id');
+  const id = vm.num('WoWAIDB.chats[1].pendingId');
+  const token = vm.evaluate('WoWAIDB.session');
+  nextSlot(vm, `{ now = time(), cwd = "", replies = { { chat = "${chatId}", id = ${id}, status = "done", text = "ok", plugin = "ask" } }, restore = { token = "${token}", chats = { { id = "old1", name = "Old work", cwd = "", plugin = "claude-code", messages = { { role = "user", id = 1, t = 1, text = "q" } } } } } }`);
+  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+  assert.equal(vm.num('#WoWAIDB.chats'), 3);
+  assert.equal(vm.evaluate('(function() for _, ch in ipairs(WoWAIDB.chats) do if ch.id == "old1" then return ch.plugin end end end)()'), 'claude-code');
+
+  // Saved data from before plugins existed: every chat was a coding chat, and
+  // says so on the wire from now on; the migration runs once.
+  const old = newVM();
+  old.run('WoWAIDB = { chats = { { id = "c1", name = "Old", cwd = "realms", history = {}, unread = 0, created = 1 } }, activeChat = "c1", settings = {} }');
+  login(old);
+  assert.equal(old.evaluate('WoWAIDB.chats[1].plugin'), 'claude-code');
+  connect(old);
+  old.run('WoWAI.Send("fix the build")');
+  const coding = stripRecords(old).find(r => r.text === 'fix the build');
+  assert.equal(coding.flags, 'plugin=claude-code');
+  assert.equal(coding.cwd, 'realms');
+  assert.equal(old.evaluate('WoWAIDB.outbox.plugin'), 'claude-code');
+  old.run('WoWAI.Resend()');
+  assert.equal(stripRecords(old).find(r => r.text === 'fix the build').flags, 'plugin=claude-code', 'a resend keeps the binding');
+  old.run('WoWAI.NewChat("More code")');
+  assert.equal(old.evaluate('WoWAIDB.chats[2].plugin'), 'claude-code', 'inherited');
+  // A chat unbound later stays unbound after a reload: the migration does not run again.
+  old.run('WoWAIDB.chats[2].plugin = ""; STUB.FireEvent("ADDON_LOADED", "WoWAI")');
+  assert.equal(old.evaluate('WoWAIDB.chats[2].plugin'), '');
+});

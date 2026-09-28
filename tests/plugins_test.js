@@ -139,3 +139,54 @@ test('the shipped coding plugin: a folder resolved against the bridge\'s, refuse
   assert.ok(calls[2].fail.includes('Folders there: realms'));
   fs.rmSync(base, { recursive: true, force: true });
 });
+
+test('the shipped ask plugin: no folder semantics, a scratch folder of its own, and instructions in the prompt', () => {
+  const ask = require('../bridge/plugins/ask');
+  const reg = PL.createRegistry();
+  const p = reg.register(ask);
+  assert.equal(p.id, 'ask');
+  assert.ok(p.tools.includes('not a coding session') && p.tools.includes('scratch space'));
+  assert.deepEqual(p.surfaces, ['map', 'macro'], 'map routes and macros are core surfaces the general chat uses');
+  // The scratch folder: configured, else per-user application data; never the chat's folder.
+  assert.equal(ask.scratchFolder({ cwd: '/x/y' }), path.resolve('/x/y'));
+  const dflt = ask.scratchFolder({});
+  assert.ok(dflt.endsWith(path.join('wow-ai', 'ask')), dflt);
+  assert.ok(dflt.startsWith(os.homedir()) || /LOCALAPPDATA|XDG/.test(dflt) || path.isAbsolute(dflt), dflt);
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'wowai-ask-'));
+  const scratch = path.join(base, 'scratch');
+  const calls = [];
+  const core = {
+    log: noop, tag: j => '#' + j.id, defaultCwd: '/some/project',
+    options: id => (id === 'ask' ? { cwd: scratch } : {}),
+    sessionFolder: () => '/elsewhere',
+    fail: (job, text) => calls.push({ fail: text }),
+    runAgent: (job, opts) => calls.push({ run: opts, job }),
+  };
+  const job = { id: 1, cwd: 'realms', text: 'what drops it' };
+  p.handle(job, core);
+  assert.equal(calls[0].run.cwd, scratch, 'runs in the scratch folder');
+  assert.ok(fs.existsSync(scratch), 'created on demand');
+  assert.equal(calls[0].run.freshSession, undefined, 'no folder-change rule: the session is the chat\'s whatever the folder');
+  assert.equal(job.cwd, 'realms', 'the chat\'s own folder is left as typed for the coding plugin');
+  assert.match(p.banner({ cwd: scratch }), /scratch/);
+  // A scratch folder that cannot be made is an error reply, not a crash.
+  fs.writeFileSync(path.join(base, 'file'), '');
+  core.options = () => ({ cwd: path.join(base, 'file', 'sub') });
+  p.handle({ id: 2, cwd: '', text: 'x' }, core);
+  assert.match(calls[1].fail, /could not create/);
+  fs.rmSync(base, { recursive: true, force: true });
+});
+
+test('the bridge\'s registry: ask is the default, claude-code the coding path, and the restore bundle carries a chat\'s plugin', () => {
+  const reg = PL.createRegistry();
+  reg.register(require('../bridge/plugins/ask'));
+  reg.register(require('../bridge/plugins/claude-code'));
+  assert.deepEqual(reg.ids(), ['ask', 'claude-code']);
+  assert.equal(reg.route({ text: 'what is this quest' }).plugin.id, 'ask', 'a chat bound to nothing is general chat');
+  assert.equal(reg.route({ text: 'fix it', plugin: 'claude-code' }).plugin.id, 'claude-code');
+  assert.equal(reg.route({ text: '/claude fix it' }).plugin.id, 'claude-code', 'the alias PLATFORM.md names');
+  assert.equal(reg.route({ text: 'hi' }, { fallback: 'claude-code' }).plugin.id, 'claude-code', 'plugins.default in the config');
+  const lua = P.luaTable('WoWAI_SlotData', [], { restore: { token: 't', chats: [{ id: 'c', name: 'n', cwd: '', plugin: 'claude-code', messages: [] }, { id: 'd', name: 'n', cwd: '', messages: [] }] } });
+  assert.ok(lua.includes('\t\t\t\tplugin = "claude-code",'));
+  assert.ok(lua.includes('\t\t\t\tplugin = "",'));
+});

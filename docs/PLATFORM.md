@@ -19,17 +19,24 @@ Core knows nothing about PRs, tickets or repositories.
 **Plugins** are named capabilities the core routes to. Each declares:
 
 ```
-id            "claude-code"
-label         shown on the chat and the whisper tab
-match         when an unaddressed message belongs to it
-tools         extra instructions appended to the system prompt
-surfaces      which of the core's surfaces it wants (tab, map, macro button, inbox row)
-handle(msg)   what to actually do
+id                 "claude-code"
+label              shown in the bridge's banner and logs (the addon shows the id)
+aliases            other names a message may address it by: "@claude …"
+match(msg)         when a bare message on a chat bound to nothing belongs to it
+tools              extra instructions placed in the system prompt after the reply rules
+surfaces           which of the core's surfaces its replies may use: "map", "macro"
+                   (the window, the echo and the tab are how every reply reaches the player)
+handle(msg, core)  what to actually do; `core` lends it the agent runner, the
+                   bridge's folder and the chat's session
 ```
 
-A chat is bound to a plugin the way it is bound to an agent today. `/claude`
-addresses the coding plugin; a bare message goes to whichever plugin the chat is
-bound to, defaulting to the general one.
+A chat is bound to a plugin the way it is bound to an agent today (a `plugin=`
+flag on the record). `@claude …` or `/claude …` at the start of a message
+addresses the coding plugin whatever the chat is bound to; a bare message goes to
+whichever plugin the chat is bound to, defaulting to the general one. Chats from
+before the split stay bound to the coding plugin. The agent CLIs (`agents.js`)
+are the core's model runner, shared by every plugin: `ask` runs the same CLI as
+`claude-code`, in a scratch folder instead of a project.
 
 ## The plugins
 

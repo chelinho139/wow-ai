@@ -23,6 +23,17 @@ Nothing here injects code, reads game memory, or generates input. The addon uses
 
 WoW addons are sandboxed: no network, no file reads at runtime. Two doors remain. **Out:** the addon draws your message as a strip of colored 4-pixel squares in the top-left corner of the screen; the bridge screen-captures that corner four times a second, decodes it, and runs the chat's agent headless in the chat's folder. **In:** a load-on-demand addon reads its files from disk at the moment it is loaded, so the bridge writes the reply into a pool of 200 pre-made slot addons and the game loads a fresh one from a timer. Cheap "is it ready yet" checks ride on a third trick: an empty `.wav` won't play and a valid one will. Map layers travel the same way: the agent's tools hand them to the bridge, which keeps them versioned and ships them inside the slot files. Details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/MAP.md](docs/MAP.md).
 
+## Plugins
+
+What a chat *does* with your message is a plugin's business; the window, the whisper tabs, the game-chat echo, the map, macros, your character context and the transcripts are the same whatever the chat is bound to ([docs/PLATFORM.md](docs/PLATFORM.md)).
+
+| Plugin | What it is |
+|---|---|
+| `ask` (default) | General in-game AI chat: game questions, quest research, routes on the map, macros. No project, no folder: the agent runs in a scratch folder of its own and is told it is your in-game assistant, not a coding session. |
+| `claude-code` | An agent session in a folder, what the bridge was before plugins: `/wow-ai cd` picks the project, the agent edits and runs things there. |
+
+A chat is bound to a plugin the way it is bound to an agent; a chat bound to nothing follows the bridge's default (`plugins.default` in `bridge/config.json`, `ask` unless you change it). Chats you made before plugins existed stay bound to `claude-code`, so nothing changes for them; a new chat inherits the binding of the chat you were in. A message that starts with `@ask ` or `@claude ` (in the window or a whisper tab) goes to that plugin whatever the chat is bound to. Either plugin runs whichever agent the chat picked.
+
 ## Agents
 
 The bridge drives whichever of these you have installed; each chat can use a different one.
