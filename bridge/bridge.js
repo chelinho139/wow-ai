@@ -325,9 +325,19 @@ function publish(key, record, urgent) {
   else if (!publishTimer) publishTimer = setTimeout(() => { publishTimer = null; publishNow(false); }, wait);
 }
 
+// "On" is a valid .wav, "off" is NO FILE. An empty file used to mean off, but
+// this client reports a 0-byte file as playable (verified in game: missing ->
+// willPlay=nil, empty/garbage/truncated/valid -> true), so presence/absence is
+// the only discriminator that actually works. It holds on every platform.
+function setSignalFile(file, on) {
+  try {
+    if (on) atomicWrite(file, SILENT_WAV);
+    else fs.rmSync(file, { force: true });
+  } catch {}
+}
+
 function signal(kind, id, on) {
-  const file = path.join(cfg.addonDir, 'WoWAI', kind, pad3(slotNumber(id)) + '.wav');
-  try { atomicWrite(file, on ? SILENT_WAV : Buffer.alloc(0)); } catch {}
+  setSignalFile(path.join(cfg.addonDir, 'WoWAI', kind, pad3(slotNumber(id)) + '.wav'), on);
 }
 
 // Heartbeat: act/NNN/kk.wav flips valid for the k-th action of message NNN. The
@@ -338,7 +348,7 @@ function actFile(id, k) {
   return path.join(cfg.addonDir, 'WoWAI', 'act', pad3(slotNumber(id)), String(k).padStart(2, '0') + '.wav');
 }
 function resetBeats(id) {
-  for (let k = 1; k <= ACT_MAX; k++) { try { atomicWrite(actFile(id, k), Buffer.alloc(0)); } catch {} }
+  for (let k = 1; k <= ACT_MAX; k++) setSignalFile(actFile(id, k), false);
 }
 function beat(job) {
   job.beats = (job.beats || 0) + 1;
@@ -358,10 +368,10 @@ function presenceBeat() {
   if (!fs.existsSync(path.join(cfg.addonDir, 'WoWAI', 'presence'))) return;
   state.presence = ((state.presence || 0) % PRESENCE_MAX) + 1;
   const k = state.presence;
-  try { atomicWrite(presenceFile(k), SILENT_WAV); } catch {}
+  setSignalFile(presenceFile(k), true);
   for (let j = 1; j <= 50; j++) {
     const n = ((k - 1 + j) % PRESENCE_MAX) + 1;
-    try { atomicWrite(presenceFile(n), Buffer.alloc(0)); } catch {}
+    setSignalFile(presenceFile(n), false);
   }
   saveState();
 }
