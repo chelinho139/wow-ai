@@ -6,7 +6,9 @@
 //
 // Finds the WoW: Forever client, copies the addon into Interface\AddOns, writes
 // bridge/config.json from the example (if missing), and builds the slot pool.
-// Re-running is safe: existing config and generated files are kept.
+// Re-running is safe: existing config and generated files are kept, except that
+// an explicit --project updates defaultCwd (that is the only way to correct it
+// without editing config.json by hand).
 //
 // An install of this project under its old name (wow-claude: the WoWClaude
 // addon, WoWClaude_S### slots, WoWClaude.lua saved data) is migrated: the saved
@@ -28,6 +30,36 @@ const args = {};
 for (let i = 2; i < process.argv.length; i++) {
   const a = process.argv[i];
   if (a.startsWith('--')) args[a.slice(2)] = process.argv[i + 1] && !process.argv[i + 1].startsWith('--') ? process.argv[++i] : true;
+}
+
+// package.json says node >=22.2, but npm does not enforce engines by default, so a
+// too-old node otherwise fails later with something unrelated-looking.
+const MIN_NODE = [22, 2];
+function checkNode() {
+  const [maj, min] = process.versions.node.split('.').map(Number);
+  if (maj > MIN_NODE[0] || (maj === MIN_NODE[0] && min >= MIN_NODE[1])) return;
+  throw new Error(`Node ${MIN_NODE.join('.')} or newer is required; this is ${process.versions.node}. ` +
+    'Install a newer Node (https://nodejs.org) and run setup again.');
+}
+
+// The default work folder. Validated, because the README's example is a Windows
+// placeholder and path.resolve() would otherwise silently glue it onto the folder
+// setup was run from, producing a path that exists nowhere and only fails in game.
+function resolveProject(raw) {
+  const p = String(raw === true ? '' : raw).trim();
+  if (!p) throw new Error('--project needs a folder (e.g. --project ~/code/my-game)');
+  const windowsShaped = /^[A-Za-z]:[\\/]/.test(p) || p.startsWith('\\\\');
+  if (windowsShaped && process.platform !== 'win32') {
+    throw new Error(`--project "${p}" is a Windows path, but this is ${process.platform}. ` +
+      'Pass a path for this machine, e.g. --project ~/code/my-game');
+  }
+  const abs = path.resolve(p.replace(/^~(?=[\\/]|$)/, os.homedir()));
+  if (!fs.existsSync(abs)) {
+    throw new Error(`--project "${p}" does not exist (looked in ${abs}). ` +
+      'Pass the folder you want the agents to work in, or leave --project off to use the current folder.');
+  }
+  if (!fs.statSync(abs).isDirectory()) throw new Error(`--project "${p}" is not a folder (${abs})`);
+  return abs;
 }
 
 function isClient(dir) {
@@ -147,6 +179,12 @@ function writeConfig(client, account) {
   if (fs.existsSync(CONFIG)) {
     const cfg = JSON.parse(fs.readFileSync(CONFIG, 'utf8'));
     const notes = upgradeConfig(cfg, example);
+    // An explicit --project on a re-run is a correction: honour it. Without this
+    // there was no way to fix a bad defaultCwd short of editing config.json.
+    if (args.project) {
+      const want = resolveProject(args.project);
+      if (cfg.defaultCwd !== want) { cfg.defaultCwd = want; notes.push('defaultCwd'); }
+    }
     if (notes.length) {
       fs.writeFileSync(CONFIG, JSON.stringify(cfg, null, 2) + '\n');
       console.log(`config   : ${CONFIG} updated (${notes.join(', ')}); everything else kept`);
@@ -159,7 +197,7 @@ function writeConfig(client, account) {
   cfg.addonDir = path.join(client, 'Interface', 'AddOns');
   cfg.inboxFile = path.join(cfg.addonDir, 'WoWAI', 'Inbox.lua');
   cfg.savedVariablesFile = path.join(client, 'WTF', 'Account', account, 'SavedVariables', 'WoWAI.lua');
-  cfg.defaultCwd = args.project ? path.resolve(args.project) : process.cwd();
+  cfg.defaultCwd = args.project ? resolveProject(args.project) : process.cwd();
   const exe = fs.readdirSync(client).find(f => /^Wow.*\.exe$/i.test(f) || /\.app$/i.test(f));
   if (exe) {
     let processName = exe.replace(/\.exe$/i, '');
@@ -178,6 +216,52 @@ function writeConfig(client, account) {
   return cfg;
 }
 
+// Warnings collected as we go, repeated at the end so they are not scrolled past.
+const warnings = [];
+function warn(line, hint) {
+  warnings.push(hint ? `${line}\n           -> ${hint}` : line);
+  console.log(`warning  : ${line}${hint ? `\n           -> ${hint}` : ''}`);
+}
+
+// The capture backends off Windows are python3 scripts, so a missing interpreter
+// means no messages ever reach the bridge. Reported next to the agent CLIs.
+function pythonReport(cfg) {
+  if (process.platform === 'win32') return; // capture.ps1 needs no python
+  const py = (cfg.capture && cfg.capture.python) || 'python3';
+  const r = spawnSync(py, ['--version'], { encoding: 'utf8' });
+  if (r.error || r.status !== 0) {
+    warn(`python3 not found ("${py}"), and the ${process.platform === 'darwin' ? 'macOS' : 'Linux'} screen capture is a python script`,
+      process.platform === 'darwin'
+        ? 'Install it with: xcode-select --install (or brew install python3), then run setup again.'
+        : 'Install python3 from your package manager, then run setup again.');
+    return;
+  }
+  console.log(`python   : ${(r.stdout || r.stderr).trim()} (${py})`);
+}
+
+// macOS: the two permissions the bridge cannot work without, checked for real
+// rather than discovered later as a screencapture error repeating once a second.
+function macCaptureReport(cfg) {
+  if (process.platform !== 'darwin') return;
+  const py = (cfg.capture && cfg.capture.python) || 'python3';
+  const r = spawnSync(py, [path.join(BRIDGE, 'capture_mac.py'), '--check',
+    '--process-name', (cfg.capture && cfg.capture.processName) || 'World of Warcraft'], { encoding: 'utf8' });
+  if (r.error) return; // python already reported missing
+  const rows = String(r.stdout || '').trim().split('\n').filter(Boolean).map(l => {
+    try { return JSON.parse(l); } catch { return null; }
+  }).filter(Boolean);
+  if (!rows.length) {
+    warn('could not check the macOS screen-capture permissions', `Run it yourself: ${py} bridge/capture_mac.py --check`);
+    return;
+  }
+  const label = { 'screen-recording': 'Screen Recording', window: 'window access', scale: 'display scale' };
+  for (const row of rows) {
+    const name = label[row.check] || row.check;
+    if (row.ok) console.log(`capture  : ${name} OK${row.detail ? ' - ' + row.detail : ''}`);
+    else warn(`${name}: ${row.detail || 'not available'}`, row.hint);
+  }
+}
+
 // Which agent CLIs this PC has, so the last lines of setup can say what is missing.
 function agentReport(cfg) {
   const A = require(path.join(BRIDGE, 'agents.js'));
@@ -190,6 +274,9 @@ function agentReport(cfg) {
 }
 
 try {
+  checkNode();
+  // Validate arguments before copying anything, so a bad --project costs nothing.
+  if (args.project) args.project = resolveProject(args.project);
   const client = findClient();
   console.log(`client   : ${client}`);
   const account = findAccount(client);
@@ -199,16 +286,32 @@ try {
   console.log(`addon    : ${copied} file(s) -> ${dest}`);
   const cfg = writeConfig(client, account);
   console.log(`project  : ${cfg.defaultCwd}  (change with /wow-ai cd in game, or defaultCwd in config.json)`);
+  // A defaultCwd that no longer exists (moved folder, or a bad --project from an
+  // earlier run) makes every chat fail with "Folder does not exist" in game.
+  if (!fs.existsSync(cfg.defaultCwd)) {
+    warn(`the default project folder does not exist: ${cfg.defaultCwd}`,
+      'Every chat that has not picked its own folder will fail. Fix it with: ' +
+      'node setup.js --project "<folder>"');
+  }
   console.log(`agent    : ${cfg.agent} by default (change with /wow-ai agent in game, or "agent" in config.json)`);
   console.log(agentReport(cfg));
+  pythonReport(cfg);
+  macCaptureReport(cfg);
   console.log('slots    : building the reply-slot pool and signal files...');
   const r = spawnSync(process.execPath, [path.join(BRIDGE, 'install-slots.js')], { stdio: 'inherit' });
   if (r.status !== 0) throw new Error('install-slots.js failed');
+  if (warnings.length) {
+    console.log(`\n${warnings.length} warning(s) to deal with first:`);
+    for (const w of warnings) console.log(`  - ${w}`);
+  }
   console.log(`
 Done. Next:
   1. Fully quit and relaunch World of Warcraft (it only discovers new addon files at launch).
   2. Enable "WoW AI" at the character select AddOns screen (the WoW AI slot ### entries stay enabled).
-  3. Start the bridge:  npm start   (in this terminal${process.platform === 'win32' ? '; bridge\\start-window.cmd opens its own window' : '; on Linux keep the game borderless/windowed and check the capture with: npm run probe'})
+  3. Start the bridge:  npm start   (in this terminal${
+    process.platform === 'win32' ? '; bridge\\start-window.cmd opens its own window'
+    : process.platform === 'darwin' ? '; keep the game windowed or borderless, and check the capture with: npm run probe:mac'
+    : '; keep the game borderless/windowed and check the capture with: npm run probe'})
   4. In game:  /wow-ai
 `);
 } catch (e) {
