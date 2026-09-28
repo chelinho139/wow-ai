@@ -1,6 +1,6 @@
 'use strict';
 // Pure strip decoder for the screenshot transport: reads the PNG or TGA file the
-// game wrote and finds the WoWAI pixel strip in its top-left corner. Zero
+// game wrote and finds the ClaudeWoW pixel strip in its top-left corner. Zero
 // dependencies (PNG inflation is node's zlib). The cell, magic, length and
 // checksum rules are exactly those of capture.ps1 / capture_x11.py /
 // capture_mac.py, so both transports read the same Codec.lua output; the only

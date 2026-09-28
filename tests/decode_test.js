@@ -14,7 +14,7 @@ const fengari = require('fengari');
 const { lua, lauxlib, lualib, to_luastring, to_jsstring } = fengari;
 const D = require('../bridge/decode');
 
-const CODEC = path.join(__dirname, '..', 'addon', 'WoWAI', 'Codec.lua');
+const CODEC = path.join(__dirname, '..', 'addon', 'ClaudeWoW', 'Codec.lua');
 const CELL = 4, CELLS = 200, MAXROWS = 48;
 
 function encodeWithLua(id, payload) {
@@ -23,7 +23,7 @@ function encodeWithLua(id, payload) {
   const L = lauxlib.luaL_newstate();
   lualib.luaL_openlibs(L);
   const code = fs.readFileSync(CODEC, 'utf8') +
-    `\nlocal cells = WoWAI_Codec.Encode(${id}, ${lit})\n` +
+    `\nlocal cells = ClaudeWoW_Codec.Encode(${id}, ${lit})\n` +
     `local t = {}\nfor i = 1, #cells do t[i] = string.format("%d", cells[i]) end\n` +
     `RESULT = table.concat(t, ",")\n`;
   if (lauxlib.luaL_dostring(L, to_luastring(code)) !== 0) throw new Error('Lua error: ' + to_jsstring(lua.lua_tostring(L, -1)));

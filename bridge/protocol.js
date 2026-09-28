@@ -6,6 +6,15 @@
 const os = require('os');
 const path = require('path');
 
+// The addon's name, as the game sees it: its folder under Interface/AddOns, its
+// .toc, its SavedVariables file (<ADDON>.lua) and the prefix of its globals.
+// The names it had before (wow-claude, then wow-ai) are what setup.js migrates
+// from and what an older config.json may still name.
+const ADDON = 'ClaudeWoW';
+const OLD_ADDONS = ['WoWAI', 'WoWClaude']; // newest first
+const OLD_ADDON_PATH = new RegExp('(^|[\\\\/])(' + OLD_ADDONS.join('|') + ')([\\\\/]|$)');
+const OLD_SAVED_FILE = new RegExp('(' + OLD_ADDONS.join('|') + ')\\.lua$');
+
 function fromHex(hex) {
   return Buffer.from(hex || '', 'hex').toString('utf8');
 }
@@ -189,7 +198,7 @@ function parseOutbox(src) {
 // reply goes to the addon's window and only its closing "TL;DR:" block is
 // printed in the game chat, so every reply must end with one. Then, while the
 // addon has sent a context (the player's character, location and so on; see
-// GameContext in WoWAI.lua), that context plus the addon/macro primer
+// GameContext in ClaudeWoW.lua), that context plus the addon/macro primer
 // (docs/WOW-ADDON-PRIMER.md) so it can write for this client whatever folder
 // the chat works in. Empty context = neither is appended, so a bridge used for
 // unrelated projects, or an addon with `/wow-ai context off`, only gets the
@@ -600,6 +609,7 @@ function luaMacros(macros) {
 }
 
 module.exports = {
+  ADDON, OLD_ADDONS, OLD_ADDON_PATH, OLD_SAVED_FILE,
   fromHex, pad3, slotNumber, chatKey, sessKey,
   alreadyHandled, markHandled, pruneStale, MONTH_MS,
   resolveCwd, sameFolder, baseName,

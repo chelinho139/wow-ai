@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Linux/X11 counterpart of capture.ps1: screen-captures the top-left corner of the
-WoW client window (running under Wine) and decodes the WoWAI pixel strip (see
+WoW client window (running under Wine) and decodes the ClaudeWoW pixel strip (see
 Codec.lua in the addon). Prints one JSON line per new message to stdout, with the
 same {info|warn|error|id,text} contract as capture.ps1. Started by bridge.js.
 

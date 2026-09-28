@@ -43,10 +43,10 @@ test('slot file round-trips replies, denied rules, cwd, agents and a restore bun
       { role: 'assistant', id: 1, t: 2, agent: 'codex', text: 'hello | pipe \\ backslash' },
     ] }],
   };
-  const lua = P.luaTable('WoWAI_SlotData',
+  const lua = P.luaTable('ClaudeWoW_SlotData',
     [{ chat: 'c9', id: 3, status: 'done', text: 'ok\ttab', denied: ['WebSearch', 'Bash(cargo:*)'], agent: 'grok' }],
     { cwd: 'C:\\proj', restore, now: 1700000000123, agent: 'claude', agents: ['claude', 'codex', 'grok'] });
-  const d = readSlot(lua, 'WoWAI_SlotData');
+  const d = readSlot(lua, 'ClaudeWoW_SlotData');
   assert.equal(d.now, 1700000000);
   assert.equal(d.cwd, 'C:\\proj');
   assert.equal(d.agent, 'claude');
@@ -64,7 +64,7 @@ test('slot file round-trips replies, denied rules, cwd, agents and a restore bun
 });
 
 test('slot file without a restore has no restore field and tolerates empty records', () => {
-  const d = readSlot(P.luaTable('WoWAI_Inbox', [], { cwd: '' }), 'WoWAI_Inbox');
+  const d = readSlot(P.luaTable('ClaudeWoW_Inbox', [], { cwd: '' }), 'ClaudeWoW_Inbox');
   assert.equal(d.cwd, '');
   assert.equal(d.agent, '');
   assert.deepEqual(d.agents, {}); // an empty Lua table

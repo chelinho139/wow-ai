@@ -10,10 +10,11 @@
 // an explicit --project updates defaultCwd (that is the only way to correct it
 // without editing config.json by hand).
 //
-// An install of this project under its old name (wow-claude: the WoWClaude
-// addon, WoWClaude_S### slots, WoWClaude.lua saved data) is migrated: the saved
-// data is carried over so chats survive, the old folders are removed so two
-// addons don't fight over /ai and /r, and config.json is brought up to date.
+// An install of this project under one of its old names (wow-ai: the WoWAI
+// addon, WoWAI_S### slots, WoWAI.lua saved data; before that wow-claude and
+// WoWClaude) is migrated: the saved data is carried over so chats survive, the
+// old folders are removed so two addons don't fight over the slash commands and
+// /r, and config.json is brought up to date.
 
 const fs = require('fs');
 const os = require('os');
@@ -21,15 +22,19 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 
 const ROOT = __dirname;
-const ADDON_SRC = path.join(ROOT, 'addon', 'WoWAI');
 const BRIDGE = path.join(ROOT, 'bridge');
+const P = require(path.join(BRIDGE, 'protocol.js')); // the addon's name, and its old names
+const ADDON_SRC = path.join(ROOT, 'addon', P.ADDON);
 const CONFIG = path.join(BRIDGE, 'config.json');
 const EXAMPLE = path.join(BRIDGE, 'config.example.json');
 
 const args = {};
-for (let i = 2; i < process.argv.length; i++) {
-  const a = process.argv[i];
-  if (a.startsWith('--')) args[a.slice(2)] = process.argv[i + 1] && !process.argv[i + 1].startsWith('--') ? process.argv[++i] : true;
+function parseArgs(argv) {
+  for (let i = 2; i < argv.length; i++) {
+    const a = argv[i];
+    if (a.startsWith('--')) args[a.slice(2)] = argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[++i] : true;
+  }
+  return args;
 }
 
 // package.json says node >=22.2, but npm does not enforce engines by default, so a
@@ -110,32 +115,42 @@ function findAccount(client) {
   return names[0];
 }
 
-// The previous name of this project. Chats live in the addon's saved data, so
-// carry that over (renaming the global inside), then remove the old addon and
-// its slot pool: the game only needs one of each, and the old one would still
-// answer /ai, /r and the shift-click hook.
+// The previous names of this project. Chats live in the addon's saved data, so
+// carry that over (renaming the globals inside: the game loads a SavedVariables
+// file by the addon's name and keeps only the globals the .toc declares), then
+// remove the old addon and its slot pool: the game only needs one of each, and
+// the old one would still answer /r and the shift-click hook. The old saved
+// file is left where it is; nothing here deletes saved data. Agent sessions
+// are keyed by chat id in the bridge's state.json, so they follow the chats.
+function migrateSavedData(oldName, oldSaved, newSaved) {
+  let src = fs.readFileSync(oldSaved, 'utf8');
+  for (const g of ['DB', 'MapDB']) src = src.replace(new RegExp('^' + oldName + g + '(\\s*=)', 'm'), P.ADDON + g + '$1');
+  fs.writeFileSync(newSaved, src);
+}
+
 function migrateOldInstall(client, account) {
   const addons = path.join(client, 'Interface', 'AddOns');
   const savedDir = path.join(client, 'WTF', 'Account', account, 'SavedVariables');
-  const oldSaved = path.join(savedDir, 'WoWClaude.lua');
-  const newSaved = path.join(savedDir, 'WoWAI.lua');
-  if (fs.existsSync(oldSaved) && !fs.existsSync(newSaved)) {
-    const src = fs.readFileSync(oldSaved, 'utf8').replace(/^WoWClaudeDB\s*=/m, 'WoWAIDB =');
-    fs.writeFileSync(newSaved, src);
-    console.log(`migrate  : chats and settings copied from ${path.basename(oldSaved)} to ${path.basename(newSaved)}`);
-  }
-  let removed = 0;
-  for (const name of fs.existsSync(addons) ? fs.readdirSync(addons) : []) {
-    if (name === 'WoWClaude' || /^WoWClaude_S\d{3}$/.test(name)) {
-      fs.rmSync(path.join(addons, name), { recursive: true, force: true });
-      removed++;
+  const newSaved = path.join(savedDir, P.ADDON + '.lua');
+  for (const old of P.OLD_ADDONS) { // newest first: WoWAI.lua wins over WoWClaude.lua when both exist
+    const oldSaved = path.join(savedDir, old + '.lua');
+    if (fs.existsSync(oldSaved) && !fs.existsSync(newSaved)) {
+      migrateSavedData(old, oldSaved, newSaved);
+      console.log(`migrate  : chats and settings copied from ${path.basename(oldSaved)} to ${path.basename(newSaved)} (${path.basename(oldSaved)} is kept)`);
     }
+    let removed = 0;
+    for (const name of fs.existsSync(addons) ? fs.readdirSync(addons) : []) {
+      if (name === old || new RegExp('^' + old + '_S\\d{3}$').test(name)) {
+        fs.rmSync(path.join(addons, name), { recursive: true, force: true });
+        removed++;
+      }
+    }
+    if (removed) console.log(`migrate  : removed the old ${old} addon and slot folders (${removed} folder(s))`);
   }
-  if (removed) console.log(`migrate  : removed the old WoWClaude addon and slot folders (${removed} folder(s))`);
 }
 
 function copyAddon(client) {
-  const dest = path.join(client, 'Interface', 'AddOns', 'WoWAI');
+  const dest = path.join(client, 'Interface', 'AddOns', P.ADDON);
   fs.mkdirSync(dest, { recursive: true });
   let copied = 0;
   for (const f of fs.readdirSync(ADDON_SRC)) {
@@ -147,17 +162,17 @@ function copyAddon(client) {
   return { dest, copied };
 }
 
-// A config.json from before the rename, or from before agents: fix the paths
-// that named the old addon, and move Claude's settings under agents.claude next
+// A config.json from before a rename, or from before agents: fix the paths
+// that named an old addon, and move Claude's settings under agents.claude next
 // to the codex and grok blocks from the example. Everything else is kept.
 function upgradeConfig(cfg, example) {
   const notes = [];
-  if (/WoWClaude/.test(cfg.inboxFile || '')) {
-    cfg.inboxFile = path.join(cfg.addonDir, 'WoWAI', 'Inbox.lua');
+  if (P.OLD_ADDON_PATH.test(cfg.inboxFile || '')) {
+    cfg.inboxFile = path.join(cfg.addonDir, P.ADDON, 'Inbox.lua');
     notes.push('inboxFile');
   }
-  if (/WoWClaude\.lua$/.test(cfg.savedVariablesFile || '')) {
-    cfg.savedVariablesFile = cfg.savedVariablesFile.replace(/WoWClaude\.lua$/, 'WoWAI.lua');
+  if (P.OLD_SAVED_FILE.test(cfg.savedVariablesFile || '')) {
+    cfg.savedVariablesFile = cfg.savedVariablesFile.replace(P.OLD_SAVED_FILE, P.ADDON + '.lua');
     notes.push('savedVariablesFile');
   }
   if (!cfg.agents) {
@@ -195,8 +210,8 @@ function writeConfig(client, account) {
   }
   const cfg = example;
   cfg.addonDir = path.join(client, 'Interface', 'AddOns');
-  cfg.inboxFile = path.join(cfg.addonDir, 'WoWAI', 'Inbox.lua');
-  cfg.savedVariablesFile = path.join(client, 'WTF', 'Account', account, 'SavedVariables', 'WoWAI.lua');
+  cfg.inboxFile = path.join(cfg.addonDir, P.ADDON, 'Inbox.lua');
+  cfg.savedVariablesFile = path.join(client, 'WTF', 'Account', account, 'SavedVariables', P.ADDON + '.lua');
   cfg.defaultCwd = args.project ? resolveProject(args.project) : process.cwd();
   const exe = fs.readdirSync(client).find(f => /^Wow.*\.exe$/i.test(f) || /\.app$/i.test(f));
   if (exe) {
@@ -273,7 +288,9 @@ function agentReport(cfg) {
   return lines.join('\n');
 }
 
+function main() {
 try {
+  parseArgs(process.argv);
   checkNode();
   // Validate arguments before copying anything, so a bad --project costs nothing.
   if (args.project) args.project = resolveProject(args.project);
@@ -285,7 +302,7 @@ try {
   const { dest, copied } = copyAddon(client);
   console.log(`addon    : ${copied} file(s) -> ${dest}`);
   const cfg = writeConfig(client, account);
-  console.log(`project  : ${cfg.defaultCwd}  (change with /wow-ai cd in game, or defaultCwd in config.json)`);
+  console.log(`project  : ${cfg.defaultCwd}  (change with /claude-wow cd in game, or defaultCwd in config.json)`);
   // A defaultCwd that no longer exists (moved folder, or a bad --project from an
   // earlier run) makes every chat fail with "Folder does not exist" in game.
   if (!fs.existsSync(cfg.defaultCwd)) {
@@ -293,7 +310,7 @@ try {
       'Every chat that has not picked its own folder will fail. Fix it with: ' +
       'node setup.js --project "<folder>"');
   }
-  console.log(`agent    : ${cfg.agent} by default (change with /wow-ai agent in game, or "agent" in config.json)`);
+  console.log(`agent    : ${cfg.agent} by default (change with /claude-wow agent in game, or "agent" in config.json)`);
   console.log(agentReport(cfg));
   pythonReport(cfg);
   macCaptureReport(cfg);
@@ -307,14 +324,20 @@ try {
   console.log(`
 Done. Next:
   1. Fully quit and relaunch World of Warcraft (it only discovers new addon files at launch).
-  2. Enable "WoW AI" at the character select AddOns screen (the WoW AI slot ### entries stay enabled).
+  2. Enable "Claude WoW" at the character select AddOns screen (the Claude WoW slot ### entries stay enabled).
   3. Start the bridge:  npm start   (in this terminal${
     process.platform === 'win32' ? '; bridge\\start-window.cmd opens its own window'
     : process.platform === 'darwin' ? '; keep the game windowed or borderless, and check the capture with: npm run probe:mac'
     : '; keep the game borderless/windowed and check the capture with: npm run probe'})
-  4. In game:  /wow-ai
+  4. In game:  /claude
 `);
 } catch (e) {
   console.error('setup failed:', e.message);
   process.exit(1);
 }
+}
+
+// Run as a script this is the installer; required (tests/setup_test.js) it only
+// lends out the pieces, the migration above all.
+if (require.main === module) main();
+module.exports = { migrateOldInstall, migrateSavedData, copyAddon, upgradeConfig, isClient, parseArgs, main };

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 'use strict';
-// WoW AI bridge: the half of WoWAI that lives outside the game.
+// WoW AI bridge: the half of ClaudeWoW that lives outside the game.
 //
 //   OUT  capture.ps1 screen-captures the addon's pixel strip -> one or more
 //        {session, chat, id, cwd, flags, text} records per frame; or, in
@@ -14,7 +14,7 @@
 //        streaming progress. Each chat is its own agent session; up to
 //        maxParallel run at once.
 //   IN   we write the latest reply/status of every chat into every
-//        WoWAI_S### slot addon (the game loads a fresh one from a timer),
+//        ClaudeWoW_S### slot addon (the game loads a fresh one from a timer),
 //        flip a signal .wav per message, and also write Inbox.lua for the
 //        reload path.
 //
@@ -133,10 +133,10 @@ const vis = Object.assign({}, V.DEFAULTS, cfg.vision || {});
 // Screenshot mode draws the strip dark (capture.screenshotLevels) and reads it
 // with the threshold between the two levels; pixel mode stays bright and >= 128.
 const LEVELS = P.screenshotLevels(cap.screenshotLevels);
-// The game-side files. A config.json written for the addon's old name
-// (WoWClaude) still works: the paths are derived from addonDir instead.
-const INBOX_FILE = cfg.inboxFile && !/WoWClaude/.test(cfg.inboxFile) ? cfg.inboxFile : path.join(cfg.addonDir || '', 'WoWAI', 'Inbox.lua');
-const SAVED_VARS = String(cfg.savedVariablesFile || '').replace(/WoWClaude\.lua$/, 'WoWAI.lua');
+// The game-side files. A config.json written for one of the addon's old names
+// (WoWClaude, WoWAI) still works: the paths are derived from addonDir instead.
+const INBOX_FILE = cfg.inboxFile && !P.OLD_ADDON_PATH.test(cfg.inboxFile) ? cfg.inboxFile : path.join(cfg.addonDir || '', P.ADDON, 'Inbox.lua');
+const SAVED_VARS = String(cfg.savedVariablesFile || '').replace(P.OLD_SAVED_FILE, P.ADDON + '.lua');
 
 let state = readJson(STATE_FILE, { lastId: 0, sessions: {}, handled: {} });
 if (!state.handled) state.handled = {};
@@ -322,11 +322,11 @@ function slotFile(globalName, records, urgent = true) {
 }
 
 function addonInstalled() {
-  return fs.existsSync(path.join(cfg.addonDir, 'WoWAI', 'WoWAI.toc'));
+  return fs.existsSync(path.join(cfg.addonDir, 'ClaudeWoW', 'ClaudeWoW.toc'));
 }
 
 function slotsInstalled() {
-  return fs.existsSync(path.join(cfg.addonDir, 'WoWAI_S001', 'Inbox.lua'));
+  return fs.existsSync(path.join(cfg.addonDir, 'ClaudeWoW_S001', 'Inbox.lua'));
 }
 
 // The game will load *some* unused slot next, so every slot gets the full picture.
@@ -338,7 +338,7 @@ function publishNow(urgent = true) {
   lastPublish = Date.now();
   const records = [...live.values()].slice(-30);
   try {
-    atomicWrite(INBOX_FILE, slotFile('WoWAI_Inbox', records, urgent));
+    atomicWrite(INBOX_FILE, slotFile('ClaudeWoW_Inbox', records, urgent));
   } catch (e) {
     if (!warnedNoAddon) {
       warnedNoAddon = true;
@@ -347,9 +347,9 @@ function publishNow(urgent = true) {
     return;
   }
   if (!slotsInstalled()) return;
-  const body = slotFile('WoWAI_SlotData', records, urgent);
+  const body = slotFile('ClaudeWoW_SlotData', records, urgent);
   for (let i = 1; i <= SLOTS; i++) {
-    try { atomicWrite(path.join(cfg.addonDir, 'WoWAI_S' + pad3(i), 'Inbox.lua'), body); } catch {}
+    try { atomicWrite(path.join(cfg.addonDir, 'ClaudeWoW_S' + pad3(i), 'Inbox.lua'), body); } catch {}
   }
   // The restore bundle is large; it rides along once and is then dropped.
   // (The game keeps loading fresh slots until it has read one carrying it.)
@@ -378,7 +378,7 @@ function setSignalFile(file, on) {
 }
 
 function signal(kind, id, on) {
-  setSignalFile(path.join(cfg.addonDir, 'WoWAI', kind, pad3(slotNumber(id)) + '.wav'), on);
+  setSignalFile(path.join(cfg.addonDir, 'ClaudeWoW', kind, pad3(slotNumber(id)) + '.wav'), on);
 }
 
 // Heartbeat: act/NNN/kk.wav flips valid for the k-th action of message NNN. The
@@ -386,7 +386,7 @@ function signal(kind, id, on) {
 // without spending a reply slot.
 const ACT_MAX = cfg.actMax || 60;
 function actFile(id, k) {
-  return path.join(cfg.addonDir, 'WoWAI', 'act', pad3(slotNumber(id)), String(k).padStart(2, '0') + '.wav');
+  return path.join(cfg.addonDir, 'ClaudeWoW', 'act', pad3(slotNumber(id)), String(k).padStart(2, '0') + '.wav');
 }
 function resetBeats(id) {
   for (let k = 1; k <= ACT_MAX; k++) setSignalFile(actFile(id, k), false);
@@ -403,10 +403,10 @@ function beat(job) {
 // files just ahead of the counter are kept empty so the game can't run ahead.
 const PRESENCE_MAX = cfg.presenceMax || 2000;
 function presenceFile(k) {
-  return path.join(cfg.addonDir, 'WoWAI', 'presence', String(k).padStart(4, '0') + '.wav');
+  return path.join(cfg.addonDir, 'ClaudeWoW', 'presence', String(k).padStart(4, '0') + '.wav');
 }
 function presenceBeat() {
-  if (!fs.existsSync(path.join(cfg.addonDir, 'WoWAI', 'presence'))) return;
+  if (!fs.existsSync(path.join(cfg.addonDir, 'ClaudeWoW', 'presence'))) return;
   state.presence = ((state.presence || 0) % PRESENCE_MAX) + 1;
   const k = state.presence;
   setSignalFile(presenceFile(k), true);

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """macOS counterpart of capture.ps1 / capture_x11.py: screen-captures the
-top-left corner of the native WoW: Forever client and decodes the WoWAI pixel
+top-left corner of the native WoW: Forever client and decodes the ClaudeWoW pixel
 strip (see Codec.lua in the addon). Prints one JSON line per new message to
 stdout, with the same {info|warn|error|id,text} contract as the other capture
 scripts. Started by bridge.js.

@@ -82,17 +82,17 @@ test('the plugin binding travels as a plugin= flag and in the reload outbox, onl
   assert.equal(job.agent, 'grok');
   assert.equal(job.text, 'hi');
   const hex = s => Buffer.from(s, 'utf8').toString('hex');
-  const src = `WoWAIDB = {\n["outbox"] = {\n["id"] = 7,\n["session"] = "abc",\n["chat"] = "c1",\n["text"] = "${hex('q')}",\n["cwd"] = "",\n["plugin"] = "ask",\n},\n}`;
+  const src = `ClaudeWoWDB = {\n["outbox"] = {\n["id"] = 7,\n["session"] = "abc",\n["chat"] = "c1",\n["text"] = "${hex('q')}",\n["cwd"] = "",\n["plugin"] = "ask",\n},\n}`;
   assert.equal(P.parseOutbox(src).plugin, 'ask');
   assert.equal(P.parseOutbox(src.replace('["plugin"] = "ask",\n', '')).plugin, undefined);
 });
 
 test('slot files name the default plugin and the list, and a reply names the plugin that answered', () => {
-  const lua = P.luaTable('WoWAI_SlotData', [{ chat: 'c', id: 1, status: 'done', text: 'x', plugin: 'ask' }, { chat: 'c', id: 2, status: 'done', text: 'y' }], { plugin: 'ask', plugins: ['ask', 'claude-code'] });
+  const lua = P.luaTable('ClaudeWoW_SlotData', [{ chat: 'c', id: 1, status: 'done', text: 'x', plugin: 'ask' }, { chat: 'c', id: 2, status: 'done', text: 'y' }], { plugin: 'ask', plugins: ['ask', 'claude-code'] });
   assert.ok(lua.includes('\tplugin = "ask",'), lua);
   assert.ok(lua.includes('\tplugins = { "ask", "claude-code" },'), lua);
   assert.equal((lua.match(/\t\t\tplugin = "ask",/g) || []).length, 1, 'only the record that has one');
-  const bare = P.luaTable('WoWAI_Inbox', []);
+  const bare = P.luaTable('ClaudeWoW_Inbox', []);
   assert.ok(bare.includes('\tplugin = "",') && bare.includes('\tplugins = {  },'), bare);
 });
 
@@ -186,7 +186,7 @@ test('the bridge\'s registry: ask is the default, claude-code the coding path, a
   assert.equal(reg.route({ text: 'fix it', plugin: 'claude-code' }).plugin.id, 'claude-code');
   assert.equal(reg.route({ text: '/claude fix it' }).plugin.id, 'claude-code', 'the alias PLATFORM.md names');
   assert.equal(reg.route({ text: 'hi' }, { fallback: 'claude-code' }).plugin.id, 'claude-code', 'plugins.default in the config');
-  const lua = P.luaTable('WoWAI_SlotData', [], { restore: { token: 't', chats: [{ id: 'c', name: 'n', cwd: '', plugin: 'claude-code', messages: [] }, { id: 'd', name: 'n', cwd: '', messages: [] }] } });
+  const lua = P.luaTable('ClaudeWoW_SlotData', [], { restore: { token: 't', chats: [{ id: 'c', name: 'n', cwd: '', plugin: 'claude-code', messages: [] }, { id: 'd', name: 'n', cwd: '', messages: [] }] } });
   assert.ok(lua.includes('\t\t\t\tplugin = "claude-code",'));
   assert.ok(lua.includes('\t\t\t\tplugin = "",'));
 });

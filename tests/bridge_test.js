@@ -104,7 +104,7 @@ test('splitSummary takes the last TL;DR block for the game chat and keeps the wh
   assert.equal(P.splitSummary('a TL;DR: inline\nmore').summary, '');
   assert.equal(P.splitSummary('first TL;DR: x\n\nbody\n\nTL;DR: last one').summary, 'last one');
   // The slot file carries the summary only when there is one.
-  const lua = P.luaTable('WoWAI_SlotData', [{ chat: 'c', id: 1, status: 'done', text: 'body\nTL;DR: short', summary: 'short' }, { chat: 'c', id: 2, status: 'done', text: 'plain' }]);
+  const lua = P.luaTable('ClaudeWoW_SlotData', [{ chat: 'c', id: 1, status: 'done', text: 'body\nTL;DR: short', summary: 'short' }, { chat: 'c', id: 2, status: 'done', text: 'plain' }]);
   assert.ok(lua.includes('summary = "short"'));
   assert.equal((lua.match(/summary = /g) || []).length, 1);
 });
@@ -130,7 +130,7 @@ test('jobsFromStrip handles several records per frame and older formats', () => 
 
 test('parseOutbox decodes the SavedVariables fallback', () => {
   const hex = s => Buffer.from(s, 'utf8').toString('hex');
-  const src = `WoWAIDB = {\n["outbox"] = {\n["id"] = 7,\n["session"] = "abc123",\n["chat"] = "c1",\n["text"] = "${hex('héllo')}",\n["cwd"] = "${hex('realms')}",\n["newSession"] = true,\n},\n["settings"] = {},\n}`;
+  const src = `ClaudeWoWDB = {\n["outbox"] = {\n["id"] = 7,\n["session"] = "abc123",\n["chat"] = "c1",\n["text"] = "${hex('héllo')}",\n["cwd"] = "${hex('realms')}",\n["newSession"] = true,\n},\n["settings"] = {},\n}`;
   assert.deepEqual(P.parseOutbox(src), { id: 7, session: 'abc123', chat: 'c1', text: 'héllo', cwd: 'realms', newSession: true, via: 'reload' });
   const withAllow = src.replace('["newSession"]', `["allow"] = "${hex('WebSearch\x1fBash(git:*)')}",\n["newSession"]`);
   assert.deepEqual(P.parseOutbox(withAllow).allow, ['WebSearch', 'Bash(git:*)']);
@@ -139,7 +139,7 @@ test('parseOutbox decodes the SavedVariables fallback', () => {
   const withAgent = src.replace('["newSession"]', '["agent"] = "codex",\n["newSession"]');
   assert.equal(P.parseOutbox(withAgent).agent, 'codex');
   assert.equal(P.parseOutbox(src).agent, undefined);
-  assert.equal(P.parseOutbox('WoWAIDB = {}'), null);
+  assert.equal(P.parseOutbox('ClaudeWoWDB = {}'), null);
   assert.equal(P.parseOutbox('["outbox"] = { ["text"] = "" }'), null);
 });
 
@@ -213,11 +213,11 @@ test('slot files name the outbound transport the bridge listens on, pixel unless
   assert.equal(P.transportName('Screenshot'), 'screenshot');
   assert.equal(P.transportName('bogus'), '', 'an unknown mode is refused, not silently pixel');
   assert.deepEqual(P.TRANSPORTS, ['pixel', 'screenshot']);
-  const plain = P.luaTable('WoWAI_SlotData', []);
+  const plain = P.luaTable('ClaudeWoW_SlotData', []);
   assert.ok(plain.includes('\ttransport = "pixel",'), plain);
-  const shot = P.luaTable('WoWAI_SlotData', [], { transport: 'screenshot' });
+  const shot = P.luaTable('ClaudeWoW_SlotData', [], { transport: 'screenshot' });
   assert.ok(shot.includes('\ttransport = "screenshot",'), shot);
-  assert.ok(P.luaTable('WoWAI_Inbox', [], { transport: 'nope' }).includes('\ttransport = "pixel",'), 'garbage falls back to pixel in the file');
+  assert.ok(P.luaTable('ClaudeWoW_Inbox', [], { transport: 'nope' }).includes('\ttransport = "pixel",'), 'garbage falls back to pixel in the file');
 });
 
 test('screenshot mode ships its strip levels; pixel mode never does', () => {
@@ -227,8 +227,8 @@ test('screenshot mode ships its strip levels; pixel mode never does', () => {
   for (const bad of [{ off: 50, on: 55 }, { off: -1, on: 60 }, { off: 0, on: 300 }, { off: 'a', on: 60 }, { on: 4 }, 'x']) {
     assert.deepEqual(P.screenshotLevels(bad), { off: 0, on: 60, threshold: 31 }, JSON.stringify(bad));
   }
-  const shot = P.luaTable('WoWAI_SlotData', [], { transport: 'screenshot', levels: { off: 0, on: 60 } });
+  const shot = P.luaTable('ClaudeWoW_SlotData', [], { transport: 'screenshot', levels: { off: 0, on: 60 } });
   assert.ok(shot.includes('\tstrip = { on = 60, off = 0 },'), shot);
-  assert.ok(P.luaTable('WoWAI_SlotData', [], { transport: 'screenshot' }).includes('\tstrip = { on = 60, off = 0 },'), 'default levels when none are given');
-  assert.ok(!P.luaTable('WoWAI_SlotData', [], { transport: 'pixel', levels: { off: 0, on: 60 } }).includes('strip ='), 'pixel mode draws full primaries whatever the config says');
+  assert.ok(P.luaTable('ClaudeWoW_SlotData', [], { transport: 'screenshot' }).includes('\tstrip = { on = 60, off = 0 },'), 'default levels when none are given');
+  assert.ok(!P.luaTable('ClaudeWoW_SlotData', [], { transport: 'pixel', levels: { off: 0, on: 60 } }).includes('strip ='), 'pixel mode draws full primaries whatever the config says');
 });

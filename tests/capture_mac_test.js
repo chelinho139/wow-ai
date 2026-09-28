@@ -152,7 +152,7 @@ function bmp({ width, height, bpp, topDown, bitfields, pixel }) {
 test('read_bmp reads what screencapture -t bmp writes, and the plain bottom-up kind', { skip }, () => {
   const fs = require('node:fs');
   const os = require('node:os');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wowai-bmp-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claudewow-bmp-'));
   const pixel = (x, y) => [x * 40, y * 60, (x + y) * 10];   // distinct per channel and position
   const variants = [
     ['v4-32-topdown', { width: 5, height: 3, bpp: 32, topDown: true, bitfields: true, pixel }],   // screencapture

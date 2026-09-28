@@ -12,7 +12,7 @@ const luaparse = require('luaparse');
 const S = path.join(__dirname, 'tmp', 'inject');
 const SRC = path.join(__dirname, '..', 'bridge');
 fs.rmSync(S, { recursive: true, force: true });
-fs.mkdirSync(path.join(S, 'addons', 'WoWAI'), { recursive: true });
+fs.mkdirSync(path.join(S, 'addons', 'ClaudeWoW'), { recursive: true });
 fs.mkdirSync(path.join(S, 'proj'), { recursive: true });
 for (const f of ['bridge.js', 'protocol.js', 'agents.js', 'plugins.js', 'decode.js', 'screenshots.js', 'vision.js', 'install-slots.js', 'capture.ps1']) fs.copyFileSync(path.join(SRC, f), path.join(S, f));
 fs.mkdirSync(path.join(S, 'plugins'), { recursive: true });
@@ -21,11 +21,11 @@ const agentIdx = process.argv.indexOf('--agent');
 const agent = agentIdx >= 0 ? process.argv[agentIdx + 1] : 'claude';
 const pluginIdx = process.argv.indexOf('--plugin');
 const plugins = pluginIdx >= 0 ? [process.argv[pluginIdx + 1]] : ['claude-code', 'ask'];
-fs.writeFileSync(path.join(S, 'addons', 'WoWAI', 'WoWAI.toc'), '## Interface: 16001\n');
+fs.writeFileSync(path.join(S, 'addons', 'ClaudeWoW', 'ClaudeWoW.toc'), '## Interface: 16001\n');
 
 const cfg = JSON.parse(fs.readFileSync(path.join(SRC, 'config.example.json'), 'utf8'));
 cfg.addonDir = path.join(S, 'addons');
-cfg.inboxFile = path.join(S, 'addons', 'WoWAI', 'Inbox.lua');
+cfg.inboxFile = path.join(S, 'addons', 'ClaudeWoW', 'Inbox.lua');
 cfg.savedVariablesFile = path.join(S, 'nope.lua');
 cfg.defaultCwd = path.join(S, 'proj');
 cfg.plugins = { default: 'ask', ask: { cwd: path.join(S, 'scratch') } };
@@ -56,7 +56,7 @@ function readLua(file, globalName) {
 // that block (the summary the game chat prints is split off as `summary`).
 const pong = text => /^PONG\b/.test(String(text || ''));
 // A signal is a valid .wav; "off" is no file at all.
-const size = f => { try { return fs.statSync(path.join(S, 'addons', 'WoWAI', f)).size; } catch { return -1; } };
+const size = f => { try { return fs.statSync(path.join(S, 'addons', 'ClaudeWoW', f)).size; } catch { return -1; } };
 const pad = n => String(n).padStart(3, '0');
 const env = { ...process.env }; delete env.CLAUDECODE;
 console.log(`agent: ${agent}`);
@@ -75,13 +75,13 @@ for (const plugin of plugins) {
   if (!ran) console.log(`BAD: expected "[${plugin}] ... starting in ${where}" in the log`);
   ok = ok && ran;
   for (let i = 1; i <= 5; i++) {
-    const d = readLua(path.join(S, 'addons', 'WoWAI_S00' + i, 'Inbox.lua'), 'WoWAI_SlotData');
+    const d = readLua(path.join(S, 'addons', 'ClaudeWoW_S00' + i, 'Inbox.lua'), 'ClaudeWoW_SlotData');
     const rec = (d.replies || [])[0] || {};
     const good = d.replies && d.replies.length === 1 && Number(rec.id) === n && rec.status === 'done' && pong(rec.text) && rec.agent === agent && rec.plugin === plugin;
     ok = ok && good;
     console.log(`slot ${i}: replies=${(d.replies || []).length} id=${rec.id} status=${rec.status} agent=${rec.agent} plugin=${rec.plugin} text=${JSON.stringify(rec.text)} ${good ? 'ok' : 'BAD'}`);
   }
-  const inbox = readLua(cfg.inboxFile, 'WoWAI_Inbox');
+  const inbox = readLua(cfg.inboxFile, 'ClaudeWoW_Inbox');
   const ir = (inbox.replies || [])[0] || {};
   console.log(`Inbox.lua: id=${ir.id} status=${ir.status} plugin=${inbox.plugin} plugins=${JSON.stringify(inbox.plugins)} text=${JSON.stringify(ir.text)}`);
   ok = ok && pong(ir.text) && inbox.plugin === 'ask';

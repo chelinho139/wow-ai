@@ -1,4 +1,4 @@
--- WoWAI pixel codec. Pure Lua, no WoW APIs, so it can be tested outside the game.
+-- ClaudeWoW pixel codec. Pure Lua, no WoW APIs, so it can be tested outside the game.
 --
 -- A message is a byte stream:
 --   [0xC7 0x1A] [id hi, id lo] [len hi, len lo] [payload: len bytes] [fletcher s1, s2]
@@ -7,8 +7,8 @@
 -- off (bit 2 = R, bit 1 = G, bit 0 = B). Pure primaries survive any gamma/contrast
 -- setting, unlike intermediate levels. bridge/capture.ps1 decodes it.
 
-WoWAI_Codec = {}
-local C = WoWAI_Codec
+ClaudeWoW_Codec = {}
+local C = ClaudeWoW_Codec
 
 C.MAGIC1, C.MAGIC2 = 0xC7, 0x1A
 C.BITS = 3

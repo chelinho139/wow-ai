@@ -1,12 +1,12 @@
 ## Interface: 16001
-## Title: WoW AI
+## Title: Claude WoW
 ## Notes: Talk to Claude Code, Codex, Grok, Antigravity or Hermes from inside the game, one session per chat; ready-made macros and map routes from the agent. Needs the companion bridge (see README).
 ## Author: chelinho139
 ## Version: 0.4.0
-## SavedVariables: WoWAIDB, WoWAIMapDB
-## OptionalDeps: WoWAI_Nodes
+## SavedVariables: ClaudeWoWDB, ClaudeWoWMapDB
+## OptionalDeps: ClaudeWoW_Nodes
 
 Codec.lua
 Inbox.lua
-WoWAI.lua
+ClaudeWoW.lua
 Map.lua

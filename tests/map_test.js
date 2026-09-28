@@ -79,9 +79,9 @@ test('slot files carry the map as a Lua table the addon can read', () => {
   P.applyMapCommands(map, [{ op: 'set', layer: 'quests', title: 'Route "one"', ordered: true, points: [
     pt(48.92, 41.61, { label: '1. accept "Wolves"\\ ok', kind: 'quest' }), pt(40.6, 82.3, { kind: 'explore' }),
   ] }]);
-  const src = P.luaTable('WoWAI_SlotData', [], { now: 1, cwd: '/x', map });
+  const src = P.luaTable('ClaudeWoW_SlotData', [], { now: 1, cwd: '/x', map });
   const got = runLua(src, `(function(m) local l = m.layers[1]; local p = l.points[1]
-    return table.concat({ m.epoch, m.version, l.name, l.title, tostring(l.ordered), #l.points, p[1], p[2], p[3], p[4], p[5], l.points[2][5] }, "|") end)(WoWAI_SlotData.map)`);
+    return table.concat({ m.epoch, m.version, l.name, l.title, tostring(l.ordered), #l.points, p[1], p[2], p[3], p[4], p[5], l.points[2][5] }, "|") end)(ClaudeWoW_SlotData.map)`);
   assert.equal(got, 'ep0ch|1|quests|Route "one"|true|2|1429|48.92|41.61|1. accept "Wolves"\\ ok|quest|explore');
   assert.ok(!P.luaTable('X', [], { now: 1 }).includes('map ='));
 });

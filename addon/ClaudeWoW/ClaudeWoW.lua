@@ -1,4 +1,4 @@
--- WoWAI: talk to local coding agents (Claude Code, Codex, Grok) from inside WoW,
+-- ClaudeWoW: talk to local coding agents (Claude Code, Codex, Grok) from inside WoW,
 -- without reloading.
 --
 -- The WoW sandbox has no network and no file reads at runtime. Two doors remain open:
@@ -11,7 +11,7 @@
 --        bridge reads the file the client wrote to its Screenshots folder.
 --   IN:  load-on-demand addons read their files from disk at the moment they load.
 --        The bridge writes the latest replies for every chat into a pool of pre-made
---        slot addons (WoWAI_S001..S200); we load a fresh slot from a timer.
+--        slot addons (ClaudeWoW_S001..S200); we load a fresh slot from a timer.
 --        Each slot is single-use per session; a /reload frees them all.
 --   Fallback ("reload" mode): SavedVariables + Inbox.lua, a ReloadUI() per step.
 --
@@ -20,16 +20,16 @@
 -- Everything here is plain addon API. No automation, no memory reading.
 
 local ADDON_NAME = ...
-local WoWAI = {}
-_G.WoWAI = WoWAI
-local Codec = WoWAI_Codec
+local ClaudeWoW = {}
+_G.ClaudeWoW = ClaudeWoW
+local Codec = ClaudeWoW_Codec
 
 local DEFAULT_CWD = "" -- empty = the bridge's configured defaultCwd
 local MAX_HISTORY = 200
 local MAX_CHATS = 16
 
 local SLOT_COUNT = 200
-local SLOT_PREFIX = "WoWAI_S"
+local SLOT_PREFIX = "ClaudeWoW_S"
 local ACT_MAX = 60 -- heartbeat files per message (act/NNN/01..60.wav)
 local PRESENCE_MAX = 2000 -- presence/0001..2000.wav, one flipped by the bridge every 30 s
 local STRIP_TRIES = 3 -- re-show an unacknowledged message this many times before falling back
@@ -203,9 +203,9 @@ end
 
 local function InitDB()
 	-- Nothing saved yet: a first run, as opposed to an install from before some setting existed.
-	local fresh = WoWAIDB == nil or next(WoWAIDB) == nil
-	WoWAIDB = WoWAIDB or {}
-	db = WoWAIDB
+	local fresh = ClaudeWoWDB == nil or next(ClaudeWoWDB) == nil
+	ClaudeWoWDB = ClaudeWoWDB or {}
+	db = ClaudeWoWDB
 	db.settings = db.settings or {}
 	local s = db.settings
 	if s.autoRefresh == nil then s.autoRefresh = true end
@@ -295,7 +295,7 @@ end
 
 local function SafeReload()
 	if InCombatLockdown() then
-		WoWAI.reloadAfterCombat = true
+		ClaudeWoW.reloadAfterCombat = true
 		if ui.status then
 			ui.status:SetText("In combat - will reload as soon as it ends")
 		end
@@ -307,12 +307,12 @@ end
 -- ReloadUI() only works from a hardware event (a keypress or click), never from
 -- a timer. So the automatic reload piggybacks on the player's own next keypress
 -- once the interval has elapsed. The key still reaches the game normally.
-local keyCatcher = CreateFrame("Frame", "WoWAIKeyCatcher", UIParent)
+local keyCatcher = CreateFrame("Frame", "ClaudeWoWKeyCatcher", UIParent)
 keyCatcher:Hide()
 keyCatcher:EnableKeyboard(true)
 keyCatcher:SetScript("OnKeyDown", function(self, key)
 	if db and AnyPending() and db.settings.autoRefresh
-		and GetTime() >= (WoWAI.nextAutoRefresh or 0)
+		and GetTime() >= (ClaudeWoW.nextAutoRefresh or 0)
 		and not InCombatLockdown() then
 		self:Hide()
 		ReloadUI()
@@ -321,7 +321,7 @@ end)
 
 -- Arm the keypress reload. In pixel mode this is only used once the slot pool
 -- is exhausted (a reload frees every slot) or the slots are not installed.
-function WoWAI.ArmAutoRefresh()
+function ClaudeWoW.ArmAutoRefresh()
 	keyCatcher:Hide()
 	if not AnyPending() or not db.settings.autoRefresh then return end
 	if db.settings.mode == "pixel" and not (run.slotsExhausted or run.slotsMissing or run.pixelFailed) then return end
@@ -332,7 +332,7 @@ function WoWAI.ArmAutoRefresh()
 		keyCatcher:SetPropagateKeyboardInput(true)
 		keyCatcher.propagates = true
 	end
-	WoWAI.nextAutoRefresh = GetTime() + db.settings.interval
+	ClaudeWoW.nextAutoRefresh = GetTime() + db.settings.interval
 	keyCatcher:Show()
 end
 
@@ -345,7 +345,7 @@ local cellPool = {}
 
 local function EnsureStrip()
 	if strip then return strip end
-	strip = CreateFrame("Frame", "WoWAIStrip", UIParent)
+	strip = CreateFrame("Frame", "ClaudeWoWStrip", UIParent)
 	strip:SetFrameStrata("TOOLTIP")
 	strip:SetFrameLevel(10000)
 	-- Scale so that one UI unit is exactly one physical pixel (see Blizzard's PixelUtil).
@@ -443,7 +443,7 @@ local function ShotStats()
 	return run.shotStats
 end
 
--- Vision ("/wow-ai vision on", off by default): the screenshot this transport
+-- Vision ("/claude-wow vision on", off by default): the screenshot this transport
 -- takes per message is the whole screen; the bridge keeps the part under the
 -- strip, scales it down and attaches it to the agent's message as an image, so
 -- "what is this item?" or "why is this boss killing me?" can be answered. A "v"
@@ -615,7 +615,7 @@ local function ApplyTransport(data)
 	-- Whatever is still unacknowledged goes out again the new way.
 	for _, rec in pairs(run.outbound) do rec.shot = nil end
 	RefreshStrip()
-	WoWAI.UpdateStatus()
+	ClaudeWoW.UpdateStatus()
 end
 
 ---------------------------------------------------------------------------
@@ -648,12 +648,12 @@ end
 
 local function CheckSignal(kind, id)
 	if run.signalUnreliable then return false end
-	return SoundValid(string.format("Interface\\AddOns\\WoWAI\\%s\\%03d.wav", kind, SlotNumber(id)))
+	return SoundValid(string.format("Interface\\AddOns\\ClaudeWoW\\%s\\%03d.wav", kind, SlotNumber(id)))
 end
 
 -- Heartbeat: the bridge flips act/NNN/kk.wav for the k-th action of message NNN.
 local function ActPath(id, k)
-	return string.format("Interface\\AddOns\\WoWAI\\act\\%03d\\%02d.wav", SlotNumber(id), k)
+	return string.format("Interface\\AddOns\\ClaudeWoW\\act\\%03d\\%02d.wav", SlotNumber(id), k)
 end
 
 local function StartActivity(chat, id)
@@ -690,7 +690,7 @@ local function NotedBridge(at)
 end
 
 local function PresencePath(k)
-	return string.format("Interface\\AddOns\\WoWAI\\presence\\%04d.wav", k)
+	return string.format("Interface\\AddOns\\ClaudeWoW\\presence\\%04d.wav", k)
 end
 
 -- Valid presence files form a prefix 1..k, so a binary search finds the head.
@@ -728,7 +728,7 @@ end
 -- suspicious. Without them the addon only hears from it every IDLE_POLL_SECONDS,
 -- so the windows have to be wider or the light could never stay green between
 -- messages and every reply would be followed by a Reconnect.
-function WoWAI.BridgeState()
+function ClaudeWoW.BridgeState()
 	local seen = run.bridgeSeen
 	if not seen then
 		return "unknown", 0.6, 0.6, 0.6, "Bridge: not seen yet this session"
@@ -754,8 +754,8 @@ local STATE_ICON = {
 	unknown = "Interface\\FriendsFrame\\StatusIcon-Offline",
 }
 
-function WoWAI.UpdateDot()
-	local state, _, _, _, tip = WoWAI.BridgeState()
+function ClaudeWoW.UpdateDot()
+	local state, _, _, _, tip = ClaudeWoW.BridgeState()
 	if run.pixelFailed then state = "down" end
 	if not signalAvailable and signalStats.selftest then
 		tip = tip .. "\n(sound-file channel unavailable: " .. signalStats.selftest .. "; using slot checks only)"
@@ -771,14 +771,14 @@ end
 -- Connected = the bridge has been seen recently. In pixel mode, sending needs this;
 -- until then the Connect button takes the Send button's place. The reload
 -- transport has no idea whether the bridge is there, so it never gates.
-function WoWAI.IsConnected()
+function ClaudeWoW.IsConnected()
 	if not db or db.settings.mode ~= "pixel" then return true end
-	return WoWAI.BridgeState() == "ok" and not run.pixelFailed
+	return ClaudeWoW.BridgeState() == "ok" and not run.pixelFailed
 end
 
 -- Connect button: say hello to the bridge (it acks, refreshes the slots and
 -- offers a restore), ignoring SayHello's throttle so a click always does something.
-function WoWAI.Connect()
+function ClaudeWoW.Connect()
 	if db.settings.mode ~= "pixel" then
 		SafeReload()
 		return
@@ -787,22 +787,22 @@ function WoWAI.Connect()
 	run.pixelFailed = nil
 	run.connectFailed = nil
 	run.connectingAt = GetTime()
-	WoWAI.SayHello()
+	ClaudeWoW.SayHello()
 end
 
 -- One word for the connection state, so Tick can tell when it changed.
 local function ConnectionKey()
-	if WoWAI.IsConnected() then return "ok" end
+	if ClaudeWoW.IsConnected() then return "ok" end
 	if run.connectingAt then return "connecting" end
 	if run.connectFailed then return "failed" end
-	return WoWAI.BridgeState()
+	return ClaudeWoW.BridgeState()
 end
 
 -- Called every tick: time out a Connect attempt, and redraw when the state flips
 -- (light, button, status line, placeholder) without redrawing every tick.
-function WoWAI.CheckConnection()
+function ClaudeWoW.CheckConnection()
 	if run.connectingAt then
-		if WoWAI.IsConnected() then
+		if ClaudeWoW.IsConnected() then
 			run.connectingAt, run.connectFailed = nil, nil
 			-- A message typed while disconnected goes out now, without a second click,
 			-- as long as the same chat is still in front and free.
@@ -811,26 +811,26 @@ function WoWAI.CheckConnection()
 			local c = queued and ActiveChat()
 			if c and c.id == queued.chat and not c.pendingId then
 				if ui.input and Trim(ui.input:GetText() or "") == queued.text then ui.input:SetText("") end
-				WoWAI.Send(queued.text, queued.allow, queued.opts)
+				ClaudeWoW.Send(queued.text, queued.allow, queued.opts)
 			end
 		elseif GetTime() - run.connectingAt > CONNECT_WAIT then
 			run.connectingAt, run.connectFailed = nil, true
 			run.sendOnConnect = nil -- the text is still in the box
 		end
-	elseif run.connectFailed and WoWAI.IsConnected() then
+	elseif run.connectFailed and ClaudeWoW.IsConnected() then
 		run.connectFailed = nil
 	end
 	local key = ConnectionKey()
 	if key ~= run.connKey then
 		run.connKey = key
-		WoWAI.Render()
+		ClaudeWoW.Render()
 	end
 end
 
 -- Swap Send and Connect depending on the state; part of UpdateStatus.
-function WoWAI.UpdateConnect()
+function ClaudeWoW.UpdateConnect()
 	if not ui.connect or not ui.send then return end
-	local connected = WoWAI.IsConnected()
+	local connected = ClaudeWoW.IsConnected()
 	ui.send:SetShown(connected)
 	ui.connect:SetShown(not connected)
 	if connected then return end
@@ -838,7 +838,7 @@ function WoWAI.UpdateConnect()
 		ui.connect:SetText("Connecting...")
 		ui.connect:Disable()
 	else
-		ui.connect:SetText(WoWAI.BridgeState() == "stale" and "Reconnect" or "Connect")
+		ui.connect:SetText(ClaudeWoW.BridgeState() == "stale" and "Reconnect" or "Connect")
 		ui.connect:Enable()
 	end
 end
@@ -851,8 +851,8 @@ local function SelfTestSignals()
 		return
 	end
 	-- ctl/absent.wav is never created by setup; it must read as unplayable.
-	local missingLooksValid = SoundValid("Interface\\AddOns\\WoWAI\\ctl\\absent.wav")
-	local validLooksValid = SoundValid("Interface\\AddOns\\WoWAI\\ctl\\valid.wav")
+	local missingLooksValid = SoundValid("Interface\\AddOns\\ClaudeWoW\\ctl\\absent.wav")
+	local validLooksValid = SoundValid("Interface\\AddOns\\ClaudeWoW\\ctl\\valid.wav")
 	if missingLooksValid then
 		signalAvailable = false
 		signalStats.selftest = "a missing file reports as playable"
@@ -874,7 +874,7 @@ local function ActivityLine(chat)
 		if a.last then
 			local quiet = now - a.last
 			s = s .. ", last " .. FmtDur(quiet) .. " ago"
-			if quiet > 120 then s = s .. " (quiet for a while - stuck? /wow-ai cancel)" end
+			if quiet > 120 then s = s .. " (quiet for a while - stuck? /claude-wow cancel)" end
 		elseif now - started > 60 then
 			s = s .. ", no activity seen yet"
 		end
@@ -928,7 +928,7 @@ local function ApplyReplies(replies)
 			MarkAcked(r.id)
 			local denied = type(r.denied) == "table" and #r.denied > 0 and r.denied or nil
 			if r.status == "done" then
-				Finish(c, "assistant", r.text or "", denied, r.agent, r.summary, WoWAI.CleanMacros(r.macros))
+				Finish(c, "assistant", r.text or "", denied, r.agent, r.summary, ClaudeWoW.CleanMacros(r.macros))
 			elseif r.status == "error" then
 				Finish(c, "system", "Bridge error: " .. tostring(r.text), denied)
 			elseif r.status == "working" then
@@ -979,7 +979,7 @@ local function ImportRestore(r)
 			end
 		end
 		AddHistory(current, "system", "Restored " .. added .. " chat(s) from the bridge after the game reset the saved data.")
-		WoWAI.RenderChatList()
+		ClaudeWoW.RenderChatList()
 	end
 end
 
@@ -987,24 +987,24 @@ local function TryLoadSlot(why)
 	local name = FreeSlot()
 	if not name then
 		run.slotsExhausted = true
-		WoWAI.ArmAutoRefresh()
-		WoWAI.UpdateStatus()
+		ClaudeWoW.ArmAutoRefresh()
+		ClaudeWoW.UpdateStatus()
 		return
 	end
-	WoWAI_SlotData = nil
+	ClaudeWoW_SlotData = nil
 	local loaded, reason = C_AddOns.LoadAddOn(name)
 	if not loaded then
 		run.slotError = reason
 		if reason == "MISSING" or reason == "DISABLED" then
 			run.slotsMissing = true
-			WoWAI.ArmAutoRefresh()
+			ClaudeWoW.ArmAutoRefresh()
 		end
-		WoWAI.UpdateStatus()
+		ClaudeWoW.UpdateStatus()
 		return
 	end
 	run.polls = (run.polls or 0) + 1
 	ScheduleNextPoll()
-	local data = WoWAI_SlotData
+	local data = ClaudeWoW_SlotData
 	if type(data) == "table" and type(data.now) == "number" then
 		-- The bridge's clock and ours are the same machine; translate to GetTime().
 		NotedBridge(GetTime() - (time() - data.now))
@@ -1019,11 +1019,11 @@ local function TryLoadSlot(why)
 	end
 	local matched = ApplyReplies(type(data) == "table" and data.replies or nil)
 	if type(data) == "table" and data.restore then ImportRestore(data.restore) end
-	if type(data) == "table" and data.map and WoWAIMap then WoWAIMap.Sync(data.map) end
+	if type(data) == "table" and data.map and ClaudeWoWMap then ClaudeWoWMap.Sync(data.map) end
 	if why == "signal" and not matched then
 		run.signalUnreliable = true
 	end
-	WoWAI.Render()
+	ClaudeWoW.Render()
 end
 
 local function Tick()
@@ -1038,8 +1038,8 @@ local function Tick()
 		run.lastIdlePoll = now
 		TryLoadSlot("idle")
 	end
-	WoWAI.UpdateDot()
-	WoWAI.CheckConnection()
+	ClaudeWoW.UpdateDot()
+	ClaudeWoW.CheckConnection()
 	if db.settings.mode ~= "pixel" then return end
 	local changed = false
 	if run.helloPollAt and now >= run.helloPollAt then
@@ -1048,12 +1048,12 @@ local function Tick()
 		-- Whatever that slot held, the wait is over.
 		if run.restoring then
 			run.restoring = nil
-			WoWAI.Render()
+			ClaudeWoW.Render()
 		end
 	end
 	if run.restoring and now - run.restoring > 25 then
 		run.restoring = nil
-		WoWAI.Render()
+		ClaudeWoW.Render()
 	end
 	for id, rec in pairs(run.outbound) do
 		if not rec.acked and CheckSignal("ack", id) then
@@ -1092,20 +1092,20 @@ local function Tick()
 				run.outbound[id] = nil
 				run.pixelFailed = true
 				changed = true
-				WoWAI.ArmAutoRefresh()
+				ClaudeWoW.ArmAutoRefresh()
 			end
 		end
 	end
 	if changed then
 		RefreshStrip()
-		WoWAI.UpdateStatus()
+		ClaudeWoW.UpdateStatus()
 	end
 	if not AnyPending() then return end
 	local moved = false
 	for _, c in ipairs(db.chats) do
 		if c.pendingId and PollActivity(c) then moved = true end
 	end
-	if moved then WoWAI.Render() end
+	if moved then ClaudeWoW.Render() end
 	for _, c in ipairs(db.chats) do
 		if c.pendingId and CheckSignal("sig", c.pendingId) then
 			TryLoadSlot("signal")
@@ -1119,7 +1119,7 @@ end
 
 -- Pull whatever bridge.js last wrote into Inbox.lua (the reload path).
 local function ProcessInbox()
-	local inbox = WoWAI_Inbox
+	local inbox = ClaudeWoW_Inbox
 	if type(inbox) ~= "table" then return end
 	if type(inbox.cwd) == "string" and inbox.cwd ~= "" then run.bridgeCwd = inbox.cwd end
 	if type(inbox.agent) == "string" and inbox.agent ~= "" then run.bridgeAgent = inbox.agent end
@@ -1129,7 +1129,7 @@ local function ProcessInbox()
 	ApplyTransport(inbox)
 	ApplyReplies(inbox.replies)
 	if inbox.restore then ImportRestore(inbox.restore) end
-	if inbox.map and WoWAIMap then WoWAIMap.Sync(inbox.map) end
+	if inbox.map and ClaudeWoWMap then ClaudeWoWMap.Sync(inbox.map) end
 end
 
 Finish = function(chat, role, text, denied, agent, summary, macros)
@@ -1149,8 +1149,8 @@ Finish = function(chat, role, text, denied, agent, summary, macros)
 		ui.input:SetText(chat.draft)
 		chat.draft = nil
 	end
-	WoWAI.Render()
-	WoWAI.Notify(chat, text, agent, summary, role, denied)
+	ClaudeWoW.Render()
+	ClaudeWoW.Notify(chat, text, agent, summary, role, denied)
 end
 
 ---------------------------------------------------------------------------
@@ -1193,7 +1193,7 @@ local PROFESSION_SKILL_IDS = {
 -- The character's skill lines as { name, isHeader, rank, maxRank, skillID }.
 -- Forever only has C_SkillInfo (one table per line); the classic globals
 -- (multiple returns) are the fallback for other clients.
-function WoWAI.SkillLines()
+function ClaudeWoW.SkillLines()
 	local out = {}
 	if C_SkillInfo and C_SkillInfo.GetNumSkillLines then
 		local n = Try(C_SkillInfo.GetNumSkillLines)
@@ -1222,7 +1222,7 @@ function WoWAI.SkillLines()
 	return out
 end
 
-function WoWAI.GameContext()
+function ClaudeWoW.GameContext()
 	local lines = {}
 	local version, build, _, toc = Try(GetBuildInfo)
 	toc = tonumber(toc)
@@ -1303,7 +1303,7 @@ function WoWAI.GameContext()
 	-- Skill lines under the Professions and Secondary Skills headers.
 	local header, parts = nil, {}
 	local wanted = { [TRADE_SKILLS or "Professions"] = true, [SECONDARY_SKILLS or "Secondary Skills"] = true }
-	for _, sk in ipairs(WoWAI.SkillLines()) do
+	for _, sk in ipairs(ClaudeWoW.SkillLines()) do
 		if sk.isHeader then
 			header = sk.name
 		elseif (header and wanted[header]) or PROFESSION_SKILL_IDS[sk.skillID] then
@@ -1343,7 +1343,7 @@ end
 -- it (or it wouldn't fit next to this message; it goes with a later one).
 -- "" when the setting is off, so the bridge drops what it had.
 local function ContextToSend(room)
-	local ctx = db.settings.context and WoWAI.GameContext() or ""
+	local ctx = db.settings.context and ClaudeWoW.GameContext() or ""
 	if ctx == (run.contextSent or "") then return nil end
 	if room and #ctx > room then return nil end
 	return ctx
@@ -1353,15 +1353,15 @@ end
 local scanTip
 local function TooltipLines(payload)
 	if not scanTip then
-		scanTip = CreateFrame("GameTooltip", "WoWAIScanTip", UIParent, "GameTooltipTemplate")
+		scanTip = CreateFrame("GameTooltip", "ClaudeWoWScanTip", UIParent, "GameTooltipTemplate")
 	end
 	scanTip:SetOwner(UIParent, "ANCHOR_NONE")
 	scanTip:ClearLines()
 	local lines = {}
 	if pcall(scanTip.SetHyperlink, scanTip, payload) then
 		for i = 1, math.min(scanTip:NumLines() or 0, LINK_LINES_MAX) do
-			local left = _G["WoWAIScanTipTextLeft" .. i]
-			local right = _G["WoWAIScanTipTextRight" .. i]
+			local left = _G["ClaudeWoWScanTipTextLeft" .. i]
+			local right = _G["ClaudeWoWScanTipTextRight" .. i]
 			local l = Trim(tostring((left and left:GetText()) or ""))
 			local r = Trim(tostring((right and right:IsShown() and right:GetText()) or ""))
 			if r ~= "" then l = l .. "  " .. r end
@@ -1388,7 +1388,7 @@ end
 -- Turn the links in a message into text the agent can use: each becomes [Name]
 -- in place, and a block at the end lists what the tooltip says about it.
 -- Returns the new text and the number of links found.
-function WoWAI.ExpandLinks(text)
+function ClaudeWoW.ExpandLinks(text)
 	local links, seen = {}, {}
 	local function Take(payload, name)
 		if not seen[payload] then
@@ -1421,7 +1421,7 @@ end
 -- Whisper tabs
 ---------------------------------------------------------------------------
 
--- "/wow-ai whisper on" (off by default): every chat gets a native whisper tab
+-- "/claude-wow whisper on" (off by default): every chat gets a native whisper tab
 -- in the chat dock, opened on its first message the way a stranger's whisper
 -- opens one. Replies are written into it as incoming whispers and the tab
 -- flashes when it isn't the one on screen; what you send shows as "To Claude:";
@@ -1441,7 +1441,7 @@ end
 -- can't pass for the game's business.
 
 local WHISPER_TEXT_MAX = 4000 -- characters of a reply written into the tab before it points at the window
-local WHISPER_PROBE_NAME = "Wowaiprobe" -- /aiwhisper leak whispers this nobody to prove the leak filter works
+local WHISPER_PROBE_NAME = "Cwowprobe" -- /aiwhisper leak whispers this nobody to prove the leak filter works
 
 local function WhisperOn()
 	return db ~= nil and db.settings.whisper == true
@@ -1493,10 +1493,10 @@ end
 -- Still the tab we opened: alive, and its whisper still aimed at our agent (a
 -- closed temporary window is reused by the game for the next real whisper).
 local function WhisperOwns(chat, frame)
-	if not frame or frame.wowaiChatId ~= chat.id or not WhisperAlive(frame) then return false end
+	if not frame or frame.claudewowChatId ~= chat.id or not WhisperAlive(frame) then return false end
 	local eb = WhisperBox(frame)
 	local target = eb and eb.GetAttribute and eb:GetAttribute("tellTarget")
-	return target == nil or frame.wowaiTarget == nil or tostring(target):lower() == frame.wowaiTarget:lower()
+	return target == nil or frame.claudewowTarget == nil or tostring(target):lower() == frame.claudewowTarget:lower()
 end
 
 local function WhisperWrite(frame, text, r, g, b)
@@ -1507,8 +1507,8 @@ function Whisper.Retitle(chat)
 	local frame = run.whisperTabs and run.whisperTabs[chat.id]
 	if not frame then return end
 	local title = Display(chat.name)
-	if frame.wowaiTitle == title then return end
-	frame.wowaiTitle = title
+	if frame.claudewowTitle == title then return end
+	frame.claudewowTitle = title
 	local ok = type(FCF_SetWindowName) == "function" and pcall(FCF_SetWindowName, frame, title, true)
 	if not ok then
 		local tab = WhisperTab(frame)
@@ -1520,10 +1520,10 @@ end
 -- whisper to an agent goes to the addon wherever it is typed. The original
 -- handler runs for everything else.
 local function WhisperHookBox(eb)
-	if type(eb) ~= "table" or eb.wowaiWhisperHooked then return end
-	eb.wowaiWhisperHooked = true
+	if type(eb) ~= "table" or eb.claudewowWhisperHooked then return end
+	eb.claudewowWhisperHooked = true
 	local script = eb.GetScript and eb:GetScript("OnEnterPressed")
-	eb.wowaiOrigEnter = script -- /aiwhisper send drives the game's own path with it
+	eb.claudewowOrigEnter = script -- /aiwhisper send drives the game's own path with it
 	if eb.SetScript then
 		eb:SetScript("OnEnterPressed", function(self, ...)
 			if Whisper.Intercept(self, "script") then return end
@@ -1543,8 +1543,8 @@ end
 
 local function WhisperAdopt(chat, frame)
 	run.whisperTabs = run.whisperTabs or {}
-	frame.wowaiChatId = chat.id
-	frame.wowaiTarget = frame.wowaiTarget or ChatAgentName(chat)
+	frame.claudewowChatId = chat.id
+	frame.claudewowTarget = frame.claudewowTarget or ChatAgentName(chat)
 	run.whisperTabs[chat.id] = frame
 	WhisperHookBox(WhisperBox(frame))
 	Whisper.Retitle(chat)
@@ -1569,7 +1569,7 @@ function Whisper.FrameFor(chat, create, select)
 		if f.isTemporary and WhisperAlive(f) then
 			local tab = WhisperTab(f)
 			local name = tab and tab.GetText and tab:GetText()
-			local unclaimed = f.wowaiChatId == nil or not FindChat(f.wowaiChatId)
+			local unclaimed = f.claudewowChatId == nil or not FindChat(f.claudewowChatId)
 			if WhisperOwns(chat, f) or (unclaimed and type(name) == "string" and name:lower() == title) then
 				return WhisperAdopt(chat, f)
 			end
@@ -1581,8 +1581,8 @@ function Whisper.FrameFor(chat, create, select)
 		run.whisperError = tostring(f)
 		return nil
 	end
-	f.wowaiTitle = nil
-	f.wowaiTarget = ChatAgentName(chat)
+	f.claudewowTitle = nil
+	f.claudewowTarget = ChatAgentName(chat)
 	return WhisperAdopt(chat, f)
 end
 
@@ -1626,12 +1626,12 @@ function Whisper.Reply(chat, text, agent, role, denied)
 	local frame = Whisper.FrameFor(chat, true, false)
 	if not frame then return false end
 	local who = ReplyAgentName(chat, agent)
-	local open = "|Hwowai:open:" .. chat.id .. "|h|cff7ec8ff[open]|r|h"
+	local open = "|Hclaudewow:open:" .. chat.id .. "|h|cff7ec8ff[open]|r|h"
 	if role == "system" then
 		WhisperWrite(frame, Display(text) .. "  " .. open, WhisperColor("SYSTEM", 1, 1, 0))
 	else
 		local r, g, b = WhisperColor("WHISPER", 1, 0.5, 1)
-		local prefix = WhisperFormat(CHAT_WHISPER_GET, "%s whispers: ", "|Hwowai:reply:" .. chat.id .. "|h[" .. who .. "]|h")
+		local prefix = WhisperFormat(CHAT_WHISPER_GET, "%s whispers: ", "|Hclaudewow:reply:" .. chat.id .. "|h[" .. who .. "]|h")
 		local body = Display(text)
 		local first, shown = true, 0
 		for line in (body .. "\n"):gmatch("(.-)\n") do
@@ -1686,7 +1686,7 @@ function Whisper.Close(chat)
 	local frame = run.whisperTabs and run.whisperTabs[chat.id]
 	if not frame then return end
 	run.whisperTabs[chat.id] = nil
-	frame.wowaiChatId = nil
+	frame.claudewowChatId = nil
 	if run.whisperProgress then run.whisperProgress[chat.id] = nil end
 	if type(FCF_Close) == "function" and WhisperAlive(frame) then pcall(FCF_Close, frame) end
 end
@@ -1733,7 +1733,7 @@ function Whisper.ChatForBox(eb)
 	if text:match("^%s*/") then return nil end
 	if not eb.GetAttribute or eb:GetAttribute("chatType") ~= "WHISPER" then return nil end
 	local frame = eb.chatFrame or (eb.GetParent and eb:GetParent())
-	local chat = type(frame) == "table" and frame.wowaiChatId and FindChat(frame.wowaiChatId)
+	local chat = type(frame) == "table" and frame.claudewowChatId and FindChat(frame.claudewowChatId)
 	if chat and run.whisperTabs and run.whisperTabs[chat.id] == frame then return chat, text end
 	return WhisperAgentChat(eb:GetAttribute("tellTarget")), text
 end
@@ -1766,13 +1766,13 @@ function Whisper.Intercept(eb, layer)
 		return true
 	end
 	if text == "" then return true end
-	if db.activeChat ~= chat.id then WoWAI.SwitchChat(chat.id) end
+	if db.activeChat ~= chat.id then ClaudeWoW.SwitchChat(chat.id) end
 	if chat.pendingId then
-		Whisper.System(chat, ChatAgentName(chat) .. " is still working on your last message; this one is kept as a draft in the window (/wow-ai cancel gives up on the last one)")
-	elseif not WoWAI.IsConnected() then
+		Whisper.System(chat, ChatAgentName(chat) .. " is still working on your last message; this one is kept as a draft in the window (/claude-wow cancel gives up on the last one)")
+	elseif not ClaudeWoW.IsConnected() then
 		Whisper.System(chat, "Not connected to the bridge yet, connecting; the message waits in the window")
 	end
-	WoWAI.Send(text)
+	ClaudeWoW.Send(text)
 	return true
 end
 
@@ -1801,7 +1801,7 @@ local function WhisperLeakFilter(_, _, msg, ...)
 	if not ours then return false end
 	run.whisperLeaks = (run.whisperLeaks or 0) + 1
 	run.whisperLastLeak = msg
-	return false, "|cffff4040[WoW AI] WHISPER LEAK: " .. tostring(msg) .. " - a send reached the server. Run /aiwhisper status and report it.|r", ...
+	return false, "|cffff4040[Claude WoW] WHISPER LEAK: " .. tostring(msg) .. " - a send reached the server. Run /aiwhisper status and report it.|r", ...
 end
 
 local whisperInstalled = false
@@ -1850,8 +1850,8 @@ function Whisper.Status()
 end
 
 -- opts.vision asks for a picture of the screen with this one message, whatever
--- the setting ("/wow-ai look <question>").
-function WoWAI.Send(text, allow, opts)
+-- the setting ("/claude-wow look <question>").
+function ClaudeWoW.Send(text, allow, opts)
 	local c = ActiveChat()
 	if not c then return end
 	text = Trim(text or "")
@@ -1866,23 +1866,23 @@ function WoWAI.Send(text, allow, opts)
 		return
 	end
 	if text == "" then return end
-	if not WoWAI.IsConnected() then
+	if not ClaudeWoW.IsConnected() then
 		-- Not connected: the message stays in the box and we try to connect;
 		-- CheckConnection sends it the moment the light turns green. If the bridge
 		-- never answers, the text is still in the box for a later try.
 		if ui.input then ui.input:SetText(text) end
 		run.sendOnConnect = { chat = c.id, text = text, allow = allow, opts = opts }
-		if not run.connectingAt then WoWAI.Connect() end
-		WoWAI.Toggle(true)
+		if not run.connectingAt then ClaudeWoW.Connect() end
+		ClaudeWoW.Toggle(true)
 		return
 	end
 	-- Shift-clicked links become [Name] plus their tooltip, which is what the agent can read.
 	local links
-	text, links = WoWAI.ExpandLinks(text)
+	text, links = ClaudeWoW.ExpandLinks(text)
 	local limit = Codec.MAX_PAYLOAD - 300
 	if #text > limit then
 		AddHistory(c, "system", "That message is too long for one send (" .. #text .. " chars, max ~" .. limit .. "). Split it up." .. (links > 0 and " Each linked item adds its tooltip to the message." or ""))
-		WoWAI.Render()
+		ClaudeWoW.Render()
 		return
 	end
 	-- The game context rides along when the bridge doesn't have this version yet.
@@ -1921,7 +1921,7 @@ function WoWAI.Send(text, allow, opts)
 	c.progress = nil
 	AddHistory(c, "user", text, id)
 	-- A chat still carrying its default name takes its title from the first message
-	-- you send (system notes like "/wow-ai cd" before it don't count).
+	-- you send (system notes like "/claude-wow cd" before it don't count).
 	if c.name:match("^Chat %d+$") then
 		local first = true
 		for _, m in ipairs(c.history) do
@@ -1939,7 +1939,7 @@ function WoWAI.Send(text, allow, opts)
 		StartActivity(c, id)
 		ScheduleNextPoll()
 		RefreshStrip()
-		WoWAI.Render()
+		ClaudeWoW.Render()
 	else
 		SafeReload()
 	end
@@ -1971,14 +1971,14 @@ end
 -- so the status light and any lost chats come back before the first message.
 -- The game context always rides on it (empty when turned off), so the bridge's
 -- copy is brought in line at every login and Connect.
-function WoWAI.SayHello()
+function ClaudeWoW.SayHello()
 	if db.settings.mode ~= "pixel" then return end
 	local now = GetTime()
 	if run.lastHelloAt and now - run.lastHelloAt < 60 then return end
 	run.lastHelloAt = now
 	db.lastSeq = db.lastSeq + 1
 	local c = ActiveChat()
-	local ctx = db.settings.context and WoWAI.GameContext() or ""
+	local ctx = db.settings.context and ClaudeWoW.GameContext() or ""
 	run.outbound[db.lastSeq] = { chat = c and c.id or "", cwd = c and c.cwd or "", flags = "h", name = c and c.name or "", text = "", ctx = ctx, sentAt = now, hello = true }
 	run.helloPollAt = now + 5
 	-- Deletions the bridge never confirmed ride along with the hello.
@@ -1992,11 +1992,11 @@ function WoWAI.SayHello()
 		if empty then run.restoring = now end
 	end
 	RefreshStrip()
-	WoWAI.Render()
+	ClaudeWoW.Render()
 end
 
 -- Put the active chat's pending message back on the strip.
-function WoWAI.Resend()
+function ClaudeWoW.Resend()
 	local c = ActiveChat()
 	if not c or not c.pendingId then return end
 	local text
@@ -2016,32 +2016,32 @@ function WoWAI.Resend()
 	run.polls = 0
 	ScheduleNextPoll()
 	RefreshStrip()
-	WoWAI.UpdateStatus()
+	ClaudeWoW.UpdateStatus()
 end
 
-function WoWAI.SendFromInput()
+function ClaudeWoW.SendFromInput()
 	if not ui.input then return end
 	local text = ui.input:GetText()
 	ui.input:SetText("")
 	ui.input:ClearFocus() -- hand the keyboard back to the game after sending
-	WoWAI.Send(text)
+	ClaudeWoW.Send(text)
 end
 
 -- The Allow button: grant the rules a reply asked for, then tell the agent to carry on.
-function WoWAI.Allow(chatId, rules)
+function ClaudeWoW.Allow(chatId, rules)
 	local c = FindChat(chatId)
 	if not c or c.pendingId or not rules or #rules == 0 then return end
-	if db.activeChat ~= c.id then WoWAI.SwitchChat(c.id) end
+	if db.activeChat ~= c.id then ClaudeWoW.SwitchChat(c.id) end
 	for _, m in ipairs(c.history) do m.denied = nil end
 	AddHistory(c, "system", "Allowed: " .. table.concat(rules, ", "))
-	WoWAI.Send("Those actions are allowed now. Continue from where you left off.", rules)
+	ClaudeWoW.Send("Those actions are allowed now. Continue from where you left off.", rules)
 end
 
 ---------------------------------------------------------------------------
 -- Chats
 ---------------------------------------------------------------------------
 
-function WoWAI.SwitchChat(id)
+function ClaudeWoW.SwitchChat(id)
 	local c = FindChat(id)
 	if not c then return end
 	local prev = ActiveChat()
@@ -2055,25 +2055,25 @@ function WoWAI.SwitchChat(id)
 		ui.input:SetText(c.draft or "")
 		c.draft = nil
 	end
-	WoWAI.Render()
-	WoWAI.RenderChatList()
+	ClaudeWoW.Render()
+	ClaudeWoW.RenderChatList()
 end
 
-function WoWAI.NewChat(name)
+function ClaudeWoW.NewChat(name)
 	local c = AddChat(name and name ~= "" and name or nil)
 	if not c then
 		local a = ActiveChat()
-		AddHistory(a, "system", "Chat limit reached (" .. MAX_CHATS .. "). Delete one first with /wow-ai delete.")
-		WoWAI.Render()
+		AddHistory(a, "system", "Chat limit reached (" .. MAX_CHATS .. "). Delete one first with /claude-wow delete.")
+		ClaudeWoW.Render()
 		return
 	end
-	WoWAI.SwitchChat(c.id)
-	WoWAI.Toggle(true)
+	ClaudeWoW.SwitchChat(c.id)
+	ClaudeWoW.Toggle(true)
 end
 
 -- Folder this chat's agent works in. Empty (or "-" / "default") = the bridge's
 -- default. Relative paths are resolved by the bridge against that default.
-function WoWAI.SetFolder(rest, c)
+function ClaudeWoW.SetFolder(rest, c)
 	c = c or ActiveChat()
 	if not c then return end
 	rest = Trim(rest or "")
@@ -2089,12 +2089,12 @@ function WoWAI.SetFolder(rest, c)
 		c.cwd = ""
 		AddHistory(c, "system", "cwd reset to the bridge's default: " .. base)
 	else
-		AddHistory(c, "system", "cwd is the bridge's default: " .. base .. " (/wow-ai cd <folder>, or right-click the chat and pick Folder, to change)")
+		AddHistory(c, "system", "cwd is the bridge's default: " .. base .. " (/claude-wow cd <folder>, or right-click the chat and pick Folder, to change)")
 	end
-	WoWAI.Render()
+	ClaudeWoW.Render()
 end
 
-StaticPopupDialogs["WOWAI_FOLDER"] = {
+StaticPopupDialogs["CLAUDEWOW_FOLDER"] = {
 	text = "Folder for this chat\n\nRelative to the bridge's folder (%s), ~, or a full path.\nEmpty = the bridge's default. Changing it starts a fresh agent session.",
 	button1 = OKAY,
 	button2 = CANCEL,
@@ -2115,11 +2115,11 @@ StaticPopupDialogs["WOWAI_FOLDER"] = {
 	OnAccept = function(dialog, data)
 		local box = dialog.GetEditBox and dialog:GetEditBox() or dialog.editBox
 		local chat = data and FindChat(data.id)
-		if chat and box then WoWAI.SetFolder(box:GetText(), chat) end
+		if chat and box then ClaudeWoW.SetFolder(box:GetText(), chat) end
 	end,
 	EditBoxOnEnterPressed = function(box)
 		local dialog = box:GetParent()
-		StaticPopupDialogs["WOWAI_FOLDER"].OnAccept(dialog, dialog.data)
+		StaticPopupDialogs["CLAUDEWOW_FOLDER"].OnAccept(dialog, dialog.data)
 		dialog:Hide()
 	end,
 	EditBoxOnEscapePressed = function(box)
@@ -2128,10 +2128,10 @@ StaticPopupDialogs["WOWAI_FOLDER"] = {
 }
 
 -- Folder dialog for a chat (the active one when no id is given).
-function WoWAI.FolderPrompt(id)
+function ClaudeWoW.FolderPrompt(id)
 	local c = (id and FindChat(id)) or ActiveChat()
 	if not c then return end
-	StaticPopup_Show("WOWAI_FOLDER", run.bridgeCwd or "unknown until connected", nil, { id = c.id, cwd = c.cwd })
+	StaticPopup_Show("CLAUDEWOW_FOLDER", run.bridgeCwd or "unknown until connected", nil, { id = c.id, cwd = c.cwd })
 end
 
 -- The agent this chat talks to, by id. Empty (or
@@ -2141,14 +2141,14 @@ local function AgentList()
 	return run.bridgeAgents and table.concat(run.bridgeAgents, ", ") or "claude, codex, grok, agy, hermes"
 end
 
-function WoWAI.SetAgent(rest, c)
+function ClaudeWoW.SetAgent(rest, c)
 	c = c or ActiveChat()
 	if not c then return end
 	rest = Trim(rest or ""):lower()
 	if rest == "-" or rest == "default" then rest = "" end
 	if rest ~= "" and run.bridgeAgents and not Contains(run.bridgeAgents, rest) then
 		AddHistory(c, "system", "Unknown agent \"" .. rest .. "\". The bridge knows: " .. AgentList())
-		WoWAI.Render()
+		ClaudeWoW.Render()
 		return
 	end
 	local changed = rest ~= (c.agent or "")
@@ -2158,12 +2158,12 @@ function WoWAI.SetAgent(rest, c)
 	elseif changed then
 		AddHistory(c, "system", "agent reset to the bridge's default: " .. (run.bridgeAgent and AgentName(run.bridgeAgent) or "unknown until connected"))
 	else
-		AddHistory(c, "system", "agent is the bridge's default: " .. (run.bridgeAgent and AgentName(run.bridgeAgent) or "unknown until connected") .. " (/wow-ai agent <name>, or right-click the chat and pick Agent, to change; agents: " .. AgentList() .. ")")
+		AddHistory(c, "system", "agent is the bridge's default: " .. (run.bridgeAgent and AgentName(run.bridgeAgent) or "unknown until connected") .. " (/claude-wow agent <name>, or right-click the chat and pick Agent, to change; agents: " .. AgentList() .. ")")
 	end
-	WoWAI.Render()
+	ClaudeWoW.Render()
 end
 
-StaticPopupDialogs["WOWAI_AGENT"] = {
+StaticPopupDialogs["CLAUDEWOW_AGENT"] = {
 	text = "Agent for this chat\n\nOne of: %s.\nEmpty = the bridge's default (%s). Changing it starts a fresh session.",
 	button1 = OKAY,
 	button2 = CANCEL,
@@ -2184,11 +2184,11 @@ StaticPopupDialogs["WOWAI_AGENT"] = {
 	OnAccept = function(dialog, data)
 		local box = dialog.GetEditBox and dialog:GetEditBox() or dialog.editBox
 		local chat = data and FindChat(data.id)
-		if chat and box then WoWAI.SetAgent(box:GetText(), chat) end
+		if chat and box then ClaudeWoW.SetAgent(box:GetText(), chat) end
 	end,
 	EditBoxOnEnterPressed = function(box)
 		local dialog = box:GetParent()
-		StaticPopupDialogs["WOWAI_AGENT"].OnAccept(dialog, dialog.data)
+		StaticPopupDialogs["CLAUDEWOW_AGENT"].OnAccept(dialog, dialog.data)
 		dialog:Hide()
 	end,
 	EditBoxOnEscapePressed = function(box)
@@ -2197,10 +2197,10 @@ StaticPopupDialogs["WOWAI_AGENT"] = {
 }
 
 -- Agent dialog for a chat (the active one when no id is given).
-function WoWAI.AgentPrompt(id)
+function ClaudeWoW.AgentPrompt(id)
 	local c = (id and FindChat(id)) or ActiveChat()
 	if not c then return end
-	StaticPopup_Show("WOWAI_AGENT", AgentList(), run.bridgeAgent and AgentName(run.bridgeAgent) or "unknown until connected", { id = c.id, agent = c.agent or "" })
+	StaticPopup_Show("CLAUDEWOW_AGENT", AgentList(), run.bridgeAgent and AgentName(run.bridgeAgent) or "unknown until connected", { id = c.id, agent = c.agent or "" })
 end
 
 -- The plugin this chat is bound to, by id ("ask": general in-game chat,
@@ -2215,14 +2215,14 @@ local function BridgePluginName()
 	return run.bridgePlugin or "unknown until connected"
 end
 
-function WoWAI.SetPlugin(rest, c)
+function ClaudeWoW.SetPlugin(rest, c)
 	c = c or ActiveChat()
 	if not c then return end
 	rest = Trim(rest or ""):lower()
 	if rest == "-" or rest == "default" then rest = "" end
 	if rest ~= "" and run.bridgePlugins and not Contains(run.bridgePlugins, rest) then
 		AddHistory(c, "system", "Unknown plugin \"" .. rest .. "\". The bridge has: " .. PluginList())
-		WoWAI.Render()
+		ClaudeWoW.Render()
 		return
 	end
 	local changed = rest ~= (c.plugin or "")
@@ -2232,12 +2232,12 @@ function WoWAI.SetPlugin(rest, c)
 	elseif changed then
 		AddHistory(c, "system", "plugin reset to the bridge's default: " .. BridgePluginName())
 	else
-		AddHistory(c, "system", "plugin is the bridge's default: " .. BridgePluginName() .. " (/wow-ai plugin <name>, or right-click the chat and pick Plugin, to change; plugins: " .. PluginList() .. ")")
+		AddHistory(c, "system", "plugin is the bridge's default: " .. BridgePluginName() .. " (/claude-wow plugin <name>, or right-click the chat and pick Plugin, to change; plugins: " .. PluginList() .. ")")
 	end
-	WoWAI.Render()
+	ClaudeWoW.Render()
 end
 
-StaticPopupDialogs["WOWAI_PLUGIN"] = {
+StaticPopupDialogs["CLAUDEWOW_PLUGIN"] = {
 	text = "Plugin for this chat\n\nOne of: %s.\nEmpty = the bridge's default (%s). Changing it starts a fresh session.",
 	button1 = OKAY,
 	button2 = CANCEL,
@@ -2258,11 +2258,11 @@ StaticPopupDialogs["WOWAI_PLUGIN"] = {
 	OnAccept = function(dialog, data)
 		local box = dialog.GetEditBox and dialog:GetEditBox() or dialog.editBox
 		local chat = data and FindChat(data.id)
-		if chat and box then WoWAI.SetPlugin(box:GetText(), chat) end
+		if chat and box then ClaudeWoW.SetPlugin(box:GetText(), chat) end
 	end,
 	EditBoxOnEnterPressed = function(box)
 		local dialog = box:GetParent()
-		StaticPopupDialogs["WOWAI_PLUGIN"].OnAccept(dialog, dialog.data)
+		StaticPopupDialogs["CLAUDEWOW_PLUGIN"].OnAccept(dialog, dialog.data)
 		dialog:Hide()
 	end,
 	EditBoxOnEscapePressed = function(box)
@@ -2271,13 +2271,13 @@ StaticPopupDialogs["WOWAI_PLUGIN"] = {
 }
 
 -- Plugin dialog for a chat (the active one when no id is given).
-function WoWAI.PluginPrompt(id)
+function ClaudeWoW.PluginPrompt(id)
 	local c = (id and FindChat(id)) or ActiveChat()
 	if not c then return end
-	StaticPopup_Show("WOWAI_PLUGIN", PluginList(), BridgePluginName(), { id = c.id, plugin = c.plugin or "" })
+	StaticPopup_Show("CLAUDEWOW_PLUGIN", PluginList(), BridgePluginName(), { id = c.id, plugin = c.plugin or "" })
 end
 
-StaticPopupDialogs["WOWAI_RENAME"] = {
+StaticPopupDialogs["CLAUDEWOW_RENAME"] = {
 	text = "Rename this chat",
 	button1 = OKAY,
 	button2 = CANCEL,
@@ -2301,12 +2301,12 @@ StaticPopupDialogs["WOWAI_RENAME"] = {
 		if chat and name ~= "" then
 			chat.name = name:sub(1, 24)
 			Whisper.Retitle(chat)
-			WoWAI.Render()
+			ClaudeWoW.Render()
 		end
 	end,
 	EditBoxOnEnterPressed = function(box)
 		local dialog = box:GetParent()
-		StaticPopupDialogs["WOWAI_RENAME"].OnAccept(dialog, dialog.data)
+		StaticPopupDialogs["CLAUDEWOW_RENAME"].OnAccept(dialog, dialog.data)
 		dialog:Hide()
 	end,
 	EditBoxOnEscapePressed = function(box)
@@ -2315,17 +2315,17 @@ StaticPopupDialogs["WOWAI_RENAME"] = {
 }
 
 -- Rename dialog for a chat (the active one when no id is given).
-function WoWAI.RenamePrompt(id)
+function ClaudeWoW.RenamePrompt(id)
 	local c = (id and FindChat(id)) or ActiveChat()
 	if not c then return end
-	StaticPopup_Show("WOWAI_RENAME", nil, nil, { id = c.id, name = c.name })
+	StaticPopup_Show("CLAUDEWOW_RENAME", nil, nil, { id = c.id, name = c.name })
 end
-WoWAI.RenameActive = WoWAI.RenamePrompt
+ClaudeWoW.RenameActive = ClaudeWoW.RenamePrompt
 
 -- Delete a chat (the active one when no id is given). The last chat is cleared
 -- and renamed instead of removed, so there is always one to type into. Either
 -- way the bridge is told to forget it, so a restore won't bring it back.
-function WoWAI.DeleteChat(id)
+function ClaudeWoW.DeleteChat(id)
 	local c, idx = nil, nil
 	if id then c, idx = FindChat(id) end
 	if not c then c, idx = ActiveChat() end
@@ -2336,20 +2336,20 @@ function WoWAI.DeleteChat(id)
 		wipe(c.history)
 		c.pendingId, c.progress, c.unread, c.draft = nil, nil, 0, nil
 		c.name = "Chat 1"
-		WoWAI.Render()
-		WoWAI.RenderChatList()
+		ClaudeWoW.Render()
+		ClaudeWoW.RenderChatList()
 		return
 	end
 	table.remove(db.chats, idx)
 	if db.activeChat == c.id then
-		WoWAI.SwitchChat(db.chats[math.min(idx, #db.chats)].id)
+		ClaudeWoW.SwitchChat(db.chats[math.min(idx, #db.chats)].id)
 	else
-		WoWAI.RenderChatList()
+		ClaudeWoW.RenderChatList()
 	end
 end
 
--- The trash can on a chat row asks first; /wow-ai delete does not.
-StaticPopupDialogs["WOWAI_DELETE"] = {
+-- The trash can on a chat row asks first; /claude-wow delete does not.
+StaticPopupDialogs["CLAUDEWOW_DELETE"] = {
 	text = "Delete chat \"%s\"?\n\nIts transcript goes away (the last chat is cleared instead of removed).",
 	button1 = OKAY,
 	button2 = CANCEL,
@@ -2357,14 +2357,14 @@ StaticPopupDialogs["WOWAI_DELETE"] = {
 	whileDead = true,
 	hideOnEscape = true,
 	OnAccept = function(dialog, data)
-		if data then WoWAI.DeleteChat(data.id) end
+		if data then ClaudeWoW.DeleteChat(data.id) end
 	end,
 }
 
-function WoWAI.ConfirmDelete(id)
+function ClaudeWoW.ConfirmDelete(id)
 	local c = (id and FindChat(id)) or ActiveChat()
 	if not c then return end
-	StaticPopup_Show("WOWAI_DELETE", Display(c.name), nil, { id = c.id })
+	StaticPopup_Show("CLAUDEWOW_DELETE", Display(c.name), nil, { id = c.id })
 end
 
 ---------------------------------------------------------------------------
@@ -2381,11 +2381,11 @@ local MACRO_CHAR_MAX = (Constants and Constants.MacroConsts and Constants.MacroC
 local MACRO_DEFAULT_ICON = 134400 -- question mark: with #showtooltip the game shows the spell's icon
 
 local function MacroSay(msg)
-	print("|cff66ccff[WoW AI]|r " .. msg)
+	print("|cff66ccff[Claude WoW]|r " .. msg)
 end
 
 -- Only well-formed entries survive (the slot file is trusted, but not blindly).
-function WoWAI.CleanMacros(list)
+function ClaudeWoW.CleanMacros(list)
 	if type(list) ~= "table" then return nil end
 	local out = {}
 	for _, m in ipairs(list) do
@@ -2420,12 +2420,12 @@ local function MacroIcon(icon)
 	return MACRO_DEFAULT_ICON
 end
 
-function WoWAI.MacroLabel(m)
+function ClaudeWoW.MacroLabel(m)
 	local verb = FindMacro(m.name, m.char) and "Update" or "Create"
 	return verb .. " macro: " .. Display(m.name) .. (m.char and " (character)" or "") .. (m.risky and "  |cffff6060(runs code)|r" or "")
 end
 
-StaticPopupDialogs["WOWAI_MACRO"] = {
+StaticPopupDialogs["CLAUDEWOW_MACRO"] = {
 	text = "%s",
 	button1 = OKAY,
 	button2 = CANCEL,
@@ -2433,13 +2433,13 @@ StaticPopupDialogs["WOWAI_MACRO"] = {
 	whileDead = true,
 	hideOnEscape = true,
 	OnAccept = function(dialog, data)
-		if data then WoWAI.InstallMacro(data, true) end
+		if data then ClaudeWoW.InstallMacro(data, true) end
 	end,
 }
 
 -- Create or update macro `m` ({ name, body, icon, char, risky }). Asks first when it
 -- would replace a different macro of yours, or when it runs code (/run, /click...).
-function WoWAI.InstallMacro(m, confirmed)
+function ClaudeWoW.InstallMacro(m, confirmed)
 	if type(m) ~= "table" then return end
 	if InCombatLockdown() then
 		MacroSay("macros can't be changed in combat; click the button again afterwards.")
@@ -2449,9 +2449,9 @@ function WoWAI.InstallMacro(m, confirmed)
 	if not confirmed then
 		local why = {}
 		if m.risky then table.insert(why, "This macro runs code or clicks buttons (/run, /script, /click). Only keep it if you trust what it does.") end
-		if index and oldBody ~= m.body then table.insert(why, "It replaces your existing macro \"" .. m.name .. "\" (/wow-ai macro undo brings the old one back).") end
+		if index and oldBody ~= m.body then table.insert(why, "It replaces your existing macro \"" .. m.name .. "\" (/claude-wow macro undo brings the old one back).") end
 		if #why > 0 then
-			StaticPopup_Show("WOWAI_MACRO", table.concat(why, "\n\n") .. "\n\n" .. Display(m.body), nil, m)
+			StaticPopup_Show("CLAUDEWOW_MACRO", table.concat(why, "\n\n") .. "\n\n" .. Display(m.body), nil, m)
 			return
 		end
 	end
@@ -2492,10 +2492,10 @@ function WoWAI.InstallMacro(m, confirmed)
 	-- EditMacro may move the macro (names are sorted): pick up the index it returned.
 	Try(PickupMacro, newIndex)
 	MacroSay("macro \"" .. m.name .. "\" " .. (index and "updated" or "created") .. " and on your cursor: click an action bar slot to place it (it is also in /macro).")
-	WoWAI.Render()
+	ClaudeWoW.Render()
 end
 
-function WoWAI.UndoMacro()
+function ClaudeWoW.UndoMacro()
 	local u = db.macroUndo
 	if not u then MacroSay("nothing to undo."); return end
 	if InCombatLockdown() then MacroSay("macros can't be changed in combat."); return end
@@ -2510,14 +2510,14 @@ function WoWAI.UndoMacro()
 		MacroSay("macro \"" .. u.name .. "\" is back to what it was.")
 	end
 	db.macroUndo = nil
-	WoWAI.Render()
+	ClaudeWoW.Render()
 end
 
 ---------------------------------------------------------------------------
 -- Rendering
 ---------------------------------------------------------------------------
 
-function WoWAI.UpdateStatus()
+function ClaudeWoW.UpdateStatus()
 	if not ui.status then return end
 	local c = ActiveChat()
 	local mode = db.settings.mode
@@ -2532,17 +2532,17 @@ function WoWAI.UpdateStatus()
 			elseif run.slotsExhausted then
 				s = "Slot pool used up this session - next keypress reloads to free it"
 			elseif run.pixelFailed then
-				s = "Bridge didn't see #" .. id .. " after " .. STRIP_TRIES .. " tries - next keypress switches to the reload path (or /wow-ai reload)"
+				s = "Bridge didn't see #" .. id .. " after " .. STRIP_TRIES .. " tries - next keypress switches to the reload path (or /claude-wow reload)"
 			elseif c.progress or (run.act and run.act[c.id] and run.act[c.id].count > 0) then
 				s = ChatAgentName(c) .. " is working on #" .. id .. " - " .. ActivityLine(c)
 			elseif rec and not rec.acked then
 				s = "Sending #" .. id .. (rec.tries and rec.tries > 1 and (" (try " .. rec.tries .. "/" .. STRIP_TRIES .. ")") or "") .. "..."
-				local state = WoWAI.BridgeState()
+				local state = ClaudeWoW.BridgeState()
 				if state == "down" then s = s .. " - bridge not seen lately, is the bridge running?" end
 			else
 				s = "Waiting for #" .. id .. " (checked " .. (run.polls or 0) .. "x)"
 				if elapsed > 45 then
-					s = s .. " - no sign of the bridge. Is the bridge running? /wow-ai resend"
+					s = s .. " - no sign of the bridge. Is the bridge running? /claude-wow resend"
 				end
 			end
 		else
@@ -2551,14 +2551,14 @@ function WoWAI.UpdateStatus()
 				s = s .. "; auto on next keypress after " .. db.settings.interval .. "s"
 			end
 		end
-	elseif not WoWAI.IsConnected() then
+	elseif not ClaudeWoW.IsConnected() then
 		if run.connectingAt and run.sendOnConnect then
 			s = "Connecting to the bridge... your message goes out as soon as it answers"
 		elseif run.connectingAt then
 			s = "Connecting to the bridge..."
 		elseif run.connectFailed then
 			s = "No answer from the bridge. Is it running (npm start)? Connect tries again"
-		elseif WoWAI.BridgeState() == "stale" then
+		elseif ClaudeWoW.BridgeState() == "stale" then
 			s = "Bridge not seen for a while - click Reconnect"
 		else
 			s = "Not connected - start the bridge, then click Connect"
@@ -2572,10 +2572,10 @@ function WoWAI.UpdateStatus()
 	end
 	ui.status:SetText(s)
 	run.statusText = s
-	WoWAI.UpdateDot()
-	WoWAI.UpdateConnect()
+	ClaudeWoW.UpdateDot()
+	ClaudeWoW.UpdateConnect()
 	if ui.title then
-		local t = c and Display(c.name) or "WoW AI"
+		local t = c and Display(c.name) or "Claude WoW"
 		local folder = FolderName(ChatFolder(c))
 		if folder ~= "" then t = t .. "  |cff888888" .. Display(folder) .. "|r" end
 		if c and c.agent and c.agent ~= "" then t = t .. "  |cff888888" .. AgentName(c.agent) .. "|r" end
@@ -2608,7 +2608,7 @@ function WoWAI.UpdateStatus()
 	ui.cwd:SetText("cwd: " .. cwdText .. "   agent: " .. agentText .. "   mode: " .. mode .. (ScreenshotMode() and " (screenshot)" or "") .. "   vision: " .. (db.settings.vision and "on" or "off") .. "   plugin: " .. pluginText)
 	if ui.resend then ui.resend:SetShown(c and c.pendingId ~= nil and mode == "pixel") end
 	if ui.refresh then ui.refresh:SetShown(mode ~= "pixel" or run.slotsExhausted or run.slotsMissing or run.pixelFailed or false) end
-	WoWAI.UpdateMini()
+	ClaudeWoW.UpdateMini()
 end
 
 -- One message bubble: accent bar, colored label, timestamp, wrapped body.
@@ -2637,20 +2637,20 @@ local function GetBubble(i)
 	b.allow:SetHeight(22)
 	b.allow:SetPoint("TOPLEFT", b.body, "BOTTOMLEFT", 0, -6)
 	b.allow:SetScript("OnClick", function(self)
-		WoWAI.Allow(self.chatId, self.rules)
+		ClaudeWoW.Allow(self.chatId, self.rules)
 	end)
 	b.allow:Hide()
 	b.macroBtns = {}
 	-- FontStrings can't be selected, so a click opens the message in the copy box.
 	b:EnableMouse(true)
 	b:SetScript("OnMouseUp", function(self, button)
-		if button == "LeftButton" and self.text and self.text ~= "" then WoWAI.ShowCopy(self.text) end
+		if button == "LeftButton" and self.text and self.text ~= "" then ClaudeWoW.ShowCopy(self.text) end
 	end)
 	ui.bubbles[i] = b
 	return b
 end
 
-function WoWAI.Render()
+function ClaudeWoW.Render()
 	local c = ActiveChat()
 	if ui.content and c then
 		local width = ui.scroll:GetWidth()
@@ -2695,7 +2695,7 @@ function WoWAI.Render()
 				if not mb then
 					mb = CreateFrame("Button", nil, b, "UIPanelButtonTemplate")
 					mb:SetHeight(22)
-					mb:SetScript("OnClick", function(self) WoWAI.InstallMacro(self.macro) end)
+					mb:SetScript("OnClick", function(self) ClaudeWoW.InstallMacro(self.macro) end)
 					mb:SetScript("OnEnter", function(self)
 						GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
 						GameTooltip:AddLine(Display(self.macro.name))
@@ -2706,7 +2706,7 @@ function WoWAI.Render()
 					b.macroBtns[k] = mb
 				end
 				mb.macro = m
-				mb:SetText(WoWAI.MacroLabel(m))
+				mb:SetText(ClaudeWoW.MacroLabel(m))
 				mb:SetWidth(math.min(width - 24, math.max(160, mb:GetFontString():GetStringWidth() + 30)))
 				mb:ClearAllPoints()
 				mb:SetPoint("TOPLEFT", b.body, "BOTTOMLEFT", 0, -6 - extra)
@@ -2736,10 +2736,10 @@ function WoWAI.Render()
 		elseif #c.history == 0 then
 			if run.restoring then
 				Place("system", "Connecting to the bridge and restoring your chats...", "", true)
-			elseif not WoWAI.IsConnected() then
-				Place("system", "Not connected to the bridge. Start it (npm start in the wow-ai folder, or wow-ai in your project), then click Connect below.", "", true)
+			elseif not ClaudeWoW.IsConnected() then
+				Place("system", "Not connected to the bridge. Start it (npm start in the claude-wow folder, or claude-wow in your project), then click Connect below.", "", true)
 			else
-				Place("system", "Click the box below and type to start. Shift-click an item, spell or quest to link it into your message. /wow-ai help lists the commands; /ai <text> and /r work from the game chat too.", "", true)
+				Place("system", "Click the box below and type to start. Shift-click an item, spell or quest to link it into your message. /claude-wow help lists the commands; /claude <text> and /r work from the game chat too.", "", true)
 			end
 		end
 		for i = n + 1, #ui.bubbles do
@@ -2752,14 +2752,14 @@ function WoWAI.Render()
 			end
 		end)
 	end
-	WoWAI.UpdateStatus()
-	WoWAI.RenderChatList()
+	ClaudeWoW.UpdateStatus()
+	ClaudeWoW.RenderChatList()
 end
 
--- Copy box (/wow-ai copy): a selectable EditBox with the last reply pre-highlighted for Ctrl+C.
-function WoWAI.ShowCopy(text)
+-- Copy box (/claude-wow copy): a selectable EditBox with the last reply pre-highlighted for Ctrl+C.
+function ClaudeWoW.ShowCopy(text)
 	if not ui.copy then
-		local cf = CreateFrame("Frame", "WoWAICopy", UIParent, "BackdropTemplate")
+		local cf = CreateFrame("Frame", "ClaudeWoWCopy", UIParent, "BackdropTemplate")
 		cf:SetSize(560, 320)
 		cf:SetPoint("CENTER")
 		cf:SetFrameStrata("FULLSCREEN_DIALOG")
@@ -2772,7 +2772,7 @@ function WoWAI.ShowCopy(text)
 		cf:SetBackdrop(BACKDROP)
 		cf:SetBackdropColor(0.05, 0.05, 0.07, 0.97)
 		cf:SetBackdropBorderColor(0.6, 0.6, 0.6, 1)
-		tinsert(UISpecialFrames, "WoWAICopy")
+		tinsert(UISpecialFrames, "ClaudeWoWCopy")
 
 		local t = cf:CreateFontString(nil, "OVERLAY", "GameFontNormal")
 		t:SetPoint("TOPLEFT", cf, "TOPLEFT", 14, -12)
@@ -2781,10 +2781,10 @@ function WoWAI.ShowCopy(text)
 		local x = CreateFrame("Button", nil, cf, "UIPanelCloseButton")
 		x:SetPoint("TOPRIGHT", cf, "TOPRIGHT", -4, -4)
 
-		local sc = CreateFrame("ScrollFrame", "WoWAICopyScroll", cf, "UIPanelScrollFrameTemplate")
+		local sc = CreateFrame("ScrollFrame", "ClaudeWoWCopyScroll", cf, "UIPanelScrollFrameTemplate")
 		sc:SetPoint("TOPLEFT", cf, "TOPLEFT", 14, -36)
 		sc:SetPoint("BOTTOMRIGHT", cf, "BOTTOMRIGHT", -32, 14)
-		local eb = CreateFrame("EditBox", "WoWAICopyBox", sc)
+		local eb = CreateFrame("EditBox", "ClaudeWoWCopyBox", sc)
 		eb:SetMultiLine(true)
 		eb:SetAutoFocus(false)
 		eb:SetFontObject(ChatFontNormal)
@@ -2801,7 +2801,7 @@ function WoWAI.ShowCopy(text)
 	ui.copyBox:HighlightText()
 end
 
-function WoWAI.RenderChatList()
+function ClaudeWoW.RenderChatList()
 	if not ui.chatButtons then return end
 	for i, btn in ipairs(ui.chatButtons) do
 		local c = db.chats[i]
@@ -2829,7 +2829,7 @@ function WoWAI.RenderChatList()
 	end
 end
 
-function WoWAI.UpdateMini()
+function ClaudeWoW.UpdateMini()
 	if not ui.miniBadge then return end
 	local unread, working = 0, 0
 	for _, c in ipairs(db.chats) do
@@ -2857,10 +2857,10 @@ function WoWAI.UpdateMini()
 	end
 end
 
-local ECHO_DEFAULT = 4000 -- characters of a reply to print into the game chat ("/wow-ai echo <n>")
+local ECHO_DEFAULT = 4000 -- characters of a reply to print into the game chat ("/claude-wow echo <n>")
 
 local function ChatLinks(chat)
-	return "  |Hwowai:reply:" .. chat.id .. "|h|cff55ff55[reply]|r|h |Hwowai:open:" .. chat.id .. "|h|cff7ec8ff[open]|r|h"
+	return "  |Hclaudewow:reply:" .. chat.id .. "|h|cff55ff55[reply]|r|h |Hclaudewow:open:" .. chat.id .. "|h|cff7ec8ff[open]|r|h"
 end
 
 local SUMMARY_LINES = 3 -- lines of the agent's TL;DR block printed in "summary" mode
@@ -2921,9 +2921,9 @@ end
 -- chat's whisper tab when those are on: a whisper with a window of its own
 -- stays out of General); if that chat isn't on screen, also flash the screen
 -- text and light up the mini bar.
-function WoWAI.Notify(chat, text, agent, summary, role, denied)
+function ClaudeWoW.Notify(chat, text, agent, summary, role, denied)
 	pcall(PlaySound, 3081)
-	WoWAI.UpdateMini()
+	ClaudeWoW.UpdateMini()
 	-- Until a real whisper arrives, /r replies to this chat.
 	run.lastMessenger = "agent"
 	run.lastReplyChat = chat.id
@@ -2965,11 +2965,11 @@ local function SendBoxToAgent(eb)
 	local text = Trim(eb:GetText() or "")
 	eb.agentTarget = nil
 	eb:ClearChat()
-	if chat and db.activeChat ~= chat.id then WoWAI.SwitchChat(chat.id) end
+	if chat and db.activeChat ~= chat.id then ClaudeWoW.SwitchChat(chat.id) end
 	if text ~= "" then
-		WoWAI.Send(text)
+		ClaudeWoW.Send(text)
 	else
-		WoWAI.Toggle(true)
+		ClaudeWoW.Toggle(true)
 		if ui.input then ui.input:SetFocus() end
 	end
 end
@@ -3029,10 +3029,10 @@ end
 
 -- Clicks on our [reply] / [open] links in the chat frame.
 hooksecurefunc("SetItemRef", function(link)
-	local action, chatId = tostring(link):match("^wowai:(%a+):(%w+)")
+	local action, chatId = tostring(link):match("^claudewow:(%a+):(%w+)")
 	if not action or not db then return end
-	if FindChat(chatId) then WoWAI.SwitchChat(chatId) end
-	WoWAI.Toggle(true)
+	if FindChat(chatId) then ClaudeWoW.SwitchChat(chatId) end
+	ClaudeWoW.Toggle(true)
 	if action == "reply" and ui.input then ui.input:SetFocus() end
 end)
 
@@ -3073,7 +3073,7 @@ local function BuildUI()
 	if ui.frame then return end
 	local s = db.settings
 
-	local f = CreateFrame("Frame", "WoWAIFrame", UIParent, "BackdropTemplate")
+	local f = CreateFrame("Frame", "ClaudeWoWFrame", UIParent, "BackdropTemplate")
 	ui.frame = f
 	f:SetSize(s.width, s.height)
 	if s.point then
@@ -3098,7 +3098,7 @@ local function BuildUI()
 	f:SetBackdropColor(0.05, 0.05, 0.07, 0.95)
 	f:SetBackdropBorderColor(0.6, 0.6, 0.6, 1)
 	f:Hide()
-	tinsert(UISpecialFrames, "WoWAIFrame")
+	tinsert(UISpecialFrames, "ClaudeWoWFrame")
 
 	-- Status light: green = bridge seen recently, yellow = stale, red = gone.
 	local function MakeDot(parent)
@@ -3123,7 +3123,7 @@ local function BuildUI()
 
 	local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
 	title:SetPoint("LEFT", dotHolder, "RIGHT", 6, 0)
-	title:SetText("WoW AI")
+	title:SetText("Claude WoW")
 	ui.title = title
 
 	local status = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
@@ -3154,7 +3154,7 @@ local function BuildUI()
 		hl:SetColorTexture(1, 1, 1, 0.15)
 	end
 	mini:SetPoint("TOPRIGHT", f, "TOPRIGHT", -4, -4)
-	mini:SetScript("OnClick", function() WoWAI.Minimize(true) end)
+	mini:SetScript("OnClick", function() ClaudeWoW.Minimize(true) end)
 	mini:SetScript("OnEnter", function(self)
 		GameTooltip:SetOwner(self, "ANCHOR_LEFT")
 		GameTooltip:SetText("Minimize to the small bar  (Esc)")
@@ -3173,7 +3173,7 @@ local function BuildUI()
 		if not db or not db.settings.shown or not UIParent:IsShown() then return end
 		db.settings.minimized = true
 		if ui.mini then ui.mini:Show() end
-		WoWAI.UpdateMini()
+		ClaudeWoW.UpdateMini()
 	end)
 
 	-- Left panel: chat list
@@ -3190,13 +3190,13 @@ local function BuildUI()
 	panel:SetBackdropColor(0, 0, 0, 0.4)
 	panel:SetBackdropBorderColor(0.4, 0.4, 0.4, 1)
 
-	local newBtn = MakeButton(panel, "+ New chat", PANEL_W - 16, function() WoWAI.NewChat() end)
+	local newBtn = MakeButton(panel, "+ New chat", PANEL_W - 16, function() ClaudeWoW.NewChat() end)
 	newBtn:SetPoint("TOP", panel, "TOP", 0, -8)
 
 	-- Per-chat menu: Rename, Folder, Agent and Plugin, opened by right-clicking
 	-- a chat row. A plain frame of our own rather than a Blizzard dropdown, so it
 	-- looks the same on every client.
-	local menu = CreateFrame("Frame", "WoWAIChatMenu", f, "BackdropTemplate")
+	local menu = CreateFrame("Frame", "ClaudeWoWChatMenu", f, "BackdropTemplate")
 	menu:SetSize(110, 5 * 20 + 12)
 	menu:SetFrameStrata("TOOLTIP")
 	menu:SetBackdrop({
@@ -3229,10 +3229,10 @@ local function BuildUI()
 		end)
 		return it
 	end
-	MenuItem("Rename...", 1, WoWAI.RenamePrompt)
-	MenuItem("Folder...", 2, WoWAI.FolderPrompt)
-	MenuItem("Agent...", 3, WoWAI.AgentPrompt)
-	MenuItem("Plugin...", 4, WoWAI.PluginPrompt)
+	MenuItem("Rename...", 1, ClaudeWoW.RenamePrompt)
+	MenuItem("Folder...", 2, ClaudeWoW.FolderPrompt)
+	MenuItem("Agent...", 3, ClaudeWoW.AgentPrompt)
+	MenuItem("Plugin...", 4, ClaudeWoW.PluginPrompt)
 	-- Close once the mouse has wandered away from the menu and the row it came from.
 	menu:SetScript("OnUpdate", function(self, dt)
 		if not MouseIsOver then return end
@@ -3246,7 +3246,7 @@ local function BuildUI()
 	menu:Hide()
 	ui.chatMenu = menu
 
-	function WoWAI.ShowChatMenu(chatId, anchor)
+	function ClaudeWoW.ShowChatMenu(chatId, anchor)
 		local c = FindChat(chatId)
 		if not c then return end
 		if menu:IsShown() and menu.chatId == chatId then
@@ -3289,7 +3289,7 @@ local function BuildUI()
 			b.del:SetHighlightTexture("Interface\\Buttons\\UI-GroupLoot-Pass-Highlight")
 		end
 		b.del:SetAlpha(0.6)
-		b.del:SetScript("OnClick", function() WoWAI.ConfirmDelete(b.chatId) end)
+		b.del:SetScript("OnClick", function() ClaudeWoW.ConfirmDelete(b.chatId) end)
 		b.del:SetScript("OnEnter", function(self)
 			self:SetAlpha(1)
 			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
@@ -3311,32 +3311,32 @@ local function BuildUI()
 		b:RegisterForClicks("LeftButtonUp", "RightButtonUp")
 		b:SetScript("OnClick", function(self, button)
 			if button == "RightButton" then
-				WoWAI.ShowChatMenu(self.chatId, self)
+				ClaudeWoW.ShowChatMenu(self.chatId, self)
 			else
-				WoWAI.SwitchChat(self.chatId)
+				ClaudeWoW.SwitchChat(self.chatId)
 			end
 		end)
 		b:SetScript("OnDoubleClick", function(self)
-			WoWAI.SwitchChat(self.chatId)
-			WoWAI.RenamePrompt(self.chatId)
+			ClaudeWoW.SwitchChat(self.chatId)
+			ClaudeWoW.RenamePrompt(self.chatId)
 		end)
 		b:Hide()
 		ui.chatButtons[i] = b
 	end
 
 	-- Transcript: a scrolling stack of message bubbles
-	local scroll = CreateFrame("ScrollFrame", "WoWAIScroll", f, "UIPanelScrollFrameTemplate")
+	local scroll = CreateFrame("ScrollFrame", "ClaudeWoWScroll", f, "UIPanelScrollFrameTemplate")
 	scroll:SetPoint("TOPLEFT", panel, "TOPRIGHT", 8, 0)
 	scroll:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -32, 110)
 	ui.scroll = scroll
 
-	local content = CreateFrame("Frame", "WoWAIContent", scroll)
+	local content = CreateFrame("Frame", "ClaudeWoWContent", scroll)
 	content:SetSize(500, 1)
 	scroll:SetScrollChild(content)
 	ui.content = content
 	ui.bubbles = {}
 	scroll:HookScript("OnSizeChanged", function(self, w, h)
-		if ui.frame:IsShown() then WoWAI.Render() end
+		if ui.frame:IsShown() then ClaudeWoW.Render() end
 	end)
 
 	-- Input box, with Send docked at its right end like a messaging app.
@@ -3354,17 +3354,17 @@ local function BuildUI()
 	inputBg:SetBackdropColor(0, 0, 0, 0.6)
 	inputBg:SetBackdropBorderColor(0.5, 0.5, 0.5, 1)
 
-	local inScroll = CreateFrame("ScrollFrame", "WoWAIInputScroll", inputBg, "UIPanelScrollFrameTemplate")
+	local inScroll = CreateFrame("ScrollFrame", "ClaudeWoWInputScroll", inputBg, "UIPanelScrollFrameTemplate")
 	inScroll:SetPoint("TOPLEFT", inputBg, "TOPLEFT", 8, -6)
 	inScroll:SetPoint("BOTTOMRIGHT", inputBg, "BOTTOMRIGHT", -24, 6)
 
-	local input = CreateFrame("EditBox", "WoWAIInput", inScroll)
+	local input = CreateFrame("EditBox", "ClaudeWoWInput", inScroll)
 	input:SetMultiLine(true)
 	input:SetAutoFocus(false)
 	input:SetFontObject(ChatFontNormal)
 	input:SetMaxLetters(0)
 	input:SetSize(500, 40)
-	input:SetScript("OnEnterPressed", function() WoWAI.SendFromInput() end)
+	input:SetScript("OnEnterPressed", function() ClaudeWoW.SendFromInput() end)
 	input:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
 	inScroll:SetScrollChild(input)
 	inScroll:HookScript("OnSizeChanged", function(self, w, h)
@@ -3374,19 +3374,19 @@ local function BuildUI()
 	ui.input = input
 
 	-- Send sits to the right of the input box, vertically centred on it.
-	local send = MakeButton(f, "Send", SEND_W, WoWAI.SendFromInput)
+	local send = MakeButton(f, "Send", SEND_W, ClaudeWoW.SendFromInput)
 	send:SetHeight(30)
 	send:SetPoint("LEFT", inputBg, "RIGHT", 6, 0)
 	ui.send = send
 
 	-- Connect stands in for Send until the bridge has been seen (see UpdateConnect).
-	local connect = MakeButton(f, "Connect", SEND_W, WoWAI.Connect)
+	local connect = MakeButton(f, "Connect", SEND_W, ClaudeWoW.Connect)
 	connect:SetHeight(30)
 	connect:SetPoint("LEFT", inputBg, "RIGHT", 6, 0)
 	connect:SetScript("OnEnter", function(self)
 		GameTooltip:SetOwner(self, "ANCHOR_TOP")
 		GameTooltip:SetText("Connect to the bridge")
-		GameTooltip:AddLine("The bridge must be running on this PC (npm start in wow-ai, or wow-ai in your project). The light turns green once it answers.", 0.8, 0.8, 0.8, true)
+		GameTooltip:AddLine("The bridge must be running on this PC (npm start in claude-wow, or claude-wow in your project). The light turns green once it answers.", 0.8, 0.8, 0.8, true)
 		GameTooltip:Show()
 	end)
 	connect:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -3405,25 +3405,25 @@ local function BuildUI()
 	local clear = MakeButton(f, "Clear", 60, function()
 		local c = ActiveChat()
 		if c then wipe(c.history) end
-		WoWAI.Render()
+		ClaudeWoW.Render()
 	end)
 	clear:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 14, 16)
 
-	local resend = MakeButton(f, "Resend", 70, WoWAI.Resend)
+	local resend = MakeButton(f, "Resend", 70, ClaudeWoW.Resend)
 	resend:SetPoint("LEFT", clear, "RIGHT", 6, 0)
 	resend:Hide()
 	ui.resend = resend
 
-	-- A named, always-present button so a keybinding can click it (see /wow-ai bind).
-	local hotkey = CreateFrame("Button", "WoWAIRefreshButton", UIParent)
+	-- A named, always-present button so a keybinding can click it (see /claude-wow bind).
+	local hotkey = CreateFrame("Button", "ClaudeWoWRefreshButton", UIParent)
 	hotkey:SetSize(1, 1)
 	hotkey:SetPoint("TOPLEFT", UIParent, "TOPLEFT", -10, 10)
 	hotkey:SetScript("OnClick", function()
 		local c = ActiveChat()
 		if c and c.pendingId then
-			WoWAI.Send("")
+			ClaudeWoW.Send("")
 		else
-			WoWAI.Toggle()
+			ClaudeWoW.Toggle()
 		end
 	end)
 
@@ -3448,7 +3448,7 @@ local function BuildUI()
 	end)
 
 	-- Mini bar: what the window collapses into. Click it to expand, drag to move.
-	local m = CreateFrame("Frame", "WoWAIMini", UIParent, "BackdropTemplate")
+	local m = CreateFrame("Frame", "ClaudeWoWMini", UIParent, "BackdropTemplate")
 	ui.mini = m
 	m:SetSize(250, 30)
 	if s.miniPoint then
@@ -3473,7 +3473,7 @@ local function BuildUI()
 	end)
 	m:SetScript("OnMouseUp", function(self, button)
 		if button == "LeftButton" and not self.dragging then
-			WoWAI.Minimize(false)
+			ClaudeWoW.Minimize(false)
 		end
 	end)
 	m:SetBackdrop(BACKDROP)
@@ -3487,7 +3487,7 @@ local function BuildUI()
 
 	local mlabel = m:CreateFontString(nil, "OVERLAY", "GameFontNormal")
 	mlabel:SetPoint("LEFT", miniDotHolder, "RIGHT", 6, 0)
-	mlabel:SetText("WoW AI")
+	mlabel:SetText("Claude WoW")
 
 	local badge = m:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 	badge:SetPoint("LEFT", mlabel, "RIGHT", 8, 0)
@@ -3516,16 +3516,16 @@ local function BuildUI()
 	local mclose = CreateFrame("Button", nil, m, "UIPanelCloseButton")
 	mclose:SetSize(24, 24)
 	mclose:SetPoint("RIGHT", m, "RIGHT", -2, 0)
-	mclose:SetScript("OnClick", function() WoWAI.Toggle(false) end)
+	mclose:SetScript("OnClick", function() ClaudeWoW.Toggle(false) end)
 	mclose:SetScript("OnEnter", function(self)
 		GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-		GameTooltip:SetText("Quit: hide completely (/wow-ai brings it back)")
+		GameTooltip:SetText("Quit: hide completely (/claude-wow brings it back)")
 		GameTooltip:Show()
 	end)
 	mclose:SetScript("OnLeave", function() GameTooltip:Hide() end)
 end
 
-function WoWAI.Toggle(show)
+function ClaudeWoW.Toggle(show)
 	if not ui.frame then return end
 	if show == nil then show = not ui.frame:IsShown() end
 	if show then
@@ -3539,15 +3539,15 @@ function WoWAI.Toggle(show)
 	ui.quitting = nil
 	db.settings.shown = show
 	if show then
-		WoWAI.Render()
+		ClaudeWoW.Render()
 		-- No auto-focus: the game keeps the keyboard until you click the box.
 		-- No automatic hello either: if the bridge hasn't been seen, the panel
 		-- shows Connect in place of Send and waits for a click.
 	end
-	WoWAI.UpdateMini()
+	ClaudeWoW.UpdateMini()
 end
 
-function WoWAI.Minimize(mini)
+function ClaudeWoW.Minimize(mini)
 	if not ui.frame then return end
 	if mini == nil then mini = not db.settings.minimized end
 	if mini then
@@ -3555,9 +3555,9 @@ function WoWAI.Minimize(mini)
 		db.settings.shown = true
 		ui.frame:Hide() -- OnHide shows the mini bar
 		if ui.mini and not ui.mini:IsShown() then ui.mini:Show() end
-		WoWAI.UpdateMini()
+		ClaudeWoW.UpdateMini()
 	else
-		WoWAI.Toggle(true)
+		ClaudeWoW.Toggle(true)
 	end
 end
 
@@ -3566,39 +3566,39 @@ end
 ---------------------------------------------------------------------------
 
 local HELP = table.concat({
-	"/wow-ai                        toggle the window (/ai, /wowai and the old /wow-claude are the same command)",
-	"/wow-ai mini                   collapse to the small bar (click the bar to expand)",
-	"/wow-ai hide                   hide the window completely",
-	"/ai <text>                         send <text> to the current chat straight from the game chat box (/wow-ai <text> too). A message that starts with a command word is still sent when the rest of the line doesn't fit that command",
+	"/claude-wow                        toggle the window (/claude is the same command)",
+	"/claude-wow mini                   collapse to the small bar (click the bar to expand)",
+	"/claude-wow hide                   hide the window completely",
+	"/claude <text>                         send <text> to the current chat straight from the game chat box (/claude-wow <text> too). A message that starts with a command word is still sent when the rest of the line doesn't fit that command",
 	"/r <text>                          replies to the agent when it was the last to message you (else normal whisper reply)",
-	"/wow-ai whisper on|off        each chat as a native whisper tab: replies flash it like a player's whisper, typing in it goes to the agent (off by default)",
-	"/wow-ai echo summary|full|short|off|<chars>   how much of each reply to print in the game chat (summary = the agent's closing TL;DR lines)",
-	"/wow-ai longchat on|off        let the game chat box take 4000 characters (for long /ai messages)",
-	"/wow-ai new [name]             start a new chat (its own agent session, like a new terminal)",
-	"/wow-ai chat <n|name>          switch chats (or click one in the left panel)",
-	"/wow-ai rename [name]          rename the current chat (no name = dialog; right-clicking the chat in the left panel offers it too)",
-	"/wow-ai delete                 delete the current chat",
-	"/wow-ai cd <folder>            folder this chat's agent works in (relative to the bridge's folder; no folder = back to default). Right-clicking the chat in the left panel and picking Folder does the same",
-	"/wow-ai agent [name]           which agent this chat talks to (no name = show; default = the bridge's). Right-clicking the chat and picking Agent does the same",
-	"/wow-ai plugin [name]          what this chat is for: ask (general in-game chat, the default) or claude-code (an agent session in a folder). No name = show; default = the bridge's. Right-clicking the chat and picking Plugin does the same",
-	"/wow-ai reset                  next message in this chat starts a fresh agent session",
-	"/wow-ai context [on|off]       what the agent is told about your character and where you are (no argument = show it)",
-	"/wow-ai vision [on|off]        send a picture of your screen with each message, so the agent can see what you see (screenshot transport; off by default)",
-	"/wow-ai look <question>        send this one message with a picture of your screen, whatever the vision setting",
-	"/wow-ai map [...]              map layers the agent drew, the route navigator and herb/ore nodes (no argument = status and subcommands; /aimap is the same)",
-	"/wow-ai mode pixel             no-reload transport (default)",
-	"/wow-ai mode reload            fallback transport: a /reload per step",
-	"/wow-ai resend                 show the strip again if the bridge missed it",
-	"/wow-ai reload                 reload now (also frees the slot pool)",
-	"/wow-ai cancel                 stop waiting on this chat's reply",
-	"/wow-ai copy                   open the last reply in a selectable box for Ctrl+C",
-	"/wow-ai macro undo             undo the last macro the agent's button created or changed",
-	"/wow-ai bind <key>             hotkey: checks for a reply while waiting, else toggles the window",
-	"/wow-ai auto on|off            reload-mode only: auto-reload on your next keypress after the interval",
-	"/wow-ai signal on|off          the cheap sound-file readiness check (off if it spams errors)",
-	"/wow-ai slots                  how many reply slots are still free this session",
-	"/wow-ai diag                   transport diagnostics (is the cheap sound-file channel working?)",
-	"/wow-ai clear                  clear this chat's transcript",
+	"/claude-wow whisper on|off        each chat as a native whisper tab: replies flash it like a player's whisper, typing in it goes to the agent (off by default)",
+	"/claude-wow echo summary|full|short|off|<chars>   how much of each reply to print in the game chat (summary = the agent's closing TL;DR lines)",
+	"/claude-wow longchat on|off        let the game chat box take 4000 characters (for long /claude messages)",
+	"/claude-wow new [name]             start a new chat (its own agent session, like a new terminal)",
+	"/claude-wow chat <n|name>          switch chats (or click one in the left panel)",
+	"/claude-wow rename [name]          rename the current chat (no name = dialog; right-clicking the chat in the left panel offers it too)",
+	"/claude-wow delete                 delete the current chat",
+	"/claude-wow cd <folder>            folder this chat's agent works in (relative to the bridge's folder; no folder = back to default). Right-clicking the chat in the left panel and picking Folder does the same",
+	"/claude-wow agent [name]           which agent this chat talks to (no name = show; default = the bridge's). Right-clicking the chat and picking Agent does the same",
+	"/claude-wow plugin [name]          what this chat is for: ask (general in-game chat, the default) or claude-code (an agent session in a folder). No name = show; default = the bridge's. Right-clicking the chat and picking Plugin does the same",
+	"/claude-wow reset                  next message in this chat starts a fresh agent session",
+	"/claude-wow context [on|off]       what the agent is told about your character and where you are (no argument = show it)",
+	"/claude-wow vision [on|off]        send a picture of your screen with each message, so the agent can see what you see (screenshot transport; off by default)",
+	"/claude-wow look <question>        send this one message with a picture of your screen, whatever the vision setting",
+	"/claude-wow map [...]              map layers the agent drew, the route navigator and herb/ore nodes (no argument = status and subcommands; /aimap is the same)",
+	"/claude-wow mode pixel             no-reload transport (default)",
+	"/claude-wow mode reload            fallback transport: a /reload per step",
+	"/claude-wow resend                 show the strip again if the bridge missed it",
+	"/claude-wow reload                 reload now (also frees the slot pool)",
+	"/claude-wow cancel                 stop waiting on this chat's reply",
+	"/claude-wow copy                   open the last reply in a selectable box for Ctrl+C",
+	"/claude-wow macro undo             undo the last macro the agent's button created or changed",
+	"/claude-wow bind <key>             hotkey: checks for a reply while waiting, else toggles the window",
+	"/claude-wow auto on|off            reload-mode only: auto-reload on your next keypress after the interval",
+	"/claude-wow signal on|off          the cheap sound-file readiness check (off if it spams errors)",
+	"/claude-wow slots                  how many reply slots are still free this session",
+	"/claude-wow diag                   transport diagnostics (is the cheap sound-file channel working?)",
+	"/claude-wow clear                  clear this chat's transcript",
 }, "\n")
 
 -- What each subcommand accepts, so that free text which happens to start with
@@ -3625,14 +3625,14 @@ local COMMAND_ARGS = {
 	signal = { [""] = true, on = true, off = true }, longchat = { [""] = true, on = true, off = true },
 	whisper = { [""] = true, on = true, off = true },
 	vision = { [""] = true, on = true, off = true },
-	look = true, -- /wow-ai look <question>: one message with a picture of the screen
+	look = true, -- /claude-wow look <question>: one message with a picture of the screen
 	auto = OnOffOrNumber,
 	echo = function(rest) return rest == "" or rest == "summary" or rest == "full" or rest == "short" or rest == "off" or tonumber(rest) ~= nil end,
 	bind = 1, agent = 1, plugin = 1,
 	chat = ChatArgument, chats = ChatArgument,
 	cd = true, new = true, rename = true,
-	map = true, -- /wow-ai map ...: Map.lua (layers, navigator, herb/ore nodes)
-	macro = { undo = true }, -- /wow-ai macro undo; "/ai macro for my warrior" still goes to the agent
+	map = true, -- /claude-wow map ...: Map.lua (layers, navigator, herb/ore nodes)
+	macro = { undo = true }, -- /claude-wow macro undo; "/claude macro for my warrior" still goes to the agent
 }
 
 local function IsCommand(cmd, rest)
@@ -3651,13 +3651,11 @@ local function ApplyLongChat()
 	box:SetMaxLetters(db.settings.longchat and 4000 or 255)
 end
 
-SLASH_WOWAI1 = "/wow-ai"
-SLASH_WOWAI2 = "/wowai"
-SLASH_WOWAI3 = "/wow-claude" -- the project's old name, kept so old habits and macros still work
-SLASH_WOWAI4 = "/ai" -- the short form: /ai <text> sends, /ai agent codex and the rest work too
-SLASH_WOWAI5 = "/ask"
-SLASH_WOWAI6 = "/claude"
-SlashCmdList["WOWAI"] = function(msg)
+-- Two spellings of the one command and nothing else: the names from before the
+-- rename (/wow-ai, /wowai, /ai, /ask, /wow-claude) are gone, not aliased.
+SLASH_CLAUDEWOW1 = "/claude" -- the short form: /claude <text> sends, /claude agent codex and the rest work too
+SLASH_CLAUDEWOW2 = "/claude-wow"
+SlashCmdList["CLAUDEWOW"] = function(msg)
 	msg = Trim(msg or "")
 	local cmd, rest = msg:match("^(%S+)%s*(.-)$")
 	cmd = cmd and cmd:lower() or ""
@@ -3667,15 +3665,15 @@ SlashCmdList["WOWAI"] = function(msg)
 	-- Anything that isn't a command, or a command word followed by something it
 	-- doesn't take, is a message for the agent.
 	if cmd ~= "" and not IsCommand(cmd, rest) then
-		WoWAI.Send(msg)
+		ClaudeWoW.Send(msg)
 		return
 	end
 	if cmd == "" then
-		WoWAI.Toggle()
+		ClaudeWoW.Toggle()
 	elseif cmd == "mini" or cmd == "min" then
-		WoWAI.Minimize(true)
+		ClaudeWoW.Minimize(true)
 	elseif cmd == "new" then
-		WoWAI.NewChat(rest)
+		ClaudeWoW.NewChat(rest)
 	elseif cmd == "chat" or cmd == "chats" then
 		local n = tonumber(rest)
 		local target = n and db.chats[n]
@@ -3685,44 +3683,44 @@ SlashCmdList["WOWAI"] = function(msg)
 			end
 		end
 		if target then
-			WoWAI.SwitchChat(target.id)
+			ClaudeWoW.SwitchChat(target.id)
 		else
 			local lines = {}
 			for i, ch in ipairs(db.chats) do
 				table.insert(lines, i .. ". " .. ch.name .. (ch.id == db.activeChat and "  (current)" or "") .. (ch.pendingId and "  working" or "") .. ((ch.unread or 0) > 0 and ("  " .. ch.unread .. " new") or ""))
 			end
 			AddHistory(c, "system", "Chats:\n" .. table.concat(lines, "\n"))
-			WoWAI.Render()
+			ClaudeWoW.Render()
 		end
-		WoWAI.Toggle(true)
+		ClaudeWoW.Toggle(true)
 	elseif cmd == "rename" then
 		if rest ~= "" then
 			c.name = rest:sub(1, 24)
 			Whisper.Retitle(c)
-			WoWAI.Render()
+			ClaudeWoW.Render()
 		else
-			WoWAI.RenameActive()
+			ClaudeWoW.RenameActive()
 		end
-		WoWAI.Toggle(true)
+		ClaudeWoW.Toggle(true)
 	elseif cmd == "delete" then
-		WoWAI.DeleteChat()
+		ClaudeWoW.DeleteChat()
 	elseif cmd == "cd" then
-		WoWAI.SetFolder(rest, c)
-		WoWAI.Toggle(true)
+		ClaudeWoW.SetFolder(rest, c)
+		ClaudeWoW.Toggle(true)
 	elseif cmd == "map" then
-		if WoWAIMap then WoWAIMap.Command(rest) else print("|cff66ccff[WoW AI]|r the map module did not load") end
+		if ClaudeWoWMap then ClaudeWoWMap.Command(rest) else print("|cff66ccff[Claude WoW]|r the map module did not load") end
 	elseif cmd == "agent" then
-		WoWAI.SetAgent(rest, c)
-		WoWAI.Toggle(true)
+		ClaudeWoW.SetAgent(rest, c)
+		ClaudeWoW.Toggle(true)
 	elseif cmd == "plugin" then
-		WoWAI.SetPlugin(rest, c)
-		WoWAI.Toggle(true)
+		ClaudeWoW.SetPlugin(rest, c)
+		ClaudeWoW.Toggle(true)
 	elseif cmd == "reset" then
 		c.resetNext = true
 		local where = ChatFolder(c)
 		AddHistory(c, "system", "Next message starts a fresh " .. ChatAgentName(c) .. " session" .. (where ~= "" and (" in " .. where) or ""))
-		WoWAI.Render()
-		WoWAI.Toggle(true)
+		ClaudeWoW.Render()
+		ClaudeWoW.Toggle(true)
 	elseif cmd == "context" or cmd == "ctx" then
 		rest = rest:lower()
 		if rest == "on" or rest == "off" then
@@ -3730,15 +3728,15 @@ SlashCmdList["WOWAI"] = function(msg)
 			-- Make sure the next record carries the change, hello throttle or not.
 			run.contextSent = nil
 			run.lastHelloAt = nil
-			if WoWAI.IsConnected() then WoWAI.SayHello() end
+			if ClaudeWoW.IsConnected() then ClaudeWoW.SayHello() end
 		end
-		local ctx = WoWAI.GameContext()
+		local ctx = ClaudeWoW.GameContext()
 		AddHistory(c, "system", (s.context
-			and "Game context is ON: the agent is told this with each message (it goes into its system prompt, so unrelated projects are unaffected by anything but a few lines). /wow-ai context off to stop.\n\n"
-			or "Game context is OFF: the agent is told nothing about the game. /wow-ai context on to send this:\n\n") .. ctx
+			and "Game context is ON: the agent is told this with each message (it goes into its system prompt, so unrelated projects are unaffected by anything but a few lines). /claude-wow context off to stop.\n\n"
+			or "Game context is OFF: the agent is told nothing about the game. /claude-wow context on to send this:\n\n") .. ctx
 			.. "\n\nTip: click the input box, then shift-click an item, spell or quest to link it into your message; the agent gets its tooltip.")
-		WoWAI.Render()
-		WoWAI.Toggle(true)
+		ClaudeWoW.Render()
+		ClaudeWoW.Toggle(true)
 	elseif cmd == "mode" then
 		if rest == "pixel" or rest == "reload" then
 			s.mode = rest
@@ -3747,10 +3745,10 @@ SlashCmdList["WOWAI"] = function(msg)
 		else
 			AddHistory(c, "system", "mode is " .. s.mode .. " (pixel or reload)")
 		end
-		WoWAI.Render()
-		WoWAI.Toggle(true)
+		ClaudeWoW.Render()
+		ClaudeWoW.Toggle(true)
 	elseif cmd == "resend" then
-		WoWAI.Resend()
+		ClaudeWoW.Resend()
 	elseif cmd == "auto" then
 		local n = tonumber(rest)
 		if n then
@@ -3761,16 +3759,16 @@ SlashCmdList["WOWAI"] = function(msg)
 		elseif rest == "off" then
 			s.autoRefresh = false
 		end
-		WoWAI.UpdateStatus()
-		WoWAI.ArmAutoRefresh()
+		ClaudeWoW.UpdateStatus()
+		ClaudeWoW.ArmAutoRefresh()
 	elseif cmd == "hide" or cmd == "quit" then
-		WoWAI.Toggle(false)
+		ClaudeWoW.Toggle(false)
 	elseif cmd == "macro" and rest == "undo" then
-		WoWAI.UndoMacro()
+		ClaudeWoW.UndoMacro()
 	elseif cmd == "copy" then
 		for i = #c.history, 1, -1 do
 			if c.history[i].role == "assistant" then
-				WoWAI.ShowCopy(c.history[i].text)
+				ClaudeWoW.ShowCopy(c.history[i].text)
 				break
 			end
 		end
@@ -3781,59 +3779,59 @@ SlashCmdList["WOWAI"] = function(msg)
 			s.echo = tostring(math.max(200, math.floor(tonumber(rest))))
 		end
 		AddHistory(c, "system", "replies in game chat: " .. s.echo .. " (summary = the agent's TL;DR lines, full = " .. ECHO_DEFAULT .. " chars, short, off, or a number of characters)")
-		WoWAI.Render()
+		ClaudeWoW.Render()
 	elseif cmd == "longchat" then
 		if rest == "on" then s.longchat = true elseif rest == "off" then s.longchat = false end
 		ApplyLongChat()
-		AddHistory(c, "system", "game chat box limit: " .. (s.longchat and "4000 characters (fine for /ai; real chat over 255 may be rejected by the server)" or "255 (default)"))
-		WoWAI.Render()
+		AddHistory(c, "system", "game chat box limit: " .. (s.longchat and "4000 characters (fine for /claude; real chat over 255 may be rejected by the server)" or "255 (default)"))
+		ClaudeWoW.Render()
 	elseif cmd == "signal" then
 		if rest == "on" then s.signal = true elseif rest == "off" then s.signal = false end
 		AddHistory(c, "system", "signal check is " .. (s.signal and "on" or "off"))
-		WoWAI.Render()
+		ClaudeWoW.Render()
 	elseif cmd == "whisper" then
 		if rest == "on" then
 			s.whisper = true
 			Whisper.Install()
 			local frame = Whisper.FrameFor(c, true, true)
 			AddHistory(c, "system", frame
-				and ("Whisper tabs are ON: this chat is the \"" .. Display(c.name) .. "\" tab in the chat dock. Type there and press Enter to talk to " .. ChatAgentName(c) .. "; replies flash the tab. Other chats get a tab with their first message. /wow-ai whisper off closes them.")
+				and ("Whisper tabs are ON: this chat is the \"" .. Display(c.name) .. "\" tab in the chat dock. Type there and press Enter to talk to " .. ChatAgentName(c) .. "; replies flash the tab. Other chats get a tab with their first message. /claude-wow whisper off closes them.")
 				or ("Whisper tabs are ON, but this client could not open a chat tab" .. (run.whisperError and (": " .. run.whisperError) or " (no FCF_OpenTemporaryWindow)") .. ". Replies keep going to the game chat as before."))
 		elseif rest == "off" then
 			s.whisper = false
 			Whisper.CloseAll()
 			AddHistory(c, "system", "Whisper tabs are off; replies go to the game chat as before")
 		else
-			AddHistory(c, "system", Whisper.Status() .. " (/wow-ai whisper on|off: each chat as a native whisper tab)")
+			AddHistory(c, "system", Whisper.Status() .. " (/claude-wow whisper on|off: each chat as a native whisper tab)")
 		end
-		WoWAI.Render()
+		ClaudeWoW.Render()
 	elseif cmd == "vision" then
 		if rest == "on" then s.vision = true elseif rest == "off" then s.vision = false end
-		AddHistory(c, "system", VisionStatus() .. ". /wow-ai vision on|off; /wow-ai look <question> sends one message with a picture whatever the setting.")
-		WoWAI.UpdateStatus()
-		WoWAI.Render()
-		WoWAI.Toggle(true)
+		AddHistory(c, "system", VisionStatus() .. ". /claude-wow vision on|off; /claude-wow look <question> sends one message with a picture whatever the setting.")
+		ClaudeWoW.UpdateStatus()
+		ClaudeWoW.Render()
+		ClaudeWoW.Toggle(true)
 	elseif cmd == "look" then
-		WoWAI.Send(rest ~= "" and rest or "What do you see on my screen?", nil, { vision = true })
+		ClaudeWoW.Send(rest ~= "" and rest or "What do you see on my screen?", nil, { vision = true })
 	elseif cmd == "slots" then
 		local free = 0
 		for i = 1, SLOT_COUNT do
 			if not C_AddOns.IsAddOnLoaded(SlotName(i)) then free = free + 1 end
 		end
 		AddHistory(c, "system", free .. " of " .. SLOT_COUNT .. " reply slots free this session (a reload frees all)")
-		WoWAI.Render()
-		WoWAI.Toggle(true)
+		ClaudeWoW.Render()
+		ClaudeWoW.Toggle(true)
 	elseif cmd == "refresh" or cmd == "reload" then
 		SafeReload()
 	elseif cmd == "bind" then
 		local key = rest:upper()
 		if key ~= "" and not InCombatLockdown() then
-			SetBinding(key, "CLICK WoWAIRefreshButton:LeftButton")
+			SetBinding(key, "CLICK ClaudeWoWRefreshButton:LeftButton")
 			SaveBindings(GetCurrentBindingSet())
 			AddHistory(c, "system", key .. " is now bound: checks for a reply while waiting, otherwise toggles this window")
 		end
-		WoWAI.Render()
-		WoWAI.Toggle(true)
+		ClaudeWoW.Render()
+		ClaudeWoW.Toggle(true)
 	elseif cmd == "diag" then
 		local free = 0
 		for i = 1, SLOT_COUNT do
@@ -3845,7 +3843,7 @@ SlashCmdList["WOWAI"] = function(msg)
 			"sound checks: " .. signalStats.checks .. ", valid hits: " .. signalStats.hits .. (signalStats.lastHit and (", last hit " .. FmtDur(GetTime() - signalStats.lastHit) .. " ago") or ""),
 			"slot polls this session: " .. (run.polls or 0) .. ", free slots: " .. free .. "/" .. SLOT_COUNT,
 			"presence: head at " .. tostring(run.presence and run.presence.last or "?") .. ", beats seen: " .. tostring(run.presence and run.presence.beats or 0),
-			select(5, WoWAI.BridgeState()),
+			select(5, ClaudeWoW.BridgeState()),
 			"mode: " .. s.mode .. ", session token: " .. tostring(db.session),
 			Whisper.Status(),
 			"transport: " .. tostring(s.transport or "pixel") .. (s.transport == "screenshot" and type(Screenshot) ~= "function" and " (Screenshot() missing: strip stays up)" or "")
@@ -3862,8 +3860,8 @@ SlashCmdList["WOWAI"] = function(msg)
 			end
 		end
 		AddHistory(c, "system", "Diagnostics:\n" .. table.concat(lines, "\n"))
-		WoWAI.Render()
-		WoWAI.Toggle(true)
+		ClaudeWoW.Render()
+		ClaudeWoW.Toggle(true)
 	elseif cmd == "cancel" then
 		if c.pendingId then
 			AddHistory(c, "system", "Gave up waiting on #" .. c.pendingId)
@@ -3874,14 +3872,14 @@ SlashCmdList["WOWAI"] = function(msg)
 			RefreshStrip()
 			if not AnyPending() then keyCatcher:Hide() end
 		end
-		WoWAI.Render()
+		ClaudeWoW.Render()
 	elseif cmd == "clear" then
 		wipe(c.history)
-		WoWAI.Render()
+		ClaudeWoW.Render()
 	elseif cmd == "help" then
 		AddHistory(c, "system", HELP)
-		WoWAI.Render()
-		WoWAI.Toggle(true)
+		ClaudeWoW.Render()
+		ClaudeWoW.Toggle(true)
 	end
 end
 
@@ -3939,30 +3937,30 @@ ev:SetScript("OnEvent", function(self, event, arg1)
 			ui.input:SetText(c.draft)
 			if not c.pendingId then c.draft = nil end
 		end
-		WoWAI.Render()
+		ClaudeWoW.Render()
 		if db.settings.shown then
 			if db.settings.minimized then
-				WoWAI.Minimize(true)
+				ClaudeWoW.Minimize(true)
 			else
-				WoWAI.Toggle(true)
+				ClaudeWoW.Toggle(true)
 			end
 		end
-		WoWAI.ArmAutoRefresh()
-		WoWAI.UpdateDot()
+		ClaudeWoW.ArmAutoRefresh()
+		ClaudeWoW.UpdateDot()
 		if db.settings.longchat then ApplyLongChat() end
 		HookReplyCommand()
 		if db.settings.whisper then Whisper.Install() end
 		C_Timer.NewTicker(TICK_SECONDS, Tick)
-		C_Timer.After(3, WoWAI.SayHello)
+		C_Timer.After(3, ClaudeWoW.SayHello)
 	elseif event == "UPDATE_MACROS" then
 		-- "Create" / "Update" on the macro buttons follows what exists now.
-		if ui.frame and ui.frame:IsShown() then WoWAI.Render() end
+		if ui.frame and ui.frame:IsShown() then ClaudeWoW.Render() end
 	elseif event == "PLAYER_REGEN_ENABLED" then
-		if WoWAI.reloadAfterCombat then
-			WoWAI.reloadAfterCombat = nil
+		if ClaudeWoW.reloadAfterCombat then
+			ClaudeWoW.reloadAfterCombat = nil
 			ReloadUI()
 		elseif db then
-			WoWAI.ArmAutoRefresh()
+			ClaudeWoW.ArmAutoRefresh()
 		end
 	end
 end)
