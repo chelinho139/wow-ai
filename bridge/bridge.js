@@ -716,7 +716,7 @@ function pollSavedVariables() {
   if (job) submit(job);
 }
 
-// Windows: capture.ps1 (GDI). macOS: capture_mac.py (native screencapture). Elsewhere: capture_x11.py (Wine/X11).
+// Windows: capture.ps1 (GDI). macOS: capture_mac.py (CoreGraphics, screencapture fallback). Elsewhere: capture_x11.py (Wine/X11).
 function captureCommand() {
   if (process.platform === 'win32') {
     return ['powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(HERE, 'capture.ps1'),
@@ -745,9 +745,12 @@ function startCapture() {
   rl.on('line', (line) => {
     let ev;
     try { ev = JSON.parse(line); } catch { return; }
-    if (ev.info) { log('capture:', ev.info); return; }
-    if (ev.warn) { log('capture:', ev.warn); return; }
-    if (ev.error) { log('capture error:', ev.error); return; }
+    // `hint` is the capture script naming a cause the user can fix (a denied macOS
+    // permission, a display scale the decoder cannot read); never swallow it.
+    const hint = ev.hint ? `\n         -> ${ev.hint}` : '';
+    if (ev.info) { log('capture:', ev.info + hint); return; }
+    if (ev.warn) { log('capture:', ev.warn + hint); return; }
+    if (ev.error) { log('capture error:', ev.error + hint); return; }
     if (typeof ev.id === 'number') {
       const jobs = jobsFromStrip(ev.id, ev.text);
       log(`strip #${ev.id}: ${jobs.length} message(s)`);
