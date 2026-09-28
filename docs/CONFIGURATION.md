@@ -96,7 +96,14 @@ These sizes are baked into the files `install-slots.js` creates, and the addon h
 
 ## Command line
 
-`wow-ai` (after `npm link`) and `node bridge/bridge.js` take the same flags. `npm start` runs `bridge/supervisor.js`, which restarts the bridge on crash and passes flags through.
+`wow-ai` (the installer's command, `npm link`, or the Homebrew formula) and `node bridge/bridge.js` take the same flags. `npm start` runs `bridge/supervisor.js`, which restarts the bridge on crash and passes flags through. Two subcommands are handled by the supervisor itself:
+
+| Subcommand | Meaning |
+|---|---|
+| `wow-ai setup [...]` | Runs `setup.js` with the given flags (see [`setup.js` flags](#setupjs-flags)). |
+| `wow-ai service install\|uninstall\|start\|stop\|restart\|status\|logs [-n N] [-f]` | The bridge as a per-user background service that starts at login and comes back after a crash: a LaunchAgent on macOS, a systemd `--user` unit on Linux, a Startup-folder launcher on Windows. `status` exits 0 when running, 3 when not. See [INSTALL.md](INSTALL.md#running-the-bridge). |
+
+Environment: `WOW_AI_SERVICE=1` is set by the service definitions and tells the supervisor to write its output to the service log and a pid file instead of a terminal.
 
 | Flag | Meaning |
 |---|---|
@@ -140,7 +147,7 @@ All of these are gitignored.
 | `bridge/state.json` | Agent session ids per chat, the folder and the agent each session ran with, handled message ids per addon session token, the presence counter, and the latest game context the addon sent (`context`). Delete it to forget all sessions. |
 | `bridge/transcripts.json` | The last 200 messages of every chat, with the agent that wrote each reply, so the addon can recover its chats after the client wipes saved data. |
 | `bridge/mapjobs/` | One map command file per running job (`WOW_AI_MAP_FILE`), read and deleted when the job ends. Map layers themselves live in `state.json` (`map`). |
-| `bridge/bridge.log` | Everything printed to the console, with timestamps. Grows without bound; delete it whenever you like. |
+| `bridge/bridge.log` | Every line the bridge logs, with timestamps. Rotated by the supervisor at 5 MB (`bridge.log.1` … `.5` kept), so it never grows without bound. Under the background service the bridge's full output (banner, log lines, crashes) also goes to the service log: `~/Library/Logs/wow-ai/bridge.log` on macOS, `$XDG_STATE_HOME/wow-ai/bridge.log` (default `~/.local/state/wow-ai`) on Linux, `%LocalAppData%\wow-ai\logs\bridge.log` on Windows, rotated the same way; `wow-ai service logs` shows whichever applies. |
 | `bridge/tmp/` | Prompt files for agents that read the prompt from disk (Grok). Each is deleted when its run ends. |
 
 ## `setup.js` flags

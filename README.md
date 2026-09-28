@@ -32,7 +32,7 @@ What a chat *does* with your message is a plugin's business; the window, the whi
 | `ask` (default) | General in-game AI chat: game questions, quest research, routes on the map, macros. No project, no folder: the agent runs in a scratch folder of its own and is told it is your in-game assistant, not a coding session. |
 | `claude-code` | An agent session in a folder, what the bridge was before plugins: `/wow-ai cd` picks the project, the agent edits and runs things there. |
 
-A chat is bound to a plugin the way it is bound to an agent; a chat bound to nothing follows the bridge's default (`plugins.default` in `bridge/config.json`, `ask` unless you change it). Chats you made before plugins existed stay bound to `claude-code`, so nothing changes for them; a new chat inherits the binding of the chat you were in. A message that starts with `@ask ` or `@claude ` (in the window or a whisper tab) goes to that plugin whatever the chat is bound to. Either plugin runs whichever agent the chat picked.
+A chat is bound to a plugin the way it is bound to an agent: `/wow-ai plugin claude-code`, or right-click the chat and pick **Plugin...**; a chat bound to nothing follows the bridge's default (`plugins.default` in `bridge/config.json`, `ask` unless you change it). Chats you made before plugins existed stay bound to `claude-code`, so nothing changes for them; a new chat inherits the binding of the chat you were in. A message that starts with `@ask ` or `@claude ` (in the window or a whisper tab) goes to that plugin whatever the chat is bound to. Either plugin runs whichever agent the chat picked.
 
 ## Agents
 
@@ -50,7 +50,7 @@ The bridge drives whichever of these you have installed; each chat can use a dif
 
 ## Requirements
 
-- Windows (NTFS), or Linux with the game under Wine on an **X11** session and python3 (see [docs/INSTALL-LINUX.md](docs/INSTALL-LINUX.md)), or macOS with a native client and python3
+- Windows (NTFS), or Linux with the game under Wine (see [docs/INSTALL-LINUX.md](docs/INSTALL-LINUX.md)), or macOS with a native client; python3 for the pixel-capture transport off Windows
 - World of Warcraft: Forever (tested on 1.60.1.69913 and 1.60.1.69977, TOC 16001), **windowed or borderless** (exclusive fullscreen blocks screen capture)
 - [Node.js](https://nodejs.org) 22.2 or newer
 - At least one agent CLI, installed and logged in:
@@ -62,72 +62,58 @@ The bridge drives whichever of these you have installed; each chat can use a dif
 
 ## Install
 
-### Windows
+One line, then a game relaunch. Full detail, every route and the background service: [docs/INSTALL.md](docs/INSTALL.md).
 
-Step-by-step for a fresh machine, with troubleshooting: [docs/INSTALL-WINDOWS.md](docs/INSTALL-WINDOWS.md). The short version:
+macOS and Linux:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/rdimascio/wow-ai/main/install.sh | sh
+```
+
+Windows (PowerShell):
 
 ```powershell
-git clone https://github.com/chelinho139/wow-ai
-cd wow-ai
-node setup.js --project "C:\path\to\the\project\you\want\to\work\on"
+irm https://raw.githubusercontent.com/rdimascio/wow-ai/main/install.ps1 | iex
 ```
 
-`setup.js` finds the client (pass `--wow "<client folder>"` if it can't), copies the addon into `Interface\AddOns\WoWAI`, writes `bridge/config.json`, reports which agent CLIs it found, and generates the slot pool and signal files (≈15,000 tiny files; that's normal — the client only discovers addon files at launch, so they have to exist up front).
+The installer checks for Node 22.2+, puts the code in `~/.wow-ai` (Windows: `%LocalAppData%\Programs\wow-ai`) and a `wow-ai` command on your PATH, runs the game-side setup (addon into `Interface/AddOns/WoWAI`, `bridge/config.json`, the slot pool: ≈15,000 tiny files, which is normal since the client only discovers addon files at launch), and offers to run the bridge in the background from now on. It never uses sudo, is safe to re-run (that is how you update), and stops with a message saying what to do if anything is missing. Pass `--wow "<client folder>"` if setup cannot find the client and `--project <folder>` for the default folder the agents work in (after `sh -s --`; on Windows through `$env:WOW_AI_WOW` and `$env:WOW_AI_PROJECT`).
 
-Then **fully quit and relaunch WoW**, enable *WoW AI* on the AddOns screen, and start the bridge:
+Then **fully quit and relaunch WoW**, enable *WoW AI* on the AddOns screen, and:
 
 ```
-npm start               # in the current terminal (or: bridge\start.ps1)
-bridge\start-window.cmd # double-click version: opens its own window
+wow-ai                    # the bridge in this terminal; Ctrl+C stops it, it restarts itself after a crash
+wow-ai service install    # or: in the background, now and at every login
+wow-ai service status     # running? pid, uptime, last log lines   (also: logs, stop, start, restart, uninstall)
 ```
 
-It restarts itself if it ever crashes. Ctrl+C (or closing the window) stops it. The banner lists every agent with where its executable was found, or what to install.
+In game: `/wow-ai`. The bridge's banner lists every agent with where its executable was found, or what to install.
 
-### Linux (Wine)
-
-Details and capture troubleshooting: [docs/INSTALL-LINUX.md](docs/INSTALL-LINUX.md). The short version:
-
-```bash
-git clone https://github.com/chelinho139/wow-ai
-cd wow-ai
-node setup.js --project ~/path/to/the/project   # finds the client in $WINEPREFIX, ~/.wine...; or pass --wow "<client folder>"
-npm start
-```
-
-The bridge captures the game window through X11 (`bridge/capture_x11.py`, no packages needed) and writes the slot files straight into the Wine prefix. Check the capture once: send any message from the game and, while the strip of colored squares is in the top-left corner, run `npm run probe` in a second terminal. It saves what the capture sees to `bridge/probe.png` and says whether it decoded the strip.
+Other routes: `brew tap rdimascio/wow-ai && brew install --HEAD wow-ai` then `wow-ai setup` (Homebrew cannot install the addon; see the caveat in [docs/INSTALL.md](docs/INSTALL.md#route-2-homebrew-macos)), or `git clone` and `node setup.js` then `npm start` by hand. Platform notes: [docs/INSTALL-WINDOWS.md](docs/INSTALL-WINDOWS.md), [docs/INSTALL-LINUX.md](docs/INSTALL-LINUX.md), and the macOS section below.
 
 ### macOS (native client)
 
-Same commands as Linux: `node setup.js --project <dir>` (it looks for the client under `/Applications/World of Warcraft` and `~/Applications/World of Warcraft`; pass `--wow "<client folder>"` otherwise), then `npm start`. The bridge captures the game window with `bridge/capture_mac.py`, which needs only python3: it finds the window through System Events and grabs its top-left corner in-process through CoreGraphics (falling back to the built-in `screencapture` when that is unavailable). It needs two permissions in System Settings for the terminal the bridge runs in: **Automation** (System Events) and **Screen & System Audio Recording**. macOS does not always prompt for them — a missing Screen Recording permission just makes the capture fail, so the bridge sees nothing and no message ever arrives. `setup.js` checks both and names whichever is missing; `npm run check:mac` re-runs that check on its own, and `npm run probe:mac` saves what the capture sees to `bridge/probe.png` and says whether it decoded the strip. Grant a permission, then quit and reopen the terminal: it only applies to a fresh launch.
-
-The strip decoder reads one image pixel per addon pixel, so the game window must be on a display that reports one device pixel per point. On a Retina display the capture comes back doubled and never decodes; `npm run check:mac` reports the scale it measured. The alternative is `"mode": "screenshot"` under `capture` in `bridge/config.json`: no screen capture and no permissions; the addon takes a screenshot with the strip up and the bridge reads the file from the client's `Screenshots` folder (see [docs/CONFIGURATION.md](docs/CONFIGURATION.md)).
+Setup looks for the client under `/Applications/World of Warcraft` and `~/Applications/World of Warcraft` (pass `--wow "<client folder>"` otherwise). Two transports: with `"mode": "screenshot"` under `capture` in `bridge/config.json`, the addon takes a screenshot with the strip up and the bridge reads the file from the client's `Screenshots` folder; no screen capture, no permissions, works on Retina displays, and the only configuration that makes sense for the background service (a background process cannot ask for Screen Recording). The default `pixel` transport captures the game window with `bridge/capture_mac.py` (python3 only) and needs **Automation** (System Events) and **Screen & System Audio Recording** for the terminal the bridge runs in; macOS does not always prompt, so `setup.js` checks both and names whichever is missing (`npm run check:mac` re-runs that check; `npm run probe:mac` saves what the capture sees to `bridge/probe.png`). Grant a permission, then quit and reopen the terminal. The pixel decoder reads one image pixel per addon pixel, so on a Retina display it never decodes; use the screenshot transport there (see [docs/CONFIGURATION.md](docs/CONFIGURATION.md)).
 
 ### Upgrading from wow-claude
 
-This project used to be called wow-claude, with a `WoWClaude` addon and a `/wow-claude` command. `git pull` (or clone the new name) and run `node setup.js` again: it copies your chats and settings from the old addon's saved data, removes the old `WoWClaude` addon and its slot folders so the two don't fight over `/ai` and `/r`, and rewrites the paths and the Claude settings in `bridge/config.json` into the new layout. Then quit and relaunch WoW. If you had installed the command, run `npm unlink -g wow-claude` and `npm link` again, and re-do `/wow-ai bind <key>` if you had a hotkey. Your agent sessions carry on: the bridge keeps them per chat.
+This project used to be called wow-claude, with a `WoWClaude` addon and a `/wow-claude` command. Run the installer, or `git pull` and `node setup.js`: it copies your chats and settings from the old addon's saved data, removes the old `WoWClaude` addon and its slot folders so the two don't fight over `/ai` and `/r`, and rewrites the paths and the Claude settings in `bridge/config.json` into the new layout. Then quit and relaunch WoW. If you had installed the command with `npm link`, run `npm unlink -g wow-claude` and `npm link` again, and re-do `/wow-ai bind <key>` if you had a hotkey. Your agent sessions carry on: the bridge keeps them per chat.
 
 ### `wow-ai`: start it from the project folder
 
-Like the agent CLIs themselves, the bridge works in the folder you start it from. Install the command once:
+Like the agent CLIs themselves, the bridge works in the folder you start it from:
 
-```powershell
-npm link          # in the wow-ai folder; makes `wow-ai` available everywhere
 ```
-
-Then, from any project:
-
-```powershell
-cd C:\path\to\realms
+cd ~/code/realms
 wow-ai
 ```
 
-Every chat that hasn't picked its own folder now works in `realms`, and the panel's cwd line shows it. `wow-ai --project <dir>` names the folder explicitly; `npm start` inside this repo falls back to `defaultCwd` in the config. Only one bridge can run at a time (two would fight over the screen and the slot files), so this sets the default folder rather than giving you one bridge per project.
+Every chat that hasn't picked its own folder now works in `realms`, and the panel's cwd line shows it. `wow-ai --project <dir>` names the folder explicitly; the background service and `npm start` inside the repo fall back to `defaultCwd` in the config (`wow-ai setup --project <dir>` sets it). Only one bridge can run at a time (two would fight over the screen and the slot files), so this sets the default folder rather than giving you one bridge per project.
 
 ## Use
 
 In game: `/wow-ai` opens the window. Until the bridge has answered, a **Connect** button sits where Send would be: start the bridge, click it, and the light turns green (a message typed before that stays in the box). Then click the input box, type, Enter. The reply arrives with the whisper sound; the window's light shows the bridge state (green/yellow/red, hover for details), and **Reconnect** shows up if the bridge goes quiet.
 
-Right-clicking a chat in the left panel opens a small menu with **Rename...**, **Folder...** and **Agent...** (right-click again to close it); the trash can on the row deletes the chat after an OK/Cancel confirm. **Folder...** sets the folder this chat's agent works in (same as `/wow-ai cd` below), **Agent...** which agent answers it (same as `/wow-ai agent`); each chat keeps its own, so you can have chats on different projects, with different agents, side by side.
+Right-clicking a chat in the left panel opens a small menu with **Rename...**, **Folder...**, **Agent...** and **Plugin...** (right-click again to close it); the trash can on the row deletes the chat after an OK/Cancel confirm. **Folder...** sets the folder this chat's agent works in (same as `/wow-ai cd` below), **Agent...** which agent answers it (same as `/wow-ai agent`), **Plugin...** what the chat is for, `ask` or `claude-code` (same as `/wow-ai plugin`); each chat keeps its own, so you can have a general chat next to chats on different projects, with different agents, side by side. The window's footer shows all three, and `/wow-ai diag` the plugin.
 
 | Command | What it does |
 |---|---|
@@ -230,7 +216,7 @@ The keys you are most likely to touch. Every key, flag and environment variable 
 
 ## Troubleshooting
 
-- **Connect says "No answer from the bridge" / light stays red** — is the bridge running? Is the game window on screen and not minimized? Exclusive fullscreen blocks capture. `bridge.log` shows `strip #N` when a message is decoded and `strip seen but rejected: ...` when one is misread.
+- **Connect says "No answer from the bridge" / light stays red** — is the bridge running (`wow-ai service status`, or the terminal it runs in)? Is the game window on screen and not minimized? Exclusive fullscreen blocks capture. `bridge.log` shows `strip #N` when a message is decoded and `strip seen but rejected: ...` when one is misread.
 - **Linux: `bridge.log` keeps saying `waiting for WowB window`** — the game isn't running or its window has another name: set `capture.processName` to the exe name, or `capture.windowName` to part of the window title. On Wayland the capture can't see other windows; use an X11 session.
 - **Linux: `npm run probe` shows a black or stale picture** — the compositor is letting the game present on its own. Try `"keepComposited": true` under `capture`, then windowed mode, then `nvidia-settings -a AllowFlipping=0` on NVIDIA; `/wow-ai mode reload` works without any capture.
 - **No herb/ore pins after `/wow-ai map ore`** — `/wow-ai map` says whether the `WoWAI_Nodes` data addon is installed; pins show on zone maps only, and with `filter skill` only what your skill can gather.
@@ -243,11 +229,12 @@ The keys you are most likely to touch. Every key, flag and environment variable 
 
 ## Documentation
 
-- [docs/INSTALL-WINDOWS.md](docs/INSTALL-WINDOWS.md): step-by-step install on a fresh machine, with troubleshooting
+- [docs/INSTALL.md](docs/INSTALL.md): every install route (one-line installer, Homebrew, git), the background service, updating and uninstalling
+- [docs/INSTALL-WINDOWS.md](docs/INSTALL-WINDOWS.md): Windows notes and troubleshooting
 - [docs/AGENTS.md](docs/AGENTS.md): each agent's install, how the bridge drives it, permissions per agent, limits, and how to add another
 - [docs/CONFIGURATION.md](docs/CONFIGURATION.md): every config key, command-line flag and environment variable
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): how the pixel strip, slot pool and signal files work, and why
-- [docs/INSTALL-LINUX.md](docs/INSTALL-LINUX.md): Linux + Wine install, and how to check the screen capture
+- [docs/INSTALL-LINUX.md](docs/INSTALL-LINUX.md): Linux + Wine notes, systemd, and how to check the screen capture
 - [docs/MAP.md](docs/MAP.md): map layers, the navigator and herb/ore nodes
 - [CONTRIBUTING.md](CONTRIBUTING.md): repo layout, running the tests, conventions
 - [CHANGELOG.md](CHANGELOG.md): release notes

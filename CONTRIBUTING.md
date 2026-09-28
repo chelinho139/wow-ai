@@ -16,11 +16,14 @@ bridge/               the companion process (Node.js, no runtime dependencies)
   agents.js             one entry per agent (Claude, Codex, Grok, Antigravity, Hermes): command line, prompt delivery, stream parser
   capture.ps1           screen capture and strip decoder (PowerShell)
   install-slots.js      creates the slot addons and signal files
-  supervisor.js         restarts bridge.js on crash; the `wow-ai` command
+  supervisor.js         restarts bridge.js on crash; the `wow-ai` command (and `wow-ai setup` / `wow-ai service`)
+  service.js            `wow-ai service`: LaunchAgent / systemd unit / Startup launcher, log rotation, pid file
   config.example.json   template setup.js copies to config.json
-setup.js              one-shot installer
+setup.js              one-shot installer (the game side: addon, config.json, slot pool)
+install.sh, install.ps1  the one-line installers (curl | sh, irm | iex): Node check, download, command, setup, service
+homebrew/             the Homebrew tap layout (Formula/wow-ai.rb) and why it is the secondary route
 tests/                see below
-docs/                 ARCHITECTURE.md, AGENTS.md, CONFIGURATION.md, INSTALL-WINDOWS.md
+docs/                 INSTALL.md, ARCHITECTURE.md, AGENTS.md, CONFIGURATION.md, platform notes
 ```
 
 Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) first. The two transports (pixels out, load-on-demand slots in) follow from three facts about the WoW sandbox, and most design choices make sense only in that light.
@@ -51,6 +54,8 @@ To try changes in the game, run `node setup.js` (it re-copies the addon into `In
 | `node --test tests/map_addon_test.js` | The real `Map.lua` (with `WoWAI.lua`) in a Lua VM: sync and versions, pin projection on zone and continent maps, the navigator's yards, bearing and auto-advance, herb/ore nodes filtered by skill, and `/wow-ai map`. |
 | `node --test tests/decode_test.js` | `bridge/decode.js`, the screenshot transport's reader: `Codec.lua` in a Lua VM, rendered inside a 1920x1080 frame as PNG (every filter type, RGB and RGBA) and TGA (raw and RLE, 24 and 32 bit, both row orders), bright and dark palettes, offsets, bad checksum, truncation and an oversized length field. |
 | `node --test tests/screenshots_test.js` | `bridge/screenshots.js`: the client's `Screenshots` folder derived from `addonDir`, the file-name filter, and the watcher reporting a new file once its size settles while ignoring files from before it started. |
+| `node --test tests/service_test.js` | `bridge/service.js`: the LaunchAgent plist (and `plutil -lint` on macOS), the systemd unit and the Windows launcher it writes, `wow-ai service` argument parsing, log rotation and the self-rotating writer, the pid file, the launchctl output parser, and `status` on a clean machine. |
+| `node --test tests/install_test.js` | `install.sh` and `install.ps1`: they parse, the Node 22.2 gate accepts and rejects the right versions, unknown options and a missing Node fail with a hint, and `install.sh` runs nothing until fully read. |
 | `node tests/codec_test.js` | `Codec.lua` in a Lua VM, rendered to PNG with noise and gamma, decoded by `capture.ps1` (Windows) or `capture_x11.py` (elsewhere). Writes scratch images to `tests/tmp/` (gitignored). |
 | `npm run test:live` | Not part of `npm test`. Builds a sandbox under `tests/tmp/inject/` with a 5-slot pool and runs the bridge with `--inject` against a real agent CLI: Claude by default, `-- --agent codex` or `-- --agent grok` for the others. Needs that CLI installed and logged in. |
 
