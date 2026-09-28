@@ -98,7 +98,7 @@ test('Antigravity arguments and captured stream parser', () => {
 
 test('Hermes command modes, image forwarding and plain text completion', () => {
   const args = A.AGENTS.hermes.args({ cfg: { permissionMode: 'acceptEdits', model: 'm' }, cwd: 'C:\\work', resume: 's1', images: ['a.png'] });
-  assert.deepEqual(args, ['chat', '--query-file', '-', '-Q', '--in', 'C:\\work', '--source', 'tool', '--resume', 's1', '-m', 'm', '--image', 'a.png']);
+  assert.deepEqual(args, ['chat', '--query-file', '-', '--format', 'stream-json', '-Q', '--in', 'C:\\work', '--source', 'tool', '--resume', 's1', '-m', 'm', '--image', 'a.png']);
   for (const permissionMode of ['default', 'acceptEdits', 'bypassPermissions']) {
     assert.ok(!A.AGENTS.hermes.args({ cfg: { permissionMode }, cwd: '.', resume: '' }).includes('--yolo'));
   }
@@ -106,6 +106,37 @@ test('Hermes command modes, image forwarding and plain text completion', () => {
   assert.deepEqual(p.finish({ stdout: fs.readFileSync(path.join(__dirname, 'fixtures/agents/hermes-pong.stdout'), 'utf8'),
     stderr: fs.readFileSync(path.join(__dirname, 'fixtures/agents/hermes-pong.stderr'), 'utf8'), code: 0 }),
   { session: '20260925_134414_e62607', done: { text: 'PONG', error: false } });
+});
+
+test('Hermes stream-json: live tool progress, session from init, reply from result', () => {
+  const feed = (p, ev) => p.feed(ev);
+  const p = A.hermesParser();
+  const r0 = feed(p, { type: 'system', subtype: 'init', model: 'm', session_id: 's-777', timestamp: 1 });
+  assert.equal(r0.session, 's-777');
+  const r1 = feed(p, { type: 'tool_use', name: 'terminal', input: { command: 'npm test' }, timestamp: 2 });
+  assert.deepEqual(r1.progress, ['$ npm test']);
+  const r2 = feed(p, { type: 'tool_use', name: 'read_file', input: { path: 'C:\\p\\a.py' }, timestamp: 3 });
+  assert.deepEqual(r2.progress, ['read a.py']);
+  const r3 = feed(p, { type: 'tool_use', name: 'patch', input: { path: 'C:\\p\\b.lua' }, timestamp: 3 });
+  assert.deepEqual(r3.progress, ['edit b.lua']);
+  const r4 = feed(p, { type: 'text', text: 'PON', timestamp: 4 });
+  assert.deepEqual(r4.progress, []);
+  const r5 = feed(p, { type: 'text', text: 'G', timestamp: 5 });
+  assert.equal(r5.done, undefined);
+  const r6 = feed(p, { type: 'result', session_id: 's-777', exit_code: 0, text: 'PONG', tokens: {}, duration_ms: 5, timestamp: 6 });
+  assert.deepEqual(r6.done, { text: 'PONG', error: false });
+  // Non-zero exit is surfaced as an error result; unknown events are ignored.
+  const q = A.hermesParser();
+  assert.equal(q.feed({ type: 'result', session_id: 's-8', exit_code: 2, text: '', timestamp: 7 }).done.error, true);
+  assert.deepEqual(q.feed({ type: 'brand-new-event', whatever: 1 }).progress, []);
+  // A result without text falls back to the streamed text chunks.
+  const t = A.hermesParser();
+  t.feed({ type: 'text', text: 'hello', timestamp: 1 });
+  assert.deepEqual(t.feed({ type: 'result', session_id: 't-1', exit_code: 0, text: '', duration_ms: 1, timestamp: 2 }).done,
+    { text: 'hello', error: false });
+  // The plain-text finish() fallback still works for older Hermes builds.
+  const old = A.hermesParser();
+  assert.deepEqual(old.finish({ stdout: 'PONG', stderr: '', code: 0 }), { session: '', done: { text: 'PONG', error: false } });
 });
 
 test('agy review fixes: hermes stderr errors, yolo spellings, flag-like images, agy arg bound', () => {
