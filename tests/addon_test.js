@@ -1179,3 +1179,52 @@ test('plugins: a fresh install follows the bridge\'s default and sends no flag; 
   old.run('WoWAIDB.chats[2].plugin = ""; STUB.FireEvent("ADDON_LOADED", "WoWAI")');
   assert.equal(old.evaluate('WoWAIDB.chats[2].plugin'), '');
 });
+
+test('plugins: /wow-ai plugin binds the chat like /wow-ai agent, the Plugin... menu item opens a prefilled prompt, the footer and diag show the binding', () => {
+  const vm = newVM();
+  login(vm);
+  vm.run('STUB.RunTimers()');
+  nextSlot(vm, '{ now = time(), cwd = "", plugin = "ask", plugins = { "ask", "claude-code" }, replies = {} }');
+  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+  assert.equal(vm.evaluate('WoWAI.IsConnected()'), 'true');
+  const last = () => vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history].text');
+  const texts = () => vm.evaluate('table.concat(STUB.texts, "|")');
+  assert.ok(vm.evaluate('WoWAIChatMenu ~= nil') === 'true' && texts().includes('Plugin...'), 'the chat menu has a Plugin... item');
+  // Bound to nothing: the footer names the bridge's default, and so does the command.
+  assert.ok(texts().includes('vision: off   plugin: ask (bridge default)'), texts());
+  vm.run('SlashCmdList.WOWAI("plugin")');
+  assert.ok(last().startsWith('plugin is the bridge\'s default: ask'), last());
+  // Bind to the coding plugin: the flag goes out with the next message, on both transports.
+  vm.run('SlashCmdList.WOWAI("plugin Claude-Code")');
+  assert.equal(vm.evaluate('WoWAIDB.chats[1].plugin'), 'claude-code');
+  assert.ok(last().includes('plugin set to claude-code'), last());
+  vm.run('WoWAI.Send("fix the build")');
+  assert.equal(stripRecords(vm).find(r => r.text === 'fix the build').flags, 'plugin=claude-code');
+  assert.equal(vm.evaluate('WoWAIDB.outbox.plugin'), 'claude-code');
+  vm.run('STUB.texts = {}; WoWAI.UpdateStatus()');
+  assert.ok(texts().includes('vision: off   plugin: claude-code'), texts());
+  vm.run('SlashCmdList.WOWAI("diag")');
+  assert.ok(last().includes('\nplugin: claude-code (bridge has: ask, claude-code)'), last());
+  // An unknown plugin is refused; "default" unbinds; a message that merely starts with the word is sent.
+  vm.run('SlashCmdList.WOWAI("plugin factory")');
+  assert.equal(vm.evaluate('WoWAIDB.chats[1].plugin'), 'claude-code');
+  assert.ok(last().includes('Unknown plugin "factory"'), last());
+  vm.run('SlashCmdList.WOWAI("plugin default")');
+  assert.equal(vm.evaluate('WoWAIDB.chats[1].plugin'), '');
+  assert.ok(last().includes('plugin reset to the bridge\'s default: ask'), last());
+  vm.run('SlashCmdList.WOWAI("diag")');
+  assert.ok(last().includes('\nplugin: bridge default, ask (bridge has: ask, claude-code)'), last());
+  vm.run('SlashCmdList.WOWAI("plugin for my warrior please")');
+  assert.equal(vm.evaluate('WoWAIDB.chats[1].plugin'), '');
+  assert.ok(vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history].role') === 'user' || vm.evaluate('WoWAIDB.chats[1].draft') !== null, 'free text starting with the word is a message');
+  // The Plugin... menu item opens a prompt prefilled with the chat's binding; OK applies it.
+  vm.run('WoWAI.SetPlugin("ask"); WoWAI.PluginPrompt()');
+  assert.equal(vm.evaluate('STUB.popup.which'), 'WOWAI_PLUGIN');
+  assert.equal(vm.evaluate('STUB.popup.data.plugin'), 'ask');
+  vm.run(`local dialog = { editBox = { GetText = function() return "claude-code" end } }
+    StaticPopupDialogs.WOWAI_PLUGIN.OnAccept(dialog, STUB.popup.data)`);
+  assert.equal(vm.evaluate('WoWAIDB.chats[1].plugin'), 'claude-code');
+  // Help lists the command.
+  vm.run('SlashCmdList.WOWAI("help")');
+  assert.ok(last().includes('/wow-ai plugin [name]'));
+});

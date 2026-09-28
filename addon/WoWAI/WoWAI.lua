@@ -2203,6 +2203,80 @@ function WoWAI.AgentPrompt(id)
 	StaticPopup_Show("WOWAI_AGENT", AgentList(), run.bridgeAgent and AgentName(run.bridgeAgent) or "unknown until connected", { id = c.id, agent = c.agent or "" })
 end
 
+-- The plugin this chat is bound to, by id ("ask": general in-game chat,
+-- "claude-code": an agent session in a folder; docs/PLATFORM.md). Empty (or
+-- "-" / "default") = the bridge's default. The bridge starts a fresh session
+-- when a chat changes plugin, since a session belongs to the plugin that made it.
+local function PluginList()
+	return run.bridgePlugins and table.concat(run.bridgePlugins, ", ") or "ask, claude-code"
+end
+
+local function BridgePluginName()
+	return run.bridgePlugin or "unknown until connected"
+end
+
+function WoWAI.SetPlugin(rest, c)
+	c = c or ActiveChat()
+	if not c then return end
+	rest = Trim(rest or ""):lower()
+	if rest == "-" or rest == "default" then rest = "" end
+	if rest ~= "" and run.bridgePlugins and not Contains(run.bridgePlugins, rest) then
+		AddHistory(c, "system", "Unknown plugin \"" .. rest .. "\". The bridge has: " .. PluginList())
+		WoWAI.Render()
+		return
+	end
+	local changed = rest ~= (c.plugin or "")
+	c.plugin = rest
+	if rest ~= "" then
+		AddHistory(c, "system", "plugin set to " .. rest .. (changed and #c.history > 1 and "; the next message starts a fresh session with it" or ""))
+	elseif changed then
+		AddHistory(c, "system", "plugin reset to the bridge's default: " .. BridgePluginName())
+	else
+		AddHistory(c, "system", "plugin is the bridge's default: " .. BridgePluginName() .. " (/wow-ai plugin <name>, or right-click the chat and pick Plugin, to change; plugins: " .. PluginList() .. ")")
+	end
+	WoWAI.Render()
+end
+
+StaticPopupDialogs["WOWAI_PLUGIN"] = {
+	text = "Plugin for this chat\n\nOne of: %s.\nEmpty = the bridge's default (%s). Changing it starts a fresh session.",
+	button1 = OKAY,
+	button2 = CANCEL,
+	hasEditBox = 1,
+	editBoxWidth = 200,
+	maxLetters = 32,
+	timeout = 0,
+	whileDead = true,
+	hideOnEscape = true,
+	OnShow = function(dialog, data)
+		local box = dialog.GetEditBox and dialog:GetEditBox() or dialog.editBox
+		if box then
+			box:SetText(data and data.plugin or "")
+			box:HighlightText()
+			box:SetFocus()
+		end
+	end,
+	OnAccept = function(dialog, data)
+		local box = dialog.GetEditBox and dialog:GetEditBox() or dialog.editBox
+		local chat = data and FindChat(data.id)
+		if chat and box then WoWAI.SetPlugin(box:GetText(), chat) end
+	end,
+	EditBoxOnEnterPressed = function(box)
+		local dialog = box:GetParent()
+		StaticPopupDialogs["WOWAI_PLUGIN"].OnAccept(dialog, dialog.data)
+		dialog:Hide()
+	end,
+	EditBoxOnEscapePressed = function(box)
+		box:GetParent():Hide()
+	end,
+}
+
+-- Plugin dialog for a chat (the active one when no id is given).
+function WoWAI.PluginPrompt(id)
+	local c = (id and FindChat(id)) or ActiveChat()
+	if not c then return end
+	StaticPopup_Show("WOWAI_PLUGIN", PluginList(), BridgePluginName(), { id = c.id, plugin = c.plugin or "" })
+end
+
 StaticPopupDialogs["WOWAI_RENAME"] = {
 	text = "Rename this chat",
 	button1 = OKAY,
@@ -2523,7 +2597,15 @@ function WoWAI.UpdateStatus()
 	else
 		agentText = "(bridge default)"
 	end
-	ui.cwd:SetText("cwd: " .. cwdText .. "   agent: " .. agentText .. "   mode: " .. mode .. (ScreenshotMode() and " (screenshot)" or "") .. "   vision: " .. (db.settings.vision and "on" or "off"))
+	local pluginText
+	if c and c.plugin and c.plugin ~= "" then
+		pluginText = c.plugin
+	elseif run.bridgePlugin then
+		pluginText = run.bridgePlugin .. " (bridge default)"
+	else
+		pluginText = "(bridge default)"
+	end
+	ui.cwd:SetText("cwd: " .. cwdText .. "   agent: " .. agentText .. "   mode: " .. mode .. (ScreenshotMode() and " (screenshot)" or "") .. "   vision: " .. (db.settings.vision and "on" or "off") .. "   plugin: " .. pluginText)
 	if ui.resend then ui.resend:SetShown(c and c.pendingId ~= nil and mode == "pixel") end
 	if ui.refresh then ui.refresh:SetShown(mode ~= "pixel" or run.slotsExhausted or run.slotsMissing or run.pixelFailed or false) end
 	WoWAI.UpdateMini()
@@ -3111,11 +3193,11 @@ local function BuildUI()
 	local newBtn = MakeButton(panel, "+ New chat", PANEL_W - 16, function() WoWAI.NewChat() end)
 	newBtn:SetPoint("TOP", panel, "TOP", 0, -8)
 
-	-- Per-chat menu: Rename, Folder and Agent, opened by right-clicking a chat
-	-- row. A plain frame of our own rather than a Blizzard dropdown, so it looks
-	-- the same on every client.
+	-- Per-chat menu: Rename, Folder, Agent and Plugin, opened by right-clicking
+	-- a chat row. A plain frame of our own rather than a Blizzard dropdown, so it
+	-- looks the same on every client.
 	local menu = CreateFrame("Frame", "WoWAIChatMenu", f, "BackdropTemplate")
-	menu:SetSize(110, 4 * 20 + 12)
+	menu:SetSize(110, 5 * 20 + 12)
 	menu:SetFrameStrata("TOOLTIP")
 	menu:SetBackdrop({
 		bgFile = "Interface\\ChatFrame\\ChatFrameBackground",
@@ -3150,6 +3232,7 @@ local function BuildUI()
 	MenuItem("Rename...", 1, WoWAI.RenamePrompt)
 	MenuItem("Folder...", 2, WoWAI.FolderPrompt)
 	MenuItem("Agent...", 3, WoWAI.AgentPrompt)
+	MenuItem("Plugin...", 4, WoWAI.PluginPrompt)
 	-- Close once the mouse has wandered away from the menu and the row it came from.
 	menu:SetScript("OnUpdate", function(self, dt)
 		if not MouseIsOver then return end
@@ -3497,6 +3580,7 @@ local HELP = table.concat({
 	"/wow-ai delete                 delete the current chat",
 	"/wow-ai cd <folder>            folder this chat's agent works in (relative to the bridge's folder; no folder = back to default). Right-clicking the chat in the left panel and picking Folder does the same",
 	"/wow-ai agent [name]           which agent this chat talks to (no name = show; default = the bridge's). Right-clicking the chat and picking Agent does the same",
+	"/wow-ai plugin [name]          what this chat is for: ask (general in-game chat, the default) or claude-code (an agent session in a folder). No name = show; default = the bridge's. Right-clicking the chat and picking Plugin does the same",
 	"/wow-ai reset                  next message in this chat starts a fresh agent session",
 	"/wow-ai context [on|off]       what the agent is told about your character and where you are (no argument = show it)",
 	"/wow-ai vision [on|off]        send a picture of your screen with each message, so the agent can see what you see (screenshot transport; off by default)",
@@ -3544,7 +3628,7 @@ local COMMAND_ARGS = {
 	look = true, -- /wow-ai look <question>: one message with a picture of the screen
 	auto = OnOffOrNumber,
 	echo = function(rest) return rest == "" or rest == "summary" or rest == "full" or rest == "short" or rest == "off" or tonumber(rest) ~= nil end,
-	bind = 1, agent = 1,
+	bind = 1, agent = 1, plugin = 1,
 	chat = ChatArgument, chats = ChatArgument,
 	cd = true, new = true, rename = true,
 	map = true, -- /wow-ai map ...: Map.lua (layers, navigator, herb/ore nodes)
@@ -3629,6 +3713,9 @@ SlashCmdList["WOWAI"] = function(msg)
 		if WoWAIMap then WoWAIMap.Command(rest) else print("|cff66ccff[WoW AI]|r the map module did not load") end
 	elseif cmd == "agent" then
 		WoWAI.SetAgent(rest, c)
+		WoWAI.Toggle(true)
+	elseif cmd == "plugin" then
+		WoWAI.SetPlugin(rest, c)
 		WoWAI.Toggle(true)
 	elseif cmd == "reset" then
 		c.resetNext = true
@@ -3766,6 +3853,7 @@ SlashCmdList["WOWAI"] = function(msg)
 				.. (run.shotStats and string.format(", screenshots: %d taken, %d confirmed, %d failed, %d without event", run.shotStats.taken, run.shotStats.ok, run.shotStats.failed, run.shotStats.timeouts) or "")
 				.. (s.shotFormatSaved and (", screenshotFormat saved: " .. s.shotFormatSaved) or ""),
 			"vision: " .. (s.vision and "on" or "off") .. (s.vision and s.transport ~= "screenshot" and " (needs the screenshot transport; the pixel capture never sees more than the strip)" or ""),
+			"plugin: " .. ((c.plugin and c.plugin ~= "") and c.plugin or ("bridge default, " .. (run.bridgePlugin or "unknown until connected"))) .. " (bridge has: " .. PluginList() .. ")",
 		}
 		for _, ch in ipairs(db.chats) do
 			local a = run.act and run.act[ch.id]
