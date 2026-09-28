@@ -49,6 +49,9 @@ local db
 local ui = {}
 -- Transport state for this UI session. outbound[id] = { chat, cwd, flags, text, sentAt, acked }
 local run = { outbound = {} }
+-- Whisper tabs (the section after the game context). Declared up here because
+-- Send, ApplyReplies and Finish use it and come first in the file.
+local Whisper = {}
 
 -- Shared window backdrop. Declared up here because ShowCopy (rendering section)
 -- uses it too: a later `local` would be invisible there and resolve to a nil global.
@@ -214,6 +217,7 @@ local function InitDB()
 	end
 	s.echo = s.echo or "summary"
 	s.mode = s.mode or "pixel"
+	if s.whisper == nil then s.whisper = false end -- each chat as a native whisper tab; opt-in
 	s.interval = s.interval or 20
 	s.cwd = s.cwd or DEFAULT_CWD
 	s.width = s.width or 780
@@ -898,6 +902,7 @@ local function ApplyReplies(replies)
 				Finish(c, "system", "Bridge error: " .. tostring(r.text), denied)
 			elseif r.status == "working" then
 				c.progress = r.text
+				Whisper.Progress(c, r.text)
 			end
 		end
 	end
@@ -1109,7 +1114,7 @@ Finish = function(chat, role, text, denied, agent, summary, macros)
 		chat.draft = nil
 	end
 	WoWAI.Render()
-	WoWAI.Notify(chat, text, agent, summary)
+	WoWAI.Notify(chat, text, agent, summary, role, denied)
 end
 
 ---------------------------------------------------------------------------
@@ -1376,6 +1381,438 @@ end
 ---------------------------------------------------------------------------
 
 -- allow: optional list of permission rules to grant before this message runs.
+---------------------------------------------------------------------------
+-- Whisper tabs
+---------------------------------------------------------------------------
+
+-- "/wow-ai whisper on" (off by default): every chat gets a native whisper tab
+-- in the chat dock, opened on its first message the way a stranger's whisper
+-- opens one. Replies are written into it as incoming whispers and the tab
+-- flashes when it isn't the one on screen; what you send shows as "To Claude:";
+-- Enter in that tab goes to the agent. The addon window is untouched and stays
+-- the record of the chat. Tabs are temporary windows: gone with a reload,
+-- opened again on the next message.
+--
+-- Nothing here may reach the server. The tab's edit box holds a whisper to a
+-- name no player has ("Claude"), so every send path is cut before the game's
+-- own. Three layers, because this client's chat code is a mixin behind the old
+-- globals and only the game knows which runs first: the box's OnEnterPressed
+-- script (what Enter runs), its SendText and SendMessage methods (the /r hook
+-- already lives there, and shipped), and the ChatEdit_SendText and
+-- ChatFrameUtil.SendText entry points. Should a whisper still get out, the
+-- server answers "No player named 'Claude'" as a system message: a filter turns
+-- that into a loud LEAK line and counts it (/aiwhisper status), so a failure
+-- can't pass for the game's business.
+
+local WHISPER_TEXT_MAX = 4000 -- characters of a reply written into the tab before it points at the window
+local WHISPER_PROBE_NAME = "Wowaiprobe" -- /aiwhisper leak whispers this nobody to prove the leak filter works
+
+local function WhisperOn()
+	return db ~= nil and db.settings.whisper == true
+end
+
+local function WhisperColor(kind, r, g, b)
+	local info = type(ChatTypeInfo) == "table" and ChatTypeInfo[kind]
+	if type(info) == "table" and info.r then return info.r, info.g, info.b end
+	return r, g, b
+end
+
+-- The game's own format string when it has one ("%s whispers: "), else ours.
+local function WhisperFormat(fmt, default, arg)
+	if type(fmt) == "string" then
+		local ok, s = pcall(string.format, fmt, arg)
+		if ok then return s end
+	end
+	return string.format(default, arg)
+end
+
+-- Every chat frame the dock knows, temporary ones included.
+local function WhisperFrames()
+	local list, seen = {}, {}
+	local function add(f)
+		if type(f) == "table" and not seen[f] then
+			seen[f] = true
+			table.insert(list, f)
+		end
+	end
+	if type(CHAT_FRAMES) == "table" then
+		for _, name in ipairs(CHAT_FRAMES) do add(_G[name]) end
+	end
+	for i = 1, (NUM_CHAT_WINDOWS or 10) + 30 do add(_G["ChatFrame" .. i]) end
+	return list
+end
+
+local function WhisperAlive(frame)
+	return frame ~= nil and frame.inUse ~= false and (frame.isDocked or frame:IsShown()) and true or false
+end
+
+local function WhisperTab(frame)
+	return frame.tab or _G[frame:GetName() .. "Tab"]
+end
+
+local function WhisperBox(frame)
+	return frame.editBox or _G[frame:GetName() .. "EditBox"]
+end
+
+-- Still the tab we opened: alive, and its whisper still aimed at our agent (a
+-- closed temporary window is reused by the game for the next real whisper).
+local function WhisperOwns(chat, frame)
+	if not frame or frame.wowaiChatId ~= chat.id or not WhisperAlive(frame) then return false end
+	local eb = WhisperBox(frame)
+	local target = eb and eb.GetAttribute and eb:GetAttribute("tellTarget")
+	return target == nil or frame.wowaiTarget == nil or tostring(target):lower() == frame.wowaiTarget:lower()
+end
+
+local function WhisperWrite(frame, text, r, g, b)
+	if frame and frame.AddMessage then pcall(frame.AddMessage, frame, text, r, g, b) end
+end
+
+function Whisper.Retitle(chat)
+	local frame = run.whisperTabs and run.whisperTabs[chat.id]
+	if not frame then return end
+	local title = Display(chat.name)
+	if frame.wowaiTitle == title then return end
+	frame.wowaiTitle = title
+	local ok = type(FCF_SetWindowName) == "function" and pcall(FCF_SetWindowName, frame, title, true)
+	if not ok then
+		local tab = WhisperTab(frame)
+		if tab and tab.SetText then pcall(tab.SetText, tab, title) end
+	end
+end
+
+-- Enter on a chat edit box. Wrapped once per box, ours and the game's own, so a
+-- whisper to an agent goes to the addon wherever it is typed. The original
+-- handler runs for everything else.
+local function WhisperHookBox(eb)
+	if type(eb) ~= "table" or eb.wowaiWhisperHooked then return end
+	eb.wowaiWhisperHooked = true
+	local script = eb.GetScript and eb:GetScript("OnEnterPressed")
+	eb.wowaiOrigEnter = script -- /aiwhisper send drives the game's own path with it
+	if eb.SetScript then
+		eb:SetScript("OnEnterPressed", function(self, ...)
+			if Whisper.Intercept(self, "script") then return end
+			if script then return script(self, ...) end
+		end)
+	end
+	for _, name in ipairs({ "SendText", "SendMessage" }) do
+		local orig = eb[name]
+		if type(orig) == "function" then
+			eb[name] = function(self, ...)
+				if Whisper.Intercept(self, name) then return end
+				return orig(self, ...)
+			end
+		end
+	end
+end
+
+local function WhisperAdopt(chat, frame)
+	run.whisperTabs = run.whisperTabs or {}
+	frame.wowaiChatId = chat.id
+	frame.wowaiTarget = frame.wowaiTarget or ChatAgentName(chat)
+	run.whisperTabs[chat.id] = frame
+	WhisperHookBox(WhisperBox(frame))
+	Whisper.Retitle(chat)
+	return frame
+end
+
+-- The chat's tab: the one it has, one left in the dock from earlier this
+-- session (same name, nothing else claims it), or a new one when asked for.
+-- `select` brings a new tab to the front; a reply leaves the current one and
+-- flashes instead.
+function Whisper.FrameFor(chat, create, select)
+	if not WhisperOn() or not chat then return nil end
+	run.whisperTabs = run.whisperTabs or {}
+	local frame = run.whisperTabs[chat.id]
+	if WhisperOwns(chat, frame) then
+		Whisper.Retitle(chat)
+		return frame
+	end
+	run.whisperTabs[chat.id] = nil
+	local title = Display(chat.name):lower()
+	for _, f in ipairs(WhisperFrames()) do
+		if f.isTemporary and WhisperAlive(f) then
+			local tab = WhisperTab(f)
+			local name = tab and tab.GetText and tab:GetText()
+			local unclaimed = f.wowaiChatId == nil or not FindChat(f.wowaiChatId)
+			if WhisperOwns(chat, f) or (unclaimed and type(name) == "string" and name:lower() == title) then
+				return WhisperAdopt(chat, f)
+			end
+		end
+	end
+	if not create or type(FCF_OpenTemporaryWindow) ~= "function" then return nil end
+	local ok, f = pcall(FCF_OpenTemporaryWindow, "WHISPER", ChatAgentName(chat), DEFAULT_CHAT_FRAME, select and true or false)
+	if not ok or type(f) ~= "table" then
+		run.whisperError = tostring(f)
+		return nil
+	end
+	f.wowaiTitle = nil
+	f.wowaiTarget = ChatAgentName(chat)
+	return WhisperAdopt(chat, f)
+end
+
+-- Flash the tab as a real whisper does. The game's own function when it has
+-- one, else the tab glow by hand; a tab already on screen needs none.
+function Whisper.Flash(frame)
+	local how
+	if frame:IsShown() then
+		how = "visible"
+	elseif type(FCF_StartAlertFlash) == "function" and pcall(FCF_StartAlertFlash, frame) then
+		how = "FCF_StartAlertFlash"
+	else
+		local tab = WhisperTab(frame)
+		local glow = tab and tab.glow
+		if glow and type(UIFrameFlash) == "function" and pcall(UIFrameFlash, glow, 1, 1, -1, false, 0, 0, "chat") then
+			tab.alerting = true
+			how = "UIFrameFlash"
+		elseif glow and glow.Show then
+			pcall(glow.Show, glow)
+			how = "glow"
+		else
+			how = "none"
+		end
+	end
+	run.whisperFlash = how
+	return how
+end
+
+function Whisper.System(chat, text, create)
+	local frame = Whisper.FrameFor(chat, create)
+	if not frame then return false end
+	WhisperWrite(frame, Display(text), WhisperColor("SYSTEM", 1, 1, 0))
+	return true
+end
+
+-- A finished reply as an incoming whisper: "[Claude] whispers: first line", the
+-- other lines under it, then the flash. Returns true when the tab has it; the
+-- game-chat echo is skipped then, as the game does for a whisper with a window
+-- of its own.
+function Whisper.Reply(chat, text, agent, role, denied)
+	local frame = Whisper.FrameFor(chat, true, false)
+	if not frame then return false end
+	local who = ReplyAgentName(chat, agent)
+	local open = "|Hwowai:open:" .. chat.id .. "|h|cff7ec8ff[open]|r|h"
+	if role == "system" then
+		WhisperWrite(frame, Display(text) .. "  " .. open, WhisperColor("SYSTEM", 1, 1, 0))
+	else
+		local r, g, b = WhisperColor("WHISPER", 1, 0.5, 1)
+		local prefix = WhisperFormat(CHAT_WHISPER_GET, "%s whispers: ", "|Hwowai:reply:" .. chat.id .. "|h[" .. who .. "]|h")
+		local body = Display(text)
+		local first, shown = true, 0
+		for line in (body .. "\n"):gmatch("(.-)\n") do
+			if line:match("%S") then
+				if shown + #line > WHISPER_TEXT_MAX then
+					WhisperWrite(frame, "|cff888888... " .. (#body - shown) .. " more characters, click " .. open .. " to read it all|r", r, g, b)
+					break
+				end
+				WhisperWrite(frame, (first and prefix or "") .. line, r, g, b)
+				first = false
+				shown = shown + #line
+			end
+		end
+		if first then WhisperWrite(frame, prefix, r, g, b) end
+	end
+	if denied then
+		WhisperWrite(frame, who .. " needs permission for " .. Display(table.concat(denied, ", ")) .. ": click " .. open .. " and press Allow", WhisperColor("SYSTEM", 1, 1, 0))
+	end
+	if run.whisperProgress then run.whisperProgress[chat.id] = nil end
+	Whisper.Flash(frame)
+	return true
+end
+
+-- What you sent, as the game shows your own whispers, then a working line.
+function Whisper.Sent(chat, text)
+	local frame = Whisper.FrameFor(chat, true, false)
+	if not frame then return false end
+	local who = ChatAgentName(chat)
+	local flat = (Display(text):gsub("%s*\n%s*", " "))
+	WhisperWrite(frame, WhisperFormat(CHAT_WHISPER_INFORM_GET, "To %s: ", who) .. flat, WhisperColor("WHISPER_INFORM", 1, 0.5, 1))
+	WhisperWrite(frame, who .. " is working on it...", WhisperColor("SYSTEM", 1, 1, 0))
+	run.whisperProgress = run.whisperProgress or {}
+	run.whisperProgress[chat.id] = nil
+	return true
+end
+
+-- The bridge's "working" text, once per change, as a system line.
+function Whisper.Progress(chat, text)
+	text = Trim(tostring(text or ""))
+	if text == "" then return end
+	run.whisperProgress = run.whisperProgress or {}
+	if run.whisperProgress[chat.id] == text then return end
+	local frame = Whisper.FrameFor(chat, false)
+	if not frame then return end
+	run.whisperProgress[chat.id] = text
+	local flat = (Display(text):gsub("%s*\n%s*", " "))
+	if #flat > 200 then flat = flat:sub(1, 200) .. "..." end
+	WhisperWrite(frame, ChatAgentName(chat) .. ": " .. flat, WhisperColor("SYSTEM", 1, 1, 0))
+end
+
+function Whisper.Close(chat)
+	local frame = run.whisperTabs and run.whisperTabs[chat.id]
+	if not frame then return end
+	run.whisperTabs[chat.id] = nil
+	frame.wowaiChatId = nil
+	if run.whisperProgress then run.whisperProgress[chat.id] = nil end
+	if type(FCF_Close) == "function" and WhisperAlive(frame) then pcall(FCF_Close, frame) end
+end
+
+function Whisper.CloseAll()
+	for _, c in ipairs(db.chats) do Whisper.Close(c) end
+end
+
+-- The chat behind an agent's name typed as a whisper target: the active chat
+-- when it talks to that agent, else the one that last replied, else the first.
+local function WhisperAgentChat(target)
+	target = tostring(target or ""):lower()
+	if target == "" then return nil end
+	local best
+	for _, c in ipairs(db.chats) do
+		if ChatAgentName(c):lower() == target then
+			if c.id == db.activeChat then return c end
+			if c.id == run.lastReplyChat or not best then best = c end
+		end
+	end
+	return best
+end
+
+local TELL_COMMANDS = { w = true, whisper = true, t = true, tell = true }
+
+-- "/w Claude text" typed anywhere: the target and the text, when it is a tell.
+local function WhisperParseTell(text)
+	local cmd, target, rest = text:match("^%s*/(%a+)%s+(%S+)%s*(.*)$")
+	if cmd and TELL_COMMANDS[cmd:lower()] then return target, rest end
+end
+
+-- The agent chat a box's Enter belongs to, or nil for the game's own send: a
+-- tell to an agent's name, or a box whose whisper is aimed at one (our tab's
+-- box by the tab it belongs to, any other by the name).
+function Whisper.ChatForBox(eb)
+	if not WhisperOn() or type(eb) ~= "table" then return nil end
+	local text = eb.GetText and eb:GetText() or ""
+	local target, rest = WhisperParseTell(text)
+	if target then
+		local chat = WhisperAgentChat(target)
+		if chat then return chat, rest end
+		return nil
+	end
+	if text:match("^%s*/") then return nil end
+	if not eb.GetAttribute or eb:GetAttribute("chatType") ~= "WHISPER" then return nil end
+	local frame = eb.chatFrame or (eb.GetParent and eb:GetParent())
+	local chat = type(frame) == "table" and frame.wowaiChatId and FindChat(frame.wowaiChatId)
+	if chat and run.whisperTabs and run.whisperTabs[chat.id] == frame then return chat, text end
+	return WhisperAgentChat(eb:GetAttribute("tellTarget")), text
+end
+
+-- Enter on a box whose whisper belongs to an agent: the box is emptied and put
+-- away the way a send does it, and the text goes to the addon. Returns true when
+-- swallowed, and then the game's own path must not run.
+function Whisper.Intercept(eb, layer)
+	local chat, text = Whisper.ChatForBox(eb)
+	if not chat then return false end
+	text = Trim(text or "")
+	run.whisperSwallowed = (run.whisperSwallowed or 0) + 1
+	run.whisperLayer = layer
+	pcall(function()
+		if text ~= "" and eb.AddHistoryLine then eb:AddHistoryLine(text) end
+		eb:SetText("")
+		if type(eb.OnEscapePressed) == "function" then
+			eb:OnEscapePressed()
+		elseif type(ChatEdit_OnEscapePressed) == "function" then
+			ChatEdit_OnEscapePressed(eb)
+		elseif type(ChatEdit_DeactivateChat) == "function" then
+			ChatEdit_DeactivateChat(eb)
+		else
+			eb:ClearFocus()
+		end
+	end)
+	if run.whisperProbe then
+		-- /aiwhisper send: count the catch instead of bothering the agent.
+		run.whisperProbe(chat, text, layer)
+		return true
+	end
+	if text == "" then return true end
+	if db.activeChat ~= chat.id then WoWAI.SwitchChat(chat.id) end
+	if chat.pendingId then
+		Whisper.System(chat, ChatAgentName(chat) .. " is still working on your last message; this one is kept as a draft in the window (/wow-ai cancel gives up on the last one)")
+	elseif not WoWAI.IsConnected() then
+		Whisper.System(chat, "Not connected to the bridge yet, connecting; the message waits in the window")
+	end
+	WoWAI.Send(text)
+	return true
+end
+
+-- The name in "No player named '%s' is currently playing.", or nil.
+local function WhisperNotFoundName(msg)
+	local fmt = type(ERR_CHAT_PLAYER_NOT_FOUND_S) == "string" and ERR_CHAT_PLAYER_NOT_FOUND_S or "No player named '%s' is currently playing."
+	local pattern = fmt:gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%0")
+	pattern = pattern:gsub("%%%%s", "(.-)")
+	return tostring(msg or ""):match("^" .. pattern .. "$")
+end
+
+-- A whisper that got out comes back as this system message: make it a loud
+-- leak report instead of a line that looks like the game's business.
+local function WhisperLeakFilter(_, _, msg, ...)
+	if not WhisperOn() then return false end
+	local name = WhisperNotFoundName(msg)
+	if not name then return false end
+	name = name:lower()
+	local ours = name == WHISPER_PROBE_NAME:lower()
+	for _, c in ipairs(db.chats) do
+		if ChatAgentName(c):lower() == name then ours = true end
+	end
+	for _, n in pairs(AGENT_NAMES) do
+		if n:lower() == name then ours = true end
+	end
+	if not ours then return false end
+	run.whisperLeaks = (run.whisperLeaks or 0) + 1
+	run.whisperLastLeak = msg
+	return false, "|cffff4040[WoW AI] WHISPER LEAK: " .. tostring(msg) .. " - a send reached the server. Run /aiwhisper status and report it.|r", ...
+end
+
+local whisperInstalled = false
+
+function Whisper.HookBoxes()
+	for i = 1, (NUM_CHAT_WINDOWS or 10) do WhisperHookBox(_G["ChatFrame" .. i .. "EditBox"]) end
+	for _, f in ipairs(WhisperFrames()) do WhisperHookBox(WhisperBox(f)) end
+end
+
+-- The hooks, once, the first time the setting is on (at login or when turned
+-- on). They stay in place but do nothing while it is off.
+function Whisper.Install()
+	if whisperInstalled then return end
+	whisperInstalled = true
+	run.whisperLayers = { "OnEnterPressed", "SendText/SendMessage" }
+	if type(ChatEdit_SendText) == "function" then
+		local orig = ChatEdit_SendText
+		ChatEdit_SendText = function(eb, ...)
+			if Whisper.Intercept(eb, "ChatEdit_SendText") then return end
+			return orig(eb, ...)
+		end
+		table.insert(run.whisperLayers, "ChatEdit_SendText")
+	end
+	if type(ChatFrameUtil) == "table" and type(ChatFrameUtil.SendText) == "function" then
+		local orig = ChatFrameUtil.SendText
+		ChatFrameUtil.SendText = function(eb, ...)
+			if Whisper.Intercept(eb, "ChatFrameUtil.SendText") then return end
+			return orig(eb, ...)
+		end
+		table.insert(run.whisperLayers, "ChatFrameUtil.SendText")
+	end
+	if type(ChatFrame_AddMessageEventFilter) == "function" then
+		pcall(ChatFrame_AddMessageEventFilter, "CHAT_MSG_SYSTEM", WhisperLeakFilter)
+		table.insert(run.whisperLayers, "leak filter")
+	end
+	Whisper.HookBoxes()
+end
+
+function Whisper.Status()
+	local tabs = 0
+	for _, c in ipairs(db.chats) do
+		if WhisperOwns(c, run.whisperTabs and run.whisperTabs[c.id]) then tabs = tabs + 1 end
+	end
+	return "whisper tabs: " .. (WhisperOn() and "on" or "off") .. ", " .. tabs .. " open, sends swallowed: " .. (run.whisperSwallowed or 0)
+		.. ", LEAKS: " .. (run.whisperLeaks or 0) .. (run.whisperError and (", last open error: " .. run.whisperError) or "")
+end
+
 function WoWAI.Send(text, allow)
 	local c = ActiveChat()
 	if not c then return end
@@ -1452,6 +1889,7 @@ function WoWAI.Send(text, allow)
 		if first then c.name = AutoTitle(text) or c.name end
 	end
 	db.settings.shown = true
+	Whisper.Sent(c, text)
 
 	if db.settings.mode == "pixel" then
 		run.outbound[id] = { chat = c.id, cwd = c.cwd, flags = flags, name = c.name, text = text, ctx = ctx, sentAt = GetTime() }
@@ -1743,6 +2181,7 @@ StaticPopupDialogs["WOWAI_RENAME"] = {
 		local name = box and Trim(box:GetText() or "") or ""
 		if chat and name ~= "" then
 			chat.name = name:sub(1, 24)
+			Whisper.Retitle(chat)
 			WoWAI.Render()
 		end
 	end,
@@ -1773,6 +2212,7 @@ function WoWAI.DeleteChat(id)
 	if not c then c, idx = ActiveChat() end
 	if not c then return end
 	ForgetOnBridge(c)
+	Whisper.Close(c)
 	if #db.chats == 1 then
 		wipe(c.history)
 		c.pendingId, c.progress, c.unread, c.draft = nil, nil, 0, nil
@@ -2350,15 +2790,19 @@ local function EchoToChat(chat, text, agent, summary)
 	print("    " .. ChatLinks(chat):sub(3))
 end
 
--- A reply landed. Always play the sound and echo it to the game chat; if that
--- chat isn't on screen, also flash the screen text and light up the mini bar.
-function WoWAI.Notify(chat, text, agent, summary)
+-- A reply landed. Always play the sound and echo it to the game chat (into the
+-- chat's whisper tab when those are on: a whisper with a window of its own
+-- stays out of General); if that chat isn't on screen, also flash the screen
+-- text and light up the mini bar.
+function WoWAI.Notify(chat, text, agent, summary, role, denied)
 	pcall(PlaySound, 3081)
 	WoWAI.UpdateMini()
 	-- Until a real whisper arrives, /r replies to this chat.
 	run.lastMessenger = "agent"
 	run.lastReplyChat = chat.id
-	EchoToChat(chat, text, agent, summary)
+	if not Whisper.Reply(chat, text, agent, role, denied) then
+		EchoToChat(chat, text, agent, summary)
+	end
 	if ui.frame and ui.frame:IsShown() and db.activeChat == chat.id then return end
 	if UIErrorsFrame then
 		UIErrorsFrame:AddMessage(ReplyAgentName(chat, agent) .. " replied in " .. Display(chat.name), 0.5, 0.8, 1, 1)
@@ -2999,6 +3443,7 @@ local HELP = table.concat({
 	"/wow-ai hide                   hide the window completely",
 	"/ai <text>                         send <text> to the current chat straight from the game chat box (/wow-ai <text> too). A message that starts with a command word is still sent when the rest of the line doesn't fit that command",
 	"/r <text>                          replies to the agent when it was the last to message you (else normal whisper reply)",
+	"/wow-ai whisper on|off        each chat as a native whisper tab: replies flash it like a player's whisper, typing in it goes to the agent (off by default)",
 	"/wow-ai echo summary|full|short|off|<chars>   how much of each reply to print in the game chat (summary = the agent's closing TL;DR lines)",
 	"/wow-ai longchat on|off        let the game chat box take 4000 characters (for long /ai messages)",
 	"/wow-ai new [name]             start a new chat (its own agent session, like a new terminal)",
@@ -3047,6 +3492,7 @@ local COMMAND_ARGS = {
 	context = { [""] = true, on = true, off = true }, ctx = { [""] = true, on = true, off = true },
 	mode = { [""] = true, pixel = true, reload = true },
 	signal = { [""] = true, on = true, off = true }, longchat = { [""] = true, on = true, off = true },
+	whisper = { [""] = true, on = true, off = true },
 	auto = OnOffOrNumber,
 	echo = function(rest) return rest == "" or rest == "summary" or rest == "full" or rest == "short" or rest == "off" or tonumber(rest) ~= nil end,
 	bind = 1, agent = 1,
@@ -3119,6 +3565,7 @@ SlashCmdList["WOWAI"] = function(msg)
 	elseif cmd == "rename" then
 		if rest ~= "" then
 			c.name = rest:sub(1, 24)
+			Whisper.Retitle(c)
 			WoWAI.Render()
 		else
 			WoWAI.RenameActive()
@@ -3208,6 +3655,22 @@ SlashCmdList["WOWAI"] = function(msg)
 		if rest == "on" then s.signal = true elseif rest == "off" then s.signal = false end
 		AddHistory(c, "system", "signal check is " .. (s.signal and "on" or "off"))
 		WoWAI.Render()
+	elseif cmd == "whisper" then
+		if rest == "on" then
+			s.whisper = true
+			Whisper.Install()
+			local frame = Whisper.FrameFor(c, true, true)
+			AddHistory(c, "system", frame
+				and ("Whisper tabs are ON: this chat is the \"" .. Display(c.name) .. "\" tab in the chat dock. Type there and press Enter to talk to " .. ChatAgentName(c) .. "; replies flash the tab. Other chats get a tab with their first message. /wow-ai whisper off closes them.")
+				or ("Whisper tabs are ON, but this client could not open a chat tab" .. (run.whisperError and (": " .. run.whisperError) or " (no FCF_OpenTemporaryWindow)") .. ". Replies keep going to the game chat as before."))
+		elseif rest == "off" then
+			s.whisper = false
+			Whisper.CloseAll()
+			AddHistory(c, "system", "Whisper tabs are off; replies go to the game chat as before")
+		else
+			AddHistory(c, "system", Whisper.Status() .. " (/wow-ai whisper on|off: each chat as a native whisper tab)")
+		end
+		WoWAI.Render()
 	elseif cmd == "slots" then
 		local free = 0
 		for i = 1, SLOT_COUNT do
@@ -3240,6 +3703,7 @@ SlashCmdList["WOWAI"] = function(msg)
 			"presence: head at " .. tostring(run.presence and run.presence.last or "?") .. ", beats seen: " .. tostring(run.presence and run.presence.beats or 0),
 			select(5, WoWAI.BridgeState()),
 			"mode: " .. s.mode .. ", session token: " .. tostring(db.session),
+			Whisper.Status(),
 			"transport: " .. tostring(s.transport or "pixel") .. (s.transport == "screenshot" and type(Screenshot) ~= "function" and " (Screenshot() missing: strip stays up)" or "")
 				.. (s.transport == "screenshot" and s.stripLevels and string.format(", strip levels %d/%d", s.stripLevels.off, s.stripLevels.on) or "")
 				.. (run.shotStats and string.format(", screenshots: %d taken, %d confirmed, %d failed, %d without event", run.shotStats.taken, run.shotStats.ok, run.shotStats.failed, run.shotStats.timeouts) or "")
@@ -3341,6 +3805,7 @@ ev:SetScript("OnEvent", function(self, event, arg1)
 		WoWAI.UpdateDot()
 		if db.settings.longchat then ApplyLongChat() end
 		HookReplyCommand()
+		if db.settings.whisper then Whisper.Install() end
 		C_Timer.NewTicker(TICK_SECONDS, Tick)
 		C_Timer.After(3, WoWAI.SayHello)
 	elseif event == "UPDATE_MACROS" then
