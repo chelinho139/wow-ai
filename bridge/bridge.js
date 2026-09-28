@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 'use strict';
-// WoW AI bridge: the half of ClaudeWoW that lives outside the game.
+// Claude WoW bridge: the half of ClaudeWoW that lives outside the game.
 //
 //   OUT  capture.ps1 screen-captures the addon's pixel strip -> one or more
 //        {session, chat, id, cwd, flags, text} records per frame; or, in
@@ -27,8 +27,8 @@
 //   --project <dir>   default folder for chats that haven't picked one
 //
 // Like the agent CLIs themselves, the bridge works in the folder it was started
-// from: `cd my-project && wow-ai` makes my-project the default for every chat
-// that hasn't chosen its own with /wow-ai cd. Started from inside this repo (npm
+// from: `cd my-project && claude-wow` makes my-project the default for every chat
+// that hasn't chosen its own with /claude-wow cd. Started from inside this repo (npm
 // start), it falls back to defaultCwd in config.json.
 
 const fs = require('fs');
@@ -41,6 +41,7 @@ const D = require('./decode');   // PNG/TGA reader + strip decoder for the scree
 const S = require('./screenshots'); // the Screenshots folder watcher (tests/screenshots_test.js)
 const V = require('./vision');   // vision: the screenshot's game view, cropped and downscaled for the agent (tests/vision_test.js)
 const PL = require('./plugins'); // the plugin registry and routing (tests/plugins_test.js)
+const H = require('./home');     // where config, state and logs live (tests/home_test.js)
 
 // The plugins this bridge has (docs/PLATFORM.md). Registration order is the
 // order match() is asked in, and the first one is the default unless
@@ -52,10 +53,13 @@ registry.register(require('./plugins/ask'));
 registry.register(require('./plugins/claude-code'));
 
 const HERE = __dirname;
-const CONFIG_FILE = path.join(HERE, 'config.json');
-const STATE_FILE = path.join(HERE, 'state.json');
-const LOG_FILE = path.join(HERE, 'bridge.log');
-const TMP_DIR = path.join(HERE, 'tmp'); // prompt files for agents that read the prompt from disk
+// Config, state, transcripts, log and scratch live in the home folder (home.js:
+// CLAUDE_WOW_HOME, ~/.claude-wow, or bridge/ for an install from before it).
+const HOME = H.resolve();
+const CONFIG_FILE = HOME.config;
+const STATE_FILE = HOME.state;
+const LOG_FILE = HOME.log;
+const TMP_DIR = HOME.tmp; // prompt files for agents that read the prompt from disk
 
 const argv = process.argv.slice(2);
 if (argv.includes('--help') || argv.includes('-h')) {
@@ -63,14 +67,14 @@ if (argv.includes('--help') || argv.includes('-h')) {
     'Runs the WoW AI bridge. Chats without a folder of their own work in <dir>,\n' +
     'or in the folder you started it from, or in defaultCwd from bridge/config.json.\n' +
     '--image attaches a screenshot to an --inject run the way vision does in game.\n' +
-    `Agents: ${A.agentIds().join(', ')} (the default is "agent" in config.json; chats pick with /wow-ai agent).\n` +
+    `Agents: ${A.agentIds().join(', ')} (the default is "agent" in config.json; chats pick with /claude-wow agent).\n` +
     `Plugins: ${registry.ids().join(', ')} (the default is plugins.default in config.json).`);
   process.exit(0);
 }
 let cfg;
 try { cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); }
 catch (e) {
-  console.error(`Cannot read ${CONFIG_FILE} (${e.message}).\nRun "node setup.js" in the wow-ai folder first.`);
+  console.error(`Cannot read ${CONFIG_FILE} (${e.message}).\nRun "claude-wow setup" (node setup.js in the claude-wow folder) first.`);
   process.exit(2); // the supervisor doesn't restart on 2
 }
 const once = argv.includes('--once');
@@ -84,7 +88,7 @@ const pluginIdx = argv.indexOf('--plugin');
 const injectPlugin = pluginIdx >= 0 ? argv[pluginIdx + 1] : '';
 const exitWhenIdle = once || inject !== null;
 
-// The agent chats use unless they pick their own (/wow-ai agent, "agent=" flag).
+// The agent chats use unless they pick their own (/claude-wow agent, "agent=" flag).
 const DEFAULT_AGENT = A.normalizeAgent(cfg.agent || A.DEFAULT_AGENT);
 if (!DEFAULT_AGENT) {
   console.error(`"agent": "${cfg.agent}" in ${CONFIG_FILE} is not one of ${A.agentIds().join(', ')}.`);
@@ -106,12 +110,14 @@ function insideRepo(dir) {
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 const projectIdx = argv.indexOf('--project');
+// CLAUDE_WOW_PROJECT names the default folder; the old WOW_AI_PROJECT still counts.
+const PROJECT_ENV = process.env.CLAUDE_WOW_PROJECT || process.env.WOW_AI_PROJECT || '';
 const DEFAULT_CWD = path.resolve(
   projectIdx >= 0 && argv[projectIdx + 1] ? argv[projectIdx + 1]
-    : process.env.WOW_AI_PROJECT ? process.env.WOW_AI_PROJECT
+    : PROJECT_ENV ? PROJECT_ENV
     : !insideRepo(process.cwd()) ? process.cwd()
     : cfg.defaultCwd || process.cwd());
-const DEFAULT_CWD_SOURCE = projectIdx >= 0 ? '--project' : process.env.WOW_AI_PROJECT ? 'WOW_AI_PROJECT'
+const DEFAULT_CWD_SOURCE = projectIdx >= 0 ? '--project' : PROJECT_ENV ? (process.env.CLAUDE_WOW_PROJECT ? 'CLAUDE_WOW_PROJECT' : 'WOW_AI_PROJECT')
   : !insideRepo(process.cwd()) ? 'started here' : 'config.json';
 
 const SLOTS = cfg.slots || 200;
@@ -125,7 +131,7 @@ if (!TRANSPORT) {
   process.exit(2);
 }
 const SCREENSHOT_DIR = S.screenshotDir(cfg);
-// Vision: a chat that turned it on (/wow-ai vision on, flag "v") gets the rest
+// Vision: a chat that turned it on (/claude-wow vision on, flag "v") gets the rest
 // of the screenshot, strip cropped off and scaled to vision.maxWidth, attached
 // to its run as an image. Screenshot transport only: the pixel capture never
 // sees more than the strip. vision.keep caps the PNGs kept in bridge/tmp.
@@ -152,7 +158,7 @@ for (const [k, v] of Object.entries(state.handled)) {
 
 // Bridge-side transcripts. The beta client sometimes wipes addon saved data; since
 // every prompt and reply passes through here, this copy lets the addon recover.
-const TRANSCRIPT_FILE = path.join(HERE, 'transcripts.json');
+const TRANSCRIPT_FILE = HOME.transcripts;
 let transcripts = readJson(TRANSCRIPT_FILE, { chats: {}, tokens: {} });
 if (!transcripts.chats) transcripts.chats = {};
 if (!transcripts.tokens) transcripts.tokens = {};
@@ -275,7 +281,7 @@ function killTree(child) {
 // truth; slot files carry the whole set while the game may not have it yet: for a
 // while after it changes, and after every hello (a fresh or wiped client).
 if (!state.map) state.map = P.newMap();
-const MAP_DIR = path.join(HERE, 'mapjobs');
+const MAP_DIR = HOME.mapjobs;
 // Every publish rewrites all slot files, so the map rides along only for a short
 // while, and on progress publishes only while it is small.
 const MAP_SHARE_MS = 3 * 60 * 1000;
@@ -551,7 +557,7 @@ function runJob(job) {
   const r = registry.route(job, { fallback: DEFAULT_PLUGIN });
   if (r.error) {
     log(`${tag} ${r.error}`);
-    finish(job, 'error', `${r.error}\nUse /wow-ai plugin <name> to pick one, or /wow-ai plugin alone for the default (${DEFAULT_PLUGIN}).`);
+    finish(job, 'error', `${r.error}\nUse /claude-wow plugin <name> to pick one, or /claude-wow plugin alone for the default (${DEFAULT_PLUGIN}).`);
     return;
   }
   job.plugin = r.plugin.id;
@@ -589,7 +595,7 @@ function runAgent(job, opts = {}) {
   if (!agentId) {
     log(`${tag} unknown agent "${job.agent}"`);
     finish(job, 'error', `Unknown agent "${job.agent}". This bridge knows: ${A.agentIds().join(', ')}.\n` +
-      `Use /wow-ai agent <name> to pick one, or /wow-ai agent alone for the default (${DEFAULT_AGENT}).`);
+      `Use /claude-wow agent <name> to pick one, or /claude-wow agent alone for the default (${DEFAULT_AGENT}).`);
     return;
   }
   job.agent = agentId;
@@ -665,7 +671,7 @@ function runAgent(job, opts = {}) {
     try {
       fs.mkdirSync(MAP_DIR, { recursive: true });
       fs.rmSync(mapFileFor(job), { force: true });
-      env.WOW_AI_MAP_FILE = mapFileFor(job);
+      env.CLAUDE_WOW_MAP_FILE = mapFileFor(job);
     } catch (e) { log(`${tag} map file unavailable: ${e.message}`); }
   }
 
@@ -973,22 +979,23 @@ function agentLine(id) {
 }
 
 function banner() {
-  console.log('WoW AI bridge');
-  console.log(`  folder   : ${DEFAULT_CWD}  (${DEFAULT_CWD_SOURCE}; chats can override with /wow-ai cd)`);
+  console.log('Claude WoW bridge');
+  console.log(`  home     : ${HOME.dir}  (${HOME.source === 'legacy' ? 'the layout from before CLAUDE_WOW_HOME; run setup to move it to ' + H.defaultDir() : HOME.source}; config, state, transcripts, log)`);
+  console.log(`  folder   : ${DEFAULT_CWD}  (${DEFAULT_CWD_SOURCE}; chats can override with /claude-wow cd)`);
   console.log(`  addons   : ${cfg.addonDir}`);
   console.log(`  addon    : ${addonInstalled() ? 'installed' : 'NOT INSTALLED - run: node setup.js, then restart WoW'}`);
   console.log(`  slots    : ${slotsInstalled() ? SLOTS + ' installed' : 'NOT INSTALLED - run: node setup.js (or node bridge/install-slots.js), then restart WoW'}`);
   console.log(`  capture  : ${!cap.enabled ? 'off' : TRANSPORT === 'screenshot' ? 'screenshot mode (' + SCREENSHOT_DIR + ', ' + cap.cellsPerRow + 'x' + cap.maxRows + ' cells of ' + cap.cellPx + 'px, levels ' + LEVELS.off + '/' + LEVELS.on + ')' : 'on (' + cap.processName + ', ' + cap.cellsPerRow + 'x' + cap.maxRows + ' cells of ' + cap.cellPx + 'px)'}`);
-  console.log(`  vision   : ${TRANSPORT === 'screenshot' ? 'per chat (/wow-ai vision on, or /wow-ai look <question>); the game view goes out up to ' + vis.maxWidth + 'px wide' : 'needs capture.mode "screenshot" (the pixel capture never sees more than the strip)'}`);
+  console.log(`  vision   : ${TRANSPORT === 'screenshot' ? 'per chat (/claude-wow vision on, or /claude-wow look <question>); the game view goes out up to ' + vis.maxWidth + 'px wide' : 'needs capture.mode "screenshot" (the pixel capture never sees more than the strip)'}`);
   console.log(`  parallel : up to ${MAX_PARALLEL} chats at once`);
   console.log(`  fallback : ${SAVED_VARS}`);
-  console.log(`  plugins  : ${registry.all().map(p => p.id + (p.id === DEFAULT_PLUGIN ? ' (default)' : '')).join(', ')}  (chats pick their own with /wow-ai plugin)`);
+  console.log(`  plugins  : ${registry.all().map(p => p.id + (p.id === DEFAULT_PLUGIN ? ' (default)' : '')).join(', ')}  (chats pick their own with /claude-wow plugin)`);
   for (const p of registry.all()) if (typeof p.banner === 'function') console.log(`  ${p.id.padEnd(9)}: ${p.banner(core.options(p.id))}`);
-  console.log(`  agent    : ${DEFAULT_AGENT} (default; chats pick their own with /wow-ai agent)`);
+  console.log(`  agent    : ${DEFAULT_AGENT} (default; chats pick their own with /claude-wow agent)`);
   for (const id of A.agentIds()) console.log(`  ${id.padEnd(9)}: ${agentLine(id)}`);
   console.log(`  sessions : ${Object.keys(state.sessions).length} saved`);
   const ctx = gameContext();
-  console.log(`  context  : ${cfg.gameContext === false ? 'off (gameContext in config.json)' : ctx ? (ctx.split('\n').find(l => /^Character:/i.test(l)) || ctx.split('\n')[0]).slice(0, 100) : 'none yet (the addon sends it with its hello; /wow-ai context in game)'}`);
+  console.log(`  context  : ${cfg.gameContext === false ? 'off (gameContext in config.json)' : ctx ? (ctx.split('\n').find(l => /^Character:/i.test(l)) || ctx.split('\n')[0]).slice(0, 100) : 'none yet (the addon sends it with its hello; /claude-wow context in game)'}`);
   console.log(`  primer   : ${!PRIMER_FILE ? 'off (primerFile in config.json)' : primer() ? path.resolve(REPO, PRIMER_FILE) + ' (' + primer().length + ' chars, with the context)' : 'NOT FOUND: ' + path.resolve(REPO, PRIMER_FILE)}`);
   console.log('Leave this window open while you play. Ctrl+C to stop.\n');
 }

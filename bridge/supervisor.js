@@ -8,7 +8,7 @@
 //   wow-ai service <cmd>   the bridge as a background service (service.js)
 // Under the service (WOW_AI_SERVICE=1) the bridge's output goes to a rotating
 // log file instead of a terminal, and a pid file lets `service status` find us.
-// bridge/bridge.log, which bridge.js appends to on its own, is rotated here too.
+// bridge.log in the home folder, which bridge.js appends to on its own, is rotated here too.
 const { spawn, spawnSync } = require('child_process');
 const path = require('path');
 const svc = require('./service');
@@ -29,7 +29,7 @@ function supervise() {
   const dirs = svc.dirs();
   const out = SERVICE ? new svc.RotatingLog(svc.serviceLogFile(dirs)) : null;
   const say = line => (out ? out.write(line + '\n') : console.log(line));
-  const BRIDGE_LOG = path.join(__dirname, 'bridge.log');
+  const BRIDGE_LOG = require('./home').resolve().log;
   const started = Date.now();
   let child = null;
   let stopping = false;

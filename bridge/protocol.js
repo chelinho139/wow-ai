@@ -201,14 +201,14 @@ function parseOutbox(src) {
 // GameContext in ClaudeWoW.lua), that context plus the addon/macro primer
 // (docs/WOW-ADDON-PRIMER.md) so it can write for this client whatever folder
 // the chat works in. Empty context = neither is appended, so a bridge used for
-// unrelated projects, or an addon with `/wow-ai context off`, only gets the
+// unrelated projects, or an addon with `/claude-wow context off`, only gets the
 // reply-format rule. Claude and Grok take this as a system prompt; for Codex,
 // agents.js puts it at the top of the prompt. opts.tools is the plugin's own
 // instructions (plugins.js), placed right after the reply rules; empty = the
 // prompt is exactly what it was before plugins existed.
 const SUMMARY_MARKER = 'TL;DR:';
 const REPLY_FORMAT = [
-  'The user is talking to you from inside World of Warcraft through the wow-ai addon. They type in a small in-game window and your reply is shown there as plain text (markdown is not rendered), so keep replies compact and formatting simple.',
+  'The user is talking to you from inside World of Warcraft through the claude-wow addon. They type in a small in-game window and your reply is shown there as plain text (markdown is not rendered), so keep replies compact and formatting simple.',
   '',
   `Only a short summary of each reply is printed into the game chat, where the user actually sees it while playing; the full reply is only visible if they open the addon window. So end EVERY reply with a final block that starts with "${SUMMARY_MARKER}" on its own line and holds one or two short lines (under about 200 characters in total) saying what you did or what the answer is, and what you need from the user if anything. Write it as plain text. Do not repeat the summary elsewhere, and put nothing after it.`,
 ];
@@ -216,7 +216,7 @@ const REPLY_FORMAT = [
 // How the agent draws on the world map (see "Map layers" below and docs/MAP.md).
 // Sent with the game context, since marks only make sense in a game chat.
 const MAP_HINT = [
-  'You can mark the player\'s world map. Either append commands to the file named by the WOW_AI_MAP_FILE environment variable (one JSON object per line) or, for a few marks, end the reply with a fenced block whose language tag is wowmap containing them. Commands:',
+  'You can mark the player\'s world map. Either append commands to the file named by the CLAUDE_WOW_MAP_FILE environment variable (one JSON object per line) or, for a few marks, end the reply with a fenced block whose language tag is wowmap containing them. Commands:',
   '{"op":"set","layer":"<name>","title":"<shown title>","ordered":true,"loop":false,"points":[{"m":<uiMapID>,"x":<0-100>,"y":<0-100>,"label":"<text>","kind":"quest"}]}  replaces that layer; "ordered" draws a numbered route with a navigator, "loop" closes it.',
   '{"op":"clear","layer":"<name>"} removes a layer; {"op":"clearall"} removes them all.',
   'x and y are map percent on the map with that uiMapID (the context gives the player\'s current one). kind is one of ore, herb, quest, turnin, kill, loot, object, explore, npc, trainer, vendor, dungeon, flight, poi. Only mark the map when asked for a route, marks or locations; say in the reply what you drew.',
@@ -237,7 +237,7 @@ const MACRO_HINT = [
 // attached, so a run without one is exactly what it was before.
 function visionHint(image) {
   const size = image && image.width && image.height ? ` (${image.width}x${image.height}, downscaled)` : '';
-  return `A screenshot of the player's screen, taken by the game the moment they sent this message, is attached to the message as an image${size}. It is what the player was looking at: the game world, their UI, any open windows, tooltips, quest text, and the WoW AI chat window itself; the addon's data strip along the top edge has been cropped off. Use it when the question is about something on screen ("what is this item", "why is this boss killing me", "read this quest") and say what you see when it matters; ignore it when the task is unrelated.`;
+  return `A screenshot of the player's screen, taken by the game the moment they sent this message, is attached to the message as an image${size}. It is what the player was looking at: the game world, their UI, any open windows, tooltips, quest text, and the Claude WoW chat window itself; the addon's data strip along the top edge has been cropped off. Use it when the question is about something on screen ("what is this item", "why is this boss killing me", "read this quest") and say what you see when it matters; ignore it when the task is unrelated.`;
 }
 
 function systemPrompt(ctx, primer, opts) {
@@ -362,7 +362,7 @@ function luaTable(globalName, records, opts = {}) {
   const plugins = Array.isArray(opts.plugins) ? opts.plugins : [];
   const transport = transportName(opts.transport) || 'pixel';
   const lines = [
-    '-- Written by the wow-ai bridge (bridge/bridge.js). Do not edit by hand.',
+    '-- Written by the claude-wow bridge (bridge/bridge.js). Do not edit by hand.',
     `${globalName} = {`,
     `\tts = ${luaStr(new Date(now).toISOString())},`,
     `\tnow = ${Math.floor(now / 1000)},`,
@@ -418,7 +418,7 @@ function luaTable(globalName, records, opts = {}) {
 // ---------------------------------------------------------------------------
 //
 // The agent marks the in-game map by writing commands, one JSON object per line,
-// to the file named by WOW_AI_MAP_FILE in its environment (a tool of its own can
+// to the file named by CLAUDE_WOW_MAP_FILE in its environment (a tool of its own can
 // do that), or with a ```wowmap fenced block in its reply for a few hand-made marks.
 // The system prompt (MAP_HINT) tells it so.
 // The bridge owns the resulting layers (state.json) and ships the whole set,
@@ -517,7 +517,7 @@ function extractMapBlocks(text) {
   return { text: stripped, cmds, errors };
 }
 
-// Commands the agent's tools appended to WOW_AI_MAP_FILE (one JSON per line).
+// Commands the agent's tools appended to CLAUDE_WOW_MAP_FILE (one JSON per line).
 function parseMapFile(src) {
   const cmds = [], errors = [];
   for (const line of String(src || '').split('\n')) {

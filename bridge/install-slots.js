@@ -7,7 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const cfg = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8'));
+const cfg = JSON.parse(fs.readFileSync(require('./home').resolve().config, 'utf8'));
 const addons = cfg.addonDir;
 const N = cfg.slots || 200;
 const ACT = cfg.actMax || 60;

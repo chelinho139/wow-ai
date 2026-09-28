@@ -175,3 +175,57 @@ test('upgradeConfig: paths naming an old addon are rewritten to the new one, oth
   const cfg = { addonDir: '/a', inboxFile: `/a/${P.ADDON}/Inbox.lua`, savedVariablesFile: `/s/${P.ADDON}.lua`, agents: {} };
   assert.deepEqual(S.upgradeConfig(cfg, example), []);
 });
+
+// The whole installer against a fake client, with CLAUDE_WOW_HOME pointing at a
+// scratch folder so nothing on this machine is read or written: the old addon
+// with real-shaped saved data goes in, ClaudeWoW with the same chats comes out,
+// and the config lands in the home folder naming the new addon.
+test('node setup.js --wow <fake client>: migrates the chats, installs ClaudeWoW and its slots, writes the config to CLAUDE_WOW_HOME', () => {
+  const { spawnSync } = require('child_process');
+  const dir = scratch('e2e');
+  const client = path.join(dir, 'client');
+  const home = path.join(dir, 'home');
+  const project = path.join(dir, 'project');
+  fs.mkdirSync(project, { recursive: true });
+  const { addons, saved } = fakeClient(client, 'WoWAI', { slots: 5 });
+  const r = spawnSync(process.execPath, [path.join(__dirname, '..', 'setup.js'), '--wow', client, '--project', project], {
+    encoding: 'utf8', env: { ...process.env, CLAUDE_WOW_HOME: home }, timeout: 120000,
+  });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /migrate {2}: chats and settings copied from WoWAI\.lua to ClaudeWoW\.lua/);
+  assert.match(r.stdout, /migrate {2}: removed the old WoWAI addon and slot folders \(6 folder\(s\)\)/);
+  assert.match(r.stdout, new RegExp('home {5}: ' + home.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+
+  // The saved data: same chats, new globals.
+  const src = fs.readFileSync(path.join(saved, 'ClaudeWoW.lua'), 'utf8');
+  assert.equal(src, oldSavedData('WoWAI').replace('WoWAIDB =', 'ClaudeWoWDB =').replace('WoWAIMapDB =', 'ClaudeWoWMapDB ='));
+  assert.ok(fs.existsSync(path.join(saved, 'WoWAI.lua')), 'the old saved file is kept');
+
+  // The game folder: the new addon and its full slot pool, nothing of the old.
+  const names = fs.readdirSync(addons);
+  assert.ok(names.includes('ClaudeWoW') && names.includes('SomeOtherAddon'));
+  assert.ok(!names.some(n => /^WoWAI/.test(n)), 'no WoWAI folder left');
+  assert.equal(names.filter(n => /^ClaudeWoW_S\d{3}$/.test(n)).length, 200);
+  assert.equal(fs.readFileSync(path.join(addons, 'ClaudeWoW_S001', 'Inbox.lua'), 'utf8'), 'ClaudeWoW_SlotData = nil\n');
+  assert.match(fs.readFileSync(path.join(addons, 'ClaudeWoW_S001', 'ClaudeWoW_S001.toc'), 'utf8'), /^## Dependencies: ClaudeWoW$/m);
+  assert.ok(fs.existsSync(path.join(addons, 'ClaudeWoW', 'ClaudeWoW.toc')));
+  assert.ok(fs.existsSync(path.join(addons, 'ClaudeWoW', 'ctl', 'valid.wav')));
+  for (const d of ['sig', 'ack', 'act', 'presence']) assert.ok(fs.statSync(path.join(addons, 'ClaudeWoW', d)).isDirectory(), d);
+
+  // The config: in the home folder, naming the new addon; nothing in bridge/ was touched.
+  const cfg = JSON.parse(fs.readFileSync(path.join(home, 'config.json'), 'utf8'));
+  assert.equal(cfg.addonDir, addons);
+  assert.equal(cfg.inboxFile, path.join(addons, 'ClaudeWoW', 'Inbox.lua'));
+  assert.equal(cfg.savedVariablesFile, path.join(saved, 'ClaudeWoW.lua'));
+  assert.equal(cfg.defaultCwd, project);
+  assert.ok(!fs.existsSync(path.join(home, 'state.json')), 'an explicit CLAUDE_WOW_HOME is not filled from this checkout');
+
+  // Run again: nothing to migrate, config kept, slots already present.
+  const again = spawnSync(process.execPath, [path.join(__dirname, '..', 'setup.js'), '--wow', client], {
+    encoding: 'utf8', env: { ...process.env, CLAUDE_WOW_HOME: home }, timeout: 120000,
+  });
+  assert.equal(again.status, 0, again.stdout + again.stderr);
+  assert.ok(!/migrate/.test(again.stdout), 'second run migrates nothing');
+  assert.match(again.stdout, /already exists, keeping it/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});

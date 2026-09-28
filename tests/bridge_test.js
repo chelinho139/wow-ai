@@ -63,15 +63,15 @@ test('systemPrompt always asks for the TL;DR block, and wraps the game context a
   // Without a context the prompt is only the reply-format rule.
   for (const empty of ['', '  \n ', undefined]) {
     const s = P.systemPrompt(empty);
-    assert.ok(s.includes('wow-ai addon'));
+    assert.ok(s.includes('claude-wow addon'));
     assert.ok(s.includes('"TL;DR:"'), 'asks for the summary marker');
     assert.ok(!s.includes('in-game situation'), 'no context section without a context');
     assert.ok(!s.includes('Reference for writing addons'), 'no primer section without a context');
   }
   const s = P.systemPrompt('Game: World of Warcraft: Forever\nCharacter: Testchar, level 23 Hunter');
   assert.ok(s.includes('"TL;DR:"'));
-  assert.ok(s.includes('WOW_AI_MAP_FILE') && s.includes('wowmap') && s.includes('"op":"set"'), 'explains how to mark the map');
-  assert.ok(!P.systemPrompt('').includes('WOW_AI_MAP_FILE'), 'map hint only with the game context');
+  assert.ok(s.includes('CLAUDE_WOW_MAP_FILE') && s.includes('wowmap') && s.includes('"op":"set"'), 'explains how to mark the map');
+  assert.ok(!P.systemPrompt('').includes('CLAUDE_WOW_MAP_FILE'), 'map hint only with the game context');
   assert.ok(s.includes('\nGame: World of Warcraft: Forever\nCharacter: Testchar, level 23 Hunter\n'));
   assert.ok(s.includes('Linked from the game'));
   assert.ok(!s.includes('Reference for writing addons'), 'no primer section without a primer');

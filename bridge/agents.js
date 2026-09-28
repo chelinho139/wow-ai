@@ -336,7 +336,7 @@ function hermesParser() {
 // short context-only version on a resumed one (the primer is already in the
 // thread).
 function contextBlock(text) {
-  return `[Context from the WoW AI bridge, not written by the user]\n${text}\n[End of context]\n\n`;
+  return `[Context from the Claude WoW bridge, not written by the user]\n${text}\n[End of context]\n\n`;
 }
 
 // Images (vision): bridge.js hands each run `images`, a list of

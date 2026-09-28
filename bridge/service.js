@@ -24,6 +24,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn, spawnSync } = require('child_process');
+const H = require('./home');
 
 const LABEL = 'io.wowai.bridge';          // launchd label
 const UNIT = 'wow-ai-bridge';             // systemd unit name
@@ -278,7 +279,7 @@ function agentEnv() {
   if (process.execPath && !env.PATH.split(path.delimiter).includes(path.dirname(process.execPath))) {
     env.PATH = path.dirname(process.execPath) + path.delimiter + env.PATH;
   }
-  for (const k of ['HOME', 'DISPLAY', 'LANG', 'WOW_AI_PROJECT', 'CODEX_BIN', 'GROK_HOME']) if (process.env[k]) env[k] = process.env[k];
+  for (const k of ['HOME', 'DISPLAY', 'LANG', 'CLAUDE_WOW_HOME', 'CLAUDE_WOW_PROJECT', 'WOW_AI_PROJECT', 'CODEX_BIN', 'GROK_HOME']) if (process.env[k]) env[k] = process.env[k];
   return env;
 }
 
@@ -291,8 +292,9 @@ function definition(platform, d) {
 
 function preflight(d) {
   const problems = [];
-  if (!fs.existsSync(path.join(__dirname, 'config.json'))) {
-    problems.push('bridge/config.json is missing: run "wow-ai setup" (node setup.js) first, or the service would just restart in a loop.');
+  const home = H.resolve();
+  if (!fs.existsSync(home.config)) {
+    problems.push(`${home.config} is missing: run "wow-ai setup" (node setup.js) first, or the service would just restart in a loop.`);
   }
   const p = readPid(d);
   if (p && p.mode === 'terminal' && alive(p.pid)) {
@@ -455,7 +457,7 @@ function status(d, platform = process.platform, out = console.log) {
   } else {
     out('  running   : no');
   }
-  const log = fs.existsSync(serviceLogFile(d)) ? serviceLogFile(d) : path.join(__dirname, 'bridge.log');
+  const log = fs.existsSync(serviceLogFile(d)) ? serviceLogFile(d) : H.resolve().log;
   out(`  log       : ${log}  (rotates at 5 MB, 5 kept)`);
   const tail = lastLines(log, 5);
   if (tail.length) {
@@ -485,7 +487,7 @@ function follow(file, out) {
 }
 
 function logs(d, opts, out = console.log) {
-  const file = fs.existsSync(serviceLogFile(d)) ? serviceLogFile(d) : path.join(__dirname, 'bridge.log');
+  const file = fs.existsSync(serviceLogFile(d)) ? serviceLogFile(d) : H.resolve().log;
   if (!fs.existsSync(file)) { out(`no log yet (${file})`); return opts.follow ? 0 : 1; }
   for (const l of lastLines(file, opts.lines)) out(l);
   if (opts.follow) follow(file, out);
@@ -508,8 +510,9 @@ function main(argv, { platform = process.platform, out = console.log, err = cons
         out(`the bridge now runs in the background and starts at every login; log: ${serviceLogFile(d)}`);
         if (platform === 'darwin') {
           let mode = 'pixel';
-          try { mode = (JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8')).capture || {}).mode || 'pixel'; } catch {}
-          if (mode !== 'screenshot') out('note: capture.mode is "pixel". A background process cannot ask for Screen Recording; set "mode": "screenshot" in bridge/config.json (no permissions needed) or run the bridge from a terminal instead.');
+          const config = H.resolve().config;
+          try { mode = (JSON.parse(fs.readFileSync(config, 'utf8')).capture || {}).mode || 'pixel'; } catch {}
+          if (mode !== 'screenshot') out(`note: capture.mode is "pixel". A background process cannot ask for Screen Recording; set "mode": "screenshot" in ${config} (no permissions needed) or run the bridge from a terminal instead.`);
         }
         out('re-run "wow-ai service install" after installing a new agent CLI or a new Node, so the service sees the new PATH.');
         out('');

@@ -1,6 +1,6 @@
 'use strict';
 // The coding plugin: what the bridge did before there were plugins. A chat is
-// an agent session in a folder, resolved against the bridge's folder (/wow-ai
+// an agent session in a folder, resolved against the bridge's folder (/claude-wow
 // cd, --project, defaultCwd); the folder must exist, and a session belongs to
 // the folder that made it, so a chat that changes folder starts a new one.
 // Everything else (which agent, the game context, map and macros, transcripts)
@@ -33,7 +33,7 @@ const plugin = {
       core.fail(job, `Folder does not exist: ${cwd}\n` +
         `Paths are relative to ${core.defaultCwd}.` +
         (sibs.length ? `\nFolders there: ${sibs.join(', ')}` : '') +
-        `\nUse /wow-ai cd <folder> to pick one, or /wow-ai cd alone for the default.`);
+        `\nUse /claude-wow cd <folder> to pick one, or /claude-wow cd alone for the default.`);
       return;
     }
     core.runAgent(job, {

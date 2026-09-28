@@ -24,9 +24,10 @@ const { spawnSync } = require('child_process');
 const ROOT = __dirname;
 const BRIDGE = path.join(ROOT, 'bridge');
 const P = require(path.join(BRIDGE, 'protocol.js')); // the addon's name, and its old names
+const H = require(path.join(BRIDGE, 'home.js'));     // CLAUDE_WOW_HOME: where config.json and the state live
 const ADDON_SRC = path.join(ROOT, 'addon', P.ADDON);
-const CONFIG = path.join(BRIDGE, 'config.json');
 const EXAMPLE = path.join(BRIDGE, 'config.example.json');
+let CONFIG = H.resolve().config; // settled in main(), after the legacy layout has been migrated
 
 const args = {};
 function parseArgs(argv) {
@@ -226,6 +227,7 @@ function writeConfig(client, account) {
     }
     cfg.capture.processName = processName;
   }
+  fs.mkdirSync(path.dirname(CONFIG), { recursive: true }); // the home folder, on a fresh install
   fs.writeFileSync(CONFIG, JSON.stringify(cfg, null, 2) + '\n');
   console.log(`config   : wrote ${CONFIG}`);
   return cfg;
@@ -294,6 +296,13 @@ try {
   checkNode();
   // Validate arguments before copying anything, so a bad --project costs nothing.
   if (args.project) args.project = resolveProject(args.project);
+  // Config, state and transcripts from a checkout that kept them in bridge/ move
+  // to the home folder first, so the config written below lands in one place.
+  const carried = H.migrateLegacy();
+  const home = H.resolve();
+  CONFIG = home.config;
+  console.log(`home     : ${home.dir}${home.source === 'CLAUDE_WOW_HOME' ? '  (CLAUDE_WOW_HOME)' : ''}`);
+  if (carried.length) console.log(`migrate  : ${carried.join(', ')} copied from ${H.LEGACY_DIR} to ${home.dir}; the bridge reads them there from now on (the copies in bridge/ are no longer used)`);
   const client = findClient();
   console.log(`client   : ${client}`);
   const account = findAccount(client);

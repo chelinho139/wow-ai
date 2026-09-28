@@ -16,9 +16,9 @@ const path = require('path');
 // Per-user application data, the usual place on each platform.
 function dataDir() {
   const home = os.homedir();
-  if (process.platform === 'win32') return path.join(process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local'), 'wow-ai');
-  if (process.platform === 'darwin') return path.join(home, 'Library', 'Application Support', 'wow-ai');
-  return path.join(process.env.XDG_DATA_HOME || path.join(home, '.local', 'share'), 'wow-ai');
+  if (process.platform === 'win32') return path.join(process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local'), 'claude-wow');
+  if (process.platform === 'darwin') return path.join(home, 'Library', 'Application Support', 'claude-wow');
+  return path.join(process.env.XDG_DATA_HOME || path.join(home, '.local', 'share'), 'claude-wow');
 }
 
 // Where this plugin's runs happen: the configured folder, else <data>/ask.

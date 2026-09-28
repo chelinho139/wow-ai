@@ -21,7 +21,7 @@ one shows up as a failure here rather than a dialog; --check names which.
   capture_mac.py --probe out.png          save what the capture sees once and exit
   capture_mac.py --check                  report the permissions, backend and display scale
   capture_mac.py --window-name NAME       match a window by title instead of process name
-  capture_mac.py --backend screencapture  force the slow path (WOWAI_MAC_BACKEND does the same)
+  capture_mac.py --backend screencapture  force the slow path (CLAUDE_WOW_MAC_BACKEND does the same; the old WOWAI_MAC_BACKEND still counts)
 """
 
 import argparse
@@ -55,7 +55,7 @@ p.add_argument("--y-slack", type=int, default=80, help="vertical search margin i
 p.add_argument("--region-w", type=int, default=0, help="0 = strip width + horizontal slack")
 p.add_argument("--region-h", type=int, default=0, help="0 = strip height + --y-slack")
 p.add_argument("--backend", choices=("auto", "native", "screencapture"),
-               default=os.environ.get("WOWAI_MAC_BACKEND", "auto"),
+               default=os.environ.get("CLAUDE_WOW_MAC_BACKEND", os.environ.get("WOWAI_MAC_BACKEND", "auto")),
                help="native = CoreGraphics in-process (fast); screencapture = the /usr/sbin binary "
                     "per frame (slow); auto = native when it loads, else screencapture")
 args = p.parse_args()

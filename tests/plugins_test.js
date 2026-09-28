@@ -150,7 +150,7 @@ test('the shipped ask plugin: no folder semantics, a scratch folder of its own, 
   // The scratch folder: configured, else per-user application data; never the chat's folder.
   assert.equal(ask.scratchFolder({ cwd: '/x/y' }), path.resolve('/x/y'));
   const dflt = ask.scratchFolder({});
-  assert.ok(dflt.endsWith(path.join('wow-ai', 'ask')), dflt);
+  assert.ok(dflt.endsWith(path.join('claude-wow', 'ask')), dflt);
   assert.ok(dflt.startsWith(os.homedir()) || /LOCALAPPDATA|XDG/.test(dflt) || path.isAbsolute(dflt), dflt);
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'wowai-ask-'));
   const scratch = path.join(base, 'scratch');

@@ -89,7 +89,7 @@ test('Codex: exec --json in the chat folder, sandbox from permissionMode, resume
   // for a new session and as the short version on a resumed one.
   const fresh = A.AGENTS.codex.input({ prompt: 'fix it', system: 'FULL', systemShort: 'SHORT', resume: '' });
   assert.equal(fresh.stdin, A.contextBlock('FULL') + 'fix it');
-  assert.ok(fresh.stdin.startsWith('[Context from the WoW AI bridge'));
+  assert.ok(fresh.stdin.startsWith('[Context from the Claude WoW bridge'));
   assert.equal(A.AGENTS.codex.input({ prompt: 'fix it', system: 'FULL', systemShort: 'SHORT', resume: 't' }).stdin, A.contextBlock('SHORT') + 'fix it');
   assert.equal(A.AGENTS.codex.input({ prompt: 'fix it', system: '', systemShort: '', resume: '' }).stdin, 'fix it');
   assert.deepEqual(A.AGENTS.codex.args({ cfg: {}, resume: '', cwd: 'x', images: ['a.png', 'b.png'] }).slice(-5), ['-i', 'a.png', '-i', 'b.png', '-']);

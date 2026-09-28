@@ -196,8 +196,17 @@ test('status on a clean machine says not installed / not running and exits 3; he
   assert.match(errs.join('\n'), /unknown service command/);
 });
 
-test('install refuses without a config.json rather than looping a broken service', { skip: fs.existsSync(path.join(__dirname, '..', 'bridge', 'config.json')) && 'config.json exists on this machine' }, () => {
-  const errs = [];
-  assert.equal(S.main(['install'], { out: () => {}, err: l => errs.push(l) }), 1);
-  assert.match(errs.join('\n'), /config\.json is missing/);
+test('install refuses without a config.json rather than looping a broken service', () => {
+  // An empty CLAUDE_WOW_HOME: no config there, whatever this machine has elsewhere.
+  const home = scratch('nohome');
+  const saved = process.env.CLAUDE_WOW_HOME;
+  process.env.CLAUDE_WOW_HOME = home;
+  try {
+    const errs = [];
+    assert.equal(S.main(['install'], { out: () => {}, err: l => errs.push(l) }), 1);
+    assert.match(errs.join('\n'), /config\.json is missing/);
+    assert.ok(errs.join('\n').includes(path.join(home, 'config.json')), 'names the file it looked for');
+  } finally {
+    if (saved === undefined) delete process.env.CLAUDE_WOW_HOME; else process.env.CLAUDE_WOW_HOME = saved;
+  }
 });
