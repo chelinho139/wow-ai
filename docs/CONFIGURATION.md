@@ -34,6 +34,15 @@ Keys under `agents.claude`, `agents.codex`, `agents.grok`, `agents.agy` and `age
 
 A `config.json` from before agents existed kept Claude's settings at the top level (`claudePath`, `model`, `permissionMode`, `allowedTools`). The bridge still reads them, under anything in `agents.claude`; `setup.js` moves them down.
 
+## Plugins
+
+| Key | Default | Meaning |
+|---|---|---|
+| `plugins.default` | the first plugin the bridge registers | The plugin for chats that are not bound to one (`plugin=` flag). The bridge refuses to start on a name it does not have; `--help` lists them. |
+| `plugins.<id>` | `{}` | That plugin's own settings, if it has any. |
+
+A `config.json` without a `plugins` block keeps working: the default applies.
+
 ## Runs
 
 | Key | Default | Meaning |

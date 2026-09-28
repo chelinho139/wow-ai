@@ -13,7 +13,9 @@ const SRC = path.join(__dirname, '..', 'bridge');
 fs.rmSync(S, { recursive: true, force: true });
 fs.mkdirSync(path.join(S, 'addons', 'WoWAI'), { recursive: true });
 fs.mkdirSync(path.join(S, 'proj'), { recursive: true });
-for (const f of ['bridge.js', 'protocol.js', 'agents.js', 'install-slots.js', 'capture.ps1']) fs.copyFileSync(path.join(SRC, f), path.join(S, f));
+for (const f of ['bridge.js', 'protocol.js', 'agents.js', 'plugins.js', 'decode.js', 'screenshots.js', 'vision.js', 'install-slots.js', 'capture.ps1']) fs.copyFileSync(path.join(SRC, f), path.join(S, f));
+fs.mkdirSync(path.join(S, 'plugins'), { recursive: true });
+for (const f of fs.readdirSync(path.join(SRC, 'plugins'))) fs.copyFileSync(path.join(SRC, 'plugins', f), path.join(S, 'plugins', f));
 const agentIdx = process.argv.indexOf('--agent');
 const agent = agentIdx >= 0 ? process.argv[agentIdx + 1] : 'claude';
 fs.writeFileSync(path.join(S, 'addons', 'WoWAI', 'WoWAI.toc'), '## Interface: 16001\n');
@@ -52,20 +54,24 @@ function readLua(file, globalName) {
   return top;
 }
 
+// The system prompt asks for a closing TL;DR block, so the reply is "PONG" plus
+// that block (the summary the game chat prints is split off as `summary`).
+const pong = text => /^PONG\b/.test(String(text || ''));
 let ok = true;
 for (let i = 1; i <= 5; i++) {
   const d = readLua(path.join(S, 'addons', 'WoWAI_S00' + i, 'Inbox.lua'), 'WoWAI_SlotData');
   const rec = (d.replies || [])[0] || {};
-  const good = d.replies && d.replies.length === 1 && Number(rec.id) === 1 && rec.status === 'done' && rec.text === 'PONG' && rec.agent === agent;
+  const good = d.replies && d.replies.length === 1 && Number(rec.id) === 1 && rec.status === 'done' && pong(rec.text) && rec.agent === agent;
   ok = ok && good;
-  console.log(`slot ${i}: replies=${(d.replies || []).length} id=${rec.id} status=${rec.status} agent=${rec.agent} text=${JSON.stringify(rec.text)} ${good ? 'ok' : 'BAD'}`);
+  console.log(`slot ${i}: replies=${(d.replies || []).length} id=${rec.id} status=${rec.status} agent=${rec.agent} plugin=${rec.plugin} text=${JSON.stringify(rec.text)} ${good ? 'ok' : 'BAD'}`);
 }
 const inbox = readLua(cfg.inboxFile, 'WoWAI_Inbox');
 const ir = (inbox.replies || [])[0] || {};
 console.log(`Inbox.lua: id=${ir.id} status=${ir.status} text=${JSON.stringify(ir.text)}`);
-ok = ok && ir.text === 'PONG';
-const size = f => fs.statSync(path.join(S, 'addons', 'WoWAI', f)).size;
-console.log(`sig/001.wav=${size('sig/001.wav')}B  ack/001.wav=${size('ack/001.wav')}B  sig/002.wav=${size('sig/002.wav')}B  act/001/01.wav=${size('act/001/01.wav')}B`);
-ok = ok && size('sig/001.wav') > 40 && size('ack/001.wav') > 40 && size('sig/002.wav') === 0 && size('act/001/01.wav') > 40;
+ok = ok && pong(ir.text);
+// A signal is a valid .wav; "off" is no file at all.
+const size = f => { try { return fs.statSync(path.join(S, 'addons', 'WoWAI', f)).size; } catch { return -1; } };
+console.log(`sig/001.wav=${size('sig/001.wav')}B  ack/001.wav=${size('ack/001.wav')}B  sig/002.wav=${size('sig/002.wav')}B  act/001/01.wav=${size('act/001/01.wav')}B  (-1 = no file)`);
+ok = ok && size('sig/001.wav') > 40 && size('ack/001.wav') > 40 && size('sig/002.wav') === -1 && size('act/001/01.wav') > 40;
 console.log(ok ? '>>> INJECT TEST PASS' : '>>> INJECT TEST FAIL');
 process.exit(ok ? 0 : 1);

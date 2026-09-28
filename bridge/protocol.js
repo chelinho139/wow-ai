@@ -113,7 +113,10 @@ function sameFolder(a, b) {
 // session (no prompt), "allow=Rule1,Rule2" = add these permission rules before
 // running, "c" = the record carries a game-context field before the text (an
 // empty one clears the context the bridge keeps), "agent=codex" = run this
-// chat with that agent instead of the bridge's default (see agents.js).
+// chat with that agent instead of the bridge's default (see agents.js),
+// "plugin=ask" = the chat is bound to that plugin instead of the bridge's
+// default (see plugins.js; only set when the flag is there, so a record from
+// an addon that predates plugins parses exactly as before).
 function parseFlags(flags) {
   const out = { newSession: false, hello: false, forget: false, context: false, vision: false, allow: [], agent: '' };
   for (const tok of String(flags || '').split(';')) {
@@ -124,6 +127,7 @@ function parseFlags(flags) {
     else if (tok === 'v') out.vision = true; // attach the screenshot's game view to the run (screenshot transport only)
     else if (tok.startsWith('allow=')) out.allow.push(...tok.slice(6).split(',').map(s => s.trim()).filter(Boolean));
     else if (tok.startsWith('agent=')) out.agent = tok.slice(6).trim().toLowerCase();
+    else if (tok.startsWith('plugin=')) { const p = tok.slice(7).trim().toLowerCase(); if (p) out.plugin = p; }
   }
   return out;
 }
@@ -170,6 +174,8 @@ function parseOutbox(src) {
   if (ctx) job.ctx = fromHex(ctx[1]);
   const agent = b.match(/\["agent"\]\s*=\s*"([0-9a-zA-Z_-]*)"/);
   if (agent && agent[1]) job.agent = agent[1].toLowerCase();
+  const plugin = b.match(/\["plugin"\]\s*=\s*"([0-9a-zA-Z_-]*)"/);
+  if (plugin && plugin[1]) job.plugin = plugin[1].toLowerCase();
   const allow = b.match(/\["allow"\]\s*=\s*"([0-9a-fA-F]*)"/);
   if (allow && allow[1]) job.allow = fromHex(allow[1]).split('\x1F').filter(Boolean);
   return job;
@@ -188,7 +194,9 @@ function parseOutbox(src) {
 // the chat works in. Empty context = neither is appended, so a bridge used for
 // unrelated projects, or an addon with `/wow-ai context off`, only gets the
 // reply-format rule. Claude and Grok take this as a system prompt; for Codex,
-// agents.js puts it at the top of the prompt.
+// agents.js puts it at the top of the prompt. opts.tools is the plugin's own
+// instructions (plugins.js), placed right after the reply rules; empty = the
+// prompt is exactly what it was before plugins existed.
 const SUMMARY_MARKER = 'TL;DR:';
 const REPLY_FORMAT = [
   'The user is talking to you from inside World of Warcraft through the wow-ai addon. They type in a small in-game window and your reply is shown there as plain text (markdown is not rendered), so keep replies compact and formatting simple.',
@@ -226,6 +234,8 @@ function visionHint(image) {
 function systemPrompt(ctx, primer, opts) {
   const lines = [...REPLY_FORMAT];
   const text = String(ctx || '').trim();
+  const tools = opts && String(opts.tools || '').trim();
+  if (tools) lines.push('', tools);
   if (opts && opts.image) lines.push('', visionHint(opts.image));
   if (text) {
     lines.push('',
@@ -311,7 +321,8 @@ function luaStr(s) {
 }
 
 // The slot file / Inbox.lua body: the latest record of every chat, the bridge's
-// clock, default folder and default agent (plus the agents it knows), the
+// clock, default folder, default agent (plus the agents it knows), default
+// plugin (plus the plugins it has), the
 // outbound transport it listens on ("pixel": it screen-captures the strip;
 // "screenshot": the addon must call Screenshot() with the strip up), and
 // (right after a saved-data reset) a restore bundle.
@@ -339,6 +350,7 @@ function screenshotLevels(raw) {
 function luaTable(globalName, records, opts = {}) {
   const now = opts.now || Date.now();
   const agents = Array.isArray(opts.agents) ? opts.agents : [];
+  const plugins = Array.isArray(opts.plugins) ? opts.plugins : [];
   const transport = transportName(opts.transport) || 'pixel';
   const lines = [
     '-- Written by the wow-ai bridge (bridge/bridge.js). Do not edit by hand.',
@@ -348,6 +360,8 @@ function luaTable(globalName, records, opts = {}) {
     `\tcwd = ${luaStr(opts.cwd || '')},`,
     `\tagent = ${luaStr(opts.agent || '')},`,
     `\tagents = { ${agents.map(luaStr).join(', ')} },`,
+    `\tplugin = ${luaStr(opts.plugin || '')},`,
+    `\tplugins = { ${plugins.map(luaStr).join(', ')} },`,
     `\ttransport = ${luaStr(transport)},`,
     '\treplies = {',
   ];
@@ -364,6 +378,7 @@ function luaTable(globalName, records, opts = {}) {
     lines.push(`\t\t\tcwd = ${luaStr(r.cwd || '')},`);
     lines.push(`\t\t\tsession = ${luaStr(r.session || '')},`);
     lines.push(`\t\t\tagent = ${luaStr(r.agent || '')},`);
+    if (r.plugin) lines.push(`\t\t\tplugin = ${luaStr(r.plugin)},`);
     if (r.summary) lines.push(`\t\t\tsummary = ${luaStr(r.summary)},`);
     if (Array.isArray(r.denied) && r.denied.length) {
       lines.push(`\t\t\tdenied = { ${r.denied.map(luaStr).join(', ')} },`);

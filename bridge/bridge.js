@@ -7,9 +7,12 @@
 //        capture.mode "screenshot", the addon calls Screenshot() with the strip
 //        up and we decode the file from the game's Screenshots folder
 //        (fallback: the game's SavedVariables file, written on /reload)
-//   RUN  the chat's agent (Claude Code, Codex or Grok; see agents.js) headless
-//        in the chat's folder, streaming progress. Each chat is its own agent
-//        session; up to maxParallel run at once.
+//   ROUTE the plugin the message belongs to (plugins.js: the chat's binding,
+//        else the default) decides what happens: the coding plugin
+//        (plugins/claude-code.js) runs the chat's agent in the chat's folder.
+//   RUN  the chat's agent (Claude Code, Codex or Grok; see agents.js) headless,
+//        streaming progress. Each chat is its own agent session; up to
+//        maxParallel run at once.
 //   IN   we write the latest reply/status of every chat into every
 //        WoWAI_S### slot addon (the game loads a fresh one from a timer),
 //        flip a signal .wav per message, and also write Inbox.lua for the
@@ -19,6 +22,7 @@
 //   --once            handle one pending SavedVariables prompt and exit
 //   --inject "text"   pretend the strip said this and exit when done
 //   --agent <id>      agent for --inject (default: "agent" in config.json)
+//   --plugin <id>     plugin for --inject (default: plugins.default in config.json)
 //   --image <file>    with --inject: attach this PNG/TGA as the player's screen (vision)
 //   --project <dir>   default folder for chats that haven't picked one
 //
@@ -36,6 +40,13 @@ const A = require('./agents');   // how each agent is launched and read, unit-te
 const D = require('./decode');   // PNG/TGA reader + strip decoder for the screenshot transport (tests/decode_test.js)
 const S = require('./screenshots'); // the Screenshots folder watcher (tests/screenshots_test.js)
 const V = require('./vision');   // vision: the screenshot's game view, cropped and downscaled for the agent (tests/vision_test.js)
+const PL = require('./plugins'); // the plugin registry and routing (tests/plugins_test.js)
+
+// The plugins this bridge has (docs/PLATFORM.md). Registration order is the
+// order match() is asked in, and the first one is the default unless
+// plugins.default in config.json says otherwise.
+const registry = PL.createRegistry();
+registry.register(require('./plugins/claude-code'));
 
 const HERE = __dirname;
 const CONFIG_FILE = path.join(HERE, 'config.json');
@@ -45,11 +56,12 @@ const TMP_DIR = path.join(HERE, 'tmp'); // prompt files for agents that read the
 
 const argv = process.argv.slice(2);
 if (argv.includes('--help') || argv.includes('-h')) {
-  console.log('wow-ai [--project <dir>] [--once] [--inject "text" [--agent <id>] [--image <png|tga>]]\n\n' +
+  console.log('wow-ai [--project <dir>] [--once] [--inject "text" [--agent <id>] [--plugin <id>] [--image <png|tga>]]\n\n' +
     'Runs the WoW AI bridge. Chats without a folder of their own work in <dir>,\n' +
     'or in the folder you started it from, or in defaultCwd from bridge/config.json.\n' +
     '--image attaches a screenshot to an --inject run the way vision does in game.\n' +
-    `Agents: ${A.agentIds().join(', ')} (the default is "agent" in config.json; chats pick with /wow-ai agent).`);
+    `Agents: ${A.agentIds().join(', ')} (the default is "agent" in config.json; chats pick with /wow-ai agent).\n` +
+    `Plugins: ${registry.ids().join(', ')} (the default is plugins.default in config.json).`);
   process.exit(0);
 }
 let cfg;
@@ -65,12 +77,21 @@ const agentIdx = argv.indexOf('--agent');
 const injectAgent = agentIdx >= 0 ? argv[agentIdx + 1] : '';
 const imageIdx = argv.indexOf('--image');
 const injectImage = imageIdx >= 0 ? argv[imageIdx + 1] : '';
+const pluginIdx = argv.indexOf('--plugin');
+const injectPlugin = pluginIdx >= 0 ? argv[pluginIdx + 1] : '';
 const exitWhenIdle = once || inject !== null;
 
 // The agent chats use unless they pick their own (/wow-ai agent, "agent=" flag).
 const DEFAULT_AGENT = A.normalizeAgent(cfg.agent || A.DEFAULT_AGENT);
 if (!DEFAULT_AGENT) {
   console.error(`"agent": "${cfg.agent}" in ${CONFIG_FILE} is not one of ${A.agentIds().join(', ')}.`);
+  process.exit(2);
+}
+// The plugin a chat is routed to unless it is bound to another ("plugin=" flag).
+const pluginsCfg = cfg.plugins && typeof cfg.plugins === 'object' ? cfg.plugins : {};
+const DEFAULT_PLUGIN = pluginsCfg.default ? registry.normalize(pluginsCfg.default) : registry.ids()[0];
+if (!DEFAULT_PLUGIN) {
+  console.error(`"plugins.default": "${pluginsCfg.default}" in ${CONFIG_FILE} is not one of ${registry.ids().join(', ')}.`);
   process.exit(2);
 }
 
@@ -89,17 +110,6 @@ const DEFAULT_CWD = path.resolve(
     : cfg.defaultCwd || process.cwd());
 const DEFAULT_CWD_SOURCE = projectIdx >= 0 ? '--project' : process.env.WOW_AI_PROJECT ? 'WOW_AI_PROJECT'
   : !insideRepo(process.cwd()) ? 'started here' : 'config.json';
-
-const resolveCwd = raw => P.resolveCwd(raw, DEFAULT_CWD);
-const { sameFolder } = P;
-// Subfolders of the default folder, for the "folder not found" hint.
-function siblingFolders() {
-  try {
-    return fs.readdirSync(DEFAULT_CWD, { withFileTypes: true })
-      .filter(d => d.isDirectory() && !d.name.startsWith('.') && d.name !== 'node_modules')
-      .map(d => d.name).sort().slice(0, 30);
-  } catch { return []; }
-}
 
 const SLOTS = cfg.slots || 200;
 const MAX_PARALLEL = cfg.maxParallel || 3;
@@ -197,6 +207,7 @@ function forgetChat(job) {
   delete state.sessions[chatKey(job)];
   if (state.sessionCwd) delete state.sessionCwd[sessKey(job)];
   if (state.sessionAgent) delete state.sessionAgent[sessKey(job)];
+  if (state.sessionPlugin) delete state.sessionPlugin[sessKey(job)];
   if (pendingRestore) pendingRestore.chats = pendingRestore.chats.filter(c => c.id !== job.chat);
   saveTranscripts();
   log(`#${job.id}${job.session ? '@' + job.session : ''} forgot chat ${job.chat}${had ? '' : ' (nothing stored)'}`);
@@ -302,7 +313,7 @@ function takeMapCommands(job, text) {
 // Slot file / Inbox.lua body: see protocol.luaTable.
 function slotFile(globalName, records, urgent = true) {
   const map = Date.now() < mapShareUntil && (urgent || mapLuaSize() <= MAP_PROGRESS_MAX) ? state.map : null;
-  return P.luaTable(globalName, records, { cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), map, transport: TRANSPORT, levels: LEVELS });
+  return P.luaTable(globalName, records, { cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), plugin: DEFAULT_PLUGIN, plugins: registry.ids(), map, transport: TRANSPORT, levels: LEVELS });
 }
 
 function addonInstalled() {
@@ -522,23 +533,52 @@ function drainQueue() {
   }
 }
 
+const tagOf = job => `#${job.id}${job.session ? '@' + job.session : ''}`;
+
+// A message the addon sent: acknowledge it, decide which plugin it belongs to
+// (plugins.js: an address in the text, the chat's binding, a plugin's match(),
+// else the default), and hand it over.
 function runJob(job) {
-  const key = chatKey(job);
-  const cwd = resolveCwd(job.cwd);
-  job.cwd = cwd;
-  const tag = `#${job.id}${job.session ? '@' + job.session : ''}`;
+  const tag = tagOf(job);
   signal('sig', job.id, false);
   resetBeats(job.id);
   signal('ack', job.id, true);
-  if (!fs.existsSync(cwd)) {
-    log(`${tag} cwd does not exist: ${cwd}`);
-    const sibs = siblingFolders();
-    finish(job, 'error', `Folder does not exist: ${cwd}\n` +
-      `Paths are relative to ${DEFAULT_CWD}.` +
-      (sibs.length ? `\nFolders there: ${sibs.join(', ')}` : '') +
-      `\nUse /wow-ai cd <folder> to pick one, or /wow-ai cd alone for the default.`);
+  const r = registry.route(job, { fallback: DEFAULT_PLUGIN });
+  if (r.error) {
+    log(`${tag} ${r.error}`);
+    finish(job, 'error', `${r.error}\nUse /wow-ai plugin <name> to pick one, or /wow-ai plugin alone for the default (${DEFAULT_PLUGIN}).`);
     return;
   }
+  job.plugin = r.plugin.id;
+  if (r.text !== undefined) job.text = r.text; // "@ask ..." addressed it; the address is not part of the prompt
+  r.plugin.handle(job, core);
+}
+
+// What a plugin's handle(job, core) may use: the model runner, the bridge's
+// folder, and the sessions the core keeps per chat.
+const core = {
+  log,
+  tag: tagOf,
+  get defaultCwd() { return DEFAULT_CWD; },
+  // That plugin's block in config.json (plugins.<id>), or nothing.
+  options: id => (pluginsCfg[id] && typeof pluginsCfg[id] === 'object' ? pluginsCfg[id] : {}),
+  // The folder the chat's current agent session was made in, if any.
+  sessionFolder: job => (state.sessionCwd && state.sessionCwd[sessKey(job)]) || '',
+  fail: (job, text) => finish(job, 'error', text),
+  runAgent,
+};
+
+// Run the chat's agent on the message, in opts.cwd, and publish what it says.
+// opts.freshSession() may name a reason to start a new session instead of
+// resuming (the coding plugin: the folder changed). The plugin's own
+// instructions (tools) go into the system prompt; its surfaces say whether the
+// run may mark the map and whether macro blocks in the reply become buttons.
+function runAgent(job, opts = {}) {
+  const key = chatKey(job);
+  const cwd = opts.cwd || DEFAULT_CWD;
+  const tag = tagOf(job);
+  const plugin = registry.get(job.plugin) || { id: '', tools: '', surfaces: [] };
+  const surfaces = new Set(plugin.surfaces);
   // Which agent: the chat's own (an "agent=" flag), else the bridge's default.
   const agentId = job.agent ? A.normalizeAgent(job.agent) : DEFAULT_AGENT;
   if (!agentId) {
@@ -558,16 +598,22 @@ function runJob(job) {
   }
   const skey = sessKey(job);
   if (job.newSession) { delete state.sessions[skey]; delete state.sessions[key]; }
-  // Agents keep sessions per project folder, and a session belongs to the agent
-  // that made it, so a chat that changes either starts fresh.
-  const prevCwd = state.sessionCwd && state.sessionCwd[skey];
-  if (prevCwd && !sameFolder(prevCwd, cwd) && state.sessions[skey]) {
-    log(`${tag} folder changed (${prevCwd} -> ${cwd}): new session`);
+  // A session belongs to the plugin and the agent that made it (and, for the
+  // coding plugin, its folder), so a chat that changes any of them starts fresh.
+  const why = typeof opts.freshSession === 'function' && state.sessions[skey] ? opts.freshSession() : '';
+  if (why) {
+    log(`${tag} ${why}: new session`);
     delete state.sessions[skey]; delete state.sessions[key];
   }
   const prevAgent = (state.sessionAgent && state.sessionAgent[skey]) || 'claude';
   if (prevAgent !== agentId && state.sessions[skey]) {
     log(`${tag} agent changed (${prevAgent} -> ${agentId}): new session`);
+    delete state.sessions[skey]; delete state.sessions[key];
+  }
+  // Sessions from before plugins existed were all the coding plugin's.
+  const prevPlugin = (state.sessionPlugin && state.sessionPlugin[skey]) || 'claude-code';
+  if (prevPlugin !== plugin.id && state.sessions[skey]) {
+    log(`${tag} plugin changed (${prevPlugin} -> ${plugin.id}): new session`);
     delete state.sessions[skey]; delete state.sessions[key];
   }
   if (Array.isArray(job.allow) && job.allow.length) {
@@ -595,7 +641,7 @@ function runJob(job) {
   const image = images[0] || null;
 
   const ctx = gameContext();
-  const system = P.systemPrompt(ctx, primer(), { image });
+  const system = P.systemPrompt(ctx, primer(), { image, tools: plugin.tools });
   const systemShort = P.systemPrompt(ctx, '', { image });
   const promptFile = path.join(TMP_DIR, `prompt-${job.id}-${Date.now().toString(36)}.txt`);
   const input = agent.input({ prompt: job.text, system, systemShort, resume, cfg: acfg, images });
@@ -608,17 +654,20 @@ function runJob(job) {
     prompt: job.text, timeoutMs: cfg.timeoutMs,
   })];
   const env = agent.env({ ...process.env });
-  // Where this run's tools append map commands (docs/MAP.md); any agent can use it.
-  try {
-    fs.mkdirSync(MAP_DIR, { recursive: true });
-    fs.rmSync(mapFileFor(job), { force: true });
-    env.WOW_AI_MAP_FILE = mapFileFor(job);
-  } catch (e) { log(`${tag} map file unavailable: ${e.message}`); }
+  // Where this run's tools append map commands (docs/MAP.md); any agent can use
+  // it, on a plugin whose replies may reach the map.
+  if (surfaces.has('map')) {
+    try {
+      fs.mkdirSync(MAP_DIR, { recursive: true });
+      fs.rmSync(mapFileFor(job), { force: true });
+      env.WOW_AI_MAP_FILE = mapFileFor(job);
+    } catch (e) { log(`${tag} map file unavailable: ${e.message}`); }
+  }
 
-  log(`${tag} (${job.via}) ${agent.name} starting in ${cwd}${resume ? ' (resume ' + resume.slice(0, 8) + ')' : ' (new session)'}${ctx ? ' [game context]' : ''}${image ? ` [screen ${image.width}x${image.height}, ${Math.round(image.bytes / 1024)} KB]` : ''}${running.size ? ' [' + (running.size + 1) + ' running]' : ''}`);
+  log(`${tag} (${job.via}) [${plugin.id}] ${agent.name} starting in ${cwd}${resume ? ' (resume ' + resume.slice(0, 8) + ')' : ' (new session)'}${ctx ? ' [game context]' : ''}${image ? ` [screen ${image.width}x${image.height}, ${Math.round(image.bytes / 1024)} KB]` : ''}${running.size ? ' [' + (running.size + 1) + ' running]' : ''}`);
   const child = spawn(cmd.file, args, { cwd, env, windowsHide: true, stdio: [input.stdin !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
   running.set(key, { job, child });
-  publish(key, { chat: job.chat, id: job.id, status: 'working', text: resume ? 'thinking...' : 'starting a new session...', cwd, session: resume, agent: agentId }, true);
+  publish(key, { chat: job.chat, id: job.id, status: 'working', text: resume ? 'thinking...' : 'starting a new session...', cwd: job.cwd, session: resume, agent: agentId, plugin: plugin.id }, true);
   if (input.stdin !== undefined) { child.stdin.on('error', () => {}); child.stdin.end(input.stdin); }
 
   const parser = agent.parser();
@@ -636,7 +685,7 @@ function runJob(job) {
     progress.push(line);
     while (progress.length > 10) progress.shift();
     beat(job);
-    publish(key, { chat: job.chat, id: job.id, status: 'working', text: progress.join('\n'), cwd, session: sessionId, agent: agentId }, false);
+    publish(key, { chat: job.chat, id: job.id, status: 'working', text: progress.join('\n'), cwd: job.cwd, session: sessionId, agent: agentId, plugin: plugin.id }, false);
   };
   if (agent.stream === 'text') pushProgress(`${agent.name} is working (no live progress)`);
   if (input.note) notes.push(input.note);
@@ -720,11 +769,14 @@ function runJob(job) {
       state.sessions[skey] = sessionId;
       (state.sessionCwd = state.sessionCwd || {})[skey] = cwd;
       (state.sessionAgent = state.sessionAgent || {})[skey] = agentId;
+      (state.sessionPlugin = state.sessionPlugin || {})[skey] = plugin.id;
     }
     // Map marks count whatever the outcome: the tools already reported them.
-    const mapped = takeMapCommands(job, result ? result.text : '');
-    if (result) result.text = mapped.text;
-    if (mapped.note) notes.push(mapped.note);
+    if (surfaces.has('map')) {
+      const mapped = takeMapCommands(job, result ? result.text : '');
+      if (result) result.text = mapped.text;
+      if (mapped.note) notes.push(mapped.note);
+    }
     const extra = notes.length ? `\n\n[bridge] ${notes.join('\n\n[bridge] ')}` : '';
     if (result && !result.error) {
       const body = String(result.text || '').trim() || (notes.length ? '' : `(${agent.name} finished without a reply)`);
@@ -747,17 +799,21 @@ function finish(job, status, text, session, denied) {
   // that part is what the game chat prints; the window gets the whole reply.
   let summary = '';
   let macros = [];
+  const plugin = registry.get(job.plugin);
   if (status === 'done') {
     ({ text, summary } = P.splitSummary(text));
     // After the split: a macro block the agent put after "TL;DR:" must not end up
-    // in the game-chat summary.
-    const m = P.extractMacros(text);
-    text = m.text + (m.notes.length ? `\n\n[bridge] ${m.notes.join('; ')}` : '');
-    macros = m.macros;
-    summary = P.stripMacroBlocks(summary);
+    // in the game-chat summary. Only a plugin whose replies may carry macros
+    // gets the buttons.
+    if (plugin && plugin.surfaces.includes('macro')) {
+      const m = P.extractMacros(text);
+      text = m.text + (m.notes.length ? `\n\n[bridge] ${m.notes.join('; ')}` : '');
+      macros = m.macros;
+      summary = P.stripMacroBlocks(summary);
+    }
   }
   noteMessage(job, status === 'done' ? 'assistant' : 'system', status === 'done' ? text : 'Bridge error: ' + text);
-  publish(chatKey(job), { chat: job.chat, id: job.id, status, text, summary, cwd: job.cwd, session, denied, macros, agent: job.agent || '' }, true);
+  publish(chatKey(job), { chat: job.chat, id: job.id, status, text, summary, cwd: job.cwd, session, denied, macros, agent: job.agent || '', plugin: job.plugin || '' }, true);
   signal('sig', job.id, true);
   log(`#${job.id}${job.session ? '@' + job.session : ''} ${status} (${text.length} chars${summary ? ', summary ' + summary.length : ', no summary'})`);
   drainQueue();
@@ -921,6 +977,7 @@ function banner() {
   console.log(`  vision   : ${TRANSPORT === 'screenshot' ? 'per chat (/wow-ai vision on, or /wow-ai look <question>); the game view goes out up to ' + vis.maxWidth + 'px wide' : 'needs capture.mode "screenshot" (the pixel capture never sees more than the strip)'}`);
   console.log(`  parallel : up to ${MAX_PARALLEL} chats at once`);
   console.log(`  fallback : ${SAVED_VARS}`);
+  console.log(`  plugins  : ${registry.all().map(p => p.id + (p.id === DEFAULT_PLUGIN ? ' (default)' : '')).join(', ')}  (chats pick their own with /wow-ai plugin)`);
   console.log(`  agent    : ${DEFAULT_AGENT} (default; chats pick their own with /wow-ai agent)`);
   for (const id of A.agentIds()) console.log(`  ${id.padEnd(9)}: ${agentLine(id)}`);
   console.log(`  sessions : ${Object.keys(state.sessions).length} saved`);
@@ -933,6 +990,7 @@ function banner() {
 banner();
 if (inject !== null) {
   const job = { id: state.lastId + 1, session: '', chat: '', text: inject, cwd: '', newSession: false, via: 'inject', agent: injectAgent || '' };
+  if (injectPlugin) job.plugin = injectPlugin;
   if (injectImage) {
     // The whole file is the screen (no strip to crop): what vision does in game, without the game.
     let img;
