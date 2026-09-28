@@ -17,7 +17,7 @@ test('install.sh: everything lives in functions and main runs last, so a cut-off
   const src = fs.readFileSync(SH, 'utf8');
   assert.match(src, /\nmain "\$@"\n$/, 'main "$@" is the last line');
   assert.ok(!/\nsudo\b/.test(src) && !/ sudo /.test(src), 'never sudo');
-  assert.match(src, /curl -fsSL https:\/\/raw\.githubusercontent\.com\/rdimascio\/wow-ai\/main\/install\.sh \| sh/, 'documents its own URL');
+  assert.match(src, /curl -fsSL https:\/\/raw\.githubusercontent\.com\/rdimascio\/claude-wow\/main\/install\.sh \| sh/, 'documents its own URL');
   assert.match(src, /id -u.*-ne 0/, 'refuses root');
 });
 
@@ -55,6 +55,24 @@ test('install.ps1 parses, and its Node gate matches the shell one', { skip: !pws
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.match(r.stdout, /OK/);
   const src = fs.readFileSync(PS1, 'utf8');
-  assert.match(src, /irm https:\/\/raw\.githubusercontent\.com\/rdimascio\/wow-ai\/main\/install\.ps1 \| iex/, 'documents its own URL');
+  assert.match(src, /irm https:\/\/raw\.githubusercontent\.com\/rdimascio\/claude-wow\/main\/install\.ps1 \| iex/, 'documents its own URL');
   assert.ok(!/RunAs|Start-Process .*-Verb/i.test(src), 'never elevates');
+});
+
+test('the installers put the code under the home folder, name the claude-wow command, and carry an old wow-ai install over', () => {
+  const sh = fs.readFileSync(SH, 'utf8');
+  assert.match(sh, /^DIR=\$\{CLAUDE_WOW_DIR:-\$HOME_DIR\/app\}$/m, 'code under ~/.claude-wow/app, state in ~/.claude-wow');
+  assert.match(sh, /^HOME_DIR=\$\{CLAUDE_WOW_HOME:-\$HOME\/\.claude-wow\}$/m);
+  assert.match(sh, /"\$BIN_DIR\/claude-wow"/);
+  assert.ok(!/BIN_DIR\/wow-ai" <<EOF/.test(sh), 'no wow-ai shim is written');
+  assert.match(sh, /migrate_old_install\(\)/);
+  assert.match(sh, /for f in config\.json state\.json transcripts\.json/);
+  assert.match(sh, /service uninstall/);
+  assert.ok(!/WOW_AI_/.test(sh), 'no WOW_AI_* variable left');
+  const ps = fs.readFileSync(PS1, 'utf8');
+  assert.match(ps, /'claude-wow\.cmd'/);
+  assert.match(ps, /Programs\\claude-wow'/);
+  assert.match(ps, /\$OldDir = Join-Path \$env:LOCALAPPDATA 'Programs\\wow-ai'/);
+  assert.match(ps, /'config\.json', 'state\.json', 'transcripts\.json'/);
+  assert.ok(!/WOW_AI_/.test(ps), 'no WOW_AI_* variable left');
 });

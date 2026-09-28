@@ -1,38 +1,45 @@
 #!/bin/sh
-# WoW AI installer for macOS and Linux. One line:
+# Claude WoW installer for macOS and Linux. One line:
 #
-#   curl -fsSL https://raw.githubusercontent.com/rdimascio/wow-ai/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/rdimascio/claude-wow/main/install.sh | sh
 #
 # With options (everything after `-s --` goes to the script):
 #
-#   curl -fsSL https://raw.githubusercontent.com/rdimascio/wow-ai/main/install.sh | sh -s -- --wow "/Applications/World of Warcraft/_classic_beta_" --project ~/code/my-game --service
+#   curl -fsSL https://raw.githubusercontent.com/rdimascio/claude-wow/main/install.sh | sh -s -- --wow "/Applications/World of Warcraft/_classic_beta_" --project ~/code/my-game --service
 #
 #   --wow <folder>      the WoW client folder (setup.js looks in the usual places without it)
 #   --project <folder>  the default folder the agents work in
 #   --service           install the background service without asking
 #   --no-service        don't install or ask
-#   --dir <folder>      where to put the code (default ~/.wow-ai; or WOW_AI_DIR)
-#   --ref <branch|tag>  which version (default main; or WOW_AI_REF)
+#   --dir <folder>      where to put the code (default ~/.claude-wow/app; or CLAUDE_WOW_DIR)
+#   --ref <branch|tag>  which version (default main; or CLAUDE_WOW_REF)
 #
 # What it does, in order, and it is safe to run again (an existing install is
 # updated, config.json and your chats are kept):
 #   1. checks for Node.js 22.2+ (and says how to get it if not)
-#   2. clones the repo into ~/.wow-ai with git, or downloads the tarball
+#   2. clones the repo into ~/.claude-wow/app with git, or downloads the tarball
 #      (there is nothing to npm-install: the bridge has no runtime dependencies)
-#   3. puts a `wow-ai` command in ~/.local/bin
-#   4. runs the game-side setup (addon, config.json, slot pool)
+#   3. puts a `claude-wow` command in ~/.local/bin
+#   4. runs the game-side setup (addon, config.json, slot pool); config, state
+#      and logs live in ~/.claude-wow (CLAUDE_WOW_HOME), outside the code
 #   5. offers to install the background service
+# An install by the project's old name (~/.wow-ai, the wow-ai command, the
+# io.wowai.bridge service) is carried over: its config and sessions are copied
+# to ~/.claude-wow, its service and command are removed, and setup migrates
+# the addon and your chats in the game folder.
 # Never sudo. Any failure stops with a message saying what to do.
 
 set -eu
 
-REPO_URL=${WOW_AI_REPO:-https://github.com/rdimascio/wow-ai}
-REF=${WOW_AI_REF:-main}
-DIR=${WOW_AI_DIR:-$HOME/.wow-ai}
-BIN_DIR=${WOW_AI_BIN:-$HOME/.local/bin}
+REPO_URL=${CLAUDE_WOW_REPO:-https://github.com/rdimascio/claude-wow}
+REF=${CLAUDE_WOW_REF:-main}
+HOME_DIR=${CLAUDE_WOW_HOME:-$HOME/.claude-wow}
+DIR=${CLAUDE_WOW_DIR:-$HOME_DIR/app}
+BIN_DIR=${CLAUDE_WOW_BIN:-$HOME/.local/bin}
+OLD_DIR=$HOME/.wow-ai
 MIN_NODE=22.2
-WOW=${WOW_AI_WOW:-}
-PROJECT=${WOW_AI_PROJECT:-}
+WOW=${CLAUDE_WOW_WOW:-}
+PROJECT=${CLAUDE_WOW_PROJECT:-}
 SERVICE=ask
 
 say()  { printf '%s\n' "$*"; }
@@ -92,7 +99,7 @@ get_code() {
     return
   fi
   if [ -e "$DIR" ] && [ ! -f "$DIR/setup.js" ] && [ -n "$(ls -A "$DIR" 2>/dev/null)" ]; then
-    fail "$DIR exists and is not a wow-ai install" "Pick another folder with --dir <folder> (or WOW_AI_DIR), or move that one aside."
+    fail "$DIR exists and is not a claude-wow install" "Pick another folder with --dir <folder> (or CLAUDE_WOW_DIR), or move that one aside."
   fi
   if command -v git >/dev/null 2>&1 && [ ! -f "$DIR/setup.js" ]; then
     say "cloning $REPO_URL ($REF) into $DIR"
@@ -102,13 +109,13 @@ get_code() {
   # No git (or a previous tarball install to refresh): download the archive.
   command -v curl >/dev/null 2>&1 || fail "neither git nor curl is available" "Install git (macOS: xcode-select --install) and run this again."
   command -v tar >/dev/null 2>&1 || fail "tar is not available" "Install tar from your package manager and run this again."
-  tmp=$(mktemp -d 2>/dev/null || mktemp -d -t wow-ai)
+  tmp=$(mktemp -d 2>/dev/null || mktemp -d -t claude-wow)
   say "downloading $REPO_URL/archive/refs/heads/$REF.tar.gz"
   if ! curl -fsSL "$REPO_URL/archive/refs/heads/$REF.tar.gz" | tar -xz -C "$tmp" 2>/dev/null; then
     curl -fsSL "$REPO_URL/archive/refs/tags/$REF.tar.gz" | tar -xz -C "$tmp" || fail "download failed" "Check the network, or install git and run this again."
   fi
   src=$(find "$tmp" -mindepth 1 -maxdepth 1 -type d | head -n 1)
-  [ -f "$src/setup.js" ] || fail "the archive did not contain wow-ai" "Try again with git installed."
+  [ -f "$src/setup.js" ] || fail "the archive did not contain claude-wow" "Try again with git installed."
   mkdir -p "$DIR"
   # cp over the old files; config.json, state.json and transcripts.json are not in the archive, so they survive.
   cp -R "$src/." "$DIR/"
@@ -116,16 +123,38 @@ get_code() {
   say "installed into $DIR (no git: run this script again to update)"
 }
 
+# An install under the old name: its config and the agents' sessions move to
+# the home folder (once; setup then rewrites the addon paths inside), its
+# background service is removed so it stops starting the old bridge at login,
+# and its command goes. The old code folder is left for you to delete.
+migrate_old_install() {
+  [ -d "$OLD_DIR" ] || return 0
+  if [ -f "$OLD_DIR/bridge/config.json" ] && [ ! -f "$HOME_DIR/config.json" ]; then
+    mkdir -p "$HOME_DIR" || fail "cannot create $HOME_DIR"
+    for f in config.json state.json transcripts.json; do
+      [ -f "$OLD_DIR/bridge/$f" ] && cp "$OLD_DIR/bridge/$f" "$HOME_DIR/$f"
+    done
+    say "carried config.json, state.json and transcripts.json over from $OLD_DIR/bridge to $HOME_DIR"
+    # The old service would keep starting the old bridge; the new one is installed in step 5 if wanted.
+    "$NODE_BIN" "$DIR/bridge/supervisor.js" service uninstall >/dev/null 2>&1 || true
+  fi
+  if [ -f "$BIN_DIR/wow-ai" ] && grep -q "$OLD_DIR" "$BIN_DIR/wow-ai" 2>/dev/null; then
+    rm -f "$BIN_DIR/wow-ai"
+    say "removed the old wow-ai command ($BIN_DIR/wow-ai); it is claude-wow from now on"
+  fi
+  say "the old code in $OLD_DIR is no longer used; delete it when you like"
+}
+
 install_command() {
-  mkdir -p "$BIN_DIR" || fail "cannot create $BIN_DIR" "Pick another folder with WOW_AI_BIN=<folder>."
-  cat > "$BIN_DIR/wow-ai" <<EOF
+  mkdir -p "$BIN_DIR" || fail "cannot create $BIN_DIR" "Pick another folder with CLAUDE_WOW_BIN=<folder>."
+  cat > "$BIN_DIR/claude-wow" <<EOF
 #!/bin/sh
-# WoW AI: written by install.sh. Runs the bridge from $DIR.
+# Claude WoW: written by install.sh. Runs the bridge from $DIR.
 NODE=\$(command -v node 2>/dev/null || echo "$NODE_BIN")
 exec "\$NODE" "$DIR/bridge/supervisor.js" "\$@"
 EOF
-  chmod +x "$BIN_DIR/wow-ai"
-  say "wow-ai command: $BIN_DIR/wow-ai"
+  chmod +x "$BIN_DIR/claude-wow"
+  say "claude-wow command: $BIN_DIR/claude-wow"
   case ":$PATH:" in
     *":$BIN_DIR:"*) ;;
     *)
@@ -133,12 +162,12 @@ EOF
       line="export PATH=\"$BIN_DIR:\$PATH\""
       [ "${rc##*/}" = config.fish ] && line="fish_add_path $BIN_DIR"
       if [ -f "$rc" ] && grep -Fq "$BIN_DIR" "$rc" 2>/dev/null; then
-        say "$BIN_DIR is already in $rc; open a new terminal for the wow-ai command"
+        say "$BIN_DIR is already in $rc; open a new terminal for the claude-wow command"
       elif ask "$BIN_DIR is not on your PATH. Add it to $rc? [y/N] "; then
-        printf '\n# wow-ai\n%s\n' "$line" >> "$rc"
-        say "added to $rc; open a new terminal for the wow-ai command"
+        printf '\n# claude-wow\n%s\n' "$line" >> "$rc"
+        say "added to $rc; open a new terminal for the claude-wow command"
       else
-        say "to use the wow-ai command, add this to $rc:  $line"
+        say "to use the claude-wow command, add this to $rc:  $line"
       fi
       ;;
   esac
@@ -172,8 +201,9 @@ main() {
   get_code
   [ -f "$DIR/setup.js" ] || fail "$DIR does not contain setup.js after the download" "Remove $DIR and run this again."
 
-  step "3/5 The wow-ai command"
+  step "3/5 The claude-wow command"
   install_command
+  migrate_old_install
 
   step "4/5 Game-side setup (addon, config, slot pool)"
   set --
@@ -181,27 +211,27 @@ main() {
   [ -n "$PROJECT" ] && set -- "$@" --project "$PROJECT"
   if ! (cd "$DIR" && "$NODE_BIN" setup.js "$@"); then
     fail "the game-side setup did not finish (see above)" \
-      "The code and the wow-ai command are installed. Fix what setup reported (usually: pass the client folder), then run:  wow-ai setup --wow \"<World of Warcraft/_classic_beta_>\""
+      "The code and the claude-wow command are installed. Fix what setup reported (usually: pass the client folder), then run:  claude-wow setup --wow \"<World of Warcraft/_classic_beta_>\""
   fi
 
   step "5/5 Background service"
   if [ "$SERVICE" = no ]; then
-    say "skipped (install later with: wow-ai service install)"
+    say "skipped (install later with: claude-wow service install)"
   elif [ "$SERVICE" = yes ] || ask "Run the bridge in the background and start it at login? [y/N] "; then
-    "$NODE_BIN" "$DIR/bridge/supervisor.js" service install || fail "the service did not install (see above)" "Everything else is in place; start the bridge by hand with: wow-ai"
+    "$NODE_BIN" "$DIR/bridge/supervisor.js" service install || fail "the service did not install (see above)" "Everything else is in place; start the bridge by hand with: claude-wow"
   else
-    say "skipped (install later with: wow-ai service install; or start the bridge by hand with: wow-ai)"
+    say "skipped (install later with: claude-wow service install; or start the bridge by hand with: claude-wow)"
   fi
 
-  printf '\nInstalled. From here on, the wow-ai command does what "npm start" does above, from any folder. Next:\n'
+  printf '\nInstalled. From here on, the claude-wow command does what "npm start" does above, from any folder. Next:\n'
   say "  1. Fully quit and relaunch World of Warcraft (it only discovers new addon files at launch)."
-  say "  2. Enable \"WoW AI\" at the character-select AddOns screen."
+  say "  2. Enable \"Claude WoW\" at the character-select AddOns screen."
   if [ "$SERVICE" = no ]; then
-    say "  3. Start the bridge:  wow-ai        (or: wow-ai service install, to keep it running in the background)"
+    say "  3. Start the bridge:  claude-wow        (or: claude-wow service install, to keep it running in the background)"
   else
-    say "  3. Check the bridge:  wow-ai service status     (logs: wow-ai service logs)"
+    say "  3. Check the bridge:  claude-wow service status     (logs: claude-wow service logs)"
   fi
-  say "  4. In game:  /wow-ai"
+  say "  4. In game:  /claude"
   say ""
   say "Update later by running this installer again. Code: $DIR"
 }

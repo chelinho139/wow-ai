@@ -9,11 +9,11 @@
 //   claude-wow service status      installed? running? pid, uptime, last log lines
 //   claude-wow service logs [-n N] [-f]
 //
-//   macOS    LaunchAgent  ~/Library/LaunchAgents/io.wowai.bridge.plist (RunAtLoad + KeepAlive)
-//   Linux    systemd      ~/.config/systemd/user/wow-ai-bridge.service (Restart=always)
+//   macOS    LaunchAgent  ~/Library/LaunchAgents/io.claudewow.bridge.plist (RunAtLoad + KeepAlive)
+//   Linux    systemd      ~/.config/systemd/user/claude-wow-bridge.service (Restart=always)
 //   Windows  Startup folder launcher (hidden window); the supervisor does the crash restarts
 //
-// Under the service the supervisor runs with WOW_AI_SERVICE=1: it captures the
+// Under the service the supervisor runs with CLAUDE_WOW_SERVICE=1: it captures the
 // bridge's output into <logs>/bridge.log (rotated at 5 MB, 5 files kept) and
 // writes <run>/supervisor.pid so `status` can find it. Everything that builds a
 // file or parses a command's output is a pure function, tested in
@@ -26,8 +26,13 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 const H = require('./home');
 
-const LABEL = 'io.wowai.bridge';          // launchd label
-const UNIT = 'wow-ai-bridge';             // systemd unit name
+const LABEL = 'io.claudewow.bridge';      // launchd label
+const UNIT = 'claude-wow-bridge';         // systemd unit name
+// The service as the project's old name (wow-ai) installed it. `install` and
+// `uninstall` remove it, or two bridges would start at login and fight over
+// the slot files.
+const OLD_LABEL = 'io.wowai.bridge';
+const OLD_UNIT = 'wow-ai-bridge';
 const REPO = path.resolve(__dirname, '..');
 const SUPERVISOR = path.join(__dirname, 'supervisor.js');
 const LOG_MAX_BYTES = 5 * 1024 * 1024;
@@ -38,26 +43,41 @@ const COMMANDS = ['install', 'uninstall', 'start', 'stop', 'restart', 'status', 
 function dirs(platform = process.platform, env = process.env, home = os.homedir()) {
   if (platform === 'darwin') {
     return {
-      logs: path.join(home, 'Library', 'Logs', 'wow-ai'),
-      run: path.join(home, 'Library', 'Application Support', 'wow-ai'),
+      logs: path.join(home, 'Library', 'Logs', 'claude-wow'),
+      run: path.join(home, 'Library', 'Application Support', 'claude-wow'),
       definition: path.join(home, 'Library', 'LaunchAgents', `${LABEL}.plist`),
     };
   }
   if (platform === 'win32') {
-    const base = path.join(env.LOCALAPPDATA || path.join(home, 'AppData', 'Local'), 'wow-ai');
+    const base = path.join(env.LOCALAPPDATA || path.join(home, 'AppData', 'Local'), 'claude-wow');
     return {
       logs: path.join(base, 'logs'),
       run: base,
       definition: path.join(env.APPDATA || path.join(home, 'AppData', 'Roaming'),
-        'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', 'WoW AI bridge.vbs'),
+        'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', 'Claude WoW bridge.vbs'),
     };
   }
-  const state = path.join(env.XDG_STATE_HOME || path.join(home, '.local', 'state'), 'wow-ai');
+  const state = path.join(env.XDG_STATE_HOME || path.join(home, '.local', 'state'), 'claude-wow');
   return {
     logs: state,
     run: state,
     definition: path.join(env.XDG_CONFIG_HOME || path.join(home, '.config'), 'systemd', 'user', `${UNIT}.service`),
   };
+}
+
+// Where the old name's service kept its definition and pid file.
+function oldDirs(platform = process.platform, env = process.env, home = os.homedir()) {
+  if (platform === 'darwin') {
+    return { label: OLD_LABEL, definition: path.join(home, 'Library', 'LaunchAgents', `${OLD_LABEL}.plist`), run: path.join(home, 'Library', 'Application Support', 'wow-ai') };
+  }
+  if (platform === 'win32') {
+    return {
+      run: path.join(env.LOCALAPPDATA || path.join(home, 'AppData', 'Local'), 'wow-ai'),
+      definition: path.join(env.APPDATA || path.join(home, 'AppData', 'Roaming'),
+        'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', 'WoW AI bridge.vbs'),
+    };
+  }
+  return { unit: OLD_UNIT, definition: path.join(env.XDG_CONFIG_HOME || path.join(home, '.config'), 'systemd', 'user', `${OLD_UNIT}.service`), run: path.join(env.XDG_STATE_HOME || path.join(home, '.local', 'state'), 'wow-ai') };
 }
 
 const serviceLogFile = d => path.join(d.logs, 'bridge.log');
@@ -95,6 +115,7 @@ const HELP = `claude-wow service <command>
   logs        Show the log (-n <lines>, default 50; -f to follow).
 
 macOS: a LaunchAgent (~/Library/LaunchAgents/${LABEL}.plist).
+An install by the project's old name (${OLD_LABEL}, ${OLD_UNIT}) is removed by install and uninstall.
 Linux: a systemd --user unit (${UNIT}.service).
 Windows: a launcher in your Startup folder; the bridge runs without a window.
 Logs rotate at 5 MB, 5 files kept. Run "claude-wow setup" before installing.`;
@@ -109,7 +130,7 @@ function xmlEscape(s) {
 // The user's PATH is baked in: launchd hands agents an almost empty one, and the
 // bridge finds the agent CLIs (claude, codex, ...) through it.
 function launchdPlist({ label = LABEL, node, script, cwd, logFile, env = {} }) {
-  const envRows = Object.entries({ WOW_AI_SERVICE: '1', ...env })
+  const envRows = Object.entries({ CLAUDE_WOW_SERVICE: '1', ...env })
     .filter(([, v]) => v !== undefined && v !== null && v !== '')
     .map(([k, v]) => `      <key>${xmlEscape(k)}</key>\n      <string>${xmlEscape(v)}</string>`).join('\n');
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -149,11 +170,11 @@ ${envRows}
 // systemd --user: starts with the user's session, restarts on any exit.
 function systemdUnit({ node, script, cwd, env = {} }) {
   const q = s => `"${String(s).replace(/(["\\])/g, '\\$1')}"`;
-  const envRows = Object.entries({ WOW_AI_SERVICE: '1', ...env })
+  const envRows = Object.entries({ CLAUDE_WOW_SERVICE: '1', ...env })
     .filter(([, v]) => v !== undefined && v !== null && v !== '')
     .map(([k, v]) => `Environment=${q(`${k}=${v}`)}`).join('\n');
   return `[Unit]
-Description=WoW AI bridge
+Description=Claude WoW bridge
 After=default.target
 
 [Service]
@@ -174,9 +195,9 @@ WantedBy=default.target
 // the crash restarts itself, so nothing else watches it.
 function startupVbs({ node, script, cwd }) {
   const q = s => `"${String(s).replace(/"/g, '""')}"`;
-  return `' WoW AI bridge: started at login, no window. Written by "claude-wow service install"; remove with "claude-wow service uninstall".\r
+  return `' Claude WoW bridge: started at login, no window. Written by "claude-wow service install"; remove with "claude-wow service uninstall".\r
 Set sh = CreateObject("WScript.Shell")\r
-sh.Environment("Process")("WOW_AI_SERVICE") = "1"\r
+sh.Environment("Process")("CLAUDE_WOW_SERVICE") = "1"\r
 sh.CurrentDirectory = ${q(cwd)}\r
 sh.Run ${q(`"${node}" "${script}"`)}, 0, False\r
 `;
@@ -317,24 +338,35 @@ const mac = {
     if (!r.ok && /not find|No such process|3: /.test(r.out)) r.ok = true; // was not loaded
     return r;
   },
+  // The agent the old name installed: unload it and drop its plist. Best effort;
+  // a plist that is not loaded, or an old launchctl, must not stop the install.
+  removeOld(old = oldDirs('darwin')) {
+    if (!fs.existsSync(old.definition)) return false;
+    let r = run('launchctl', ['bootout', `gui/${process.getuid()}/${old.label}`]);
+    if (!r.ok) r = run('launchctl', ['unload', '-w', old.definition]);
+    try { fs.unlinkSync(old.definition); } catch {}
+    return true;
+  },
   install(d) {
     fs.mkdirSync(path.dirname(d.definition), { recursive: true });
     fs.mkdirSync(d.logs, { recursive: true });
     fs.mkdirSync(d.run, { recursive: true });
     rotate(launchdLogFile(d), { maxBytes: 1024 * 1024, keep: 1 });
+    this.removeOld();
     fs.writeFileSync(d.definition, definition('darwin', d));
     if (this.loaded()) this.bootout();
     const r = this.bootstrap(d);
     if (!r.ok) throw new Error(`launchctl could not load ${d.definition}: ${r.out.trim() || r.error}`);
   },
   uninstall(d) {
+    const old = this.removeOld();
     if (fs.existsSync(d.definition)) {
       const r = this.bootout();
       if (!r.ok) throw new Error(`launchctl could not unload the service: ${r.out.trim()}`);
       fs.unlinkSync(d.definition);
       return true;
     }
-    return false;
+    return old;
   },
   start(d) {
     if (!fs.existsSync(d.definition)) throw new Error('the service is not installed. Run: claude-wow service install');
@@ -364,16 +396,25 @@ const linux = {
     if (r.error && r.error.code === 'ENOENT') throw new Error('systemctl was not found. Without systemd, start the bridge from your session startup with: node ' + SUPERVISOR);
     return r;
   },
+  removeOld(old = oldDirs('linux')) {
+    if (!fs.existsSync(old.definition)) return false;
+    try { this.sys(['disable', '--now', old.unit]); } catch {}
+    try { fs.unlinkSync(old.definition); } catch {}
+    try { this.sys(['daemon-reload']); } catch {}
+    return true;
+  },
   install(d) {
     fs.mkdirSync(path.dirname(d.definition), { recursive: true });
     fs.mkdirSync(d.logs, { recursive: true });
+    this.removeOld();
     fs.writeFileSync(d.definition, definition('linux', d));
     this.sys(['daemon-reload']);
     const r = this.sys(['enable', '--now', UNIT]);
     if (!r.ok) throw new Error(`systemctl could not enable ${UNIT}: ${r.out.trim()}`);
   },
   uninstall(d) {
-    if (!fs.existsSync(d.definition)) return false;
+    const old = this.removeOld();
+    if (!fs.existsSync(d.definition)) return old;
     this.sys(['disable', '--now', UNIT]);
     fs.unlinkSync(d.definition);
     this.sys(['daemon-reload']);
@@ -398,25 +439,39 @@ const linux = {
 
 // Windows -------------------------------------------------------------------
 const win = {
+  // The old name's launcher in the Startup folder, and the bridge it started if
+  // its pid file says one is still running.
+  removeOld(old = oldDirs('win32')) {
+    const had = fs.existsSync(old.definition);
+    if (had) try { fs.unlinkSync(old.definition); } catch {}
+    const p = readPid(old);
+    if (p && p.mode === 'service' && alive(p.pid)) {
+      run('taskkill', ['/PID', String(p.pid), '/T', '/F']);
+      try { fs.unlinkSync(pidFile(old)); } catch {}
+    }
+    return had;
+  },
   install(d) {
     fs.mkdirSync(path.dirname(d.definition), { recursive: true });
     fs.mkdirSync(d.logs, { recursive: true });
     fs.mkdirSync(d.run, { recursive: true });
+    this.removeOld();
     fs.writeFileSync(d.definition, definition('win32', d));
     this.start(d);
   },
   uninstall(d) {
+    const old = this.removeOld();
     const had = fs.existsSync(d.definition);
     this.stop(d);
     if (had) fs.unlinkSync(d.definition);
-    return had;
+    return had || old;
   },
   start(d) {
     const p = readPid(d);
     if (p && p.mode === 'service' && alive(p.pid)) return; // already running
     const child = spawn(process.execPath, [SUPERVISOR], {
       cwd: REPO, detached: true, stdio: 'ignore', windowsHide: true,
-      env: { ...process.env, WOW_AI_SERVICE: '1' },
+      env: { ...process.env, CLAUDE_WOW_SERVICE: '1' },
     });
     child.unref();
   },
@@ -537,8 +592,8 @@ function main(argv, { platform = process.platform, out = console.log, err = cons
 }
 
 module.exports = {
-  LABEL, UNIT, COMMANDS, LOG_MAX_BYTES, LOG_KEEP, HELP,
-  dirs, serviceLogFile, launchdLogFile, pidFile,
+  LABEL, UNIT, OLD_LABEL, OLD_UNIT, COMMANDS, LOG_MAX_BYTES, LOG_KEEP, HELP,
+  dirs, oldDirs, backend, serviceLogFile, launchdLogFile, pidFile,
   parseArgs, launchdPlist, systemdUnit, startupVbs, xmlEscape,
   rotate, RotatingLog, writePid, readPid, clearPid, alive,
   parseLaunchctlPrint, formatUptime, lastLines, agentEnv,

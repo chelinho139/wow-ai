@@ -6,7 +6,7 @@
 // makes proj the default folder for chats. Two subcommands are handled here:
 //   claude-wow setup [...]     runs setup.js (the game-side install)
 //   claude-wow service <cmd>   the bridge as a background service (service.js)
-// Under the service (WOW_AI_SERVICE=1) the bridge's output goes to a rotating
+// Under the service (CLAUDE_WOW_SERVICE=1) the bridge's output goes to a rotating
 // log file instead of a terminal, and a pid file lets `service status` find us.
 // bridge.log in the home folder, which bridge.js appends to on its own, is rotated here too.
 const { spawn, spawnSync } = require('child_process');
@@ -25,7 +25,7 @@ if (argv[0] === 'service') {
 }
 
 function supervise() {
-  const SERVICE = process.env.WOW_AI_SERVICE === '1';
+  const SERVICE = process.env.CLAUDE_WOW_SERVICE === '1';
   const dirs = svc.dirs();
   const out = SERVICE ? new svc.RotatingLog(svc.serviceLogFile(dirs)) : null;
   const say = line => (out ? out.write(line + '\n') : console.log(line));

@@ -1,4 +1,4 @@
-// bridge/service.js, the `wow-ai service` command: the service definitions it
+// bridge/service.js, the `claude-wow service` command: the service definitions it
 // writes (LaunchAgent plist, systemd unit, Windows Startup launcher), its
 // argument parsing, the log rotation the supervisor runs, the pid file, and the
 // bits that read launchctl back. Nothing here talks to launchd or systemd.
@@ -32,16 +32,25 @@ test('argument parsing: the seven commands, -n and -f, and errors for anything e
 test('per-user folders per platform, none of them under /usr or Program Files', () => {
   const home = '/Users/p';
   const mac = S.dirs('darwin', {}, home);
-  assert.equal(mac.definition, path.join(home, 'Library', 'LaunchAgents', 'io.wowai.bridge.plist'));
-  assert.equal(mac.logs, path.join(home, 'Library', 'Logs', 'wow-ai'));
+  assert.equal(mac.definition, path.join(home, 'Library', 'LaunchAgents', 'io.claudewow.bridge.plist'));
+  assert.equal(mac.logs, path.join(home, 'Library', 'Logs', 'claude-wow'));
   const lin = S.dirs('linux', {}, '/home/p');
-  assert.equal(lin.definition, path.join('/home/p', '.config', 'systemd', 'user', 'wow-ai-bridge.service'));
-  assert.equal(lin.logs, path.join('/home/p', '.local', 'state', 'wow-ai'));
+  assert.equal(lin.definition, path.join('/home/p', '.config', 'systemd', 'user', 'claude-wow-bridge.service'));
+  assert.equal(lin.logs, path.join('/home/p', '.local', 'state', 'claude-wow'));
   const xdg = S.dirs('linux', { XDG_STATE_HOME: '/st', XDG_CONFIG_HOME: '/cf' }, '/home/p');
-  assert.equal(xdg.logs, path.join('/st', 'wow-ai'));
-  assert.equal(xdg.definition, path.join('/cf', 'systemd', 'user', 'wow-ai-bridge.service'));
+  assert.equal(xdg.logs, path.join('/st', 'claude-wow'));
+  assert.equal(xdg.definition, path.join('/cf', 'systemd', 'user', 'claude-wow-bridge.service'));
   const win = S.dirs('win32', { LOCALAPPDATA: 'C:\\U\\p\\AppData\\Local', APPDATA: 'C:\\U\\p\\AppData\\Roaming' }, 'C:\\U\\p');
-  assert.ok(win.definition.includes('Startup') && win.definition.endsWith('WoW AI bridge.vbs'));
+  assert.ok(win.definition.includes('Startup') && win.definition.endsWith('Claude WoW bridge.vbs'));
+  // The old name's service, which install and uninstall remove.
+  assert.equal(S.oldDirs('darwin', {}, home).definition, path.join(home, 'Library', 'LaunchAgents', 'io.wowai.bridge.plist'));
+  assert.equal(S.oldDirs('darwin', {}, home).label, 'io.wowai.bridge');
+  assert.equal(S.oldDirs('linux', { XDG_CONFIG_HOME: '/cf' }, '/home/p').definition, path.join('/cf', 'systemd', 'user', 'wow-ai-bridge.service'));
+  assert.equal(S.oldDirs('linux', {}, '/home/p').unit, 'wow-ai-bridge');
+  assert.ok(S.oldDirs('win32', { APPDATA: 'C:\\U\\p\\AppData\\Roaming' }, 'C:\\U\\p').definition.endsWith('WoW AI bridge.vbs'));
+  assert.notEqual(S.oldDirs('darwin', {}, home).definition, mac.definition);
+  assert.notEqual(S.oldDirs('linux', {}, '/home/p').definition, lin.definition);
+  assert.notEqual(S.oldDirs('win32', { APPDATA: 'C:\\U\\p\\AppData\\Roaming' }, 'C:\\U\\p').definition, win.definition);
   assert.ok(win.logs.startsWith('C:\\U\\p\\AppData\\Local'));
   assert.equal(S.pidFile(mac), path.join(mac.run, 'supervisor.pid'));
   assert.equal(S.serviceLogFile(mac), path.join(mac.logs, 'bridge.log'));
@@ -49,17 +58,17 @@ test('per-user folders per platform, none of them under /usr or Program Files', 
 
 test('the LaunchAgent plist: label, node + supervisor, RunAtLoad, KeepAlive, logs, PATH, and XML escaping', () => {
   const plist = S.launchdPlist({
-    node: '/opt/homebrew/bin/node', script: '/Users/p/wow-ai/bridge/supervisor.js', cwd: '/Users/p/wow-ai',
-    logFile: '/Users/p/Library/Logs/wow-ai/launchd.log', env: { PATH: '/a/b & c:/usr/bin', EMPTY: '' },
+    node: '/opt/homebrew/bin/node', script: '/Users/p/claude-wow/bridge/supervisor.js', cwd: '/Users/p/claude-wow',
+    logFile: '/Users/p/Library/Logs/claude-wow/launchd.log', env: { PATH: '/a/b & c:/usr/bin', EMPTY: '' },
   });
   assert.ok(plist.startsWith('<?xml version="1.0"'));
-  assert.match(plist, /<key>Label<\/key>\s*<string>io\.wowai\.bridge<\/string>/);
-  assert.match(plist, /<key>ProgramArguments<\/key>\s*<array>\s*<string>\/opt\/homebrew\/bin\/node<\/string>\s*<string>\/Users\/p\/wow-ai\/bridge\/supervisor\.js<\/string>\s*<\/array>/);
-  assert.match(plist, /<key>WorkingDirectory<\/key>\s*<string>\/Users\/p\/wow-ai<\/string>/);
+  assert.match(plist, /<key>Label<\/key>\s*<string>io\.claudewow\.bridge<\/string>/);
+  assert.match(plist, /<key>ProgramArguments<\/key>\s*<array>\s*<string>\/opt\/homebrew\/bin\/node<\/string>\s*<string>\/Users\/p\/claude-wow\/bridge\/supervisor\.js<\/string>\s*<\/array>/);
+  assert.match(plist, /<key>WorkingDirectory<\/key>\s*<string>\/Users\/p\/claude-wow<\/string>/);
   assert.match(plist, /<key>RunAtLoad<\/key>\s*<true\/>/);
   assert.match(plist, /<key>KeepAlive<\/key>\s*<true\/>/);
-  assert.match(plist, /<key>StandardOutPath<\/key>\s*<string>\/Users\/p\/Library\/Logs\/wow-ai\/launchd\.log<\/string>/);
-  assert.match(plist, /<key>WOW_AI_SERVICE<\/key>\s*<string>1<\/string>/, 'the supervisor knows it is the service');
+  assert.match(plist, /<key>StandardOutPath<\/key>\s*<string>\/Users\/p\/Library\/Logs\/claude-wow\/launchd\.log<\/string>/);
+  assert.match(plist, /<key>CLAUDE_WOW_SERVICE<\/key>\s*<string>1<\/string>/, 'the supervisor knows it is the service');
   assert.match(plist, /<key>PATH<\/key>\s*<string>\/a\/b &amp; c:\/usr\/bin<\/string>/, 'the ampersand is escaped');
   assert.ok(!plist.includes('EMPTY'), 'empty variables are left out');
   // Well-formed: every <key> has a value, every open tag closes.
@@ -71,7 +80,7 @@ test('the LaunchAgent plist: label, node + supervisor, RunAtLoad, KeepAlive, log
 
 test('the plist parses with plutil where it exists', { skip: process.platform !== 'darwin' }, () => {
   const { spawnSync } = require('child_process');
-  const file = path.join(scratch('plutil'), 'io.wowai.bridge.plist');
+  const file = path.join(scratch('plutil'), 'io.claudewow.bridge.plist');
   fs.writeFileSync(file, S.launchdPlist({ node: '/usr/local/bin/node', script: '/x/supervisor.js', cwd: '/x', logFile: '/x/l.log', env: { PATH: '/usr/bin' } }));
   const r = spawnSync('plutil', ['-lint', file], { encoding: 'utf8' });
   if (r.error) return; // no plutil on this box
@@ -79,21 +88,21 @@ test('the plist parses with plutil where it exists', { skip: process.platform !=
 });
 
 test('the systemd unit: ExecStart with quoted paths, Restart=always, the environment, WantedBy=default.target', () => {
-  const unit = S.systemdUnit({ node: '/usr/bin/node', script: '/home/p/my wow-ai/bridge/supervisor.js', cwd: '/home/p/my wow-ai', env: { PATH: '/usr/bin', DISPLAY: ':0' } });
+  const unit = S.systemdUnit({ node: '/usr/bin/node', script: '/home/p/my claude-wow/bridge/supervisor.js', cwd: '/home/p/my claude-wow', env: { PATH: '/usr/bin', DISPLAY: ':0' } });
   assert.match(unit, /^\[Unit\]/);
-  assert.match(unit, /^ExecStart="\/usr\/bin\/node" "\/home\/p\/my wow-ai\/bridge\/supervisor\.js"$/m);
-  assert.match(unit, /^WorkingDirectory=\/home\/p\/my wow-ai$/m);
+  assert.match(unit, /^ExecStart="\/usr\/bin\/node" "\/home\/p\/my claude-wow\/bridge\/supervisor\.js"$/m);
+  assert.match(unit, /^WorkingDirectory=\/home\/p\/my claude-wow$/m);
   assert.match(unit, /^Restart=always$/m);
-  assert.match(unit, /^Environment="WOW_AI_SERVICE=1"$/m);
+  assert.match(unit, /^Environment="CLAUDE_WOW_SERVICE=1"$/m);
   assert.match(unit, /^Environment="DISPLAY=:0"$/m);
   assert.match(unit, /^WantedBy=default\.target$/m);
 });
 
 test('the Windows launcher: hidden window, service flag, quotes doubled', () => {
-  const vbs = S.startupVbs({ node: 'C:\\Program Files\\nodejs\\node.exe', script: 'C:\\Users\\p\\wow-ai\\bridge\\supervisor.js', cwd: 'C:\\Users\\p\\wow-ai' });
-  assert.match(vbs, /sh\.Environment\("Process"\)\("WOW_AI_SERVICE"\) = "1"/);
-  assert.match(vbs, /sh\.CurrentDirectory = "C:\\Users\\p\\wow-ai"/);
-  assert.match(vbs, /sh\.Run """C:\\Program Files\\nodejs\\node\.exe"" ""C:\\Users\\p\\wow-ai\\bridge\\supervisor\.js""", 0, False/);
+  const vbs = S.startupVbs({ node: 'C:\\Program Files\\nodejs\\node.exe', script: 'C:\\Users\\p\\claude-wow\\bridge\\supervisor.js', cwd: 'C:\\Users\\p\\claude-wow' });
+  assert.match(vbs, /sh\.Environment\("Process"\)\("CLAUDE_WOW_SERVICE"\) = "1"/);
+  assert.match(vbs, /sh\.CurrentDirectory = "C:\\Users\\p\\claude-wow"/);
+  assert.match(vbs, /sh\.Run """C:\\Program Files\\nodejs\\node\.exe"" ""C:\\Users\\p\\claude-wow\\bridge\\supervisor\.js""", 0, False/);
   assert.ok(vbs.split('\n').every(l => l === '' || l.endsWith('\r')), 'CRLF for Windows');
 });
 
@@ -150,9 +159,9 @@ test('pid file: written, read back, only its owner clears it, liveness check', (
 });
 
 test('launchctl print is read for the pid and state; uptime and log tails format sensibly', () => {
-  const text = `gui/501/io.wowai.bridge = {
+  const text = `gui/501/io.claudewow.bridge = {
 \tactive count = 1
-\tpath = /Users/p/Library/LaunchAgents/io.wowai.bridge.plist
+\tpath = /Users/p/Library/LaunchAgents/io.claudewow.bridge.plist
 \tstate = running
 \tprogram = /opt/homebrew/bin/node
 \tpid = 4242
@@ -184,7 +193,7 @@ test('the environment baked into the service puts node on PATH and drops nothing
 test('status on a clean machine says not installed / not running and exits 3; help and bad input exit cleanly', () => {
   const lines = [];
   const dir = scratch('status');
-  const code = S.status({ run: dir, logs: dir, definition: path.join(dir, 'io.wowai.bridge.plist') }, 'darwin', l => lines.push(l));
+  const code = S.status({ run: dir, logs: dir, definition: path.join(dir, 'io.claudewow.bridge.plist') }, 'darwin', l => lines.push(l));
   assert.equal(code, 3);
   assert.match(lines.join('\n'), /installed : no/);
   assert.match(lines.join('\n'), /running   : no/);
@@ -209,4 +218,29 @@ test('install refuses without a config.json rather than looping a broken service
   } finally {
     if (saved === undefined) delete process.env.CLAUDE_WOW_HOME; else process.env.CLAUDE_WOW_HOME = saved;
   }
+});
+
+test('the old name\'s service is removed: its definition goes, its pid file is honoured, and nothing throws when it is absent', () => {
+  // Windows backend: pure fs (no process of the old service is running here).
+  const dir = scratch('oldwin');
+  const old = { run: dir, definition: path.join(dir, 'Startup', 'WoW AI bridge.vbs') };
+  assert.equal(S.backend('win32').removeOld(old), false, 'nothing to remove');
+  fs.mkdirSync(path.dirname(old.definition), { recursive: true });
+  fs.writeFileSync(old.definition, '\' old launcher\r\n');
+  fs.writeFileSync(S.pidFile(old), JSON.stringify({ pid: 2147483000, mode: 'service' })); // a pid nobody has: not killed, not an error
+  assert.equal(S.backend('win32').removeOld(old), true);
+  assert.ok(!fs.existsSync(old.definition), 'the old launcher is gone');
+  // macOS backend: the plist is removed whatever launchctl says about a label that is not loaded.
+  if (process.platform === 'darwin') {
+    const mdir = scratch('oldmac');
+    const mold = { label: 'io.wowai.bridge.test-' + process.pid, definition: path.join(mdir, 'io.wowai.bridge.plist'), run: mdir };
+    assert.equal(S.backend('darwin').removeOld(mold), false);
+    fs.writeFileSync(mold.definition, '<plist/>');
+    assert.equal(S.backend('darwin').removeOld(mold), true);
+    assert.ok(!fs.existsSync(mold.definition));
+  }
+  // Every backend has it, and install and uninstall call it before touching the new definition.
+  for (const p of ['darwin', 'linux', 'win32']) assert.equal(typeof S.backend(p).removeOld, 'function', p);
+  const src = fs.readFileSync(path.join(__dirname, '..', 'bridge', 'service.js'), 'utf8');
+  assert.equal((src.match(/this\.removeOld\(\)/g) || []).length, 6, 'three backends, install and uninstall each');
 });
