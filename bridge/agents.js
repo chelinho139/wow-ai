@@ -313,9 +313,49 @@ function agyParser() {
   };
 }
 
+// A Hermes stream-json tool_use as one progress line, same style as the other
+// agents ("$ npm test", "edit a.lua"). Hermes tools: terminal, read_file,
+// write_file, patch, search_files, web_search, web_extract, hindsight_recall...
+function hermesToolLine(ev) {
+  const name = String(ev.name || '');
+  const input = ev.input && typeof ev.input === 'object' ? ev.input : {};
+  const cmd = String(input.command || '').split('\n')[0].trim().slice(0, 110);
+  switch (name) {
+    case 'terminal': return `$ ${cmd}`;
+    case 'read_file': return `read ${baseName(input.path)}`;
+    case 'write_file':
+    case 'patch': return `edit ${baseName(input.path || input.file || '')}`;
+    case 'search_files': return `grep: ${String(input.pattern || '').slice(0, 60)}`;
+    case 'web_search': return `search: ${String(input.query || '').slice(0, 60)}`;
+    case 'web_extract': return `fetch ${String(input.urls || '').split(/[,\s]/)[0].slice(0, 60)}`;
+    case 'hindsight_recall': return 'recall: memory';
+    default: return name ? `tool: ${name}` : '';
+  }
+}
+
 function hermesParser() {
+  let response = '';
   return {
-    feed() { return empty(); },
+    // `hermes chat --format stream-json` emits one JSON object per line:
+    // system/init (session id, immediately), tool_use (live actions), text
+    // (reply chunks), and a final result carrying the full reply.
+    feed(ev) {
+      const out = empty();
+      try {
+        if (ev.type === 'system' && ev.subtype === 'init') {
+          if (ev.session_id) out.session = ev.session_id;
+        } else if (ev.type === 'tool_use') {
+          const line = hermesToolLine(ev);
+          if (line) out.progress.push(line);
+        } else if (ev.type === 'text' && ev.text) {
+          response += ev.text;
+        } else if (ev.type === 'result') {
+          const final = String(ev.text ?? '').trim() || response.trim();
+          out.done = { text: final, error: ev.exit_code !== 0 };
+        }
+      } catch (e) { /* unknown events are ignored */ }
+      return out;
+    },
     finish({ stdout, stderr, code }) {
       const err = String(stderr || '').replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
       const session = /session_id:\s*(\S+)/i.exec(err);
@@ -458,9 +498,10 @@ const AGENTS = {
     name: 'Hermes', command: 'hermes',
     install: 'Install Hermes Agent and run `hermes setup` once.',
     windowsPaths: () => [], posixPaths: () => [],
-    stream: 'text',
+    // No `stream: 'text'`: stdout is the stream-json JSONL, so the bridge runs
+    // the per-line feed() path and Hermes gets live progress like the others.
     args({ cfg, resume, cwd, images }) {
-      const a = ['chat', '--query-file', '-', '-Q', '--in', cwd, '--source', 'tool'];
+      const a = ['chat', '--query-file', '-', '--format', 'stream-json', '-Q', '--in', cwd, '--source', 'tool'];
       if (resume) a.push('--resume', resume);
       if (cfg.model) a.push('-m', cfg.model);
       if (images && images.length && !String(images[0]).startsWith('-')) a.push('--image', images[0]);
