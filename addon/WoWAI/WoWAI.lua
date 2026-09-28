@@ -407,8 +407,10 @@ end
 -- Signals and slots (in)
 ---------------------------------------------------------------------------
 
--- Optional cheap poll: an empty .wav won't play, a valid one will. The bridge
--- fills sig/NNN.wav when reply NNN is ready. Self-disables if it misbehaves.
+-- Optional cheap poll: a missing .wav won't play, a real one will. The bridge
+-- creates sig/NNN.wav when reply NNN is ready and deletes it to take it back.
+-- (An EMPTY file is not a reliable "no": this client reports a 0-byte file as
+-- playable, so absence is the only signal that works.) Self-disables if it misbehaves.
 local signalAvailable = type(PlaySoundFile) == "function"
 local signalStats = { checks = 0, hits = 0, lastHit = nil }
 
@@ -633,11 +635,12 @@ local function SelfTestSignals()
 		signalStats.selftest = "PlaySoundFile missing"
 		return
 	end
-	local emptyLooksValid = SoundValid("Interface\\AddOns\\WoWAI\\ctl\\empty.wav")
+	-- ctl/absent.wav is never created by setup; it must read as unplayable.
+	local missingLooksValid = SoundValid("Interface\\AddOns\\WoWAI\\ctl\\absent.wav")
 	local validLooksValid = SoundValid("Interface\\AddOns\\WoWAI\\ctl\\valid.wav")
-	if emptyLooksValid then
+	if missingLooksValid then
 		signalAvailable = false
-		signalStats.selftest = "an empty file reports as playable"
+		signalStats.selftest = "a missing file reports as playable"
 	elseif not validLooksValid then
 		signalAvailable = false
 		signalStats.selftest = "a valid file reports as unplayable (files not indexed? restart WoW)"
