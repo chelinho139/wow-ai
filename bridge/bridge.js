@@ -63,8 +63,8 @@ const TMP_DIR = HOME.tmp; // prompt files for agents that read the prompt from d
 
 const argv = process.argv.slice(2);
 if (argv.includes('--help') || argv.includes('-h')) {
-  console.log('wow-ai [--project <dir>] [--once] [--inject "text" [--agent <id>] [--plugin <id>] [--image <png|tga>]]\n\n' +
-    'Runs the WoW AI bridge. Chats without a folder of their own work in <dir>,\n' +
+  console.log('claude-wow [--project <dir>] [--once] [--inject "text" [--agent <id>] [--plugin <id>] [--image <png|tga>]]\n\n' +
+    'Runs the Claude WoW bridge. Chats without a folder of their own work in <dir>,\n' +
     'or in the folder you started it from, or in defaultCwd from bridge/config.json.\n' +
     '--image attaches a screenshot to an --inject run the way vision does in game.\n' +
     `Agents: ${A.agentIds().join(', ')} (the default is "agent" in config.json; chats pick with /claude-wow agent).\n` +

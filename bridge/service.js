@@ -1,13 +1,13 @@
 'use strict';
-// `wow-ai service`: the bridge as a per-user background service that starts at
+// `claude-wow service`: the bridge as a per-user background service that starts at
 // login and comes back after a crash, plus the log rotation the supervisor uses
 // in every mode (the bridge itself only appends to bridge/bridge.log).
 //
-//   wow-ai service install     write the service definition and start it
-//   wow-ai service uninstall   stop it and remove the definition
-//   wow-ai service start|stop|restart
-//   wow-ai service status      installed? running? pid, uptime, last log lines
-//   wow-ai service logs [-n N] [-f]
+//   claude-wow service install     write the service definition and start it
+//   claude-wow service uninstall   stop it and remove the definition
+//   claude-wow service start|stop|restart
+//   claude-wow service status      installed? running? pid, uptime, last log lines
+//   claude-wow service logs [-n N] [-f]
 //
 //   macOS    LaunchAgent  ~/Library/LaunchAgents/io.wowai.bridge.plist (RunAtLoad + KeepAlive)
 //   Linux    systemd      ~/.config/systemd/user/wow-ai-bridge.service (Restart=always)
@@ -84,7 +84,7 @@ function parseArgs(argv) {
   return { cmd, opts };
 }
 
-const HELP = `wow-ai service <command>
+const HELP = `claude-wow service <command>
 
   install     Run the bridge in the background, now and at every login.
   uninstall   Stop it and remove the background service.
@@ -97,7 +97,7 @@ const HELP = `wow-ai service <command>
 macOS: a LaunchAgent (~/Library/LaunchAgents/${LABEL}.plist).
 Linux: a systemd --user unit (${UNIT}.service).
 Windows: a launcher in your Startup folder; the bridge runs without a window.
-Logs rotate at 5 MB, 5 files kept. Run "wow-ai setup" before installing.`;
+Logs rotate at 5 MB, 5 files kept. Run "claude-wow setup" before installing.`;
 
 // ---- the service definitions (pure) -----------------------------------------
 
@@ -174,7 +174,7 @@ WantedBy=default.target
 // the crash restarts itself, so nothing else watches it.
 function startupVbs({ node, script, cwd }) {
   const q = s => `"${String(s).replace(/"/g, '""')}"`;
-  return `' WoW AI bridge: started at login, no window. Written by "wow-ai service install"; remove with "wow-ai service uninstall".\r
+  return `' WoW AI bridge: started at login, no window. Written by "claude-wow service install"; remove with "claude-wow service uninstall".\r
 Set sh = CreateObject("WScript.Shell")\r
 sh.Environment("Process")("WOW_AI_SERVICE") = "1"\r
 sh.CurrentDirectory = ${q(cwd)}\r
@@ -294,7 +294,7 @@ function preflight(d) {
   const problems = [];
   const home = H.resolve();
   if (!fs.existsSync(home.config)) {
-    problems.push(`${home.config} is missing: run "wow-ai setup" (node setup.js) first, or the service would just restart in a loop.`);
+    problems.push(`${home.config} is missing: run "claude-wow setup" (node setup.js) first, or the service would just restart in a loop.`);
   }
   const p = readPid(d);
   if (p && p.mode === 'terminal' && alive(p.pid)) {
@@ -337,7 +337,7 @@ const mac = {
     return false;
   },
   start(d) {
-    if (!fs.existsSync(d.definition)) throw new Error('the service is not installed. Run: wow-ai service install');
+    if (!fs.existsSync(d.definition)) throw new Error('the service is not installed. Run: claude-wow service install');
     const r = this.loaded() ? run('launchctl', ['kickstart', this.target()]) : this.bootstrap(d);
     if (!r.ok) throw new Error(`launchctl could not start the service: ${r.out.trim()}`);
   },
@@ -380,7 +380,7 @@ const linux = {
     return true;
   },
   start(d) {
-    if (!fs.existsSync(d.definition)) throw new Error('the service is not installed. Run: wow-ai service install');
+    if (!fs.existsSync(d.definition)) throw new Error('the service is not installed. Run: claude-wow service install');
     const r = this.sys(['start', UNIT]);
     if (!r.ok) throw new Error(`systemctl could not start ${UNIT}: ${r.out.trim()}`);
   },
@@ -446,9 +446,9 @@ function status(d, platform = process.platform, out = console.log) {
   const p = readPid(d);
   const supervisorAlive = !!(p && alive(p.pid));
   const bridgeAlive = !!(p && alive(p.bridgePid));
-  out(`wow-ai service (${b.kind})`);
-  out(`  installed : ${installed ? 'yes  ' + d.definition : 'no   (wow-ai service install)'}`);
-  if (installed && platform !== 'win32') out(`  loaded    : ${probe.loaded ? 'yes' : 'no   (wow-ai service start)'}${probe.state ? '  [' + probe.state + ']' : ''}`);
+  out(`claude-wow service (${b.kind})`);
+  out(`  installed : ${installed ? 'yes  ' + d.definition : 'no   (claude-wow service install)'}`);
+  if (installed && platform !== 'win32') out(`  loaded    : ${probe.loaded ? 'yes' : 'no   (claude-wow service start)'}${probe.state ? '  [' + probe.state + ']' : ''}`);
   if (supervisorAlive) {
     const where = p.mode === 'service' ? 'as the service' : 'in a terminal';
     out(`  running   : yes, ${where}: supervisor pid ${p.pid}${bridgeAlive ? ', bridge pid ' + p.bridgePid : ', bridge restarting'}, up ${formatUptime(Date.now() - p.started)} (since ${new Date(p.started).toLocaleString()})`);
@@ -496,7 +496,7 @@ function logs(d, opts, out = console.log) {
 
 function main(argv, { platform = process.platform, out = console.log, err = console.error } = {}) {
   const { cmd, opts, error } = parseArgs(argv);
-  if (error) { err(`wow-ai service: ${error}\n`); out(HELP); return 2; }
+  if (error) { err(`claude-wow service: ${error}\n`); out(HELP); return 2; }
   if (cmd === 'help') { out(HELP); return 0; }
   const d = dirs(platform);
   const b = backend(platform);
@@ -504,7 +504,7 @@ function main(argv, { platform = process.platform, out = console.log, err = cons
     switch (cmd) {
       case 'install': {
         const problems = preflight(d);
-        if (problems.length) { for (const p of problems) err(`wow-ai service: ${p}`); return 1; }
+        if (problems.length) { for (const p of problems) err(`claude-wow service: ${p}`); return 1; }
         b.install(d);
         out(`installed ${d.definition}`);
         out(`the bridge now runs in the background and starts at every login; log: ${serviceLogFile(d)}`);
@@ -514,7 +514,7 @@ function main(argv, { platform = process.platform, out = console.log, err = cons
           try { mode = (JSON.parse(fs.readFileSync(config, 'utf8')).capture || {}).mode || 'pixel'; } catch {}
           if (mode !== 'screenshot') out(`note: capture.mode is "pixel". A background process cannot ask for Screen Recording; set "mode": "screenshot" in ${config} (no permissions needed) or run the bridge from a terminal instead.`);
         }
-        out('re-run "wow-ai service install" after installing a new agent CLI or a new Node, so the service sees the new PATH.');
+        out('re-run "claude-wow service install" after installing a new agent CLI or a new Node, so the service sees the new PATH.');
         out('');
         return status(d, platform, out);
       }
@@ -524,14 +524,14 @@ function main(argv, { platform = process.platform, out = console.log, err = cons
         return 0;
       }
       case 'start': b.start(d); out('started'); return status(d, platform, out);
-      case 'stop': b.stop(d); out('stopped (it starts again at the next login; "wow-ai service uninstall" to remove it)'); return 0;
+      case 'stop': b.stop(d); out('stopped (it starts again at the next login; "claude-wow service uninstall" to remove it)'); return 0;
       case 'restart': b.restart(d); out('restarted'); return status(d, platform, out);
       case 'status': return status(d, platform, out);
       case 'logs': return logs(d, opts, out);
       default: out(HELP); return 2;
     }
   } catch (e) {
-    err(`wow-ai service ${cmd}: ${e.message}`);
+    err(`claude-wow service ${cmd}: ${e.message}`);
     return 1;
   }
 }

@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 'use strict';
 // Keeps bridge.js running: restarts it 3 s after any exit. Ctrl+C stops both.
-// This is also the `wow-ai` command (package.json "bin"): arguments and the
-// current folder pass straight through to bridge.js, so `cd proj && wow-ai`
+// This is also the `claude-wow` command (package.json "bin"): arguments and the
+// current folder pass straight through to bridge.js, so `cd proj && claude-wow`
 // makes proj the default folder for chats. Two subcommands are handled here:
-//   wow-ai setup [...]     runs setup.js (the game-side install)
-//   wow-ai service <cmd>   the bridge as a background service (service.js)
+//   claude-wow setup [...]     runs setup.js (the game-side install)
+//   claude-wow service <cmd>   the bridge as a background service (service.js)
 // Under the service (WOW_AI_SERVICE=1) the bridge's output goes to a rotating
 // log file instead of a terminal, and a pid file lets `service status` find us.
 // bridge.log in the home folder, which bridge.js appends to on its own, is rotated here too.
@@ -20,7 +20,7 @@ if (argv[0] === 'service') {
   const r = spawnSync(process.execPath, [path.join(__dirname, '..', 'setup.js'), ...argv.slice(1)], { stdio: 'inherit' });
   process.exitCode = r.status === null ? 1 : r.status;
 } else {
-  if (argv.includes('--help') || argv.includes('-h')) console.log('wow-ai setup [...]   game-side install (setup.js)\nwow-ai service <cmd> background service (install, uninstall, start, stop, restart, status, logs)\n');
+  if (argv.includes('--help') || argv.includes('-h')) console.log('claude-wow setup [...]   game-side install (setup.js)\nclaude-wow service <cmd> background service (install, uninstall, start, stop, restart, status, logs)\n');
   supervise();
 }
 
@@ -48,7 +48,7 @@ function supervise() {
       child = null;
       if (stopping) return;
       if (code === 2 && SERVICE) { // config problem: keep the service alive, retry slowly
-        say(`\nbridge exited (${code}): run "wow-ai setup"; retrying in 60 s`);
+        say(`\nbridge exited (${code}): run "claude-wow setup"; retrying in 60 s`);
         setTimeout(start, 60000);
         return;
       }
