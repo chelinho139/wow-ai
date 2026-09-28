@@ -1,6 +1,6 @@
 # Configuration reference
 
-Everything the bridge reads: `bridge/config.json`, command-line flags, environment variables, and the files it writes next to itself. `node setup.js` writes a working `config.json` from `bridge/config.example.json` (and brings an older one up to date); this page explains each key so you can tune it by hand.
+Everything the bridge reads: `config.json` in its home folder (`~/.claude-wow`, see [Where the bridge keeps its files](#where-the-bridge-keeps-its-files)), command-line flags, environment variables, and the files it writes there. `node setup.js` writes a working `config.json` from `bridge/config.example.json` (and brings an older one up to date); this page explains each key so you can tune it by hand.
 
 The bridge reads `config.json` once at start. Restart it after editing, except for an agent's `allowedTools`, which the **Allow & retry** button updates live.
 
@@ -9,15 +9,15 @@ The bridge reads `config.json` once at start. Restart it after editing, except f
 | Key | Default (from `config.example.json`) | Meaning |
 |---|---|---|
 | `addonDir` | `…\World of Warcraft\_classic_beta_\Interface\AddOns` | The game's AddOns folder. The bridge writes the slot addons, `Inbox.lua` and every signal file under it. `setup.js` fills this in from the client it finds. |
-| `inboxFile` | `<addonDir>\WoWAI\Inbox.lua` | The file the game reads on `/reload` (fallback path). Normally derived from `addonDir`; only change it if you moved the addon. A value still naming the old `WoWClaude` addon is ignored in favour of the derived one. |
-| `savedVariablesFile` | `…\WTF\Account\<account>\SavedVariables\WoWAI.lua` | The addon's saved data. The bridge polls it for the reload-path outbox. `setup.js` picks the first account under `WTF\Account`; pass `--account <name>` to choose another. |
-| `defaultCwd` | `C:\path\to\your\project` | Folder for chats that have not chosen one with `/wow-ai cd`, when the bridge is started from inside this repo (`npm start`). See [Which folder the agent works in](#which-folder-the-agent-works-in). |
+| `inboxFile` | `<addonDir>\ClaudeWoW\Inbox.lua` | The file the game reads on `/reload` (fallback path). Normally derived from `addonDir`; only change it if you moved the addon. A value still naming an old addon (`WoWAI`, `WoWClaude`) is ignored in favour of the derived one. |
+| `savedVariablesFile` | `…\WTF\Account\<account>\SavedVariables\ClaudeWoW.lua` | The addon's saved data. The bridge polls it for the reload-path outbox. `setup.js` picks the first account under `WTF\Account`; pass `--account <name>` to choose another. |
+| `defaultCwd` | `C:\path\to\your\project` | Folder for chats that have not chosen one with `/claude-wow cd`, when the bridge is started from inside this repo (`npm start`). See [Which folder the agent works in](#which-folder-the-agent-works-in). |
 
 ## Agents
 
 | Key | Default | Meaning |
 |---|---|---|
-| `agent` | `"claude"` | The agent for chats that have not picked one with `/wow-ai agent`. One of `claude`, `codex`, `grok`, `agy`, `hermes`; the bridge refuses to start on anything else. |
+| `agent` | `"claude"` | The agent for chats that have not picked one with `/claude-wow agent`. One of `claude`, `codex`, `grok`, `agy`, `hermes`; the bridge refuses to start on anything else. |
 | `agents.<id>` | one block per agent | That agent's settings, below. A missing block means the defaults. |
 
 Keys under `agents.claude`, `agents.codex`, `agents.grok`, `agents.agy` and `agents.hermes` (what each one means per agent is spelled out in [AGENTS.md](AGENTS.md)):
@@ -39,7 +39,7 @@ A `config.json` from before agents existed kept Claude's settings at the top lev
 | Key | Default | Meaning |
 |---|---|---|
 | `plugins.default` | `"ask"` | The plugin for chats that are not bound to one (`plugin=` flag): `ask` (general in-game chat) or `claude-code` (an agent session in a folder). The bridge refuses to start on a name it does not have; `--help` lists them. |
-| `plugins.ask.cwd` | `""` | The scratch folder the `ask` plugin runs the agent in (it has no project). Empty = the per-user application data folder (`~/Library/Application Support/wow-ai/ask` on macOS, `%LOCALAPPDATA%\wow-ai\ask` on Windows, `~/.local/share/wow-ai/ask` on Linux), created on demand. |
+| `plugins.ask.cwd` | `""` | The scratch folder the `ask` plugin runs the agent in (it has no project). Empty = the per-user application data folder (`~/Library/Application Support/claude-wow/ask` on macOS, `%LOCALAPPDATA%\claude-wow\ask` on Windows, `~/.local/share/claude-wow/ask` on Linux), created on demand. |
 
 A `config.json` without a `plugins` block keeps working: the default applies. Chats made before plugins existed are bound to `claude-code` by the addon, so they behave as before whatever the default is.
 
@@ -47,8 +47,8 @@ A `config.json` without a `plugins` block keeps working: the default applies. Ch
 
 | Key | Default | Meaning |
 |---|---|---|
-| `gameContext` | `true` | Put the character/zone context the addon sends into the agent's system prompt. `false` ignores it, for a bridge only ever used on unrelated projects. The addon has its own switch, `/wow-ai context off`, which also clears what the bridge holds. |
-| `primerFile` | `"docs/WOW-ADDON-PRIMER.md"` | A markdown file appended to the system prompt together with the game context, whatever folder the chat works in: how to write addons and macros for this client. Relative to the wow-ai folder, or absolute. Re-read on every run, so edits count at once. `""` sends none. Off whenever the context is off. |
+| `gameContext` | `true` | Put the character/zone context the addon sends into the agent's system prompt. `false` ignores it, for a bridge only ever used on unrelated projects. The addon has its own switch, `/claude-wow context off`, which also clears what the bridge holds. |
+| `primerFile` | `"docs/WOW-ADDON-PRIMER.md"` | A markdown file appended to the system prompt together with the game context, whatever folder the chat works in: how to write addons and macros for this client. Relative to the claude-wow folder, or absolute. Re-read on every run, so edits count at once. `""` sends none. Off whenever the context is off. |
 | `maxParallel` | `3` | How many chats may run an agent at the same time. Further messages queue per chat. |
 | `timeoutMs` | `1800000` (30 min) | A run longer than this is killed (with its children) and reported as an error in game. |
 | `progressWriteMs` | `3000` | Minimum gap between progress writes to the slot files. Final replies are written immediately. |
@@ -60,12 +60,12 @@ Keys under `capture`:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `enabled` | `true` | Run the outbound transport below. With `false` only the reload path works (`/wow-ai mode reload` in game). |
+| `enabled` | `true` | Run the outbound transport below. With `false` only the reload path works (`/claude-wow mode reload` in game). |
 | `mode` | `"pixel"` | Outbound transport. `pixel`: `capture.ps1` (Windows), `capture_mac.py` (macOS) or `capture_x11.py` (Linux) screen-captures the strip four times a second. `screenshot`: no screen capture; the addon calls `Screenshot()` with the strip up for two frames and the bridge decodes the PNG/TGA the client writes to its `Screenshots` folder, then deletes it (files without a strip, i.e. your own screenshots, are left alone). The bridge names the mode in every slot file and the addon follows it; while it is on, the addon sets `screenshotFormat` to `png` and restores your value when it leaves the mode or you log out. |
 | `screenshotLevels` | `{ "off": 0, "on": 60 }` | `screenshot` mode only: the two levels (0-255) each colour channel of a strip cell is drawn at. A screenshot is bit-exact, so dark levels read as well as bright ones and the strip is nearly invisible for the two frames it is up; the bridge decodes at the threshold halfway between them. `on - off` must be at least 8 or the default is used. The pixel transport ignores this and always draws full primaries. |
 | `screenshotDir` | *(derived)* | `screenshot` mode: the client's `Screenshots` folder. Derived from `addonDir` (`<client>/Interface/AddOns` -> `<client>/Screenshots`) unless set. |
 | `processName` | `"WowB"` | The game executable without `.exe`. `setup.js` sets it from the `Wow*.exe` it finds in the client folder (on macOS, from the binary inside the `.app` bundle). |
-| `cellPx` | `4` | Pixel size of one strip cell. Must match `CELL` in `addon/WoWAI/Codec.lua`. |
+| `cellPx` | `4` | Pixel size of one strip cell. Must match `CELL` in `addon/ClaudeWoW/Codec.lua`. |
 | `cellsPerRow` | `200` | Cells per strip row. Must match the addon. |
 | `maxRows` | `48` | Maximum strip rows captured. Must match the addon. |
 | `intervalMs` | `250` | Capture period. Lower is more responsive and costs a little more CPU. |
@@ -79,16 +79,16 @@ The capture region is `cellsPerRow × cellPx` by `maxRows × cellPx` pixels (800
 
 | Key | Default | Meaning |
 |---|---|---|
-| `vision.maxWidth` | `1280` | `screenshot` mode only. When a chat has `/wow-ai vision on` (or sends `/wow-ai look ...`), the bridge cuts the strip's rows off the screenshot it decoded, scales the rest down to at most this many pixels wide (area averaging, so UI text stays readable) and attaches it to the run as a PNG. A 1080p frame becomes 1280x712, 1.5-2 MB; the Anthropic API takes images up to 5 MB and itself downscales anything past 1568 pixels on the long edge, so higher values buy little. |
-| `vision.keep` | `6` | How many of those PNGs may sit in `bridge/tmp` at once: one per message that asked, deleted when its run ends, so only runs that never started (a bridge killed mid-queue) leave one. The oldest beyond this are removed, and all of them when the bridge starts. |
+| `vision.maxWidth` | `1280` | `screenshot` mode only. When a chat has `/claude-wow vision on` (or sends `/claude-wow look ...`), the bridge cuts the strip's rows off the screenshot it decoded, scales the rest down to at most this many pixels wide (area averaging, so UI text stays readable) and attaches it to the run as a PNG. A 1080p frame becomes 1280x712, 1.5-2 MB; the Anthropic API takes images up to 5 MB and itself downscales anything past 1568 pixels on the long edge, so higher values buy little. |
+| `vision.keep` | `6` | How many of those PNGs may sit in `~/.claude-wow/tmp` at once: one per message that asked, deleted when its run ends, so only runs that never started (a bridge killed mid-queue) leave one. The oldest beyond this are removed, and all of them when the bridge starts. |
 
 ## Slot pool and signal files
 
-These sizes are baked into the files `install-slots.js` creates, and the addon has matching constants at the top of `addon/WoWAI/WoWAI.lua` (`SLOT_COUNT`, `ACT_MAX`, `PRESENCE_MAX`). Change all three places together, re-run `node bridge/install-slots.js`, and restart the game.
+These sizes are baked into the files `install-slots.js` creates, and the addon has matching constants at the top of `addon/ClaudeWoW/ClaudeWoW.lua` (`SLOT_COUNT`, `ACT_MAX`, `PRESENCE_MAX`). Change all three places together, re-run `node bridge/install-slots.js`, and restart the game.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `slots` | `200` | Reply-slot addons `WoWAI_S001` … `WoWAI_S200`. Each slot can be loaded once per UI session; `/reload` frees them all. |
+| `slots` | `200` | Reply-slot addons `ClaudeWoW_S001` … `ClaudeWoW_S200`. Each slot can be loaded once per UI session; `/reload` frees them all. |
 | `actMax` | `60` | Heartbeat files per message (`act/NNN/01..60.wav`). One flips per agent action. |
 | `presenceMax` | `2000` | Presence files (`presence/0001..2000.wav`). One flips per `presenceIntervalMs`. |
 | `presenceIntervalMs` | `30000` | How often the bridge flips a presence file so the in-game light stays green. |
@@ -96,14 +96,14 @@ These sizes are baked into the files `install-slots.js` creates, and the addon h
 
 ## Command line
 
-`wow-ai` (the installer's command, `npm link`, or the Homebrew formula) and `node bridge/bridge.js` take the same flags. `npm start` runs `bridge/supervisor.js`, which restarts the bridge on crash and passes flags through. Two subcommands are handled by the supervisor itself:
+`claude-wow` (the installer's command, `npm link`, or the Homebrew formula) and `node bridge/bridge.js` take the same flags. `npm start` runs `bridge/supervisor.js`, which restarts the bridge on crash and passes flags through. Two subcommands are handled by the supervisor itself:
 
 | Subcommand | Meaning |
 |---|---|
-| `wow-ai setup [...]` | Runs `setup.js` with the given flags (see [`setup.js` flags](#setupjs-flags)). |
-| `wow-ai service install\|uninstall\|start\|stop\|restart\|status\|logs [-n N] [-f]` | The bridge as a per-user background service that starts at login and comes back after a crash: a LaunchAgent on macOS, a systemd `--user` unit on Linux, a Startup-folder launcher on Windows. `status` exits 0 when running, 3 when not. See [INSTALL.md](INSTALL.md#running-the-bridge). |
+| `claude-wow setup [...]` | Runs `setup.js` with the given flags (see [`setup.js` flags](#setupjs-flags)). |
+| `claude-wow service install\|uninstall\|start\|stop\|restart\|status\|logs [-n N] [-f]` | The bridge as a per-user background service that starts at login and comes back after a crash: a LaunchAgent on macOS, a systemd `--user` unit on Linux, a Startup-folder launcher on Windows. `status` exits 0 when running, 3 when not. See [INSTALL.md](INSTALL.md#running-the-bridge). |
 
-Environment: `WOW_AI_SERVICE=1` is set by the service definitions and tells the supervisor to write its output to the service log and a pid file instead of a terminal.
+Environment: `CLAUDE_WOW_SERVICE=1` is set by the service definitions and tells the supervisor to write its output to the service log and a pid file instead of a terminal; `CLAUDE_WOW_HOME` (below) is passed through to the service when set.
 
 | Flag | Meaning |
 |---|---|
@@ -119,36 +119,45 @@ Exit codes: `0` normal, `1` the injected or one-shot job failed, `2` config miss
 
 | Variable | Meaning |
 |---|---|
-| `WOW_AI_PROJECT` | Default working folder, below `--project` and above the start folder in precedence. |
+| `CLAUDE_WOW_HOME` | Where `config.json`, `state.json`, `transcripts.json`, `bridge.log`, `tmp/` and `mapjobs/` live. Default `~/.claude-wow`; see [Where the bridge keeps its files](#where-the-bridge-keeps-its-files). |
+| `CLAUDE_WOW_PROJECT` | Default working folder, below `--project` and above the start folder in precedence. The old name `WOW_AI_PROJECT` is still read. |
+| `CLAUDE_WOW_MAC_BACKEND` | macOS pixel capture: `native`, `screencapture` or `auto` (`capture_mac.py --backend`). The old name `WOWAI_MAC_BACKEND` is still read. |
 | `CLAUDECODE` | Removed from Claude's environment so a bridge started from inside a Claude Code session can still launch `claude -p`. |
 | `GROK_DISABLE_AUTOUPDATER` | Set to `1` for Grok runs, so a headless run never stops for an update. |
 | `GROK_HOME` | Honoured when looking for `grok.exe` (`<GROK_HOME>\bin`); Grok's own setting. |
-| `WOW_AI_MAP_FILE` | Set by the bridge for each run, whatever the agent: a file where the agent's tools append map commands, one JSON object per line (see [MAP.md](MAP.md)). |
+| `CLAUDE_WOW_MAP_FILE` | Set by the bridge for each run, whatever the agent: a file where the agent's tools append map commands, one JSON object per line (see [MAP.md](MAP.md)). |
 
 ## Which folder the agent works in
 
-Each chat can pick its own folder with `/wow-ai cd` or **Folder...** in the menu that opens when you right-click the chat in the left panel. Chats that have not are given the bridge's default folder, chosen in this order:
+Each chat can pick its own folder with `/claude-wow cd` or **Folder...** in the menu that opens when you right-click the chat in the left panel. Chats that have not are given the bridge's default folder, chosen in this order:
 
 1. `--project <dir>`
-2. `WOW_AI_PROJECT`
+2. `CLAUDE_WOW_PROJECT`
 3. The folder the bridge was started from, unless that is inside this repo
 4. `defaultCwd` in `config.json`
 5. The current folder
 
-A relative `/wow-ai cd` path is resolved against that default. `~` expands to your home folder. The agents keep sessions per folder, so a chat that changes folder starts a fresh session there; the same happens when a chat changes agent.
+A relative `/claude-wow cd` path is resolved against that default. `~` expands to your home folder. The agents keep sessions per folder, so a chat that changes folder starts a fresh session there; the same happens when a chat changes agent.
 
-## Files the bridge writes next to itself
+## Where the bridge keeps its files
 
-All of these are gitignored.
+The bridge separates what it runs from what it remembers. The code can be replaced (`git pull`, `brew upgrade`, the installer run again) without touching any of the files below, which live in a home folder chosen in this order:
+
+1. `CLAUDE_WOW_HOME`, when set (a leading `~` expands).
+2. `~/.claude-wow`, once it holds a `config.json`.
+3. The checkout's `bridge/` folder, while it holds a `config.json`: the layout from before there was a home folder. The next `node setup.js` copies `config.json`, `state.json` and `transcripts.json` from there to `~/.claude-wow` (copies, never moves: an older checkout still reads `bridge/`), and the bridge reads them in `~/.claude-wow` from then on. Nothing is ever copied into an explicit `CLAUDE_WOW_HOME`.
+4. `~/.claude-wow` otherwise (a fresh install; setup writes the config there).
+
+The bridge's banner prints the folder it chose (`home :`). The one-line installer puts the code in `~/.claude-wow/app`, next to these files; Homebrew keeps the code in its keg and only these files in `~/.claude-wow`.
 
 | File | Contents |
 |---|---|
-| `bridge/config.json` | Your configuration. |
-| `bridge/state.json` | Agent session ids per chat, the folder and the agent each session ran with, handled message ids per addon session token, the presence counter, and the latest game context the addon sent (`context`). Delete it to forget all sessions. |
-| `bridge/transcripts.json` | The last 200 messages of every chat, with the agent that wrote each reply, so the addon can recover its chats after the client wipes saved data. |
-| `bridge/mapjobs/` | One map command file per running job (`WOW_AI_MAP_FILE`), read and deleted when the job ends. Map layers themselves live in `state.json` (`map`). |
-| `bridge/bridge.log` | Every line the bridge logs, with timestamps. Rotated by the supervisor at 5 MB (`bridge.log.1` … `.5` kept), so it never grows without bound. Under the background service the bridge's full output (banner, log lines, crashes) also goes to the service log: `~/Library/Logs/wow-ai/bridge.log` on macOS, `$XDG_STATE_HOME/wow-ai/bridge.log` (default `~/.local/state/wow-ai`) on Linux, `%LocalAppData%\wow-ai\logs\bridge.log` on Windows, rotated the same way; `wow-ai service logs` shows whichever applies. |
-| `bridge/tmp/` | Prompt files for agents that read the prompt from disk (Grok). Each is deleted when its run ends. |
+| `~/.claude-wow/config.json` | Your configuration. |
+| `~/.claude-wow/state.json` | Agent session ids per chat, the folder and the agent each session ran with, handled message ids per addon session token, the presence counter, and the latest game context the addon sent (`context`). Delete it to forget all sessions. |
+| `~/.claude-wow/transcripts.json` | The last 200 messages of every chat, with the agent that wrote each reply, so the addon can recover its chats after the client wipes saved data. |
+| `~/.claude-wow/mapjobs/` | One map command file per running job (`CLAUDE_WOW_MAP_FILE`), read and deleted when the job ends. Map layers themselves live in `state.json` (`map`). |
+| `~/.claude-wow/bridge.log` | Every line the bridge logs, with timestamps. Rotated by the supervisor at 5 MB (`bridge.log.1` … `.5` kept), so it never grows without bound. Under the background service the bridge's full output (banner, log lines, crashes) also goes to the service log: `~/Library/Logs/claude-wow/bridge.log` on macOS, `$XDG_STATE_HOME/claude-wow/bridge.log` (default `~/.local/state/claude-wow`) on Linux, `%LocalAppData%\claude-wow\logs\bridge.log` on Windows, rotated the same way; `claude-wow service logs` shows whichever applies. |
+| `~/.claude-wow/tmp/` | Prompt files for agents that read the prompt from disk (Grok). Each is deleted when its run ends. |
 
 ## `setup.js` flags
 
@@ -158,4 +167,4 @@ All of these are gitignored.
 | `--project "<dir>"` | Written to `defaultCwd`. Defaults to the folder you ran setup from. |
 | `--account <name>` | Which `WTF\Account\<name>` to use when there are several. |
 
-Re-running `setup.js` re-copies the addon (except `Inbox.lua`, which the bridge owns once running), keeps an existing `config.json` (adding the `agents` blocks and fixing paths if it predates them), and only creates slot and signal files that are missing. An install under the project's old name (the `WoWClaude` addon) is migrated: its saved data is copied to `WoWAI.lua` so chats survive, and the old addon and slot folders are removed.
+Re-running `setup.js` re-copies the addon (except `Inbox.lua`, which the bridge owns once running), keeps an existing `config.json` (adding the `agents` blocks and fixing paths if it predates them), and only creates slot and signal files that are missing. An install under one of the project's old names (the `WoWAI` addon, or `WoWClaude` before it) is migrated: its saved data is copied to `ClaudeWoW.lua` with the globals renamed so chats survive (the old file is kept), the old addon and slot folders are removed, and `inboxFile` / `savedVariablesFile` in an old `config.json` are rewritten.

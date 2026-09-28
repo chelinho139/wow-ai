@@ -1,6 +1,6 @@
-# wow-ai as a platform: core + plugins
+# claude-wow as a platform: core + plugins
 
-Today wow-ai is one thing: a chat window wired to a coding agent. The goal is two
+Today claude-wow is one thing: a chat window wired to a coding agent. The goal is two
 things — a general in-game AI client that stands on its own, and coding work as one
 plugin among several.
 

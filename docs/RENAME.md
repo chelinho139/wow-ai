@@ -1,5 +1,23 @@
 # Rename: wow-ai -> claude-wow
 
+**Status: done** (branch `macos-ci-and-setup-checks`, one commit per surface: addon,
+bridge, package/CLI, service/install, docs). Where the code differed from the plan
+below, the code won:
+
+- `WoWAIProbeFrame` does not exist in the addon; the frames are `WoWAIFrame`,
+  `WoWAIStrip`, `WoWAIMini` and so on, all renamed to `ClaudeWoW*`.
+- The optional node data addon is `ClaudeWoW_Nodes` (global `ClaudeWoWNodes`); it is
+  this project's format and nobody ships one yet, so no fallback to `WoWAI_Nodes`.
+- `/r`, `/aimap` and `/aiwhisper` are commands of their own, not aliases of the main
+  one, and stay.
+- The installer puts the code in `~/.claude-wow/app`, not `~/.claude-wow`: the home
+  folder (`CLAUDE_WOW_HOME`, default `~/.claude-wow`) holds config, state and logs,
+  and a git clone and a `config.json` cannot share one folder without the
+  installer's "exists and is not an install" check misfiring for Homebrew users.
+- Config, state and transcripts are copied from `bridge/` to `~/.claude-wow`, not
+  moved, so an older checkout (the open upstream PR branches) still runs.
+- The GitHub repo itself has not been renamed yet (last step, once this is merged).
+
 Run this as one pass, after the plugin-seam and install/service work lands. The
 project has done this once before (`wow-claude` -> `wow-ai`), and `setup.js` still
 carries that migration; this rename follows the same shape and should absorb it, so
