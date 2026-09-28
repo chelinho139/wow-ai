@@ -716,7 +716,7 @@ function pollSavedVariables() {
   if (job) submit(job);
 }
 
-// Windows: capture.ps1 (GDI). macOS: capture_mac.py (native screencapture). Elsewhere: capture_x11.py (Wine/X11).
+// Windows: capture.ps1 (GDI). macOS: capture_mac.py (CoreGraphics, screencapture fallback). Elsewhere: capture_x11.py (Wine/X11).
 function captureCommand() {
   if (process.platform === 'win32') {
     return ['powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(HERE, 'capture.ps1'),
