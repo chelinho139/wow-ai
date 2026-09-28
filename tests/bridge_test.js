@@ -13,9 +13,11 @@ test('luaStr escapes everything Lua 5.1 needs', () => {
 });
 
 test('parseFlags reads new-session, hello, forget, context, agent and allow lists', () => {
-  const none = { newSession: false, hello: false, forget: false, context: false, allow: [], agent: '' };
+  const none = { newSession: false, hello: false, forget: false, context: false, vision: false, allow: [], agent: '' };
   assert.deepEqual(P.parseFlags(''), none);
   assert.deepEqual(P.parseFlags('n'), { ...none, newSession: true });
+  assert.deepEqual(P.parseFlags('v'), { ...none, vision: true });
+  assert.deepEqual(P.parseFlags('agent=codex;v;c'), { ...none, vision: true, context: true, agent: 'codex' });
   assert.deepEqual(P.parseFlags('h'), { ...none, hello: true });
   assert.deepEqual(P.parseFlags('d'), { ...none, forget: true });
   assert.deepEqual(P.parseFlags('h;c'), { ...none, hello: true, context: true });
@@ -28,7 +30,7 @@ test('jobsFromStrip parses the current record format and keeps separators inside
   const rec = ['sess', 'chat1', '12', 'realms', 'allow=WebSearch', 'My chat', 'hello\x1Fworld'].join('\x1F');
   const jobs = P.jobsFromStrip(12, rec);
   assert.equal(jobs.length, 1);
-  assert.deepEqual(jobs[0], { session: 'sess', chat: 'chat1', id: 12, cwd: 'realms', newSession: false, hello: false, forget: false, context: false, allow: ['WebSearch'], agent: '', name: 'My chat', text: 'hello\x1Fworld', via: 'pixel' });
+  assert.deepEqual(jobs[0], { session: 'sess', chat: 'chat1', id: 12, cwd: 'realms', newSession: false, hello: false, forget: false, context: false, vision: false, allow: ['WebSearch'], agent: '', name: 'My chat', text: 'hello\x1Fworld', via: 'pixel' });
   // A chat that picked its own agent says so in the flags.
   const codex = P.jobsFromStrip(13, ['sess', 'chat1', '13', '', 'agent=codex', 'My chat', 'hi'].join('\x1F'))[0];
   assert.equal(codex.agent, 'codex');
@@ -77,6 +79,15 @@ test('systemPrompt always asks for the TL;DR block, and wraps the game context a
   const withPrimer = P.systemPrompt('Character: Testchar', '# Primer\n\nUse local.');
   assert.ok(withPrimer.endsWith('Reference for writing addons and macros for this client. Follow it when the task is about WoW, and check anything it marks as uncertain against the Blizzard UI source it names:\n\n# Primer\n\nUse local.'));
   assert.ok(!P.systemPrompt('', '# Primer').includes('# Primer'));
+  // Vision: the attached-screen paragraph only when an image really is attached.
+  for (const s of [P.systemPrompt(''), P.systemPrompt('Character: X', '# P'), P.systemPrompt('Character: X', '# P', {}), P.systemPrompt('', '', { image: null })]) {
+    assert.ok(!s.includes('screenshot of the player'), 'no vision hint without an image');
+  }
+  const seeing = P.systemPrompt('Character: X', '# P', { image: { width: 1280, height: 712 } });
+  assert.ok(seeing.includes('A screenshot of the player\'s screen') && seeing.includes('(1280x712, downscaled)') && seeing.includes('cropped off'));
+  assert.ok(seeing.indexOf('screenshot of the player') < seeing.indexOf('in-game situation'), 'before the context, after the reply rules');
+  assert.equal(P.visionHint({}), P.visionHint(null));
+  assert.ok(!P.visionHint({}).includes('downscaled)'), 'no size when unknown');
 });
 
 test('splitSummary takes the last TL;DR block for the game chat and keeps the whole reply for the window', () => {

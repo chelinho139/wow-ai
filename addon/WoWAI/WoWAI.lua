@@ -218,6 +218,7 @@ local function InitDB()
 	s.echo = s.echo or "summary"
 	s.mode = s.mode or "pixel"
 	if s.whisper == nil then s.whisper = false end -- each chat as a native whisper tab; opt-in
+	if s.vision == nil then s.vision = false end -- send a picture of the screen with each message (screenshot transport); opt-in
 	s.interval = s.interval or 20
 	s.cwd = s.cwd or DEFAULT_CWD
 	s.width = s.width or 780
@@ -425,6 +426,21 @@ end
 local function ShotStats()
 	run.shotStats = run.shotStats or { taken = 0, ok = 0, failed = 0, timeouts = 0 }
 	return run.shotStats
+end
+
+-- Vision ("/wow-ai vision on", off by default): the screenshot this transport
+-- takes per message is the whole screen; the bridge keeps the part under the
+-- strip, scales it down and attaches it to the agent's message as an image, so
+-- "what is this item?" or "why is this boss killing me?" can be answered. A "v"
+-- flag on the record asks for it. The pixel transport never sees more than the
+-- strip, so there the flag is sent but changes nothing.
+local function VisionStatus()
+	local s = db.settings
+	if not s.vision then return "Vision is OFF: the agent gets no picture of your screen" end
+	if s.transport ~= "screenshot" then
+		return "Vision is ON, but the bridge listens on the pixel transport, which has no screenshot to send: set capture.mode to \"screenshot\" in bridge/config.json and restart the bridge"
+	end
+	return "Vision is ON: each message goes out with a picture of your screen (the screenshot this transport takes anyway, strip cropped off and downscaled by the bridge), so the agent can see what you see"
 end
 
 -- The client writes screenshots as JPEG by default, which is lossy; the
@@ -780,7 +796,7 @@ function WoWAI.CheckConnection()
 			local c = queued and ActiveChat()
 			if c and c.id == queued.chat and not c.pendingId then
 				if ui.input and Trim(ui.input:GetText() or "") == queued.text then ui.input:SetText("") end
-				WoWAI.Send(queued.text, queued.allow)
+				WoWAI.Send(queued.text, queued.allow, queued.opts)
 			end
 		elseif GetTime() - run.connectingAt > CONNECT_WAIT then
 			run.connectingAt, run.connectFailed = nil, true
@@ -1813,7 +1829,9 @@ function Whisper.Status()
 		.. ", LEAKS: " .. (run.whisperLeaks or 0) .. (run.whisperError and (", last open error: " .. run.whisperError) or "")
 end
 
-function WoWAI.Send(text, allow)
+-- opts.vision asks for a picture of the screen with this one message, whatever
+-- the setting ("/wow-ai look <question>").
+function WoWAI.Send(text, allow, opts)
 	local c = ActiveChat()
 	if not c then return end
 	text = Trim(text or "")
@@ -1833,7 +1851,7 @@ function WoWAI.Send(text, allow)
 		-- CheckConnection sends it the moment the light turns green. If the bridge
 		-- never answers, the text is still in the box for a later try.
 		if ui.input then ui.input:SetText(text) end
-		run.sendOnConnect = { chat = c.id, text = text, allow = allow }
+		run.sendOnConnect = { chat = c.id, text = text, allow = allow, opts = opts }
 		if not run.connectingAt then WoWAI.Connect() end
 		WoWAI.Toggle(true)
 		return
@@ -1855,6 +1873,7 @@ function WoWAI.Send(text, allow)
 	local tokens = {}
 	if c.resetNext then table.insert(tokens, "n") end
 	if c.agent and c.agent ~= "" then table.insert(tokens, "agent=" .. c.agent) end
+	if db.settings.vision or (opts and opts.vision) then table.insert(tokens, "v") end
 	local allowHex
 	if type(allow) == "table" and #allow > 0 then
 		table.insert(tokens, "allow=" .. table.concat(allow, ","))
@@ -1966,7 +1985,10 @@ function WoWAI.Resend()
 		end
 	end
 	if not text then return end
-	run.outbound[c.pendingId] = { chat = c.id, cwd = c.cwd, flags = (c.agent and c.agent ~= "") and ("agent=" .. c.agent) or "", name = c.name, text = text, sentAt = GetTime() }
+	local tokens = {}
+	if c.agent and c.agent ~= "" then table.insert(tokens, "agent=" .. c.agent) end
+	if db.settings.vision then table.insert(tokens, "v") end -- a resend is a fresh screenshot
+	run.outbound[c.pendingId] = { chat = c.id, cwd = c.cwd, flags = table.concat(tokens, ";"), name = c.name, text = text, sentAt = GetTime() }
 	run.sentAt = GetTime()
 	run.polls = 0
 	ScheduleNextPoll()
@@ -2478,7 +2500,7 @@ function WoWAI.UpdateStatus()
 	else
 		agentText = "(bridge default)"
 	end
-	ui.cwd:SetText("cwd: " .. cwdText .. "   agent: " .. agentText .. "   mode: " .. mode .. (ScreenshotMode() and " (screenshot)" or ""))
+	ui.cwd:SetText("cwd: " .. cwdText .. "   agent: " .. agentText .. "   mode: " .. mode .. (ScreenshotMode() and " (screenshot)" or "") .. "   vision: " .. (db.settings.vision and "on" or "off"))
 	if ui.resend then ui.resend:SetShown(c and c.pendingId ~= nil and mode == "pixel") end
 	if ui.refresh then ui.refresh:SetShown(mode ~= "pixel" or run.slotsExhausted or run.slotsMissing or run.pixelFailed or false) end
 	WoWAI.UpdateMini()
@@ -3454,6 +3476,8 @@ local HELP = table.concat({
 	"/wow-ai agent [name]           which agent this chat talks to (no name = show; default = the bridge's). Right-clicking the chat and picking Agent does the same",
 	"/wow-ai reset                  next message in this chat starts a fresh agent session",
 	"/wow-ai context [on|off]       what the agent is told about your character and where you are (no argument = show it)",
+	"/wow-ai vision [on|off]        send a picture of your screen with each message, so the agent can see what you see (screenshot transport; off by default)",
+	"/wow-ai look <question>        send this one message with a picture of your screen, whatever the vision setting",
 	"/wow-ai map [...]              map layers the agent drew, the route navigator and herb/ore nodes (no argument = status and subcommands; /aimap is the same)",
 	"/wow-ai mode pixel             no-reload transport (default)",
 	"/wow-ai mode reload            fallback transport: a /reload per step",
@@ -3493,6 +3517,8 @@ local COMMAND_ARGS = {
 	mode = { [""] = true, pixel = true, reload = true },
 	signal = { [""] = true, on = true, off = true }, longchat = { [""] = true, on = true, off = true },
 	whisper = { [""] = true, on = true, off = true },
+	vision = { [""] = true, on = true, off = true },
+	look = true, -- /wow-ai look <question>: one message with a picture of the screen
 	auto = OnOffOrNumber,
 	echo = function(rest) return rest == "" or rest == "summary" or rest == "full" or rest == "short" or rest == "off" or tonumber(rest) ~= nil end,
 	bind = 1, agent = 1,
@@ -3671,6 +3697,14 @@ SlashCmdList["WOWAI"] = function(msg)
 			AddHistory(c, "system", Whisper.Status() .. " (/wow-ai whisper on|off: each chat as a native whisper tab)")
 		end
 		WoWAI.Render()
+	elseif cmd == "vision" then
+		if rest == "on" then s.vision = true elseif rest == "off" then s.vision = false end
+		AddHistory(c, "system", VisionStatus() .. ". /wow-ai vision on|off; /wow-ai look <question> sends one message with a picture whatever the setting.")
+		WoWAI.UpdateStatus()
+		WoWAI.Render()
+		WoWAI.Toggle(true)
+	elseif cmd == "look" then
+		WoWAI.Send(rest ~= "" and rest or "What do you see on my screen?", nil, { vision = true })
 	elseif cmd == "slots" then
 		local free = 0
 		for i = 1, SLOT_COUNT do
@@ -3708,6 +3742,7 @@ SlashCmdList["WOWAI"] = function(msg)
 				.. (s.transport == "screenshot" and s.stripLevels and string.format(", strip levels %d/%d", s.stripLevels.off, s.stripLevels.on) or "")
 				.. (run.shotStats and string.format(", screenshots: %d taken, %d confirmed, %d failed, %d without event", run.shotStats.taken, run.shotStats.ok, run.shotStats.failed, run.shotStats.timeouts) or "")
 				.. (s.shotFormatSaved and (", screenshotFormat saved: " .. s.shotFormatSaved) or ""),
+			"vision: " .. (s.vision and "on" or "off") .. (s.vision and s.transport ~= "screenshot" and " (needs the screenshot transport; the pixel capture never sees more than the strip)" or ""),
 		}
 		for _, ch in ipairs(db.chats) do
 			local a = run.act and run.act[ch.id]

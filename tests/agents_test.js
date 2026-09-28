@@ -41,6 +41,36 @@ test('Claude Code: headless stream-json with the allowlist, resume and system pr
   assert.equal(env.PATH, 'x');
 });
 
+test('Claude Code with an image (vision): a stream-json user message with the picture as a content block', () => {
+  const image = { file: '/b/tmp/vision-7-x.png', data: 'aGVsbG8=', mediaType: 'image/png', width: 1280, height: 712 };
+  // Without images nothing changes: no --input-format, plain text on stdin.
+  assert.deepEqual(A.AGENTS.claude.args({ cfg: {}, resume: '', system: '', cwd: 'x', images: [] }),
+    ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits']);
+  assert.deepEqual(A.AGENTS.claude.input({ prompt: 'hi', images: [] }), { stdin: 'hi' });
+  assert.deepEqual(A.AGENTS.claude.input({ prompt: 'hi' }), { stdin: 'hi' });
+  // With one: the prompt goes in as one JSON line the CLI reads with --input-format stream-json.
+  const args = A.AGENTS.claude.args({ cfg: {}, resume: 's', system: 'SYS', cwd: 'x', images: [image] });
+  assert.deepEqual(args, ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits',
+    '--input-format', 'stream-json', '--resume', 's', '--append-system-prompt', 'SYS']);
+  const { stdin } = A.AGENTS.claude.input({ prompt: 'what is this?', images: [image] });
+  assert.ok(stdin.endsWith('\n'), 'one line, newline-terminated');
+  const msg = JSON.parse(stdin);
+  assert.equal(msg.type, 'user');
+  assert.equal(msg.message.role, 'user');
+  assert.deepEqual(msg.message.content[0], { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aGVsbG8=' } });
+  assert.deepEqual(msg.message.content[1], { type: 'text', text: A.IMAGE_CAPTION + '\n\nwhat is this?' });
+  assert.equal(msg.message.content.length, 2);
+  // A path-only image (no pixels loaded) is not inlined: it is named in the prompt like the other CLIs do.
+  assert.deepEqual(A.AGENTS.claude.input({ prompt: 'hi', images: ['/a.png'] }), { stdin: 'hi\n\nAttached screenshots: /a.png — read them with your Read tool.' });
+  assert.ok(!A.AGENTS.claude.args({ cfg: {}, resume: '', system: '', cwd: 'x', images: ['/a.png'] }).includes('--input-format'));
+  // The other agents take the file path out of the same image objects.
+  assert.deepEqual(A.imagePaths([image, '/b.png', null]), ['/b/tmp/vision-7-x.png', '/b.png']);
+  assert.deepEqual(A.AGENTS.codex.args({ cfg: {}, resume: '', cwd: 'x', images: [image] }).slice(-3), ['-i', '/b/tmp/vision-7-x.png', '-']);
+  assert.ok(A.AGENTS.codex.input({ prompt: 'p', system: '', systemShort: '', resume: '', images: [image] }).stdin.includes('Attached screenshots: /b/tmp/vision-7-x.png'));
+  assert.ok(A.AGENTS.hermes.args({ cfg: {}, cwd: '.', resume: '', images: [image] }).includes('/b/tmp/vision-7-x.png'));
+  assert.ok(A.AGENTS.grok.input({ prompt: 'p', images: [image] }).promptFile.includes('/b/tmp/vision-7-x.png'));
+});
+
 test('Codex: exec --json in the chat folder, sandbox from permissionMode, resume as a subcommand, prompt on stdin with the context on top', () => {
   const args = A.AGENTS.codex.args({ cfg: { permissionMode: 'acceptEdits', model: 'gpt-5-codex' }, resume: '', cwd: 'C:\\p' });
   assert.deepEqual(args, ['exec', '--json', '--skip-git-repo-check', '-C', 'C:\\p', '--sandbox', 'workspace-write', '-m', 'gpt-5-codex', '-']);

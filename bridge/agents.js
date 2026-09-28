@@ -339,6 +339,26 @@ function contextBlock(text) {
   return `[Context from the WoW AI bridge, not written by the user]\n${text}\n[End of context]\n\n`;
 }
 
+// Images (vision): bridge.js hands each run `images`, a list of
+// { file, data (base64), mediaType, width, height } for the game view it cut
+// out of the screenshot. Claude takes the pixels inline: with
+// `--input-format stream-json` the prompt goes in as one JSON user message
+// whose content holds an Anthropic `image` block next to the text (verified on
+// Claude Code 2.1: the model sees the picture with no tool call at all). The
+// other CLIs take a path: Codex `-i`, Hermes `--image`, Grok reads it with its
+// own file tool from the note in the prompt. A bare string is a path too.
+function imagePaths(images) {
+  return (Array.isArray(images) ? images : []).map(i => (typeof i === 'string' ? i : i && i.file)).filter(Boolean);
+}
+function attachedNote(images) {
+  const paths = imagePaths(images);
+  return paths.length ? `\n\nAttached screenshots: ${paths.join(', ')} — read them with your Read tool.` : '';
+}
+// The line next to the image in the message itself. Claude keeps the system
+// prompt of a conversation's first request for later resumes, so the caption
+// rides with the picture, where it cannot be missed.
+const IMAGE_CAPTION = '[The image above is a screenshot of the player\'s screen, taken the moment they sent this message.]';
+
 const AGENTS = {
   claude: {
     name: 'Claude',
@@ -346,8 +366,10 @@ const AGENTS = {
     install: 'https://claude.com/claude-code, then run `claude` once and log in',
     windowsPaths: () => [path.join(os.homedir(), '.local', 'bin', 'claude.exe')],
     posixPaths: () => [path.join(os.homedir(), '.local', 'bin', 'claude')],
-    args({ cfg, resume, system }) {
+    args({ cfg, resume, system, images }) {
       const a = ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', cfg.permissionMode || 'acceptEdits'];
+      // With an image the prompt is a stream-json user message (see input below).
+      if (Array.isArray(images) && images.some(i => i && i.data)) a.push('--input-format', 'stream-json');
       const rules = Array.isArray(cfg.allowedTools) ? cfg.allowedTools.filter(Boolean) : [];
       if (rules.length) a.push('--allowedTools', ...rules);
       const denied = Array.isArray(cfg.deniedTools) ? cfg.deniedTools.filter(Boolean) : [];
@@ -358,8 +380,11 @@ const AGENTS = {
       return a.concat(Array.isArray(cfg.extraArgs) ? cfg.extraArgs : []);
     },
     input: ({ prompt, images }) => {
-      const attached = images && images.length ? `\n\nAttached screenshots: ${images.join(', ')} — read them with your Read tool` : '';
-      return { stdin: prompt + attached };
+      const inline = (Array.isArray(images) ? images : []).filter(i => i && typeof i === 'object' && i.data);
+      if (!inline.length) return { stdin: prompt + attachedNote(images) };
+      const content = inline.map(i => ({ type: 'image', source: { type: 'base64', media_type: i.mediaType || 'image/png', data: i.data } }));
+      content.push({ type: 'text', text: `${IMAGE_CAPTION}\n\n${prompt}` });
+      return { stdin: JSON.stringify({ type: 'user', message: { role: 'user', content } }) + '\n' };
     },
     env: (env) => { delete env.CLAUDECODE; return env; }, // a bridge started from inside Claude Code can still launch it
     parser: claudeParser,
@@ -382,14 +407,13 @@ const AGENTS = {
       if (cfg.model) a.push('-m', cfg.model);
       a.push(...(Array.isArray(cfg.extraArgs) ? cfg.extraArgs : []));
       if (resume) a.push('resume', resume);
-      for (const image of images || []) if (!String(image).startsWith('-')) a.push('-i', image);
+      for (const image of imagePaths(images)) if (!String(image).startsWith('-')) a.push('-i', image);
       a.push('-'); // the prompt comes on stdin
       return a;
     },
     input: ({ prompt, system, systemShort, resume, images }) => {
       const ctx = resume ? systemShort : system;
-      const attached = images && images.length ? `\n\nAttached screenshots: ${images.join(', ')} — read them with your Read tool.` : '';
-      return { stdin: (ctx ? contextBlock(ctx) : '') + prompt + attached };
+      return { stdin: (ctx ? contextBlock(ctx) : '') + prompt + attachedNote(images) };
     },
     env: (env) => env,
     parser: codexParser,
@@ -424,10 +448,7 @@ const AGENTS = {
       if (system) a.push('--append-system-prompt', system);
       return a.concat(Array.isArray(cfg.extraArgs) ? cfg.extraArgs : []);
     },
-    input: ({ prompt, images }) => {
-      const attached = images && images.length ? `\n\nAttached screenshots: ${images.join(', ')} — read them with your Read tool.` : '';
-      return { promptFile: prompt + attached };
-    },
+    input: ({ prompt, images }) => ({ promptFile: prompt + attachedNote(images) }),
     env: (env) => { env.GROK_DISABLE_AUTOUPDATER = '1'; return env; },
     parser: grokParser,
   },
@@ -463,14 +484,16 @@ const AGENTS = {
       const a = ['chat', '--query-file', '-', '-Q', '--in', cwd, '--source', 'tool'];
       if (resume) a.push('--resume', resume);
       if (cfg.model) a.push('-m', cfg.model);
-      if (images && images.length && !String(images[0]).startsWith('-')) a.push('--image', images[0]);
+      const paths = imagePaths(images);
+      if (paths.length && !String(paths[0]).startsWith('-')) a.push('--image', paths[0]);
       // R1: hermes never runs with --yolo from the bridge, even via extraArgs.
       return a.concat(Array.isArray(cfg.extraArgs) ? cfg.extraArgs.filter(x => !/^(-y|--yolo)(=.*)?$/.test(String(x))) : []);
     },
     input: ({ prompt, system, systemShort, resume, images, cfg }) => {
       const ctx = resume ? systemShort : system;
       let text = (ctx ? contextBlock(ctx) : '') + prompt;
-      if (images && images.length > 1) text += `\n\nAdditional attached screenshot paths: ${images.slice(1).join(', ')}`;
+      const paths = imagePaths(images);
+      if (paths.length > 1) text += `\n\nAdditional attached screenshot paths: ${paths.slice(1).join(', ')}`;
       const note = cfg && cfg.permissionMode === 'bypassPermissions' ? 'hermes never runs with --yolo from the bridge' : '';
       return { stdin: text, note };
     },
@@ -599,7 +622,7 @@ function resolveCommand(id, cfg = {}) {
 
 module.exports = {
   AGENTS, DEFAULT_AGENT, agentIds, normalizeAgent, displayName, agentConfig,
-  grokRules, snippet, contextBlock,
+  grokRules, snippet, contextBlock, imagePaths, IMAGE_CAPTION,
   claudeParser, codexParser, grokParser, agyParser, hermesParser, codexItemLine, grokCall, grokRefusal, shellInner,
   resolveCommand, unwrapShim, nativeNextTo,
 };

@@ -202,6 +202,7 @@ test('a strip in the corner of a full-frame screenshot decodes from PNG and TGA,
       assert.equal(msg.id, id, name);
       assert.equal(msg.text, payload, name);
       assert.deepEqual(offset, [0, 0], name);
+      assert.equal(msg.rows, Math.ceil(cells.length / CELLS), `${name}: rows the strip covered (vision crops them off)`);
     }
   }
 });

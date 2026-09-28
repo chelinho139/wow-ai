@@ -8,7 +8,7 @@
 // screenshot is bit-exact while a screen capture goes through gamma and scaling.
 //
 //   readImage(buf)                  -> { width, height, px(x, y) -> [r, g, b] }
-//   decodeStrip(img, opts)          -> { id, text } | { error } | null (no magic)
+//   decodeStrip(img, opts)          -> { id, text, rows } | { error } | null (no magic)
 //   findStrip(img, opts)            -> { msg, offset }
 
 const zlib = require('zlib');
@@ -194,9 +194,10 @@ function decodeStrip(img, opts, ox = 0, oy = 0) {
   const rowsAvailable = Math.min(o.maxRows, Math.floor((img.height - oy) / o.cell));
   const total = o.cells * rowsAvailable;
   const out = [];
-  let acc = 0, nbits = 0, needed = 6;
+  let acc = 0, nbits = 0, needed = 6, cellsRead = 0;
   for (let i = 0; i < total && out.length < needed; i++) {
     acc = (acc << 3) | cellValue(img, o, i % o.cells, Math.floor(i / o.cells), ox, oy);
+    cellsRead = i + 1;
     nbits += 3;
     while (nbits >= 8) {
       out.push((acc >> (nbits - 8)) & 0xff);
@@ -215,7 +216,9 @@ function decodeStrip(img, opts, ox = 0, oy = 0) {
   let s1 = 0, s2 = 0;
   for (let k = 2; k < 6 + length; k++) { s1 = (s1 + out[k]) % 255; s2 = (s2 + s1) % 255; }
   if (out[6 + length] !== s1 || out[7 + length] !== s2) return { error: 'checksum' };
-  return { id: out[2] * 256 + out[3], text: Buffer.from(out.slice(6, 6 + length)).toString('utf8') };
+  // rows: how many cell rows the strip covered, so a caller that wants the rest
+  // of the frame (vision) knows how much of the top to cut off.
+  return { id: out[2] * 256 + out[3], text: Buffer.from(out.slice(6, 6 + length)).toString('utf8'), rows: Math.ceil(cellsRead / o.cells) };
 }
 
 // Try the last good offset, then a small window around the origin. Returns

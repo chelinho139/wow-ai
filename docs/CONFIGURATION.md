@@ -66,6 +66,13 @@ Keys under `capture`:
 
 The capture region is `cellsPerRow × cellPx` by `maxRows × cellPx` pixels (800 × 192 by default) at the top-left of the game's client area. In `screenshot` mode the same cells are read from the top-left of the screenshot, which is the rendered frame, so it works on any display (a Retina display, where the screen capture cannot read the strip, included).
 
+## Vision
+
+| Key | Default | Meaning |
+|---|---|---|
+| `vision.maxWidth` | `1280` | `screenshot` mode only. When a chat has `/wow-ai vision on` (or sends `/wow-ai look ...`), the bridge cuts the strip's rows off the screenshot it decoded, scales the rest down to at most this many pixels wide (area averaging, so UI text stays readable) and attaches it to the run as a PNG. A 1080p frame becomes 1280x712, 1.5-2 MB; the Anthropic API takes images up to 5 MB and itself downscales anything past 1568 pixels on the long edge, so higher values buy little. |
+| `vision.keep` | `6` | How many of those PNGs may sit in `bridge/tmp` at once: one per message that asked, deleted when its run ends, so only runs that never started (a bridge killed mid-queue) leave one. The oldest beyond this are removed, and all of them when the bridge starts. |
+
 ## Slot pool and signal files
 
 These sizes are baked into the files `install-slots.js` creates, and the addon has matching constants at the top of `addon/WoWAI/WoWAI.lua` (`SLOT_COUNT`, `ACT_MAX`, `PRESENCE_MAX`). Change all three places together, re-run `node bridge/install-slots.js`, and restart the game.

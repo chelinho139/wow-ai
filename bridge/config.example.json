@@ -22,6 +22,7 @@
     "windowName": "",
     "keepComposited": false
   },
+  "vision": { "maxWidth": 1280, "keep": 6 },
   "agent": "claude",
   "agents": {
     "claude": {

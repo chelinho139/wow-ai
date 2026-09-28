@@ -115,12 +115,13 @@ function sameFolder(a, b) {
 // empty one clears the context the bridge keeps), "agent=codex" = run this
 // chat with that agent instead of the bridge's default (see agents.js).
 function parseFlags(flags) {
-  const out = { newSession: false, hello: false, forget: false, context: false, allow: [], agent: '' };
+  const out = { newSession: false, hello: false, forget: false, context: false, vision: false, allow: [], agent: '' };
   for (const tok of String(flags || '').split(';')) {
     if (tok === 'n') out.newSession = true;
     else if (tok === 'h') out.hello = true;
     else if (tok === 'd') out.forget = true;
     else if (tok === 'c') out.context = true;
+    else if (tok === 'v') out.vision = true; // attach the screenshot's game view to the run (screenshot transport only)
     else if (tok.startsWith('allow=')) out.allow.push(...tok.slice(6).split(',').map(s => s.trim()).filter(Boolean));
     else if (tok.startsWith('agent=')) out.agent = tok.slice(6).trim().toLowerCase();
   }
@@ -214,9 +215,18 @@ const MACRO_HINT = [
   'The addon shows the player a button that creates the macro (or updates one with the same name) and puts it on their cursor. Explain outside the block what it does. Avoid /run and /script unless asked; the player is warned about them.',
 ];
 
-function systemPrompt(ctx, primer) {
+// What the agent is told when the player's screen rides along with the message
+// (vision, screenshot transport only). Only added when an image really is
+// attached, so a run without one is exactly what it was before.
+function visionHint(image) {
+  const size = image && image.width && image.height ? ` (${image.width}x${image.height}, downscaled)` : '';
+  return `A screenshot of the player's screen, taken by the game the moment they sent this message, is attached to the message as an image${size}. It is what the player was looking at: the game world, their UI, any open windows, tooltips, quest text, and the WoW AI chat window itself; the addon's data strip along the top edge has been cropped off. Use it when the question is about something on screen ("what is this item", "why is this boss killing me", "read this quest") and say what you see when it matters; ignore it when the task is unrelated.`;
+}
+
+function systemPrompt(ctx, primer, opts) {
   const lines = [...REPLY_FORMAT];
   const text = String(ctx || '').trim();
+  if (opts && opts.image) lines.push('', visionHint(opts.image));
   if (text) {
     lines.push('',
       'Their in-game situation when the message was written, as reported by the addon:',
@@ -578,7 +588,7 @@ module.exports = {
   fromHex, pad3, slotNumber, chatKey, sessKey,
   alreadyHandled, markHandled, pruneStale, MONTH_MS,
   resolveCwd, sameFolder, baseName,
-  parseFlags, jobsFromStrip, parseOutbox, systemPrompt, splitSummary,
+  parseFlags, jobsFromStrip, parseOutbox, systemPrompt, visionHint, splitSummary,
   ruleFor, describeToolUse,
   luaStr, luaTable, SILENT_WAV, TRANSPORTS, transportName, DEFAULT_LEVELS, screenshotLevels,
   MAP_LIMITS, validateMapCommand, newMap, applyMapCommands, extractMapBlocks, parseMapFile, luaMap,

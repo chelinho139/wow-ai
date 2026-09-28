@@ -19,6 +19,7 @@
 //   --once            handle one pending SavedVariables prompt and exit
 //   --inject "text"   pretend the strip said this and exit when done
 //   --agent <id>      agent for --inject (default: "agent" in config.json)
+//   --image <file>    with --inject: attach this PNG/TGA as the player's screen (vision)
 //   --project <dir>   default folder for chats that haven't picked one
 //
 // Like the agent CLIs themselves, the bridge works in the folder it was started
@@ -34,6 +35,7 @@ const P = require('./protocol'); // the pure protocol code, unit-tested in tests
 const A = require('./agents');   // how each agent is launched and read, unit-tested in tests/agents_test.js
 const D = require('./decode');   // PNG/TGA reader + strip decoder for the screenshot transport (tests/decode_test.js)
 const S = require('./screenshots'); // the Screenshots folder watcher (tests/screenshots_test.js)
+const V = require('./vision');   // vision: the screenshot's game view, cropped and downscaled for the agent (tests/vision_test.js)
 
 const HERE = __dirname;
 const CONFIG_FILE = path.join(HERE, 'config.json');
@@ -43,9 +45,10 @@ const TMP_DIR = path.join(HERE, 'tmp'); // prompt files for agents that read the
 
 const argv = process.argv.slice(2);
 if (argv.includes('--help') || argv.includes('-h')) {
-  console.log('wow-ai [--project <dir>] [--once] [--inject "text" [--agent <id>]]\n\n' +
+  console.log('wow-ai [--project <dir>] [--once] [--inject "text" [--agent <id>] [--image <png|tga>]]\n\n' +
     'Runs the WoW AI bridge. Chats without a folder of their own work in <dir>,\n' +
     'or in the folder you started it from, or in defaultCwd from bridge/config.json.\n' +
+    '--image attaches a screenshot to an --inject run the way vision does in game.\n' +
     `Agents: ${A.agentIds().join(', ')} (the default is "agent" in config.json; chats pick with /wow-ai agent).`);
   process.exit(0);
 }
@@ -60,6 +63,8 @@ const injectIdx = argv.indexOf('--inject');
 const inject = injectIdx >= 0 ? argv[injectIdx + 1] : null;
 const agentIdx = argv.indexOf('--agent');
 const injectAgent = agentIdx >= 0 ? argv[agentIdx + 1] : '';
+const imageIdx = argv.indexOf('--image');
+const injectImage = imageIdx >= 0 ? argv[imageIdx + 1] : '';
 const exitWhenIdle = once || inject !== null;
 
 // The agent chats use unless they pick their own (/wow-ai agent, "agent=" flag).
@@ -107,6 +112,11 @@ if (!TRANSPORT) {
   process.exit(2);
 }
 const SCREENSHOT_DIR = S.screenshotDir(cfg);
+// Vision: a chat that turned it on (/wow-ai vision on, flag "v") gets the rest
+// of the screenshot, strip cropped off and scaled to vision.maxWidth, attached
+// to its run as an image. Screenshot transport only: the pixel capture never
+// sees more than the strip. vision.keep caps the PNGs kept in bridge/tmp.
+const vis = Object.assign({}, V.DEFAULTS, cfg.vision || {});
 // Screenshot mode draws the strip dark (capture.screenshotLevels) and reads it
 // with the threshold between the two levels; pixel mode stays bright and >= 128.
 const LEVELS = P.screenshotLevels(cap.screenshotLevels);
@@ -496,6 +506,13 @@ function submit(job) {
   runJob(job);
 }
 
+// Is this message already running or waiting its turn? (A retried strip.)
+function inFlight(job) {
+  const key = chatKey(job);
+  const cur = running.get(key), q = queued.get(key);
+  return !!((cur && cur.job.id === job.id) || (q && q.id === job.id));
+}
+
 function drainQueue() {
   for (const [key, job] of queued) {
     if (running.size >= MAX_PARALLEL) break;
@@ -561,17 +578,33 @@ function runJob(job) {
   noteMessage(job, 'user', job.text);
   const resume = state.sessions[skey] || state.sessions[key];
 
+  // Vision: the game view handleScreenshot cut out for this job, read now (it
+  // may have waited in the queue) and handed to the agent as an image.
+  const images = [];
+  let visionNote = '';
+  if (job.image) {
+    try {
+      images.push({ ...job.image, data: fs.readFileSync(job.image.file).toString('base64') });
+    } catch (e) {
+      log(`${tag} vision: ${path.basename(job.image.file)} is gone (${e.message}); running without the screen`);
+      visionNote = 'The screenshot for this message was gone before the run started, so the agent did not see your screen.';
+    }
+  } else if (job.vision && TRANSPORT !== 'screenshot') {
+    log(`${tag} vision asked for, but the ${TRANSPORT} transport has no screenshot to attach`);
+  }
+  const image = images[0] || null;
+
   const ctx = gameContext();
-  const system = P.systemPrompt(ctx, primer());
-  const systemShort = P.systemPrompt(ctx, '');
+  const system = P.systemPrompt(ctx, primer(), { image });
+  const systemShort = P.systemPrompt(ctx, '', { image });
   const promptFile = path.join(TMP_DIR, `prompt-${job.id}-${Date.now().toString(36)}.txt`);
-  const input = agent.input({ prompt: job.text, system, systemShort, resume, cfg: acfg });
+  const input = agent.input({ prompt: job.text, system, systemShort, resume, cfg: acfg, images });
   if (input.promptFile !== undefined) {
     try { fs.mkdirSync(TMP_DIR, { recursive: true }); fs.writeFileSync(promptFile, input.promptFile); }
     catch (e) { finish(job, 'error', `Could not write the prompt file ${promptFile}: ${e.message}`); return; }
   }
   const args = [...cmd.args, ...agent.args({
-    cfg: acfg, resume, cwd, system, systemShort, promptFile,
+    cfg: acfg, resume, cwd, system, systemShort, promptFile, images,
     prompt: job.text, timeoutMs: cfg.timeoutMs,
   })];
   const env = agent.env({ ...process.env });
@@ -582,7 +615,7 @@ function runJob(job) {
     env.WOW_AI_MAP_FILE = mapFileFor(job);
   } catch (e) { log(`${tag} map file unavailable: ${e.message}`); }
 
-  log(`${tag} (${job.via}) ${agent.name} starting in ${cwd}${resume ? ' (resume ' + resume.slice(0, 8) + ')' : ' (new session)'}${ctx ? ' [game context]' : ''}${running.size ? ' [' + (running.size + 1) + ' running]' : ''}`);
+  log(`${tag} (${job.via}) ${agent.name} starting in ${cwd}${resume ? ' (resume ' + resume.slice(0, 8) + ')' : ' (new session)'}${ctx ? ' [game context]' : ''}${image ? ` [screen ${image.width}x${image.height}, ${Math.round(image.bytes / 1024)} KB]` : ''}${running.size ? ' [' + (running.size + 1) + ' running]' : ''}`);
   const child = spawn(cmd.file, args, { cwd, env, windowsHide: true, stdio: [input.stdin !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
   running.set(key, { job, child });
   publish(key, { chat: job.chat, id: job.id, status: 'working', text: resume ? 'thinking...' : 'starting a new session...', cwd, session: resume, agent: agentId }, true);
@@ -607,6 +640,7 @@ function runJob(job) {
   };
   if (agent.stream === 'text') pushProgress(`${agent.name} is working (no live progress)`);
   if (input.note) notes.push(input.note);
+  if (visionNote) notes.push(visionNote);
   // Long thinking stretches produce no tool events; keep the heartbeat alive anyway.
   const keepalive = setInterval(() => beat(job), 45000);
 
@@ -660,6 +694,8 @@ function runJob(job) {
     clearTimeout(timer);
     clearInterval(keepalive);
     if (input.promptFile !== undefined) { try { fs.unlinkSync(promptFile); } catch {} }
+    // The game view was for this run only; the agent has it in its session now.
+    if (job.image) { try { fs.unlinkSync(job.image.file); } catch {} }
   };
 
   child.on('error', (err) => {
@@ -812,12 +848,47 @@ function handleScreenshot(file) {
   if (msg.error) {
     log(`screenshot: strip in ${path.basename(file)} rejected: ${msg.error}` + (msg.error === 'checksum' ? ' (is the strip drawn at 1 UI unit per pixel?)' : ''));
   } else {
-    const jobs = jobsFromStrip(msg.id, msg.text);
+    const jobs = jobsFromStrip(msg.id, msg.text).map(job => ({ ...job, via: 'screenshot' }));
     log(`strip #${msg.id} (screenshot ${path.basename(file)}, ${img.width}x${img.height} ${img.format}): ${jobs.length} message(s)`);
-    for (const job of jobs) submit({ ...job, via: 'screenshot' });
+    // Vision: the frame below the strip is the game as the player saw it. Cut
+    // it out once for the messages that asked, before the file goes (not for a
+    // retried shot of a message already handled or under way: no orphan file).
+    const seeing = jobs.filter(job => job.vision && !job.hello && !job.forget && !alreadyHandled(job) && !inFlight(job));
+    if (seeing.length) attachGameView(img, offset[1] + msg.rows * cap.cellPx, seeing, path.basename(file));
+    for (const job of jobs) submit(job);
   }
   try { fs.unlinkSync(file); } catch (e) { log(`screenshot: could not delete ${path.basename(file)} (${e.message})`); }
 }
+
+// Vision: crop the strip's rows off `img`, scale it down and write one PNG per
+// job into bridge/tmp (job.image says where; runJob reads and then deletes it).
+// The folder never holds more than vision.keep of them: a run that never
+// started (bridge killed, chat deleted) must not leave a pile of screenshots.
+function attachGameView(img, cropTop, jobs, source) {
+  let view, png;
+  try {
+    view = V.gameView(img, { cropTop, maxWidth: vis.maxWidth });
+    png = V.encodePNG(view);
+    fs.mkdirSync(TMP_DIR, { recursive: true });
+  } catch (e) { log(`vision: could not prepare the game view from ${source} (${e.message}); running without it`); return; }
+  for (const job of jobs) {
+    const file = path.join(TMP_DIR, V.fileName(job.id));
+    try { fs.writeFileSync(file, png); } catch (e) { log(`vision: could not write ${file} (${e.message})`); continue; }
+    job.image = { file, width: view.width, height: view.height, mediaType: 'image/png', bytes: png.length };
+  }
+  pruneVisionFiles(Math.max(1, vis.keep | 0));
+  log(`vision: ${source} -> ${view.width}x${view.height} png, ${Math.round(png.length / 1024)} KB, for ${jobs.map(j => '#' + j.id).join(', ')}`);
+}
+
+// Keep the newest `keep` vision files in bridge/tmp; 0 sweeps them all (startup).
+function pruneVisionFiles(keep) {
+  let names = [];
+  try { names = fs.readdirSync(TMP_DIR).filter(V.isVisionFile); } catch { return; }
+  const files = names.map(name => { const f = path.join(TMP_DIR, name); let m = 0; try { m = fs.statSync(f).mtimeMs; } catch {} return { f, m }; })
+    .sort((a, b) => b.m - a.m);
+  for (const { f } of files.slice(keep)) { try { fs.unlinkSync(f); } catch {} }
+}
+pruneVisionFiles(0); // leftovers from a bridge that died mid-run
 
 function startScreenshotWatch() {
   if (!SCREENSHOT_DIR) { log('screenshot transport: no addonDir in config.json, so no Screenshots folder to watch'); return; }
@@ -847,6 +918,7 @@ function banner() {
   console.log(`  addon    : ${addonInstalled() ? 'installed' : 'NOT INSTALLED - run: node setup.js, then restart WoW'}`);
   console.log(`  slots    : ${slotsInstalled() ? SLOTS + ' installed' : 'NOT INSTALLED - run: node setup.js (or node bridge/install-slots.js), then restart WoW'}`);
   console.log(`  capture  : ${!cap.enabled ? 'off' : TRANSPORT === 'screenshot' ? 'screenshot mode (' + SCREENSHOT_DIR + ', ' + cap.cellsPerRow + 'x' + cap.maxRows + ' cells of ' + cap.cellPx + 'px, levels ' + LEVELS.off + '/' + LEVELS.on + ')' : 'on (' + cap.processName + ', ' + cap.cellsPerRow + 'x' + cap.maxRows + ' cells of ' + cap.cellPx + 'px)'}`);
+  console.log(`  vision   : ${TRANSPORT === 'screenshot' ? 'per chat (/wow-ai vision on, or /wow-ai look <question>); the game view goes out up to ' + vis.maxWidth + 'px wide' : 'needs capture.mode "screenshot" (the pixel capture never sees more than the strip)'}`);
   console.log(`  parallel : up to ${MAX_PARALLEL} chats at once`);
   console.log(`  fallback : ${SAVED_VARS}`);
   console.log(`  agent    : ${DEFAULT_AGENT} (default; chats pick their own with /wow-ai agent)`);
@@ -860,7 +932,17 @@ function banner() {
 
 banner();
 if (inject !== null) {
-  submit({ id: state.lastId + 1, session: '', chat: '', text: inject, cwd: '', newSession: false, via: 'inject', agent: injectAgent || '' });
+  const job = { id: state.lastId + 1, session: '', chat: '', text: inject, cwd: '', newSession: false, via: 'inject', agent: injectAgent || '' };
+  if (injectImage) {
+    // The whole file is the screen (no strip to crop): what vision does in game, without the game.
+    let img;
+    try { img = D.readImage(fs.readFileSync(injectImage)); }
+    catch (e) { console.error(`--image: cannot read ${injectImage} (${e.message}); PNG or TGA only.`); process.exit(2); }
+    job.vision = true;
+    attachGameView(img, 0, [job], path.basename(injectImage));
+    if (!job.image) process.exit(2);
+  }
+  submit(job);
 } else {
   pollSavedVariables();
   if (once) {

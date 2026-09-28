@@ -129,6 +129,8 @@ Right-clicking a chat in the left panel opens a small menu with **Rename...**, *
 | `/wow-ai cd <folder>` | folder this chat's agent works in (**Folder...** after right-clicking the chat opens the same thing as a dialog). Relative to the bridge's folder (`/wow-ai cd realms`, `/wow-ai cd ../other`), `~` works, a full path too; `/wow-ai cd` alone goes back to the bridge's default. A chat that changes folder starts a fresh session there |
 | `/wow-ai reset` | wipe this chat's agent memory, keep the transcript |
 | `/wow-ai context [on\|off]` | show what the agent is told about your character and location, or turn it on/off |
+| `/wow-ai vision [on\|off]` | send a picture of your screen with each message, so the agent sees what you see: "what is this item?", "why is this boss killing me?", "read this quest" (off by default; needs the screenshot transport) |
+| `/wow-ai look <question>` | one message with a picture of your screen, whatever the setting (`/ai look what is this?` from the chat box too) |
 | `/wow-ai rename`, `/wow-ai delete`, `/wow-ai clear` | manage the current chat |
 | `/wow-ai echo summary\|full\|short\|off\|<chars>` | how much of each reply to print into the game chat. `summary` (the default) prints only the agent's closing TL;DR lines, the full reply is in the window behind `[open]`; `full` prints up to 4000 chars, `short` one preview line |
 | `/wow-ai longchat on` | let the game chat box take 4000 characters, for long `/ai` messages |
@@ -155,6 +157,10 @@ Along with it, every run gets [docs/WOW-ADDON-PRIMER.md](docs/WOW-ADDON-PRIMER.m
 ### Link items, spells and quests
 
 Click the input box, then **shift-click** an item in your bags, a spell in the spellbook, a quest in the log, or a link in the chat: it lands in your message the way it would in the game chat. When you send, each link becomes `[Name]` in the text and its tooltip (an item's stats, a spell's description) is attached below, so the agent sees what you see when hovering it. This works from the game chat box too (`/ai is this an upgrade? [Fine Longsword]`). Without a box focused, shift-click keeps its normal meaning.
+
+### The agent sees your screen
+
+On the screenshot transport (`capture.mode: "screenshot"`) the game already takes a screenshot of the whole screen for every message you send; the strip is only its top-left corner. `/wow-ai vision on` tells the bridge to keep the rest: it crops the strip's rows off, scales the frame down (1280 pixels wide by default, 1-2 MB as PNG) and attaches it to the agent's message as an image, with a line in the system prompt saying an image of your screen is attached and what it is (only when one is). So "what is this item, should I equip it?", "why does this boss keep killing me?" or "read me this quest text" are answered from what is actually on your screen, tooltips and open windows included. `/wow-ai look <question>` does it for one message with the setting off. Off by default; the window's footer and `/wow-ai diag` show the state. Claude Code gets the pixels inline (an `image` block in a stream-json user message, no tool call); Codex, Grok and Hermes get the PNG's path in `bridge/tmp`, where it is deleted after the run. With it off nothing changes, and the pixel transport never sees more than the strip.
 
 ### Macros, ready to use
 
@@ -205,6 +211,7 @@ The keys you are most likely to touch. Every key, flag and environment variable 
 | `primerFile` | the addon/macro primer appended with the context (default `docs/WOW-ADDON-PRIMER.md`; `""` = none) |
 | `capture.processName` | the game exe without `.exe` (`WowB` for Forever); set by `setup.js` |
 | `capture.mode` | `pixel` (screen capture, default) or `screenshot` (the addon calls `Screenshot()`; the bridge reads the file from the client's `Screenshots` folder) |
+| `vision.maxWidth`, `vision.keep` | screenshot mode: how wide the picture of your screen is scaled to before it goes to the agent (default 1280), and how many may wait in `bridge/tmp` at once (default 6) |
 | `capture.keepComposited`, `capture.windowName` | Linux: keep the compositor drawing the game window (if the probe sees black), or find the window by title |
 | `slots`, `actMax`, `presenceMax` | pool sizes; must match the constants at the top of `WoWAI.lua` if you change them |
 | `timeoutMs` | kill a run that takes longer than this (default 30 min) |

@@ -37,6 +37,7 @@ Codex also checks `CODEX_BIN` before searching `PATH`, so a newer launcher can o
 - **Session:** the `session_id` on the stream; `--resume` on later runs. Claude keeps sessions per folder.
 - **Progress:** one line per `tool_use` block (`edit player.gd`, `$ npm test`, `search: …`) and each text block as a snippet.
 - **Context:** the game context and primer go in as a system prompt, on every run.
+- **Images (vision):** the picture goes in inline. The bridge adds `--input-format stream-json` and the prompt becomes one JSON line, `{"type":"user","message":{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"…"}},{"type":"text","text":"…"}]}}`: an Anthropic `image` content block next to the text, which the model sees with no tool call (verified on Claude Code 2.1.277 with `--tools ""`: it described the frame). Claude keeps a conversation's first system prompt for later resumes, so the text block also starts with a one-line caption saying what the image is. Without an image the prompt stays plain text on stdin, so runs without vision are exactly what they were.
 
 ## Codex
 
@@ -46,6 +47,7 @@ Codex also checks `CODEX_BIN` before searching `PATH`, so a newer launcher can o
 - **Session:** the `thread_id` of the `thread.started` event; later runs use `codex exec … resume <thread_id> -`.
 - **Progress:** `command_execution` → `$ command` (the shell wrapper Codex adds, `/bin/zsh -lc '…'`, is stripped), `file_change` → `edit a.js, b.js` (or `write`/`delete`), `web_search`, `mcp_tool_call` → `tool: server.name`, reasoning summaries as `~ …`, and each `agent_message` as a snippet. The reply is the last `agent_message` of the turn (what `codex exec -o` would write).
 - **Context:** Codex has no system-prompt flag, so the game context and primer ride at the top of the prompt in a block marked as context from the bridge. A new session gets the full block; a resumed one only the short context lines (the primer is already in the thread). Codex also reads `AGENTS.md` in the chat's folder on its own.
+- **Images (vision):** `-i <path>` per image (the PNG in `bridge/tmp`), and the path is named at the end of the prompt too.
 
 ## Grok Build
 

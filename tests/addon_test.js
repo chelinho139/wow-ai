@@ -911,3 +911,74 @@ test('screenshot transport: the strip is drawn at the levels the bridge asked fo
   assert.equal(vm.evaluate('WoWAIStrip.shown'), 'true');
   assert.deepEqual(stripLevels(vm), [0, 255]);
 });
+
+// Vision: a "v" flag on the record asks the bridge to attach the screenshot's
+// game view to the run. Off by default; on per chat, or once with /wow-ai look.
+test('vision: off by default; "vision on" flags every send and resend with v, "look" flags one message, footer and diag show it', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  const chatId = vm.evaluate('WoWAIDB.chats[1].id');
+  const flagsOf = (text) => (stripRecords(vm).find(r => r.text === text) || {}).flags;
+  const reply = (text) => {
+    const id = vm.num('WoWAIDB.chats[1].pendingId');
+    nextSlot(vm, `{ now = time(), cwd = "", replies = { { chat = "${chatId}", id = ${id}, status = "done", text = "${text}", agent = "claude" } } }`);
+    vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+    assert.equal(vm.evaluate('WoWAIDB.chats[1].pendingId'), null);
+  };
+  assert.equal(vm.evaluate('WoWAIDB.settings.vision'), 'false', 'off by default');
+  vm.run('WoWAI.Send("plain")');
+  assert.equal(flagsOf('plain'), '', 'no flag while off');
+  reply('ok');
+  // The footer says so, and so does diag.
+  vm.run('STUB.texts = {}; WoWAI.UpdateStatus()');
+  assert.ok(vm.evaluate('table.concat(STUB.texts, "|")').includes('mode: pixel   vision: off'));
+  vm.run('SlashCmdList.WOWAI("diag")');
+  assert.ok(vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history].text').includes('\nvision: off'));
+
+  // "look" sends that one message with the flag; the setting stays off.
+  vm.run('SlashCmdList.WOWAI("look what is this item?")');
+  assert.equal(flagsOf('what is this item?'), 'v');
+  assert.equal(vm.evaluate('WoWAIDB.settings.vision'), 'false');
+  reply('a sword');
+  vm.run('SlashCmdList.WOWAI("look")');
+  assert.equal(flagsOf('What do you see on my screen?'), 'v', 'a bare look asks the obvious question');
+  reply('grass');
+  // "look at my gear" is the command too (the whole line is the question).
+  vm.run('SlashCmdList.WOWAI("look at my gear")');
+  assert.equal(flagsOf('at my gear'), 'v');
+  reply('fine');
+
+  // On: every send carries it, next to the other flags, and a resend keeps it.
+  vm.run('SlashCmdList.WOWAI("vision on")');
+  assert.equal(vm.evaluate('WoWAIDB.settings.vision'), 'true');
+  let note = vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history].text');
+  assert.ok(note.includes('Vision is ON, but the bridge listens on the pixel transport'), 'told it needs the screenshot transport: ' + note);
+  vm.run('STUB.texts = {}; WoWAI.UpdateStatus()');
+  assert.ok(vm.evaluate('table.concat(STUB.texts, "|")').includes('mode: pixel   vision: on'));
+  vm.run('SlashCmdList.WOWAI("agent codex")');
+  vm.run('WoWAI.Send("with the picture")');
+  assert.equal(flagsOf('with the picture'), 'agent=codex;v');
+  vm.run('WoWAI.Resend()');
+  assert.equal(flagsOf('with the picture'), 'agent=codex;v', 'a resend asks again (it is a fresh screenshot)');
+  reply('seen');
+  vm.run('SlashCmdList.WOWAI("agent default")');
+  vm.run('SlashCmdList.WOWAI("diag")');
+  assert.ok(vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history].text').includes('\nvision: on (needs the screenshot transport'));
+  // On a screenshot-mode bridge the status is the happy one.
+  nextSlot(vm, '{ now = time(), cwd = "", transport = "screenshot", replies = {} }');
+  vm.run('WoWAI.Connect(); STUB.now = STUB.now + 6; STUB.Tick()');
+  vm.run('SlashCmdList.WOWAI("vision")');
+  note = vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history].text');
+  assert.ok(note.startsWith('Vision is ON: each message goes out with a picture of your screen'), note);
+  vm.run('WoWAI.Send("dark one")');
+  assert.equal(flagsOf('dark one'), 'v');
+  vm.run('STUB.FireEvent("SCREENSHOT_SUCCEEDED")');
+  reply('yes');
+  // Off again: no flag, and the setting survives a reload (it is in the saved data).
+  vm.run('SlashCmdList.WOWAI("vision off")');
+  assert.equal(vm.evaluate('WoWAIDB.settings.vision'), 'false');
+  vm.run('WoWAI.Send("no picture")');
+  assert.equal(flagsOf('no picture'), '');
+  vm.run('STUB.FireEvent("SCREENSHOT_SUCCEEDED")');
+});
