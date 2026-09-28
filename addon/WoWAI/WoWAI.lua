@@ -6,6 +6,9 @@
 --   OUT ("pixel" mode): pending messages are drawn as a strip of colored squares in
 --        the top-left corner of the screen until the bridge acknowledges them.
 --        bridge.js screen-captures that corner and decodes it. Nothing touches the game.
+--        When the bridge says it listens on the "screenshot" transport instead, the
+--        strip is only up for the two frames around a Screenshot() call and the
+--        bridge reads the file the client wrote to its Screenshots folder.
 --   IN:  load-on-demand addons read their files from disk at the moment they load.
 --        The bridge writes the latest replies for every chat into a pool of pre-made
 --        slot addons (WoWAI_S001..S200); we load a fresh slot from a timer.
@@ -32,6 +35,9 @@ local PRESENCE_MAX = 2000 -- presence/0001..2000.wav, one flipped by the bridge 
 local STRIP_TRIES = 3 -- re-show an unacknowledged message this many times before falling back
 local CELL, CELLS_PER_ROW, MAX_ROWS = 4, 200, 48
 local STRIP_SECONDS = 40 -- max per message; it leaves the strip as soon as the bridge acknowledges
+local SHOT_FRAMES = 2 -- screenshot transport: frames the strip is drawn before Screenshot() is called
+local SHOT_TIMEOUT = 3 -- seconds to wait for SCREENSHOT_SUCCEEDED/FAILED before hiding the strip anyway
+local SHOT_RETRIES = 3 -- failed screenshots per message before the normal 40 s retry takes over
 local POLL_SCHEDULE = { 5, 10, 16, 24, 34, 46, 60, 80, 100, 130, 160, 200, 240, 300 }
 local POLL_TAIL = 60
 local TICK_SECONDS = 2
@@ -381,26 +387,172 @@ local function RecordFor(id, rec)
 	return table.concat(fields, US)
 end
 
+---------------------------------------------------------------------------
+-- Screenshot transport
+---------------------------------------------------------------------------
+--
+-- The bridge names its outbound transport in every slot file (`transport`). On
+-- "screenshot" it doesn't watch the screen: we draw the strip, wait SHOT_FRAMES
+-- frames so it is really rendered, call Screenshot(), and hide the strip when
+-- the client reports SCREENSHOT_SUCCEEDED / SCREENSHOT_FAILED (or after
+-- SHOT_TIMEOUT). The bridge decodes the file from the Screenshots folder and
+-- deletes it. Each outbound record is shot once (`rec.shot`); the 40 s retry in
+-- Tick clears the flag so an unacknowledged message is shot again. The last
+-- transport heard is kept in the saved settings, so the login hello already
+-- goes out the right way.
+
+local function ScreenshotMode()
+	return db ~= nil and db.settings.mode == "pixel" and db.settings.transport == "screenshot" and type(Screenshot) == "function"
+end
+
+local function ShotStats()
+	run.shotStats = run.shotStats or { taken = 0, ok = 0, failed = 0, timeouts = 0 }
+	return run.shotStats
+end
+
+-- The client writes screenshots as JPEG by default, which is lossy; the
+-- transport needs PNG (or TGA). The player's own setting is kept in the saved
+-- settings until we leave the mode (or log out), so a /reload in between can't
+-- lose it and a crash is repaired at the next login.
+local function ScreenshotCVarsOn()
+	if type(SetCVar) ~= "function" or type(GetCVar) ~= "function" then return end
+	if db.settings.shotFormatSaved == nil then
+		db.settings.shotFormatSaved = tostring(GetCVar("screenshotFormat") or "jpeg")
+	end
+	if GetCVar("screenshotFormat") == "png" then return end
+	local ok = pcall(SetCVar, "screenshotFormat", "png")
+	if not ok or GetCVar("screenshotFormat") ~= "png" then pcall(SetCVar, "screenshotFormat", "tga") end
+end
+
+local function ScreenshotCVarsOff()
+	local saved = db.settings.shotFormatSaved
+	if saved == nil then return end
+	db.settings.shotFormatSaved = nil
+	if type(SetCVar) == "function" then pcall(SetCVar, "screenshotFormat", saved) end
+end
+
+local function SyncScreenshotMode()
+	if ScreenshotMode() then ScreenshotCVarsOn() else ScreenshotCVarsOff() end
+end
+
+local RefreshStrip -- below; ScreenshotDone re-runs it for records that arrived mid-shot
+
+-- ok = true (SCREENSHOT_SUCCEEDED), false (SCREENSHOT_FAILED or the call raised),
+-- nil (no event within SHOT_TIMEOUT: the file may or may not exist).
+local function ScreenshotDone(ok)
+	local shot = run.shot
+	if not shot then return end
+	run.shot = nil
+	HideStrip()
+	local stats = ShotStats()
+	if ok == true then stats.ok = stats.ok + 1
+	elseif ok == false then stats.failed = stats.failed + 1
+	else stats.timeouts = stats.timeouts + 1 end
+	if ok == false then
+		for _, rec in pairs(run.outbound) do
+			if rec.shot == shot.gen then
+				rec.shotFails = (rec.shotFails or 0) + 1
+				if rec.shotFails < SHOT_RETRIES then rec.shot = nil end
+			end
+		end
+	end
+	-- Whatever is still unshot (arrived mid-shot, or just failed) goes next; in
+	-- pixel mode this puts the strip back up.
+	RefreshStrip()
+end
+
+local function TakeScreenshot()
+	local s = EnsureStrip()
+	run.shotGen = (run.shotGen or 0) + 1
+	local gen = run.shotGen
+	run.shot = { gen = gen, frames = 0, fired = false }
+	-- OnUpdate only runs while the strip is shown, which is exactly when the
+	-- frames are being rendered with it.
+	s:SetScript("OnUpdate", function(self)
+		local shot = run.shot
+		if not shot or shot.gen ~= gen then
+			self:SetScript("OnUpdate", nil)
+			return
+		end
+		shot.frames = shot.frames + 1
+		if shot.frames < SHOT_FRAMES then return end
+		self:SetScript("OnUpdate", nil)
+		shot.fired = true
+		ShotStats().taken = ShotStats().taken + 1
+		local ok, err = pcall(Screenshot)
+		if not ok then
+			shot.err = tostring(err)
+			ScreenshotDone(false)
+			return
+		end
+		C_Timer.After(SHOT_TIMEOUT, function()
+			if run.shot and run.shot.gen == gen then ScreenshotDone(nil) end
+		end)
+	end)
+	return gen
+end
+
 -- Redraw the strip from every outbound message the bridge hasn't acknowledged.
-local function RefreshStrip()
+RefreshStrip = function()
 	local ids = {}
 	for id, rec in pairs(run.outbound) do
 		if not rec.acked then table.insert(ids, id) end
 	end
 	if #ids == 0 then
-		HideStrip()
+		-- Nothing left to send. A shot still counting frames is called off; one
+		-- the client is already writing keeps the strip until its event.
+		if run.shot and not run.shot.fired then run.shot = nil end
+		if not run.shot then HideStrip() end
 		return
 	end
 	table.sort(ids)
 	-- Newest first; drop the oldest if the frame would overflow.
-	local parts, size, latest = {}, 0, ids[#ids]
+	local parts, size, latest, included = {}, 0, ids[#ids], {}
 	for i = #ids, 1, -1 do
-		local r = RecordFor(ids[i], run.outbound[ids[i]])
+		local rec = run.outbound[ids[i]]
+		local r = RecordFor(ids[i], rec)
 		if size + #r + 1 > Codec.MAX_PAYLOAD then break end
 		table.insert(parts, 1, r)
+		table.insert(included, rec)
 		size = size + #r + 1
 	end
+	if not ScreenshotMode() then
+		-- A shot still counting frames (the transport just changed) is called off.
+		if run.shot and not run.shot.fired then run.shot = nil end
+		ShowStrip(latest, table.concat(parts, RS))
+		return
+	end
+	-- Screenshot transport: only records not yet shot put the strip up.
+	local unshot = false
+	for _, rec in ipairs(included) do
+		if not rec.shot then unshot = true end
+	end
+	if not unshot then
+		if not run.shot then HideStrip() end
+		return
+	end
+	if run.shot and run.shot.fired then
+		-- The client is writing a shot of the previous strip; ScreenshotDone takes
+		-- another for the records still unshot.
+		return
+	end
 	ShowStrip(latest, table.concat(parts, RS))
+	local gen = TakeScreenshot()
+	for _, rec in ipairs(included) do rec.shot = gen end
+end
+
+-- The bridge's slot files and Inbox.lua say which transport it listens on.
+local function ApplyTransport(data)
+	if type(data) ~= "table" or type(data.transport) ~= "string" then return end
+	local t = data.transport
+	if t ~= "pixel" and t ~= "screenshot" then return end
+	if db.settings.transport == t then return end
+	db.settings.transport = t
+	SyncScreenshotMode()
+	-- Whatever is still unacknowledged goes out again the new way.
+	for _, rec in pairs(run.outbound) do rec.shot = nil end
+	RefreshStrip()
+	WoWAI.UpdateStatus()
 end
 
 ---------------------------------------------------------------------------
@@ -793,6 +945,7 @@ local function TryLoadSlot(why)
 	if type(data) == "table" then
 		if type(data.agent) == "string" and data.agent ~= "" then run.bridgeAgent = data.agent end
 		if type(data.agents) == "table" and #data.agents > 0 then run.bridgeAgents = data.agents end
+		ApplyTransport(data)
 	end
 	local matched = ApplyReplies(type(data) == "table" and data.replies or nil)
 	if type(data) == "table" and data.restore then ImportRestore(data.restore) end
@@ -840,8 +993,9 @@ local function Tick()
 		end
 		-- A hello only needs the bridge to have been seen; it never escalates.
 		-- A forget is the same, but the bridge must have been seen a moment after
-		-- the record went up, so it had a chance to read it.
-		if (rec.hello or rec.forget) and not rec.acked and run.bridgeSeen and run.bridgeSeen >= rec.sentAt + (rec.forget and 2 or 0) then
+		-- the record went up, so it had a chance to read it. That holds for a strip
+		-- that stays up; on the screenshot transport only the ack file says it was read.
+		if (rec.hello or rec.forget) and not rec.acked and not ScreenshotMode() and run.bridgeSeen and run.bridgeSeen >= rec.sentAt + (rec.forget and 2 or 0) then
 			NoteAcked(rec)
 			changed = true
 		end
@@ -855,8 +1009,9 @@ local function Tick()
 		elseif now - rec.sentAt >= STRIP_SECONDS then
 			rec.tries = (rec.tries or 1) + 1
 			if rec.tries <= STRIP_TRIES then
-				-- Nobody picked it up: show it again.
+				-- Nobody picked it up: show it again (a new screenshot in that mode).
 				rec.sentAt = now
+				rec.shot = nil
 				changed = true
 			elseif rec.forget then
 				-- The bridge is away; db.forget keeps it for the next hello.
@@ -899,6 +1054,7 @@ local function ProcessInbox()
 	if type(inbox.cwd) == "string" and inbox.cwd ~= "" then run.bridgeCwd = inbox.cwd end
 	if type(inbox.agent) == "string" and inbox.agent ~= "" then run.bridgeAgent = inbox.agent end
 	if type(inbox.agents) == "table" and #inbox.agents > 0 then run.bridgeAgents = inbox.agents end
+	ApplyTransport(inbox)
 	ApplyReplies(inbox.replies)
 	if inbox.restore then ImportRestore(inbox.restore) end
 	if inbox.map and WoWAIMap then WoWAIMap.Sync(inbox.map) end
@@ -1851,7 +2007,7 @@ function WoWAI.UpdateStatus()
 	else
 		agentText = "(bridge default)"
 	end
-	ui.cwd:SetText("cwd: " .. cwdText .. "   agent: " .. agentText .. "   mode: " .. mode)
+	ui.cwd:SetText("cwd: " .. cwdText .. "   agent: " .. agentText .. "   mode: " .. mode .. (ScreenshotMode() and " (screenshot)" or ""))
 	if ui.resend then ui.resend:SetShown(c and c.pendingId ~= nil and mode == "pixel") end
 	if ui.refresh then ui.refresh:SetShown(mode ~= "pixel" or run.slotsExhausted or run.slotsMissing or run.pixelFailed or false) end
 	WoWAI.UpdateMini()
@@ -2971,6 +3127,7 @@ SlashCmdList["WOWAI"] = function(msg)
 	elseif cmd == "mode" then
 		if rest == "pixel" or rest == "reload" then
 			s.mode = rest
+			SyncScreenshotMode()
 			AddHistory(c, "system", "mode set to " .. rest)
 		else
 			AddHistory(c, "system", "mode is " .. s.mode .. " (pixel or reload)")
@@ -3051,6 +3208,9 @@ SlashCmdList["WOWAI"] = function(msg)
 			"presence: head at " .. tostring(run.presence and run.presence.last or "?") .. ", beats seen: " .. tostring(run.presence and run.presence.beats or 0),
 			select(5, WoWAI.BridgeState()),
 			"mode: " .. s.mode .. ", session token: " .. tostring(db.session),
+			"transport: " .. tostring(s.transport or "pixel") .. (s.transport == "screenshot" and type(Screenshot) ~= "function" and " (Screenshot() missing: strip stays up)" or "")
+				.. (run.shotStats and string.format(", screenshots: %d taken, %d confirmed, %d failed, %d without event", run.shotStats.taken, run.shotStats.ok, run.shotStats.failed, run.shotStats.timeouts) or "")
+				.. (s.shotFormatSaved and (", screenshotFormat saved: " .. s.shotFormatSaved) or ""),
 		}
 		for _, ch in ipairs(db.chats) do
 			local a = run.act and run.act[ch.id]
@@ -3093,11 +3253,21 @@ ev:RegisterEvent("PLAYER_REGEN_ENABLED")
 ev:RegisterEvent("UPDATE_MACROS")
 ev:RegisterEvent("CHAT_MSG_WHISPER")
 ev:RegisterEvent("CHAT_MSG_BN_WHISPER")
+ev:RegisterEvent("SCREENSHOT_SUCCEEDED")
+ev:RegisterEvent("SCREENSHOT_FAILED")
+ev:RegisterEvent("PLAYER_LOGOUT")
 ev:SetScript("OnEvent", function(self, event, arg1)
 	if event == "ADDON_LOADED" then
 		if arg1 == ADDON_NAME then
 			InitDB()
 		end
+	elseif event == "SCREENSHOT_SUCCEEDED" then
+		ScreenshotDone(true)
+	elseif event == "SCREENSHOT_FAILED" then
+		ScreenshotDone(false)
+	elseif event == "PLAYER_LOGOUT" then
+		-- The player's screenshot format goes back before the client saves its CVars.
+		if db then ScreenshotCVarsOff() end
 	elseif event == "CHAT_MSG_WHISPER" or event == "CHAT_MSG_BN_WHISPER" then
 		-- A real person whispered: /r belongs to them again.
 		run.lastMessenger = "player"
@@ -3107,6 +3277,7 @@ ev:SetScript("OnEvent", function(self, event, arg1)
 		run = { outbound = {} }
 		SelfTestSignals()
 		ProcessInbox()
+		SyncScreenshotMode()
 		if AnyPending() then
 			-- Still waiting after a reload: resume polling with a fresh slot pool.
 			run.sentAt = GetTime()

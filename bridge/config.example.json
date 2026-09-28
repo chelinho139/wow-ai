@@ -11,6 +11,7 @@
   "maxParallel": 3,
   "capture": {
     "enabled": true,
+    "mode": "pixel",
     "processName": "WowB",
     "cellPx": 4,
     "cellsPerRow": 200,

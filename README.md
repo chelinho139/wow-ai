@@ -89,7 +89,7 @@ The bridge captures the game window through X11 (`bridge/capture_x11.py`, no pac
 
 Same commands as Linux: `node setup.js --project <dir>` (it looks for the client under `/Applications/World of Warcraft` and `~/Applications/World of Warcraft`; pass `--wow "<client folder>"` otherwise), then `npm start`. The bridge captures the game window with `bridge/capture_mac.py`, which needs only python3: it finds the window through System Events and grabs its top-left corner in-process through CoreGraphics (falling back to the built-in `screencapture` when that is unavailable). It needs two permissions in System Settings for the terminal the bridge runs in: **Automation** (System Events) and **Screen & System Audio Recording**. macOS does not always prompt for them — a missing Screen Recording permission just makes the capture fail, so the bridge sees nothing and no message ever arrives. `setup.js` checks both and names whichever is missing; `npm run check:mac` re-runs that check on its own, and `npm run probe:mac` saves what the capture sees to `bridge/probe.png` and says whether it decoded the strip. Grant a permission, then quit and reopen the terminal: it only applies to a fresh launch.
 
-The strip decoder reads one image pixel per addon pixel, so the game window must be on a display that reports one device pixel per point. On a Retina display the capture comes back doubled and never decodes; `npm run check:mac` reports the scale it measured.
+The strip decoder reads one image pixel per addon pixel, so the game window must be on a display that reports one device pixel per point. On a Retina display the capture comes back doubled and never decodes; `npm run check:mac` reports the scale it measured. The alternative is `"mode": "screenshot"` under `capture` in `bridge/config.json`: no screen capture and no permissions; the addon takes a screenshot with the strip up and the bridge reads the file from the client's `Screenshots` folder (see [docs/CONFIGURATION.md](docs/CONFIGURATION.md)).
 
 ### Upgrading from wow-claude
 
@@ -204,6 +204,7 @@ The keys you are most likely to touch. Every key, flag and environment variable 
 | `gameContext` | `false` never tells the agent about your character, whatever the addon sends (default `true`) |
 | `primerFile` | the addon/macro primer appended with the context (default `docs/WOW-ADDON-PRIMER.md`; `""` = none) |
 | `capture.processName` | the game exe without `.exe` (`WowB` for Forever); set by `setup.js` |
+| `capture.mode` | `pixel` (screen capture, default) or `screenshot` (the addon calls `Screenshot()`; the bridge reads the file from the client's `Screenshots` folder) |
 | `capture.keepComposited`, `capture.windowName` | Linux: keep the compositor drawing the game window (if the probe sees black), or find the window by title |
 | `slots`, `actMax`, `presenceMax` | pool sizes; must match the constants at the top of `WoWAI.lua` if you change them |
 | `timeoutMs` | kill a run that takes longer than this (default 30 min) |

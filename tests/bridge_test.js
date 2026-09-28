@@ -196,3 +196,15 @@ test('slotNumber wraps and SILENT_WAV is a valid RIFF header', () => {
   assert.equal(P.sessKey({ session: 's', chat: 'c' }), 'chat:c');
   assert.equal(P.sessKey({ session: 's', chat: '' }), 's:default');
 });
+
+test('slot files name the outbound transport the bridge listens on, pixel unless told otherwise', () => {
+  assert.equal(P.transportName(undefined), 'pixel');
+  assert.equal(P.transportName('Screenshot'), 'screenshot');
+  assert.equal(P.transportName('bogus'), '', 'an unknown mode is refused, not silently pixel');
+  assert.deepEqual(P.TRANSPORTS, ['pixel', 'screenshot']);
+  const plain = P.luaTable('WoWAI_SlotData', []);
+  assert.ok(plain.includes('\ttransport = "pixel",'), plain);
+  const shot = P.luaTable('WoWAI_SlotData', [], { transport: 'screenshot' });
+  assert.ok(shot.includes('\ttransport = "screenshot",'), shot);
+  assert.ok(P.luaTable('WoWAI_Inbox', [], { transport: 'nope' }).includes('\ttransport = "pixel",'), 'garbage falls back to pixel in the file');
+});

@@ -51,7 +51,9 @@ Keys under `capture`:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `enabled` | `true` | Run `capture.ps1` (Windows), `capture_mac.py` (macOS) or `capture_x11.py` (Linux). With `false` only the reload path works (`/wow-ai mode reload` in game). |
+| `enabled` | `true` | Run the outbound transport below. With `false` only the reload path works (`/wow-ai mode reload` in game). |
+| `mode` | `"pixel"` | Outbound transport. `pixel`: `capture.ps1` (Windows), `capture_mac.py` (macOS) or `capture_x11.py` (Linux) screen-captures the strip four times a second. `screenshot`: no screen capture; the addon calls `Screenshot()` with the strip up for two frames and the bridge decodes the PNG/TGA the client writes to its `Screenshots` folder, then deletes it (files without a strip, i.e. your own screenshots, are left alone). The bridge names the mode in every slot file and the addon follows it; while it is on, the addon sets `screenshotFormat` to `png` and restores your value when it leaves the mode or you log out. |
+| `screenshotDir` | *(derived)* | `screenshot` mode: the client's `Screenshots` folder. Derived from `addonDir` (`<client>/Interface/AddOns` -> `<client>/Screenshots`) unless set. |
 | `processName` | `"WowB"` | The game executable without `.exe`. `setup.js` sets it from the `Wow*.exe` it finds in the client folder (on macOS, from the binary inside the `.app` bundle). |
 | `cellPx` | `4` | Pixel size of one strip cell. Must match `CELL` in `addon/WoWAI/Codec.lua`. |
 | `cellsPerRow` | `200` | Cells per strip row. Must match the addon. |
@@ -61,7 +63,7 @@ Keys under `capture`:
 | `windowName` | `""` | Linux and macOS: find the game window by title substring instead of by process name (on Linux, by WM_CLASS `<processName>.exe`). |
 | `keepComposited` | `false` | Linux: set `_NET_WM_BYPASS_COMPOSITOR=2` on the game window so the compositor keeps drawing it. Try it if `npm run probe` sees a black or stale strip in borderless fullscreen. |
 
-The capture region is `cellsPerRow × cellPx` by `maxRows × cellPx` pixels (800 × 192 by default) at the top-left of the game's client area.
+The capture region is `cellsPerRow × cellPx` by `maxRows × cellPx` pixels (800 × 192 by default) at the top-left of the game's client area. In `screenshot` mode the same cells are read from the top-left of the screenshot, which is the rendered frame, so it works on any display (a Retina display, where the screen capture cannot read the strip, included).
 
 ## Slot pool and signal files
 

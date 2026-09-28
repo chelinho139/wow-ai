@@ -170,6 +170,17 @@ function PlaySound() end
 function PlaySoundFile(path) if STUB.sounds[path] then return true, 1 end return false end
 function StopSound() end
 function GetPhysicalScreenSize() return 1920, 1080 end
+-- CVars and screenshots, for the screenshot transport. STUB.screenshots counts
+-- Screenshot() calls; the addon hears SCREENSHOT_SUCCEEDED/FAILED from the test.
+STUB.cvars = { screenshotFormat = "jpeg", screenshotQuality = "3" }
+STUB.screenshots = 0
+function GetCVar(name) return STUB.cvars[name] end
+function SetCVar(name, value)
+	if name == "screenshotFormat" and not (value == "png" or value == "tga" or value == "jpeg") then error("invalid value") end
+	STUB.cvars[name] = tostring(value)
+	return true
+end
+function Screenshot() STUB.screenshots = STUB.screenshots + 1 end
 function SetBinding(key, cmd) STUB.bindings[key] = cmd end
 function SaveBindings() end
 function GetCurrentBindingSet() return 1 end

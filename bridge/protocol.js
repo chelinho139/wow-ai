@@ -301,8 +301,16 @@ function luaStr(s) {
 }
 
 // The slot file / Inbox.lua body: the latest record of every chat, the bridge's
-// clock, default folder and default agent (plus the agents it knows), and
+// clock, default folder and default agent (plus the agents it knows), the
+// outbound transport it listens on ("pixel": it screen-captures the strip;
+// "screenshot": the addon must call Screenshot() with the strip up), and
 // (right after a saved-data reset) a restore bundle.
+const TRANSPORTS = ['pixel', 'screenshot'];
+function transportName(v) {
+  const t = String(v || 'pixel').toLowerCase();
+  return TRANSPORTS.includes(t) ? t : '';
+}
+
 function luaTable(globalName, records, opts = {}) {
   const now = opts.now || Date.now();
   const agents = Array.isArray(opts.agents) ? opts.agents : [];
@@ -314,6 +322,7 @@ function luaTable(globalName, records, opts = {}) {
     `\tcwd = ${luaStr(opts.cwd || '')},`,
     `\tagent = ${luaStr(opts.agent || '')},`,
     `\tagents = { ${agents.map(luaStr).join(', ')} },`,
+    `\ttransport = ${luaStr(transportName(opts.transport) || 'pixel')},`,
     '\treplies = {',
   ];
   for (const r of records) {
@@ -551,7 +560,7 @@ module.exports = {
   resolveCwd, sameFolder, baseName,
   parseFlags, jobsFromStrip, parseOutbox, systemPrompt, splitSummary,
   ruleFor, describeToolUse,
-  luaStr, luaTable, SILENT_WAV,
+  luaStr, luaTable, SILENT_WAV, TRANSPORTS, transportName,
   MAP_LIMITS, validateMapCommand, newMap, applyMapCommands, extractMapBlocks, parseMapFile, luaMap,
   MACRO_LIMITS, extractMacros, stripMacroBlocks, luaMacros,
 };

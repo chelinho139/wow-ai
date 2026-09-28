@@ -715,3 +715,149 @@ test('reload mode writes the outbox for the bridge instead of drawing the strip'
   assert.equal(Buffer.from(vm.evaluate('WoWAIDB.outbox.allow'), 'hex').toString('utf8'), 'WebSearch\x1fBash(git:*)');
   assert.equal(decodeStrip(vm), null);
 });
+
+// The screenshot transport: the bridge's slot says `transport = "screenshot"`,
+// and from then on the strip is only up for the frames around a Screenshot()
+// call. Drives the strip's OnUpdate by hand (the stub renders nothing).
+function frames(vm, n) {
+  for (let i = 0; i < n; i++) vm.run('local f = WoWAIStrip; if f.shown and f.scripts.OnUpdate then f.scripts.OnUpdate(f, 0.016) end');
+}
+
+test('screenshot transport: the strip is shot once per message, hidden on the event, and the format CVar is restored', () => {
+  const vm = newVM();
+  vm.run('STUB.sounds["Interface\\\\AddOns\\\\WoWAI\\\\ctl\\\\valid.wav"] = true'); // the sound channel works: acks arrive as files
+  login(vm);
+  vm.run('STUB.RunTimers()'); // SayHello: not knowing better, the hello goes up pixel-style
+  assert.equal(vm.evaluate('WoWAIStrip.shown'), 'true');
+  assert.equal(vm.num('STUB.screenshots'), 0);
+  // The hello poll reads a slot from a screenshot-mode bridge.
+  nextSlot(vm, '{ now = time(), cwd = "", transport = "screenshot", replies = {} }');
+  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+  assert.equal(vm.evaluate('WoWAIDB.settings.transport'), 'screenshot', 'remembered for the next login');
+  assert.equal(vm.evaluate('STUB.cvars.screenshotFormat'), 'png', 'lossless format while the mode is on');
+  assert.equal(vm.evaluate('WoWAIDB.settings.shotFormatSaved'), 'jpeg', 'the player\'s own format is kept');
+  // The unacknowledged hello is shot now: strip up, two frames, Screenshot().
+  assert.equal(vm.evaluate('WoWAIStrip.shown'), 'true');
+  frames(vm, 1);
+  assert.equal(vm.num('STUB.screenshots'), 0, 'not before the strip had a frame to render');
+  frames(vm, 1);
+  assert.equal(vm.num('STUB.screenshots'), 1);
+  assert.equal(vm.evaluate('WoWAIStrip.shown'), 'true', 'still up until the client confirms');
+  assert.equal(stripRecords(vm)[0].flags, 'h;c');
+  vm.run('STUB.FireEvent("SCREENSHOT_SUCCEEDED")');
+  assert.equal(vm.evaluate('WoWAIStrip.shown'), 'false', 'hidden as soon as the shot is confirmed');
+  assert.equal(vm.evaluate('WoWAIStrip.scripts.OnUpdate'), null, 'no OnUpdate left running');
+  // A message: one more shot, carrying the hello (still unacked) and the message.
+  vm.run('WoWAI.Send("hello world")');
+  assert.equal(vm.evaluate('WoWAIStrip.shown'), 'true');
+  frames(vm, 2);
+  assert.equal(vm.num('STUB.screenshots'), 2);
+  const recs = stripRecords(vm);
+  assert.ok(recs.find(r => r.text === 'hello world'));
+  assert.ok(recs.find(r => r.flags === 'h;c'));
+  vm.run('STUB.FireEvent("SCREENSHOT_SUCCEEDED")');
+  assert.equal(vm.evaluate('WoWAIStrip.shown'), 'false');
+  // Ticks without news take no more screenshots; an ack changes nothing on screen either.
+  vm.run('STUB.now = STUB.now + 2; STUB.Tick(); STUB.now = STUB.now + 2; STUB.Tick()');
+  frames(vm, 3);
+  assert.equal(vm.num('STUB.screenshots'), 2);
+  assert.equal(vm.evaluate('WoWAIStrip.shown'), 'false');
+  const id = vm.num('WoWAIDB.chats[1].pendingId');
+  vm.run(`STUB.sounds["Interface\\\\AddOns\\\\WoWAI\\\\ack\\\\${String(id).padStart(3, '0')}.wav"] = true; STUB.now = STUB.now + 2; STUB.Tick()`);
+  frames(vm, 3);
+  assert.equal(vm.num('STUB.screenshots'), 2);
+  assert.equal(vm.evaluate('WoWAIStrip.shown'), 'false');
+  // A player's own screenshot event with nothing in flight is ignored.
+  vm.run('STUB.FireEvent("SCREENSHOT_SUCCEEDED")');
+  assert.equal(vm.num('STUB.screenshots'), 2);
+  // A second chat's message that the bridge never acks: the 40 s retry shoots it
+  // again (the hello has expired by then and is not on that strip).
+  vm.run('WoWAI.NewChat("Two"); WoWAI.Send("lost one")');
+  frames(vm, 2);
+  assert.equal(vm.num('STUB.screenshots'), 3);
+  vm.run('STUB.FireEvent("SCREENSHOT_SUCCEEDED")');
+  vm.run('STUB.now = STUB.now + 41; STUB.Tick()');
+  assert.equal(vm.evaluate('WoWAIStrip.shown'), 'true', 'retry puts the strip up again');
+  frames(vm, 2);
+  assert.equal(vm.num('STUB.screenshots'), 4);
+  assert.deepEqual(stripRecords(vm).map(r => r.text), ['lost one']);
+  vm.run('STUB.FireEvent("SCREENSHOT_SUCCEEDED")');
+  // The status line says which transport is in use; diag counts the shots.
+  vm.run('STUB.texts = {}; WoWAI.UpdateStatus()');
+  assert.ok(vm.evaluate('table.concat(STUB.texts, "|")').includes('mode: pixel (screenshot)'));
+  vm.run('SlashCmdList.WOWAI("diag")');
+  const diag = vm.evaluate('WoWAIDB.chats[2].history[#WoWAIDB.chats[2].history].text');
+  assert.ok(diag.includes('transport: screenshot, screenshots: 4 taken, 4 confirmed, 0 failed, 0 without event'), diag);
+  // Back to a pixel-mode bridge: the CVar goes back and the strip stays up pixel-style.
+  nextSlot(vm, '{ now = time(), cwd = "", transport = "pixel", replies = {} }');
+  vm.run('WoWAI.Connect(); STUB.now = STUB.now + 6; STUB.Tick()');
+  assert.equal(vm.evaluate('WoWAIDB.settings.transport'), 'pixel');
+  assert.equal(vm.evaluate('STUB.cvars.screenshotFormat'), 'jpeg', 'restored');
+  assert.equal(vm.evaluate('WoWAIDB.settings.shotFormatSaved'), null);
+  assert.equal(vm.evaluate('WoWAIStrip.shown'), 'true', 'pixel mode: the strip stays up until acked');
+  frames(vm, 3);
+  assert.equal(vm.num('STUB.screenshots'), 4, 'no screenshots in pixel mode');
+});
+
+test('screenshot transport: a failed shot is retried a few times, a missing event times out, logout restores the CVar', () => {
+  const vm = newVM();
+  login(vm);
+  vm.run('STUB.RunTimers()'); // SayHello
+  nextSlot(vm, '{ now = time(), cwd = "", transport = "screenshot", replies = {} }');
+  vm.run('STUB.now = STUB.now + 6; STUB.Tick()'); // the hello poll learns the transport
+  assert.equal(vm.evaluate('WoWAI.IsConnected()'), 'true');
+  frames(vm, 2); // the hello's shot
+  vm.run('STUB.FireEvent("SCREENSHOT_SUCCEEDED")');
+  assert.equal(vm.num('STUB.screenshots'), 1);
+  vm.run('WoWAI.Send("try me")');
+  frames(vm, 2);
+  assert.equal(vm.num('STUB.screenshots'), 2);
+  vm.run('STUB.FireEvent("SCREENSHOT_FAILED")');
+  assert.equal(vm.evaluate('WoWAIStrip.shown'), 'true', 'a failure puts it straight up again');
+  frames(vm, 2);
+  assert.equal(vm.num('STUB.screenshots'), 3);
+  vm.run('STUB.FireEvent("SCREENSHOT_FAILED")');
+  frames(vm, 2);
+  assert.equal(vm.num('STUB.screenshots'), 4);
+  vm.run('STUB.FireEvent("SCREENSHOT_FAILED")');
+  assert.equal(vm.evaluate('WoWAIStrip.shown'), 'false', 'after SHOT_RETRIES failures it waits for the normal retry');
+  frames(vm, 2);
+  assert.equal(vm.num('STUB.screenshots'), 4);
+  // No event at all: the timeout hides the strip and counts it.
+  vm.run('STUB.timers = {}; WoWAI.NewChat("Two"); WoWAI.Send("quiet")');
+  frames(vm, 2);
+  assert.equal(vm.num('STUB.screenshots'), 5);
+  assert.equal(vm.evaluate('WoWAIStrip.shown'), 'true');
+  vm.run('STUB.RunTimers()'); // the SHOT_TIMEOUT timer
+  assert.equal(vm.evaluate('WoWAIStrip.shown'), 'false');
+  vm.run('SlashCmdList.WOWAI("diag")');
+  const diag = vm.evaluate('WoWAIDB.chats[2].history[#WoWAIDB.chats[2].history].text');
+  assert.ok(diag.includes('5 taken, 1 confirmed, 3 failed, 1 without event'), diag);
+  // Logging out restores the format; the mode itself is remembered.
+  assert.equal(vm.evaluate('STUB.cvars.screenshotFormat'), 'png');
+  vm.run('STUB.FireEvent("PLAYER_LOGOUT")');
+  assert.equal(vm.evaluate('STUB.cvars.screenshotFormat'), 'jpeg');
+  assert.equal(vm.evaluate('WoWAIDB.settings.transport'), 'screenshot');
+});
+
+test('screenshot transport: a remembered mode shoots the login hello, and a /reload never loses the saved format', () => {
+  const vm = newVM();
+  // Saved data from a previous session that ended mid-mode (a /reload): the
+  // CVar is already png and the original is on record.
+  vm.run('WoWAIDB = { settings = { transport = "screenshot", shotFormatSaved = "tga" } }; STUB.cvars.screenshotFormat = "png"');
+  login(vm);
+  assert.equal(vm.evaluate('WoWAIDB.settings.shotFormatSaved'), 'tga', 'the original is not overwritten with our own png');
+  vm.run('STUB.RunTimers()'); // SayHello
+  assert.equal(vm.evaluate('WoWAIStrip.shown'), 'true');
+  frames(vm, 2);
+  assert.equal(vm.num('STUB.screenshots'), 1, 'the hello is shot without waiting for a slot');
+  vm.run('STUB.FireEvent("SCREENSHOT_SUCCEEDED")');
+  assert.equal(vm.evaluate('WoWAIStrip.shown'), 'false');
+  // Switching to the reload transport in game gives the CVar back too.
+  vm.run('SlashCmdList.WOWAI("mode reload")');
+  assert.equal(vm.evaluate('STUB.cvars.screenshotFormat'), 'tga');
+  assert.equal(vm.evaluate('WoWAIDB.settings.shotFormatSaved'), null);
+  vm.run('SlashCmdList.WOWAI("mode pixel")');
+  assert.equal(vm.evaluate('STUB.cvars.screenshotFormat'), 'png');
+  assert.equal(vm.evaluate('WoWAIDB.settings.shotFormatSaved'), 'tga');
+});

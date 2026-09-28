@@ -3,7 +3,9 @@
 // WoW AI bridge: the half of WoWAI that lives outside the game.
 //
 //   OUT  capture.ps1 screen-captures the addon's pixel strip -> one or more
-//        {session, chat, id, cwd, flags, text} records per frame
+//        {session, chat, id, cwd, flags, text} records per frame; or, in
+//        capture.mode "screenshot", the addon calls Screenshot() with the strip
+//        up and we decode the file from the game's Screenshots folder
 //        (fallback: the game's SavedVariables file, written on /reload)
 //   RUN  the chat's agent (Claude Code, Codex or Grok; see agents.js) headless
 //        in the chat's folder, streaming progress. Each chat is its own agent
@@ -30,6 +32,8 @@ const readline = require('readline');
 const { spawn } = require('child_process');
 const P = require('./protocol'); // the pure protocol code, unit-tested in tests/bridge_test.js
 const A = require('./agents');   // how each agent is launched and read, unit-tested in tests/agents_test.js
+const D = require('./decode');   // PNG/TGA reader + strip decoder for the screenshot transport (tests/decode_test.js)
+const S = require('./screenshots'); // the Screenshots folder watcher (tests/screenshots_test.js)
 
 const HERE = __dirname;
 const CONFIG_FILE = path.join(HERE, 'config.json');
@@ -94,7 +98,15 @@ function siblingFolders() {
 
 const SLOTS = cfg.slots || 200;
 const MAX_PARALLEL = cfg.maxParallel || 3;
-const cap = Object.assign({ enabled: true, processName: 'WowB', cellPx: 4, cellsPerRow: 200, maxRows: 48, intervalMs: 250 }, cfg.capture || {});
+const cap = Object.assign({ enabled: true, mode: 'pixel', processName: 'WowB', cellPx: 4, cellsPerRow: 200, maxRows: 48, intervalMs: 250 }, cfg.capture || {});
+// Outbound transport: "pixel" = a capture script watches the screen (default);
+// "screenshot" = the addon takes a screenshot per send and we read the file.
+const TRANSPORT = P.transportName(cap.mode);
+if (!TRANSPORT) {
+  console.error(`"capture.mode": "${cap.mode}" in ${CONFIG_FILE} is not one of ${P.TRANSPORTS.join(', ')}.`);
+  process.exit(2);
+}
+const SCREENSHOT_DIR = S.screenshotDir(cfg);
 // The game-side files. A config.json written for the addon's old name
 // (WoWClaude) still works: the paths are derived from addonDir instead.
 const INBOX_FILE = cfg.inboxFile && !/WoWClaude/.test(cfg.inboxFile) ? cfg.inboxFile : path.join(cfg.addonDir || '', 'WoWAI', 'Inbox.lua');
@@ -277,7 +289,7 @@ function takeMapCommands(job, text) {
 // Slot file / Inbox.lua body: see protocol.luaTable.
 function slotFile(globalName, records, urgent = true) {
   const map = Date.now() < mapShareUntil && (urgent || mapLuaSize() <= MAP_PROGRESS_MAX) ? state.map : null;
-  return P.luaTable(globalName, records, { cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), map });
+  return P.luaTable(globalName, records, { cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), map, transport: TRANSPORT });
 }
 
 function addonInstalled() {
@@ -765,6 +777,47 @@ function startCapture() {
   });
 }
 
+// The screenshot transport: every new WoWScrnShot_*.png/.tga in the game's
+// Screenshots folder is decoded once its size settles. A file holding a strip is
+// deleted after it was read (whatever the strip's verdict once the magic is
+// there, so a retried shot doesn't pile up); one without a strip is the
+// player's own screenshot and stays. Files from before the bridge started are
+// never touched.
+const stripOptions = () => ({ cell: cap.cellPx, cells: cap.cellsPerRow, maxRows: cap.maxRows, threshold: 128 });
+let shotHint = null;
+function handleScreenshot(file) {
+  let buf;
+  try { buf = fs.readFileSync(file); } catch (e) { log(`screenshot: cannot read ${path.basename(file)} (${e.message})`); return; }
+  let img;
+  try { img = D.readImage(buf); } catch (e) { log(`screenshot: ${path.basename(file)} unreadable (${e.message}); left alone`); return; }
+  const { msg, offset } = D.findStrip(img, stripOptions(), shotHint);
+  if (!msg) {
+    log(`screenshot: ${path.basename(file)} (${img.width}x${img.height} ${img.format}) holds no strip; left alone`);
+    return;
+  }
+  shotHint = offset;
+  if (msg.error) {
+    log(`screenshot: strip in ${path.basename(file)} rejected: ${msg.error}` + (msg.error === 'checksum' ? ' (is the strip drawn at 1 UI unit per pixel?)' : ''));
+  } else {
+    const jobs = jobsFromStrip(msg.id, msg.text);
+    log(`strip #${msg.id} (screenshot ${path.basename(file)}, ${img.width}x${img.height} ${img.format}): ${jobs.length} message(s)`);
+    for (const job of jobs) submit({ ...job, via: 'screenshot' });
+  }
+  try { fs.unlinkSync(file); } catch (e) { log(`screenshot: could not delete ${path.basename(file)} (${e.message})`); }
+}
+
+function startScreenshotWatch() {
+  if (!SCREENSHOT_DIR) { log('screenshot transport: no addonDir in config.json, so no Screenshots folder to watch'); return; }
+  if (!fs.existsSync(SCREENSHOT_DIR)) {
+    // The client creates it on the first screenshot; look again in a while.
+    log(`screenshot transport: ${SCREENSHOT_DIR} does not exist yet; retrying in 10 s`);
+    setTimeout(startScreenshotWatch, 10000);
+    return;
+  }
+  S.watchScreenshots(SCREENSHOT_DIR, handleScreenshot, { log });
+  log(`screenshot transport: watching ${SCREENSHOT_DIR}`);
+}
+
 function agentLine(id) {
   const acfg = A.agentConfig(cfg, id);
   const cmd = A.resolveCommand(id, acfg);
@@ -780,7 +833,7 @@ function banner() {
   console.log(`  addons   : ${cfg.addonDir}`);
   console.log(`  addon    : ${addonInstalled() ? 'installed' : 'NOT INSTALLED - run: node setup.js, then restart WoW'}`);
   console.log(`  slots    : ${slotsInstalled() ? SLOTS + ' installed' : 'NOT INSTALLED - run: node setup.js (or node bridge/install-slots.js), then restart WoW'}`);
-  console.log(`  capture  : ${cap.enabled ? 'on (' + cap.processName + ', ' + cap.cellsPerRow + 'x' + cap.maxRows + ' cells of ' + cap.cellPx + 'px)' : 'off'}`);
+  console.log(`  capture  : ${!cap.enabled ? 'off' : TRANSPORT === 'screenshot' ? 'screenshot mode (' + SCREENSHOT_DIR + ', ' + cap.cellsPerRow + 'x' + cap.maxRows + ' cells of ' + cap.cellPx + 'px)' : 'on (' + cap.processName + ', ' + cap.cellsPerRow + 'x' + cap.maxRows + ' cells of ' + cap.cellPx + 'px)'}`);
   console.log(`  parallel : up to ${MAX_PARALLEL} chats at once`);
   console.log(`  fallback : ${SAVED_VARS}`);
   console.log(`  agent    : ${DEFAULT_AGENT} (default; chats pick their own with /wow-ai agent)`);
@@ -803,6 +856,11 @@ if (inject !== null) {
     setInterval(pollSavedVariables, cfg.pollMs || 750);
     presenceBeat();
     setInterval(presenceBeat, cfg.presenceIntervalMs || 30000);
-    if (cap.enabled) startCapture();
+    // Fresh slot files right away, so the addon's first slot read tells it which
+    // transport this bridge listens on (its hello can't reach a screenshot-mode
+    // bridge until it knows to take a screenshot).
+    publishNow();
+    if (cap.enabled && TRANSPORT === 'screenshot') startScreenshotWatch();
+    else if (cap.enabled) startCapture();
   }
 }
