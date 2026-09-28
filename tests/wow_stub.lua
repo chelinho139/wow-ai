@@ -86,6 +86,13 @@ function Methods.ClearFocus(self) if STUB.focus == self then STUB.focus = nil en
 function Methods.HasFocus(self) return STUB.focus == self end
 function Methods.Insert(self, t) self.text = (self.text or "") .. tostring(t) end
 function Methods.GetEditBox(self) return self.editBox end
+function Methods.SetAttribute(self, k, v) self.attrs = self.attrs or {}; self.attrs[k] = v end
+function Methods.GetAttribute(self, k) return self.attrs and self.attrs[k] end
+-- Chat frames: AddMessage keeps every line with its colour in self.messages.
+function Methods.AddMessage(self, text, r, g, b)
+	self.messages = self.messages or {}
+	table.insert(self.messages, { text = tostring(text), r = r, g = g, b = b })
+end
 -- Tooltip scanning: SetHyperlink fills <name>TextLeft<i> / TextRight<i> from
 -- STUB.tooltips[link], a list of strings or { left, right } pairs.
 function Methods.ClearLines(self) self.lines = {} end

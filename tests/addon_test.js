@@ -982,3 +982,152 @@ test('vision: off by default; "vision on" flags every send and resend with v, "l
   assert.equal(flagsOf('no picture'), '');
   vm.run('STUB.FireEvent("SCREENSHOT_SUCCEEDED")');
 });
+
+// Whisper tabs: the chat dock stubbed just enough. FCF_OpenTemporaryWindow makes
+// ChatFrame11, 12, ... with a tab, a glow and an edit box whose own Enter, SendText
+// and SendMessage are the game's send (STUB.serverSends counts what would have
+// reached the server). ChatFrame1EditBox is the ordinary chat box.
+const WHISPER_DOCK = `
+  CHAT_FRAMES = { "ChatFrame1" }
+  ChatTypeInfo = { WHISPER = { r = 1, g = 0.5, b = 1 }, WHISPER_INFORM = { r = 1, g = 0.5, b = 1 }, SYSTEM = { r = 1, g = 1, b = 0 } }
+  CHAT_WHISPER_GET = "%s whispers: "
+  CHAT_WHISPER_INFORM_GET = "To %s: "
+  STUB.serverSends, STUB.flashed, STUB.tempWindows, STUB.filters = 0, {}, 0, {}
+  function ChatFrame_AddMessageEventFilter(ev, fn) STUB.filters[ev] = fn end
+  function FCF_StartAlertFlash(f) table.insert(STUB.flashed, f:GetName()) end
+  function FCF_SetWindowName(f, name) _G[f:GetName() .. "Tab"].text = name end
+  function FCF_Close(f) f.inUse = false; f.isDocked = false; f.shown = false end
+  local function GameSend(self) STUB.serverSends = STUB.serverSends + 1; self.text = "" end
+  local function MakeBox(name, frame)
+    local eb = CreateFrame("EditBox", name, frame)
+    eb.chatFrame = frame
+    eb.attrs = { chatType = "SAY" }
+    eb.scripts.OnEnterPressed = GameSend
+    eb.SendText, eb.SendMessage = GameSend, GameSend
+    return eb
+  end
+  ChatFrame1 = CreateFrame("Frame", "ChatFrame1", UIParent)
+  ChatFrame1.isDocked = true
+  ChatFrame1.editBox = MakeBox("ChatFrame1EditBox", ChatFrame1)
+  DEFAULT_CHAT_FRAME = ChatFrame1
+  function FCF_OpenTemporaryWindow(chatType, target, source, select)
+    STUB.tempWindows = STUB.tempWindows + 1
+    local n = 10 + STUB.tempWindows
+    local f = CreateFrame("Frame", "ChatFrame" .. n, UIParent)
+    f.isTemporary, f.inUse, f.isDocked, f.shown = true, true, true, select and true or false
+    f.chatType, f.chatTarget = chatType, target
+    local tab = CreateFrame("Button", "ChatFrame" .. n .. "Tab", f)
+    tab.text = target
+    tab.glow = CreateFrame("Frame", nil, tab)
+    f.editBox = MakeBox("ChatFrame" .. n .. "EditBox", f)
+    f.editBox.attrs = { chatType = "WHISPER", tellTarget = target }
+    table.insert(CHAT_FRAMES, f:GetName())
+    return f
+  end`;
+
+test('whisper tabs: off by default; on, each chat is a tab, Enter there goes to the agent and never to the server, replies flash it', () => {
+  const vm = newVM();
+  vm.run(WHISPER_DOCK);
+  login(vm);
+  connect(vm);
+  const chatId = vm.evaluate('WoWAIDB.chats[1].id');
+  const lines = (n) => vm.evaluate(`(function() local t = {} for _, m in ipairs(ChatFrame${n}.messages or {}) do t[#t + 1] = m.text .. " @" .. m.r .. "," .. m.g .. "," .. m.b end return table.concat(t, "\\n") end)()`) || '';
+  const enter = (box, text) => vm.run(`${box}:SetText("${text}"); ${box}.scripts.OnEnterPressed(${box})`);
+  const reply = (id, body) => {
+    const pending = vm.num(`(select(1, (function() for _, c in ipairs(WoWAIDB.chats) do if c.id == "${id}" then return c.pendingId end end end)()))`);
+    nextSlot(vm, `{ now = time(), cwd = "", replies = { { chat = "${id}", id = ${pending}, ${body} } } }`);
+    // Polls follow a schedule that a manual check (typing while pending) pushes out: tick until the slot is read.
+    for (let i = 0; i < 8; i++) vm.run('STUB.now = STUB.now + 10; STUB.Tick()');
+  };
+
+  // Off: replies go to the game chat as before, no tab opens.
+  assert.equal(vm.evaluate('WoWAIDB.settings.whisper'), 'false', 'off by default');
+  vm.run('SlashCmdList.WOWAI("agent claude")');
+  vm.run('WoWAI.Send("hello there")');
+  reply(chatId, 'status = "done", text = "plain echo", agent = "claude"');
+  assert.equal(vm.num('STUB.tempWindows'), 0);
+  assert.ok(vm.evaluate('table.concat(STUB.prints, "\\n")').includes('plain echo'));
+
+  // On: the active chat's tab opens, selected, named after the chat.
+  vm.run('SlashCmdList.WOWAI("whisper on")');
+  assert.equal(vm.evaluate('WoWAIDB.settings.whisper'), 'true');
+  assert.equal(vm.num('STUB.tempWindows'), 1);
+  assert.equal(vm.evaluate('ChatFrame11Tab.text'), 'Hello there', 'the tab carries the chat name');
+  assert.equal(vm.evaluate('ChatFrame11EditBox.attrs.tellTarget'), 'Claude', 'the box whispers the agent');
+  assert.equal(vm.evaluate('ChatFrame11.shown'), 'true');
+
+  // Enter in the tab: the text goes to the agent, the game's own send never runs.
+  enter('ChatFrame11EditBox', 'from the tab');
+  assert.equal(vm.num('STUB.serverSends'), 0, 'nothing reached the server');
+  assert.ok(stripRecords(vm).find(r => r.text === 'from the tab'), 'the message went out on the strip');
+  assert.equal(vm.evaluate('ChatFrame11EditBox:GetText()'), '', 'the box is emptied');
+  let out = lines(11);
+  assert.ok(out.includes('To Claude: from the tab @1,0.5,1'), 'echoed as an outgoing whisper: ' + out);
+  assert.ok(out.includes('Claude is working on it... @1,1,0'), 'working line in system colour');
+
+  // The bridge's working text shows once per change; the reply is an incoming
+  // whisper, line by line, the tab flashes (it is not on screen), General stays quiet.
+  vm.run('ChatFrame11.shown = false; STUB.prints = {}');
+  reply(chatId, 'status = "working", text = "Reading files"'); // read again on every poll while pending
+  assert.equal((lines(11).match(/Claude: Reading files/g) || []).length, 1, 'a progress line once');
+  reply(chatId, 'status = "done", text = "hi back\\nsecond line", agent = "claude"');
+  out = lines(11);
+  assert.ok(out.includes('|Hwowai:reply:' + chatId + '|h[Claude]|h whispers: hi back @1,0.5,1'), 'first line formatted as a whisper: ' + out);
+  assert.ok(out.includes('second line @1,0.5,1'), 'the rest follows in whisper colour');
+  assert.deepEqual(vm.evaluate('table.concat(STUB.flashed, ",")'), 'ChatFrame11', 'the tab flashed');
+  assert.ok(!vm.evaluate('table.concat(STUB.prints, "\\n")').includes('hi back'), 'no duplicate in General');
+  assert.equal(vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history].text'), 'hi back\nsecond line', 'the window has it too');
+
+  // Typing while the agent works keeps the text as a draft and says so in the tab.
+  enter('ChatFrame11EditBox', 'first');
+  const before = stripRecords(vm).length;
+  enter('ChatFrame11EditBox', 'too soon');
+  assert.equal(stripRecords(vm).length, before, 'no second record while one is pending');
+  assert.ok(lines(11).includes('still working on your last message'), 'told in the tab');
+  assert.equal(vm.evaluate('WoWAIDB.chats[1].draft'), 'too soon');
+  reply(chatId, 'status = "done", text = "done", agent = "claude"');
+
+  // A tell to an agent's name from the ordinary box goes to the agent; any other name is the game's.
+  enter('ChatFrame1EditBox', '/w Claude ping');
+  assert.ok(stripRecords(vm).find(r => r.text === 'ping'), '/w Claude from General reaches the agent');
+  assert.equal(vm.num('STUB.serverSends'), 0);
+  reply(chatId, 'status = "done", text = "pong", agent = "claude"');
+  enter('ChatFrame1EditBox', '/w Bob hi');
+  assert.equal(vm.num('STUB.serverSends'), 1, 'a real whisper still goes out');
+  enter('ChatFrame11EditBox', '/s hello all');
+  assert.equal(vm.num('STUB.serverSends'), 2, 'another slash command in the tab is the game\'s');
+
+  // A second chat gets a tab of its own; a reply to the first still lands in the first.
+  vm.run('SlashCmdList.WOWAI("new Second")');
+  const secondId = vm.evaluate('WoWAIDB.chats[2].id');
+  vm.run('WoWAI.Send("second hello")');
+  assert.equal(vm.num('STUB.tempWindows'), 2);
+  assert.equal(vm.evaluate('ChatFrame12Tab.text'), 'Second');
+  assert.ok(lines(12).includes('To Claude: second hello'));
+  reply(secondId, 'status = "done", text = "for two", agent = "claude"');
+  assert.ok(lines(12).includes('whispers: for two') && !lines(11).includes('for two'));
+  // A system reply (bridge error) is a system line, and a denied one says what to allow.
+  vm.run('WoWAI.Send("again")');
+  reply(secondId, 'status = "error", text = "boom"');
+  assert.ok(lines(12).includes('Bridge error: boom  |Hwowai:open:' + secondId + '|h|cff7ec8ff[open]|r|h @1,1,0'), lines(12));
+  vm.run('WoWAI.Send("once more")');
+  reply(secondId, 'status = "done", text = "need it", denied = { "Bash(rm:*)" }');
+  assert.ok(lines(12).includes('needs permission for Bash(rm:*)'));
+
+  // The leak filter: the server's answer to a whisper that got out becomes a loud line.
+  assert.ok(vm.evaluate(`select(2, STUB.filters.CHAT_MSG_SYSTEM(nil, "CHAT_MSG_SYSTEM", "No player named 'Claude' is currently playing."))`).includes('WHISPER LEAK'));
+  assert.equal(vm.evaluate(`select(2, STUB.filters.CHAT_MSG_SYSTEM(nil, "CHAT_MSG_SYSTEM", "No player named 'Bob' is currently playing."))`), null, 'other names are left alone');
+  vm.run('SlashCmdList.WOWAI("whisper")');
+  assert.ok(vm.evaluate('WoWAIDB.chats[2].history[#WoWAIDB.chats[2].history].text').includes('LEAKS: 1'));
+
+  // Rename retitles the tab, delete closes it, off closes them all and the hooks go quiet.
+  vm.run('SlashCmdList.WOWAI("rename Renamed")');
+  assert.equal(vm.evaluate('ChatFrame12Tab.text'), 'Renamed');
+  vm.run('SlashCmdList.WOWAI("delete")');
+  assert.equal(vm.evaluate('ChatFrame12.inUse'), 'false', 'the deleted chat\'s tab is closed');
+  vm.run('SlashCmdList.WOWAI("whisper off")');
+  assert.equal(vm.evaluate('WoWAIDB.settings.whisper'), 'false');
+  assert.equal(vm.evaluate('ChatFrame11.inUse'), 'false');
+  enter('ChatFrame1EditBox', '/w Claude ping');
+  assert.equal(vm.num('STUB.serverSends'), 3, 'off: a whisper is the game\'s again');
+});

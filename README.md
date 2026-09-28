@@ -123,6 +123,7 @@ Right-clicking a chat in the left panel opens a small menu with **Rename...**, *
 | `/wow-ai` | toggle the window (`/ai`, `/wowai` and the old `/wow-claude` are the same command); the minimize button (top right) or Esc collapses it to a small bar, click the bar to expand |
 | `/ai <text>` | send from the normal chat box (`/wow-ai <text>` is the same). `/ai` is a full alias, so `/ai agent grok` or `/ai cd realms` work too; a message that merely starts with a command word, like `/ai help me with this macro` or `/ai delete the unused imports`, is still sent as a message because the rest of the line doesn't fit that command |
 | `/r <text>` | replies to the agent when it was the last to message you; otherwise the normal whisper reply |
+| `/wow-ai whisper on\|off` | each chat as a native whisper tab in the chat dock (off by default): replies arrive there as whispers and flash the tab, what you type there goes to the agent, never to the server. The window stays the full record |
 | `/wow-ai new [name]` | new chat = new agent session. Unnamed chats take their title from your first message |
 | `/wow-ai chat <n\|name>` | switch chats (or click the left panel; right-click a row for Rename, Folder and Agent, its trash can deletes it) |
 | `/wow-ai agent [claude\|codex\|grok\|agy\|hermes]` | which agent this chat talks to; no name shows the current one and the bridge's default, `default` goes back to the bridge's. A chat that changes agent starts a fresh session with it |
