@@ -147,6 +147,7 @@ test('a bridge that dies mid-run tells the player which message was lost', async
     const id = h.client.lastSeq() + 1;
     h.client.send('doomed [[sleep 10]]');
     await h.bridge.waitForLine(new RegExp(`#${id}@\\S+ \\(screenshot\\)`));
+    await h.client.waitFor(() => h.agentCalls().length === 1 && Object.keys(h.state().inflight || {}).length === 1, { label: 'the run to be recorded as in flight' });
     await h.bridge.crash();
     h.bridge.start();
     await h.bridge.ready();
