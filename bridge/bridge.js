@@ -47,6 +47,7 @@ const PL = require('./plugins'); // the plugin registry and routing (tests/plugi
 const H = require('./home');     // where config, state and logs live (tests/home_test.js)
 const R = require('./runtime');  // node, bun, or the compiled binary (tests/runtime_test.js)
 const AS = require('./assets');  // the capture scripts and the primer, by path, from a checkout or the binary (tests/assets_test.js)
+const ACH = require('./achievements');
 
 // The plugins this bridge has (docs/PLATFORM.md). Registration order is the
 // order match() is asked in, and the first one is the default unless
@@ -360,7 +361,23 @@ function takeMapCommands(job, text) {
 function slotFile(globalName, records, urgent = true) {
   const map = Date.now() < mapShareUntil && (urgent || mapLuaSize() <= MAP_PROGRESS_MAX) ? state.map : null;
   const transportNote = TRANSPORT_SOURCE === 'fallback' ? P.transportNote(state.transportFallback) : '';
-  return P.luaTable(globalName, records, { cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), plugin: DEFAULT_PLUGIN, plugins: registry.ids(), map, transport: TRANSPORT, levels: LEVELS, codec: STRIP_CODEC, transportNote });
+  const achievementsLua = ACHIEVEMENTS_ON ? ACH.luaAchievements(state) : '';
+  return P.luaTable(globalName, records, { cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), plugin: DEFAULT_PLUGIN, plugins: registry.ids(), map, transport: TRANSPORT, levels: LEVELS, codec: STRIP_CODEC, transportNote, achievementsLua });
+}
+
+const ACHIEVEMENTS_ON = cfg.achievements !== false;
+function awardAchievements(job, status) {
+  if (!ACHIEVEMENTS_ON) return;
+  const chatTranscript = job.chat && transcripts.chats[job.chat];
+  const chatMessages = chatTranscript ? chatTranscript.messages.filter(m => m.role === 'user').length : 0;
+  const commands = job.activity ? job.activity.commands() : [];
+  try {
+    const { awards, changed } = ACH.evaluate(state, { chat: chatKey(job), status, commands, chatMessages });
+    if (changed) saveState();
+    if (awards.length) log(`${tagOf(job)} achievement${awards.length === 1 ? '' : 's'}: ${awards.map(a => a.title).join(', ')}`);
+  } catch (e) {
+    log(`${tagOf(job)} achievements: ${e.message}`);
+  }
 }
 
 // The addon cannot take the screenshot the transport needs (no Screenshot() in
@@ -757,6 +774,7 @@ function runAgent(job, opts = {}) {
   if (input.stdin !== undefined) { child.stdin.on('error', () => {}); child.stdin.end(input.stdin); }
 
   const parser = agent.parser();
+  job.activity = ACH.createRunLog(agentId);
   const progress = [];
   let sessionId = resume || '';
   let result = null;       // { text, error } once the agent has produced its reply
@@ -785,6 +803,7 @@ function runAgent(job, opts = {}) {
     let ev;
     try { ev = JSON.parse(line); } catch { return; }
     if (!ev || typeof ev !== 'object') return;
+    job.activity.feed(ev);
     let r;
     try {
       r = parser.feed(ev);
@@ -905,6 +924,7 @@ function finish(job, status, text, session, denied) {
     }
   }
   noteMessage(job, status === 'done' ? 'assistant' : 'system', status === 'done' ? text : 'Bridge error: ' + text);
+  awardAchievements(job, status);
   const usage = P.usageFields(job.usage);
   publish(chatKey(job), { chat: job.chat, id: job.id, status, text, summary, cwd: job.cwd, session, denied, macros, agent: job.agent || '', plugin: job.plugin || '', ...usage }, true);
   signal('sig', job.id, true);

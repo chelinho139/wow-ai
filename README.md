@@ -135,6 +135,7 @@ Right-clicking a chat in the left panel opens a small menu with **Rename...**, *
 | `/claude-wow context <n>` | warn once, with a **New chat** button, when a chat's context passes `n` tokens (`100k` by default, `0` = never). Every message resumes the chat's agent session, so its context only grows and each reply costs more than the last; the window's footer shows it like Claude Code's own status line (`11m 58s · ↓ 106.9k tokens · ≈$2.41 API`: time since the session started, the context, the session at API list prices, a comparison and not a bill), and `/claude-wow diag` lists it per chat |
 | `/claude-wow vision [on\|off]` | send a picture of your screen with each message, so the agent sees what you see: "what is this item?", "why is this boss killing me?", "read this quest" (off by default; needs the screenshot transport) |
 | `/claude-wow look <question>` | one message with a picture of your screen, whatever the setting (`/claude look what is this?` from the chat box too) |
+| `/claude-wow achievements [on\|off\|test]` | list the achievements your agents earned; `on`/`off` turns the toasts on or off, `test` shows a sample (see [Achievement toasts](#achievement-toasts)) |
 | `/claude-wow rename`, `/claude-wow delete`, `/claude-wow clear` | manage the current chat |
 | `/claude-wow echo summary\|full\|short\|off\|<chars>` | how much of each reply to print into the game chat. `summary` (the default) prints only the agent's closing TL;DR lines, the full reply is in the window behind `[open]`; `full` prints up to 4000 chars, `short` one preview line |
 | `/claude-wow longchat on` | let the game chat box take 4000 characters, for long `/claude` messages |
@@ -174,6 +175,24 @@ How a message leaves the game. The bridge listens on one of two, named in `captu
 - **`pixel`, deprecated.** `capture.ps1` (Windows), `capture_mac.py` (macOS) or `capture_x11.py` (Linux) screen-captures the strip four times a second. It exists only until `Screenshot()` is confirmed on Windows and on Linux under Wine, and will be removed then. It needs python3 off Windows, the two permissions on macOS, and an X11 session on Linux.
 
 A new install starts on `screenshot`; an existing `config.json` with an explicit `mode` keeps it. **If the screenshot transport cannot work on your client, the bridge falls back on its own:** when the addon reports that the client has no `Screenshot()` function, or that every shot failed (`SCREENSHOT_FAILED`), the bridge switches to the pixel capture, says so in its log and terminal (`TRANSPORT FALLBACK: ...`), remembers it in `state.json` so the next start goes straight to pixels, and names the reason in its slot files, where `/claude-wow diag` in game shows it as `transport: pixel (bridge: pixel transport, fallen back to since ... because ...)`. The addon says once in the game chat that the report is on its way; the first time, that report reaches the bridge through the reload fallback (a couple of minutes), because a bridge waiting for screenshots is not watching the screen. To settle it for good, set `capture.mode` to `"pixel"` (no more note) or `"screenshot"` (try again; an explicit value always wins over the memory). Nobody is left without a transport.
+
+### Achievement toasts
+
+Dev milestones pop an achievement-style toast in game: a gold banner with an icon, a title, points and the achievement sound. The bridge watches the shell commands the agent runs and their results (Claude Code and Codex), so every award is a fact, not a guess:
+
+| Achievement | When |
+|---|---|
+| Hello, World / Questing Buddy / Loremaster of the Repo | 1, 10 and 100 finished tasks |
+| Back From the Dead | the tests pass after failing (npm, yarn, pnpm, bun, jest, vitest, pytest, go, cargo, `node --test` and more); every time it happens |
+| Signed and Sealed / Commit Streak / Centurion | 1, 10 and 100 git commits by the agent |
+| Ship It / Frequent Flyer | 1 and 10 pushes |
+| Merged on a Friday | a commit or push on a Friday |
+| Night Owl | a task finished after midnight (before 5 a.m.) |
+| It Works On My Machine | a push in a run that never ran the tests |
+| Rubber Duck | 50 messages in one chat |
+| Leeroy Jenkins | the agent ran a command with `--force` (or `git push -f`) |
+
+Each one-time award is given once and kept in the bridge's `state.json`, so it survives restarts and the beta's saved-data wipes. `/claude-wow achievements` lists what you earned; `/claude-wow achievements off` (or `toasts off`) keeps them quiet; `/claude-wow achievements test` shows a sample toast. `"achievements": false` in `~/.claude-wow/config.json` turns the detection off. The banner uses client textures and plays the sound by its FileDataID; no Blizzard asset ships with the addon.
 
 ### Macros, ready to use
 
