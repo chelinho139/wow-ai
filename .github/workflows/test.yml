@@ -15,6 +15,7 @@ jobs:
     # with (build.js). Node is on the Bun rows too, for npm ci (the Lua VM the
     # addon tests use is an npm package).
     strategy:
+      fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest, macos-latest]
         runtime: [node, bun]
@@ -34,6 +35,22 @@ jobs:
         if: matrix.runtime == 'node'
       - run: npm run test:bun
         if: matrix.runtime == 'bun'
+
+  e2e:
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run test:e2e
 
   build:
     # The binaries (build.js): all four targets compile from one Linux runner

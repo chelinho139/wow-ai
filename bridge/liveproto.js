@@ -24,10 +24,10 @@ function homeHash(homeDir) {
 function endpoint(homeDir, platform = process.platform) {
   const hash = homeHash(homeDir);
   if (platform === 'win32') return `\\\\.\\pipe\\claude-wow-live-${hash}`;
-  const direct = path.join(path.resolve(homeDir), SOCKET_NAME);
+  const direct = path.posix.join(path.posix.resolve(homeDir), SOCKET_NAME);
   if (Buffer.byteLength(direct) <= UNIX_PATH_MAX) return direct;
   const uid = typeof process.getuid === 'function' ? process.getuid() : 0;
-  return path.join('/tmp', `claude-wow-${uid}-${hash}.sock`);
+  return path.posix.join('/tmp', `claude-wow-${uid}-${hash}.sock`);
 }
 
 function tokenFile(homeDir) {

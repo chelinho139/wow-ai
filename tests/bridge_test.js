@@ -44,6 +44,12 @@ test('withRunOnlyRules adds greed rules to one run without touching the saved ag
   assert.ok(grokArgs.includes('Bash(rm *)'), 'Grok gets the greed rule as an --allow glob');
 });
 
+test('parseFlags reads cancel=<id> and ignores a bad one', () => {
+  assert.equal(P.parseFlags('cancel=42').cancel, 42);
+  assert.equal(P.parseFlags('cancel=x').cancel, undefined);
+  assert.equal(P.parseFlags('n').cancel, undefined);
+});
+
 test('parseFlags reads shot=missing / shot=failed (the addon cannot take the screenshot the transport needs) and nothing else under shot=', () => {
   assert.equal(P.parseFlags('h;c;shot=missing').shot, 'missing');
   assert.equal(P.parseFlags('shot=failed;v').shot, 'failed');
@@ -340,6 +346,23 @@ test('screenshot mode ships its strip levels; pixel mode never does', () => {
   assert.deepEqual(P.denseLevels(undefined), [0, 20, 40, 60]);
   assert.deepEqual(P.denseLevels({ off: 10, on: 90 }), [10, 37, 63, 90]);
   assert.deepEqual(P.denseLevels({ off: 0, on: 255 }), [0, 85, 170, 255]);
+});
+
+test('noteUsage keeps a session-total cost as the total instead of adding it again on every resumed turn', () => {
+  const state = {};
+  P.noteUsage(state, 'chat:b', { usage: { context: 20000, cost: 0.04, costIsSessionTotal: true }, fresh: true, agent: 'claude', now: 1000 });
+  P.noteUsage(state, 'chat:b', { usage: { context: 21500, cost: 0.09, costIsSessionTotal: true }, agent: 'claude', now: 2000 });
+  const rec = P.noteUsage(state, 'chat:b', { usage: { context: 23000, cost: 0.15, costIsSessionTotal: true }, agent: 'claude', now: 3000 });
+  assert.equal(rec.cost, 0.15);
+  assert.equal(P.usageFields(rec).cost, 0.15);
+});
+
+test('slotsToClearAhead names the next slots past an id, wraps at the slot count, and spares pending ids', () => {
+  assert.deepEqual(P.slotsToClearAhead(10, 200, [], 3), [11, 12, 13]);
+  assert.deepEqual(P.slotsToClearAhead(199, 200, [], 3), [200, 1, 2]);
+  assert.deepEqual(P.slotsToClearAhead(199, 200, [401], 3), [200, 2], 'id 401 still pending sits in slot 1');
+  assert.equal(P.slotsToClearAhead(5, 200).length, P.SIGNAL_CLEAR_AHEAD);
+  assert.deepEqual(P.slotsToClearAhead(3, 4, []), [4, 1], 'never more than half the pool');
 });
 
 test('context growth: noteUsage counts turns per session, keeps the last known size, and the slot file carries it', () => {

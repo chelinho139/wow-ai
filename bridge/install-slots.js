@@ -20,7 +20,7 @@ if (!fs.existsSync(path.join(addons, 'ClaudeWoW', 'ClaudeWoW.toc'))) {
   process.exit(1);
 }
 
-let made = 0, kept = 0, cleaned = 0;
+let made = 0, kept = 0, cleaned = 0, updated = 0;
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
 }
@@ -32,8 +32,12 @@ function cleanEmpty(file) {
     if (fs.existsSync(file) && fs.statSync(file).size === 0) { fs.rmSync(file, { force: true }); cleaned++; }
   } catch {}
 }
-function ensure(file, content) {
-  if (fs.existsSync(file)) { kept++; return; }
+function ensure(file, content, { replaceWhenDifferent = false } = {}) {
+  if (fs.existsSync(file)) {
+    if (replaceWhenDifferent && fs.readFileSync(file, 'utf8') !== content) { fs.writeFileSync(file, content); updated++; return; }
+    kept++;
+    return;
+  }
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, content);
   made++;
@@ -51,7 +55,7 @@ for (let i = 1; i <= N; i++) {
     '',
     'Inbox.lua',
     '',
-  ].join('\n'));
+  ].join('\n'), { replaceWhenDifferent: true });
   ensure(path.join(dir, 'Inbox.lua'), 'ClaudeWoW_SlotData = nil\n');
   // No file = no signal, so only the folders are made here; the bridge creates a
   // .wav when it has something to say and deletes it to take it back.
@@ -92,5 +96,5 @@ for (const gone of ['absent.wav', 'empty.wav']) {
 }
 ensure(path.join(addons, 'ClaudeWoW', 'ctl', 'valid.wav'), require('./protocol').SILENT_WAV);
 
-console.log(`slots: ${N}  files created: ${made}  already present: ${kept}  stale empty signal files removed: ${cleaned}`);
-if (made > 0) console.log('Now fully quit and relaunch WoW so it sees the new files.');
+console.log(`slots: ${N}  files created: ${made}  updated: ${updated}  already present: ${kept}  stale empty signal files removed: ${cleaned}`);
+if (made > 0 || updated > 0) console.log('Now fully quit and relaunch WoW so it sees the new files.');
