@@ -86,6 +86,7 @@ ClaudeWoW_SlotData = {
   transportNote = "pixel transport, fallen back to since ...",   -- only when the bridge fell back to pixels on its own; /claude-wow diag shows it
   replies = { { chat = "...", id = 12, status = "working"|"done"|"error", text = "...", cwd = "...", session = "<agent session id>", agent = "codex", denied = { "WebSearch" }, macros = { { name = "Charge", body = "#showtooltip\n/cast Charge", icon = nil, char = false, risky = false } } }, … },
   map = { epoch = "...", version = 3, layers = { … } },  -- the agent's map layers (docs/MAP.md): for a while after they change and after every hello
+  widgets = { epoch = "...", version = 2, items = { { name = "dps", title = "...", rev = "<sha1>", source = "<lua>" } } },  -- live UI widgets (docs/UI-WIDGETS.md), shared like the map
   restore = { token = "...", chats = { … } },   -- only right after a saved-data reset
 }
 ```

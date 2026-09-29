@@ -30,6 +30,7 @@ const FILES = [
   'addon/ClaudeWoW/Codec.lua',
   'addon/ClaudeWoW/Inbox.lua',
   'addon/ClaudeWoW/Map.lua',
+  'addon/ClaudeWoW/Widgets.lua',
   'bridge/capture.ps1',
   'bridge/capture_mac.py',
   'bridge/capture_x11.py',

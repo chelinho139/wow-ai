@@ -13,6 +13,7 @@ Chat with your local coding agents from inside **World of Warcraft: Forever**: [
 - The agent can draw on your world map: numbered routes, quest stops and marks, with a navigator arrow that walks you from stop to stop
 - Herb and ore spawns on the world map, filtered by your gathering skill (`/claude-wow map ore`, `/claude-wow map herb`)
 - Ready-made macros: ask for one and the reply carries a **Create macro** button that saves it and puts it on your cursor, ready to drop on an action bar (`/claude-wow macro undo` reverts it)
+- Live UI widgets: ask for *"a DPS meter"* or *"a timer bar for my buffs"* and the agent's Lua loads in the game at once, no `/reload`; display-only, listed and removed with `/claude-wow ui`
 - An **Allow & retry** button when Claude or Grok needs a command outside your allowlist
 - A status light for the bridge, automatic retries, and recovery of your chats (and map layers) if the beta client wipes addon data
 - Runs on Windows, on Linux with the game under Wine, and on macOS with a native client
@@ -205,6 +206,18 @@ The system prompt tells every agent how to hand marks to the bridge: append comm
 
 `/aimap` is a shorter alias. To remove layers for good, ask the agent ("clear the map", "remove the mining route").
 
+### Live UI widgets
+
+Ask for a small UI element (*"give me a DPS meter"*, *"a timer bar for my buffs"*) and it shows up in the game a moment later, without `/reload`. The agent writes addon Lua in a ```` ```wowui <name> ```` block (or appends it to the file in `CLAUDE_WOW_UI_FILE`). The bridge refuses anything that names a protected or outward action (casting, targeting, movement, chat, macros, bindings, secure templates), keeps the rest versioned in `state.json` and ships it in the slot files, like map layers. The addon runs each widget in its own sandbox inside a `pcall`; an error stops the widget and shows up in the chat window.
+
+| Command | What it does |
+|---|---|
+| `/claude-wow ui` | list the widgets and their state (running, removed, failed) |
+| `/claude-wow ui remove <name>` | stop a widget and keep it off after login, until the agent sends a new version |
+| `/claude-wow ui run <name>` | start a widget again |
+
+Widgets start again at login. The contract, the deny-list and the limits are in [docs/UI-WIDGETS.md](docs/UI-WIDGETS.md).
+
 ### Permissions
 
 The agents run headless, so they can't ask you to approve a tool. Each agent's block in `~/.claude-wow/config.json` has a `permissionMode`, `acceptEdits` by default: file edits inside the project are auto-approved, `allowedTools` lists the commands it may run (`Bash(git:*)` is any command starting with `git`; the same rule syntax for every agent, translated for Grok), and `deniedTools` the ones it never may. What happens to anything else differs. Claude denies it. Codex has no allowlist: it runs commands in a sandbox that can write the project folder but not reach the network (unless `networkAccess` is on), and explains a blocked command in its reply. Grok's headless mode runs ordinary commands on its own and blocks the dangerous ones (deleting a project file, pushing) unless a rule allows them. With Claude and Grok the reply then grows an **Allow WebSearch, Bash(cargo:*) & retry** button: click it, the rules are added to that agent's list in your config permanently, and the agent resumes where it stopped. The rule is a prefix (`Bash(rm:*)` allows any `rm`), so read the button before clicking. `bypassPermissions` gives any agent full autonomy; you decide. The mapping per agent, as measured against the real CLIs, is in [docs/AGENTS.md](docs/AGENTS.md).
@@ -252,6 +265,7 @@ The keys you are most likely to touch. Every key, flag and environment variable 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): how the pixel strip, slot pool and signal files work, and why
 - [docs/INSTALL-LINUX.md](docs/INSTALL-LINUX.md): Linux + Wine notes, systemd, and how to check the screen capture
 - [docs/MAP.md](docs/MAP.md): map layers, the navigator and herb/ore nodes
+- [docs/UI-WIDGETS.md](docs/UI-WIDGETS.md): live UI widgets the agent writes, their contract and the display-only checks
 - [CONTRIBUTING.md](CONTRIBUTING.md): repo layout, running the tests, conventions
 - [CHANGELOG.md](CHANGELOG.md): release notes
 

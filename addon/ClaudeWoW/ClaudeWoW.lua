@@ -1276,6 +1276,7 @@ local function TryLoadSlot(why)
 	local matched = ApplyReplies(type(data) == "table" and data.replies or nil)
 	if type(data) == "table" and data.restore then ImportRestore(data.restore) end
 	if type(data) == "table" and data.map and ClaudeWoWMap then ClaudeWoWMap.Sync(data.map) end
+	if type(data) == "table" and data.widgets and ClaudeWoWWidgets then ClaudeWoWWidgets.Sync(data.widgets) end
 	if why == "signal" and not matched then
 		run.signalUnreliable = true
 	end
@@ -1398,6 +1399,7 @@ local function ProcessInbox()
 	ApplyReplies(inbox.replies)
 	if inbox.restore then ImportRestore(inbox.restore) end
 	if inbox.map and ClaudeWoWMap then ClaudeWoWMap.Sync(inbox.map) end
+	if inbox.widgets and ClaudeWoWWidgets then ClaudeWoWWidgets.Sync(inbox.widgets) end
 end
 
 Finish = function(chat, role, text, denied, agent, summary, macros)
@@ -3239,6 +3241,14 @@ function ClaudeWoW.Notify(chat, text, agent, summary, role, denied)
 	end
 end
 
+function ClaudeWoW.SystemNote(text)
+	if not db then return end
+	local c = ActiveChat()
+	if not c then return end
+	AddHistory(c, "system", text)
+	ClaudeWoW.Render()
+end
+
 -- /r goes to the agent when it was the last one to message you, exactly like
 -- whisper reply, and the box shows a "To Codex [chat]:" header while you type.
 --
@@ -3890,6 +3900,7 @@ local HELP = table.concat({
 	"/claude-wow vision [on|off]        send a picture of your screen with each message, so the agent can see what you see (screenshot transport; off by default)",
 	"/claude-wow look <question>        send this one message with a picture of your screen, whatever the vision setting",
 	"/claude-wow map [...]              map layers the agent drew, the route navigator and herb/ore nodes (no argument = status and subcommands; /aimap is the same)",
+	"/claude-wow ui [list|remove <name>|run <name>]   live UI widgets the agent wrote: list them, remove one for good, or start one again",
 	"/claude-wow mode pixel             no-reload transport (default)",
 	"/claude-wow mode reload            fallback transport: a /reload per step",
 	"/claude-wow resend                 show the strip again if the bridge missed it",
@@ -3921,6 +3932,11 @@ local function ChatArgument(rest)
 	return false
 end
 
+local function WidgetArgument(rest)
+	local lower = rest:lower()
+	return lower == "" or lower == "list" or lower:match("^remove%s+%S+$") ~= nil or lower:match("^run%s+%S+$") ~= nil
+end
+
 local COMMAND_ARGS = {
 	mini = 0, min = 0, hide = 0, quit = 0, help = 0, clear = 0, delete = 0, reset = 0, copy = 0,
 	cancel = 0, resend = 0, reload = 0, refresh = 0, slots = 0, diag = 0,
@@ -3938,6 +3954,7 @@ local COMMAND_ARGS = {
 	cd = true, new = true, rename = true,
 	map = true, -- /claude-wow map ...: Map.lua (layers, navigator, herb/ore nodes)
 	macro = { undo = true }, -- /claude-wow macro undo; "/claude macro for my warrior" still goes to the agent
+	ui = WidgetArgument,
 }
 
 local function IsCommand(cmd, rest)
@@ -4025,6 +4042,8 @@ SlashCmdList["CLAUDEWOW"] = function(msg)
 		ClaudeWoW.Toggle(true)
 	elseif cmd == "map" then
 		if ClaudeWoWMap then ClaudeWoWMap.Command(rest) else print("|cff66ccff[Claude WoW]|r the map module did not load") end
+	elseif cmd == "ui" then
+		if ClaudeWoWWidgets then ClaudeWoWWidgets.Command(rest) else print("|cff66ccff[Claude WoW]|r the widget module did not load") end
 	elseif cmd == "agent" then
 		ClaudeWoW.SetAgent(rest, c)
 		ClaudeWoW.Toggle(true)

@@ -10,7 +10,7 @@ plugin among several.
 
 - Transport in and out (screenshot strip out, load-on-demand slots in).
 - Chats, sessions, transcripts, restore.
-- Surfaces: the addon window, whisper tabs, the game-chat echo, map layers, macros.
+- Surfaces: the addon window, whisper tabs, the game-chat echo, map layers, macros, live UI widgets.
 - Game context: character, zone, position, quest log, professions, shift-click links.
 - A plugin registry, and the routing that decides which plugin a message belongs to.
 
@@ -24,7 +24,7 @@ label              shown in the bridge's banner and logs (the addon shows the id
 aliases            other names a message may address it by: "@claude …"
 match(msg)         when a bare message on a chat bound to nothing belongs to it
 tools              extra instructions placed in the system prompt after the reply rules
-surfaces           which of the core's surfaces its replies may use: "map", "macro"
+surfaces           which of the core's surfaces its replies may use: "map", "macro", "ui"
                    (the window, the echo and the tab are how every reply reaches the player)
 handle(msg, core)  what to actually do; `core` lends it the agent runner, the
                    bridge's folder and the chat's session

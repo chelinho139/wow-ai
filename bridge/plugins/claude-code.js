@@ -23,7 +23,7 @@ const plugin = {
   label: 'Code',
   aliases: ['claude', 'code'],
   tools: '',
-  surfaces: ['map', 'macro'],
+  surfaces: ['map', 'macro', 'ui'],
   handle(job, core) {
     const cwd = P.resolveCwd(job.cwd, core.defaultCwd);
     job.cwd = cwd;

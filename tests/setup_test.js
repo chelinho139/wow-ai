@@ -124,7 +124,7 @@ for (const oldName of P.OLD_ADDONS) {
     assert.equal(dest, path.join(addons, P.ADDON));
     assert.ok(copied >= 4);
     assert.ok(fs.existsSync(path.join(dest, `${P.ADDON}.toc`)));
-    assert.match(fs.readFileSync(path.join(dest, `${P.ADDON}.toc`), 'utf8'), new RegExp(`^## SavedVariables: ${P.ADDON}DB, ${P.ADDON}MapDB$`, 'm'),
+    assert.match(fs.readFileSync(path.join(dest, `${P.ADDON}.toc`), 'utf8'), new RegExp(`^## SavedVariables: ${P.ADDON}DB, ${P.ADDON}MapDB, ${P.ADDON}WidgetDB$`, 'm'),
       'the .toc declares the globals the migrated file now holds');
     fs.rmSync(dir, { recursive: true, force: true });
   });
