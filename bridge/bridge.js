@@ -535,19 +535,21 @@ function runJob(job) {
   maybeOfferRestore(job);
   noteMessage(job, 'user', job.text);
   const resume = state.sessions[skey] || state.sessions[key];
+  // The agent gets the message without the "!high" prefix; the transcript keeps it.
+  const { prompt, effort, note: effortNote } = P.effortForRun(job.text, agent);
 
   const ctx = gameContext();
   const system = P.systemPrompt(ctx, primer());
   const systemShort = P.systemPrompt(ctx, '');
   const promptFile = path.join(TMP_DIR, `prompt-${job.id}-${Date.now().toString(36)}.txt`);
-  const input = agent.input({ prompt: job.text, system, systemShort, resume, cfg: acfg });
+  const input = agent.input({ prompt, system, systemShort, resume, cfg: acfg });
   if (input.promptFile !== undefined) {
     try { fs.mkdirSync(TMP_DIR, { recursive: true }); fs.writeFileSync(promptFile, input.promptFile); }
     catch (e) { finish(job, 'error', `Could not write the prompt file ${promptFile}: ${e.message}`); return; }
   }
   const args = [...cmd.args, ...agent.args({
     cfg: acfg, resume, cwd, system, systemShort, promptFile,
-    prompt: job.text, timeoutMs: cfg.timeoutMs,
+    prompt, timeoutMs: cfg.timeoutMs, effort,
   })];
   const env = agent.env({ ...process.env });
   // Where this run's tools append map commands (docs/MAP.md); any agent can use it.
@@ -557,7 +559,7 @@ function runJob(job) {
     env.WOW_AI_MAP_FILE = mapFileFor(job);
   } catch (e) { log(`${tag} map file unavailable: ${e.message}`); }
 
-  log(`${tag} (${job.via}) ${agent.name} starting in ${cwd}${resume ? ' (resume ' + resume.slice(0, 8) + ')' : ' (new session)'}${ctx ? ' [game context]' : ''}${running.size ? ' [' + (running.size + 1) + ' running]' : ''}`);
+  log(`${tag} (${job.via}) ${agent.name} starting in ${cwd}${resume ? ' (resume ' + resume.slice(0, 8) + ')' : ' (new session)'}${ctx ? ' [game context]' : ''}${effort ? ' [effort ' + effort + ']' : ''}${running.size ? ' [' + (running.size + 1) + ' running]' : ''}`);
   const child = spawn(cmd.file, args, { cwd, env, windowsHide: true, stdio: [input.stdin !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
   running.set(key, { job, child });
   publish(key, { chat: job.chat, id: job.id, status: 'working', text: resume ? 'thinking...' : 'starting a new session...', cwd, session: resume, agent: agentId }, true);
@@ -582,6 +584,7 @@ function runJob(job) {
   };
   if (agent.stream === 'text') pushProgress(`${agent.name} is working (no live progress)`);
   if (input.note) notes.push(input.note);
+  if (effortNote) notes.push(effortNote);
   // Long thinking stretches produce no tool events; keep the heartbeat alive anyway.
   const keepalive = setInterval(() => beat(job), 45000);
 
