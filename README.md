@@ -13,7 +13,7 @@ Chat with your local coding agents from inside **World of Warcraft: Forever**: [
 - The agent can draw on your world map: numbered routes, quest stops and marks, with a navigator arrow that walks you from stop to stop
 - Herb and ore spawns on the world map, filtered by your gathering skill (`/claude-wow map ore`, `/claude-wow map herb`)
 - Ready-made macros: ask for one and the reply carries a **Create macro** button that saves it and puts it on your cursor, ready to drop on an action bar (`/claude-wow macro undo` reverts it)
-- An **Allow & retry** button when Claude or Grok needs a command outside your allowlist
+- **Need / Greed / Pass** on permissions: when Claude or Grok needs a command outside your allowlist, it drops as an epic item in a group-loot roll frame
 - A status light for the bridge, automatic retries, and recovery of your chats (and map layers) if the beta client wipes addon data
 - Runs on Windows, on Linux with the game under Wine, and on macOS with a native client
 
@@ -208,6 +208,18 @@ The system prompt tells every agent how to hand marks to the bridge: append comm
 ### Permissions
 
 The agents run headless, so they can't ask you to approve a tool. Each agent's block in `~/.claude-wow/config.json` has a `permissionMode`, `acceptEdits` by default: file edits inside the project are auto-approved, `allowedTools` lists the commands it may run (`Bash(git:*)` is any command starting with `git`; the same rule syntax for every agent, translated for Grok), and `deniedTools` the ones it never may. What happens to anything else differs. Claude denies it. Codex has no allowlist: it runs commands in a sandbox that can write the project folder but not reach the network (unless `networkAccess` is on), and explains a blocked command in its reply. Grok's headless mode runs ordinary commands on its own and blocks the dangerous ones (deleting a project file, pushing) unless a rule allows them. With Claude and Grok the reply then grows an **Allow WebSearch, Bash(cargo:*) & retry** button: click it, the rules are added to that agent's list in your config permanently, and the agent resumes where it stopped. The rule is a prefix (`Bash(rm:*)` allows any `rm`), so read the button before clicking. `bypassPermissions` gives any agent full autonomy; you decide. The mapping per agent, as measured against the real CLIs, is in [docs/AGENTS.md](docs/AGENTS.md).
+
+#### Need, Greed or Pass
+
+By default a denial does not show that button. It pops a frame in the style of the group loot roll instead. The denied command is the item, in epic purple: a scroll for a shell command, a gear for any other tool. Hover the icon to read the exact rules.
+
+| Button | What it does |
+|---|---|
+| **Need** (dice) | Allow & retry: the rules go into your config for good |
+| **Greed** (coin) | Allow for this one retry only: the bridge passes the rules to that run and saves nothing |
+| **Pass** (X) | Deny: nothing is sent, the agent is not retried |
+
+The bar under the item counts down 60 seconds. When it runs out, that is a Pass. Each choice plays the game's own loot sounds. `/claude-wow roll off` brings back the **Allow & retry** button, and `/claude-wow roll on` returns to the roll frame.
 
 ## Configuration (`~/.claude-wow/config.json`)
 
