@@ -35,6 +35,20 @@ jobs:
       - run: npm run test:bun
         if: matrix.runtime == 'bun'
 
+  e2e:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run test:e2e
+
   build:
     # The binaries (build.js): all four targets compile from one Linux runner
     # (Bun cross-compiles), and the one for that runner starts. They are kept
