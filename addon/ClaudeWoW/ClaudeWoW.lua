@@ -2136,7 +2136,7 @@ end
 -- opts.vision asks for a picture of the screen with this one message, whatever
 -- the setting ("/claude-wow look <question>").
 function ClaudeWoW.Send(text, allow, opts)
-	local c = ActiveChat()
+	local c = (opts and opts.chat and FindChat(opts.chat)) or ActiveChat()
 	if not c then return end
 	text = Trim(text or "")
 	if c.pendingId then
@@ -2179,6 +2179,7 @@ function ClaudeWoW.Send(text, allow, opts)
 	if c.agent and c.agent ~= "" then table.insert(tokens, "agent=" .. c.agent) end
 	if c.plugin and c.plugin ~= "" then table.insert(tokens, "plugin=" .. c.plugin) end
 	if db.settings.vision or (opts and opts.vision) then table.insert(tokens, "v") end
+	if opts and opts.kind then table.insert(tokens, "kind=" .. opts.kind) end
 	local allowHex
 	if type(allow) == "table" and #allow > 0 then
 		table.insert(tokens, "allow=" .. table.concat(allow, ","))
@@ -2344,6 +2345,14 @@ function ClaudeWoW.SwitchChat(id)
 	end
 	ClaudeWoW.Render()
 	ClaudeWoW.RenderChatList()
+end
+
+function ClaudeWoW.AddChat(name, fields)
+	local c = AddChat(name)
+	if not c then return nil end
+	for k, v in pairs(fields or {}) do c[k] = v end
+	ClaudeWoW.RenderChatList()
+	return c
 end
 
 function ClaudeWoW.NewChat(name)
@@ -3889,6 +3898,7 @@ local HELP = table.concat({
 	"/claude-wow context <n>            warn once, with a New chat button, when a chat's context passes n tokens (100k by default; 0 = never). The footer shows ctx and turns per chat",
 	"/claude-wow vision [on|off]        send a picture of your screen with each message, so the agent can see what you see (screenshot transport; off by default)",
 	"/claude-wow look <question>        send this one message with a picture of your screen, whatever the vision setting",
+	"/claude-wow roast [on|off]         when you die, the agent gets a recap of the hits that killed you and writes a short roast in the \"Death roasts\" chat (off by default; at most one every 2 minutes)",
 	"/claude-wow map [...]              map layers the agent drew, the route navigator and herb/ore nodes (no argument = status and subcommands; /aimap is the same)",
 	"/claude-wow mode pixel             no-reload transport (default)",
 	"/claude-wow mode reload            fallback transport: a /reload per step",
@@ -3931,6 +3941,7 @@ local COMMAND_ARGS = {
 	whisper = { [""] = true, on = true, off = true },
 	vision = { [""] = true, on = true, off = true },
 	look = true, -- /claude-wow look <question>: one message with a picture of the screen
+	roast = { [""] = true, on = true, off = true },
 	auto = OnOffOrNumber,
 	echo = function(rest) return rest == "" or rest == "summary" or rest == "full" or rest == "short" or rest == "off" or tonumber(rest) ~= nil end,
 	bind = 1, agent = 1, plugin = 1,
@@ -4025,6 +4036,8 @@ SlashCmdList["CLAUDEWOW"] = function(msg)
 		ClaudeWoW.Toggle(true)
 	elseif cmd == "map" then
 		if ClaudeWoWMap then ClaudeWoWMap.Command(rest) else print("|cff66ccff[Claude WoW]|r the map module did not load") end
+	elseif cmd == "roast" then
+		if ClaudeWoWRoast then ClaudeWoWRoast.Command(rest) else print("|cff66ccff[Claude WoW]|r the roast module did not load") end
 	elseif cmd == "agent" then
 		ClaudeWoW.SetAgent(rest, c)
 		ClaudeWoW.Toggle(true)

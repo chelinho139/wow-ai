@@ -56,6 +56,7 @@ const AS = require('./assets');  // the capture scripts and the primer, by path,
 const registry = PL.createRegistry();
 registry.register(require('./plugins/ask'));
 registry.register(require('./plugins/claude-code'));
+registry.register(require('./plugins/roast'));
 
 const HERE = __dirname;
 // Config, state, transcripts, log and scratch live in the home folder (home.js:
