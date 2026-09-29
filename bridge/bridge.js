@@ -37,7 +37,7 @@
 const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
-const { spawn } = require('child_process');
+const PR = require('./procs');  // the children (agent runs, the capture script): their process groups, and ending them for good (tests/procs_test.js)
 const P = require('./protocol'); // the pure protocol code, unit-tested in tests/bridge_test.js
 const A = require('./agents');   // how each agent is launched and read, unit-tested in tests/agents_test.js
 const D = require('./decode');   // PNG/TGA reader + strip decoder for the screenshot transport (tests/decode_test.js)
@@ -276,18 +276,33 @@ function atomicWrite(file, content) {
   fs.renameSync(tmp, file);
 }
 
-// Stop a run and whatever it spawned (an npm launcher runs the real binary as a
-// child of its own; on Windows a plain kill would leave that one going).
-function killTree(child) {
-  if (process.platform === 'win32') {
-    try {
-      const k = spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
-      k.on('error', () => { try { child.kill(); } catch {} });
-      return;
-    } catch {}
-  }
-  try { child.kill(); } catch {}
+// Stop a run and whatever it spawned: an npm launcher runs the real binary as a
+// child of its own, an agent shells out to builds and test runs. procs.js: on
+// POSIX every child leads its own process group and the group gets SIGTERM,
+// then SIGKILL after killGraceMs (a child that ignores SIGTERM would otherwise
+// hold its pipes open, 'close' would never fire, and the chat would sit in
+// `running` until a restart); on Windows taskkill /T /F.
+const KILL_GRACE_MS = Number.isFinite(cfg.killGraceMs) && cfg.killGraceMs >= 0 ? cfg.killGraceMs : PR.DEFAULT_GRACE_MS;
+function killTree(child) { PR.killTree(child, { graceMs: KILL_GRACE_MS, log }); }
+
+// Ctrl+C, `claude-wow service stop`, a kill of this pid: end the agent runs
+// and the capture script first (they are in process groups of their own now,
+// so the terminal's Ctrl+C does not reach them by itself), then exit with the
+// signal's usual code; the supervisor restarts a bridge that went this way
+// unless it is stopping too. A second signal while that is going changes nothing.
+let shuttingDown = false;
+let captureChild = null; // the capture script on the pixel transport (startCapture)
+function shutdown(sig) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  const kids = [...running.values()].map(r => r.child);
+  if (captureChild) kids.push(captureChild);
+  const n = kids.filter(PR.alive).length;
+  log(`${sig}: stopping${n ? `; ending ${n} child process${n === 1 ? '' : 'es'} (SIGTERM, SIGKILL after ${KILL_GRACE_MS} ms)` : ''}`);
+  PR.killAll(kids, { graceMs: KILL_GRACE_MS, log }, () => process.exit(sig === 'SIGINT' ? 130 : 143));
 }
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 // ---------------------------------------------------------------------------
 // What the game reads
@@ -584,6 +599,7 @@ function inFlight(job) {
 }
 
 function drainQueue() {
+  if (shuttingDown) return; // a run ending under the shutdown must not start the next one
   for (const [key, job] of queued) {
     if (running.size >= MAX_PARALLEL) break;
     if (running.has(key)) continue;
@@ -724,7 +740,7 @@ function runAgent(job, opts = {}) {
   }
 
   log(`${tag} (${job.via}) [${plugin.id}] ${agent.name} starting in ${cwd}${resume ? ' (resume ' + resume.slice(0, 8) + ')' : ' (new session)'}${ctx ? ' [game context]' : ''}${image ? ` [screen ${image.width}x${image.height}, ${Math.round(image.bytes / 1024)} KB]` : ''}${running.size ? ' [' + (running.size + 1) + ' running]' : ''}`);
-  const child = spawn(cmd.file, args, { cwd, env, windowsHide: true, stdio: [input.stdin !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
+  const child = PR.spawnChild(cmd.file, args, { cwd, env, windowsHide: true, stdio: [input.stdin !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
   running.set(key, { job, child });
   publish(key, { chat: job.chat, id: job.id, status: 'working', text: resume ? 'thinking...' : 'starting a new session...', cwd: job.cwd, session: resume, agent: agentId, plugin: plugin.id }, true);
   if (input.stdin !== undefined) { child.stdin.on('error', () => {}); child.stdin.end(input.stdin); }
@@ -794,7 +810,7 @@ function runAgent(job, opts = {}) {
   child.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8'); });
 
   const timer = setTimeout(() => {
-    log(`${tag} timed out after ${cfg.timeoutMs} ms, killing`);
+    log(`${tag} timed out after ${cfg.timeoutMs || 1800000} ms; ending it and everything it started (SIGTERM, SIGKILL after ${KILL_GRACE_MS} ms)`);
     killTree(child);
   }, cfg.timeoutMs || 1800000);
 
@@ -842,6 +858,8 @@ function runAgent(job, opts = {}) {
       finish(job, 'done', (body + extra).trim(), sessionId, [...denied]);
     } else if (result) {
       finish(job, 'error', (String(result.text || '') + extra).trim(), sessionId, [...denied]);
+    } else if (shuttingDown) {
+      finish(job, 'error', `The bridge was stopped while ${agent.name} was still working. Send the message again once it is back.`, sessionId);
     } else {
       finish(job, 'error', `${agent.name} exited with code ${code} and no result.\n${stderr.trim().slice(-1500)}`, sessionId);
     }
@@ -876,7 +894,7 @@ function finish(job, status, text, session, denied) {
   signal('sig', job.id, true);
   log(`#${job.id}${job.session ? '@' + job.session : ''} ${status} (${text.length} chars${summary ? ', summary ' + summary.length : ', no summary'})`);
   drainQueue();
-  if (exitWhenIdle && running.size === 0) process.exit(status === 'done' ? 0 : 1);
+  if (exitWhenIdle && running.size === 0 && !shuttingDown) process.exit(status === 'done' ? 0 : 1); // under a shutdown, shutdown() exits
 }
 
 // ---------------------------------------------------------------------------
@@ -916,8 +934,9 @@ function captureCommand() {
 }
 
 function startCapture() {
+  if (shuttingDown) return;
   const [cmd, args] = captureCommand();
-  const ps = spawn(cmd, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  const ps = captureChild = PR.spawnChild(cmd, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   const rl = readline.createInterface({ input: ps.stdout });
   rl.on('line', (line) => {
     let ev;
@@ -937,6 +956,8 @@ function startCapture() {
   ps.stderr.on('data', (d) => log('capture stderr:', String(d).trim().slice(0, 300)));
   ps.on('error', (err) => log(`capture could not start (${cmd}): ${err.message}`));
   ps.on('close', (code) => {
+    if (captureChild === ps) captureChild = null;
+    if (shuttingDown) return;
     log(`capture exited (${code}); restarting in 5 s`);
     setTimeout(startCapture, 5000);
   });

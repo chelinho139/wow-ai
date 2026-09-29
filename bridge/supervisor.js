@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 'use strict';
-// Keeps bridge.js running: restarts it 3 s after any exit. Ctrl+C stops both.
+// Keeps bridge.js running: restarts it 3 s after any exit. Ctrl+C stops both:
+// the bridge ends its agent runs and the capture script on its own SIGINT/SIGTERM
+// (bridge.js, procs.js), and the supervisor waits for it before it goes.
 // This is also the `claude-wow` command (package.json "bin", and the compiled
 // binary's entry): arguments and the current folder pass straight through to
 // bridge.js, so `cd proj && claude-wow` makes proj the default folder for chats.
@@ -76,10 +78,15 @@ function supervise() {
   }
 
   function stop() {
+    if (stopping) return;
     stopping = true;
-    if (child) child.kill();
-    svc.clearPid(dirs);
-    process.exit(0);
+    const gone = () => { svc.clearPid(dirs); process.exit(0); };
+    if (!child) return gone();
+    // SIGTERM; the bridge ends its own children (SIGTERM, then SIGKILL after
+    // its killGraceMs) and exits. Wait for that, within reason, then make sure.
+    const hard = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 10000);
+    child.once('exit', () => { clearTimeout(hard); gone(); });
+    try { child.kill(); } catch { clearTimeout(hard); gone(); }
   }
 
   process.on('SIGINT', stop);

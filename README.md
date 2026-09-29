@@ -227,6 +227,7 @@ The keys you are most likely to touch. Every key, flag and environment variable 
 | `capture.keepComposited`, `capture.windowName` | Linux: keep the compositor drawing the game window (if the probe sees black), or find the window by title |
 | `slots`, `actMax`, `presenceMax` | pool sizes; must match the constants at the top of `ClaudeWoW.lua` if you change them |
 | `timeoutMs` | kill a run that takes longer than this (default 30 min) |
+| `killGraceMs` | how long a run's process group gets after `SIGTERM` before `SIGKILL`, on a timeout or when the bridge stops (default 5 s) |
 
 ## Troubleshooting
 
