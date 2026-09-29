@@ -215,6 +215,23 @@ The system prompt tells every agent how to hand marks to the bridge: append comm
 
 `/aimap` is a shorter alias. To remove layers for good, ask the agent ("clear the map", "remove the mining route").
 
+### Voice lines
+
+Your character talks back while the agent works. By default the lines are your own race and gender's emote and error voices: a *yes* when a message goes out, a *hello* when the bridge picks it up, a *cheer* when the reply lands, the "can't use that item" error voice when a run fails, and the "ability not ready yet" error voice when a reply waits on **Allow & retry**. Two other packs swap in the Warcraft III workers: `peasant` (*"Ready to work"*, *"More work?"*) and `peon` (*"Work work"*, *"Work complete"*). Lines closer than 2 seconds apart are dropped, except that a reply cuts off an ack.
+
+Nothing is shipped: the addon plays sounds the game client already has, by FileDataID. The WoW client has no *"Job's done!"* recording, so the peasant's done line is *"More work?"*.
+
+| Command | What it does |
+|---|---|
+| `/claude-wow voice` | show the pack and the line for each event (`sent`, `started`, `done`, `error`, `permission`) |
+| `/claude-wow voice race\|peasant\|peon\|off` | pick the pack; `race` follows the character you are logged in on |
+| `/claude-wow voice set <event> <line>` | override one event: a line of the current pack (`cheer`), of a named pack (`peon:workcomplete`), `off`, or `default` |
+| `/claude-wow voice lines [pack]` | the line names a pack has |
+| `/claude-wow voice test <event\|line>` | play it now |
+| `/claude-wow voice reset` | back to the race pack with no overrides |
+
+The settings are saved with the addon's other settings (`ClaudeWoWDB.voice`).
+
 ### Permissions
 
 The agents run headless, so they can't ask you to approve a tool. Each agent's block in `~/.claude-wow/config.json` has a `permissionMode`, `acceptEdits` by default: file edits inside the project are auto-approved, `allowedTools` lists the commands it may run (`Bash(git:*)` is any command starting with `git`; the same rule syntax for every agent, translated for Grok), and `deniedTools` the ones it never may. What happens to anything else differs. Claude denies it. Codex has no allowlist: it runs commands in a sandbox that can write the project folder but not reach the network (unless `networkAccess` is on), and explains a blocked command in its reply. Grok's headless mode runs ordinary commands on its own and blocks the dangerous ones (deleting a project file, pushing) unless a rule allows them. With Claude and Grok the reply then grows an **Allow WebSearch, Bash(cargo:*) & retry** button: click it, the rules are added to that agent's list in your config permanently, and the agent resumes where it stopped. The rule is a prefix (`Bash(rm:*)` allows any `rm`), so read the button before clicking. `bypassPermissions` gives any agent full autonomy; you decide. The mapping per agent, as measured against the real CLIs, is in [docs/AGENTS.md](docs/AGENTS.md).
