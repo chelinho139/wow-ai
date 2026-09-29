@@ -96,12 +96,15 @@ These sizes are baked into the files `install-slots.js` creates, and the addon h
 
 ## Command line
 
-`claude-wow` (the installer's command, `npm link`, or the Homebrew formula) and `node bridge/bridge.js` take the same flags. `npm start` runs `bridge/supervisor.js`, which restarts the bridge on crash and passes flags through. Two subcommands are handled by the supervisor itself:
+`claude-wow` (the installer's binary or shim, `npm link`, or the Homebrew formula) and `node bridge/bridge.js` take the same flags. `npm start` runs `bridge/supervisor.js`, which restarts the bridge on crash and passes flags through. The subcommands are handled by the supervisor itself:
 
 | Subcommand | Meaning |
 |---|---|
 | `claude-wow setup [...]` | Runs `setup.js` with the given flags (see [`setup.js` flags](#setupjs-flags)). |
 | `claude-wow service install\|uninstall\|start\|stop\|restart\|status\|logs [-n N] [-f]` | The bridge as a per-user background service that starts at login and comes back after a crash: a LaunchAgent on macOS, a systemd `--user` unit on Linux, a Startup-folder launcher on Windows. `status` exits 0 when running, 3 when not. See [INSTALL.md](INSTALL.md#running-the-bridge). |
+| `claude-wow bridge [...]` | `bridge.js` alone, in this process, with the flags below and no restarts. This is how the supervisor runs the bridge from the compiled binary, which has no node to hand a script path to (`bridge/runtime.js`); it works from a checkout too. |
+| `claude-wow install-slots` | `install-slots.js` alone (setup runs it for you); from the binary, how setup runs it. |
+| `claude-wow --version` | The version and the runtime: `claude-wow 0.4.0 (node 24.21.0)`, `(bun 1.4.2)` or `(claude-wow binary (bun 1.4.2))`. |
 
 Environment: `CLAUDE_WOW_SERVICE=1` is set by the service definitions and tells the supervisor to write its output to the service log and a pid file instead of a terminal; `CLAUDE_WOW_HOME` (below) is passed through to the service when set.
 

@@ -30,15 +30,31 @@ test('install.sh parses, and its Node gate accepts 22.2+ only', { skip: !hasSh &
   assert.match(ok('v20.0.0').stdout, /need 22\.2/);
 });
 
-test('install.sh: unknown options and a missing Node fail loudly with a hint', { skip: !hasSh && 'no sh here' }, () => {
+test('install.sh: unknown options and a missing Node (from source) fail loudly with a hint', { skip: !hasSh && 'no sh here' }, () => {
   const bad = spawnSync('sh', [SH, '--frobnicate'], { encoding: 'utf8' });
   assert.equal(bad.status, 1);
   assert.match(bad.stderr, /install failed: unknown option --frobnicate/);
-  assert.match(bad.stderr, /-> Options:/);
-  const noNode = spawnSync('/bin/sh', [SH, '--no-service'], { encoding: 'utf8', env: { PATH: '/nonexistent', HOME: process.env.HOME } });
-  assert.equal(noNode.status, 1);
-  assert.match(noNode.stderr, /Node\.js is not installed/);
-  assert.match(noNode.stderr, /nodejs\.org/);
+  assert.match(bad.stderr, /-> Options:.*--from-source/);
+  // From source, or with nothing on the PATH to fetch a binary with, Node is required and its absence is the message.
+  for (const args of [['--no-service', '--from-source'], ['--no-service']]) {
+    const noNode = spawnSync('/bin/sh', [SH, ...args], { encoding: 'utf8', env: { PATH: '/nonexistent', HOME: process.env.HOME } });
+    assert.equal(noNode.status, 1, args.join(' '));
+    assert.match(noNode.stderr, /Node\.js is not installed/);
+    assert.match(noNode.stderr, /nodejs\.org/);
+  }
+});
+
+test('install.sh: the binary route names the release asset build.js produces for this machine, and verifies it', { skip: !hasSh && 'no sh here' }, () => {
+  const asset = spawnSync('sh', [SH, '--binary-asset'], { encoding: 'utf8' }).stdout.trim();
+  const B = require('../build');
+  if (['bun-darwin-arm64', 'bun-darwin-x64', 'bun-linux-x64'].includes(B.hostTarget())) assert.equal(asset, B.outName(B.hostTarget()));
+  else assert.equal(asset, '', 'no binary for this platform: the source route');
+  const src = fs.readFileSync(SH, 'utf8');
+  assert.match(src, /releases\/latest\/download/, 'fetches from the GitHub release');
+  assert.match(src, /SHA256SUMS/, 'checks the checksum');
+  assert.match(src, /mv -f "\$tmp\/\$asset" "\$BIN_DIR\/claude-wow"/, 'replaces the binary by rename, so a running bridge keeps its file');
+  assert.match(src, /service help/, 'runs the download once before keeping it');
+  assert.match(src, /get_source/, 'falls back to the source');
 });
 
 test('install.ps1 parses, and its Node gate matches the shell one', { skip: !pwsh && 'no PowerShell here' }, () => {
@@ -71,6 +87,10 @@ test('the installers put the code under the home folder, name the claude-wow com
   assert.ok(!/WOW_AI_/.test(sh), 'no WOW_AI_* variable left');
   const ps = fs.readFileSync(PS1, 'utf8');
   assert.match(ps, /'claude-wow\.cmd'/);
+  assert.match(ps, /'claude-wow\.exe'/, 'the binary route');
+  assert.match(ps, /claude-wow-windows-x64\.exe/, 'the release asset build.js produces');
+  assert.match(ps, /SHA256SUMS/);
+  assert.match(ps, /Get-Source/, 'falls back to the source');
   assert.match(ps, /Programs\\claude-wow'/);
   assert.match(ps, /\$OldDir = Join-Path \$env:LOCALAPPDATA 'Programs\\wow-ai'/);
   assert.match(ps, /'config\.json', 'state\.json', 'transcripts\.json'/);

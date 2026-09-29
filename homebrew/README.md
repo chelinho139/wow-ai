@@ -14,10 +14,18 @@ Then:
 
 ```sh
 brew tap rdimascio/claude-wow
-brew install --HEAD claude-wow   # head-only until the repo has a tagged release
+brew install claude-wow          # the release binary (macOS arm64 and x64): no Node.js
+brew install --HEAD claude-wow   # or the checkout, run with Homebrew's node
 claude-wow setup                 # game side: addon, config.json, slot pool
 claude-wow service install       # optional: background service
 ```
+
+The stable formula fetches one self-contained binary (`build.js`: the bridge, setup
+and the service commands with Bun's runtime inside) from the tagged release and
+puts it in `bin` as `claude-wow`; nothing else is installed. `--HEAD` clones the
+repo and runs it with Homebrew's `node`, as the formula always did. Until the first
+tagged release exists, only `--HEAD` installs; the formula's two `sha256` lines are
+filled in from the release's `SHA256SUMS` when it is cut.
 
 ## The split, honestly
 
@@ -38,7 +46,7 @@ none of that; `claude-wow service restart` afterwards picks up the new code, and
 ## Checking the formula locally
 
 ```sh
-brew install --HEAD --formula ./homebrew/Formula/claude-wow.rb
+brew install --HEAD --formula ./homebrew/Formula/claude-wow.rb   # (or without --HEAD once a release exists)
 brew test claude-wow
 claude-wow service help
 brew uninstall claude-wow

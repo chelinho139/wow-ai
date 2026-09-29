@@ -8,8 +8,8 @@ The install itself is in [INSTALL.md](INSTALL.md): one line in PowerShell, or by
 |---|---|---|
 | Windows 10/11 on NTFS | | |
 | World of Warcraft: Forever, **windowed or borderless** | Options → Graphics → Display Mode | Exclusive fullscreen blocks screen capture, so the bridge can't see your messages |
-| Node.js 22.2 or newer | `node -v` prints `v22.x` or higher | [nodejs.org](https://nodejs.org), the LTS installer; tick "Add to PATH" (default). Or `winget install OpenJS.NodeJS.LTS` |
-| Git (optional; the installer downloads the archive without it) | `git --version` | [git-scm.com](https://git-scm.com/download/win) |
+| Nothing else with the installer: it fetches the `claude-wow` binary (Windows x64), which has its runtime inside | `claude-wow --version` after installing | The by-hand route below, and the installer where there is no binary yet, run the checkout and need Node.js 22.2 or newer (`node -v`): [nodejs.org](https://nodejs.org), the LTS installer, tick "Add to PATH" (default), or `winget install OpenJS.NodeJS.LTS` |
+| Git (optional; only for a from-source install, and the installer downloads the archive without it) | `git --version` | [git-scm.com](https://git-scm.com/download/win) |
 | At least one agent CLI, logged in (they work side by side) | | |
 | · Claude Code | `claude --version` prints a version | [claude.com/claude-code](https://claude.com/claude-code), then run `claude` once and log in |
 | · Codex | `codex --version` prints a version | `npm install -g @openai/codex`, then run `codex` once and log in |
@@ -25,9 +25,9 @@ Open a new terminal after installing Node or Git so the `PATH` change is picked 
 irm https://raw.githubusercontent.com/rdimascio/claude-wow/main/install.ps1 | iex
 ```
 
-Set `$env:CLAUDE_WOW_WOW` first if the client is somewhere setup will not look (it tries `Program Files (x86)\World of Warcraft\_classic_beta_` and a few other common places), and `$env:CLAUDE_WOW_PROJECT` for the default project folder. The installer puts the code in `%LocalAppData%\Programs\claude-wow`, adds its `bin` folder to your user `PATH` (no administrator rights), runs setup, and offers to start the bridge at login. Everything after that, including the service and updating, is in [INSTALL.md](INSTALL.md).
+Set `$env:CLAUDE_WOW_WOW` first if the client is somewhere setup will not look (it tries `Program Files (x86)\World of Warcraft\_classic_beta_` and a few other common places), and `$env:CLAUDE_WOW_PROJECT` for the default project folder. The installer downloads the `claude-wow.exe` binary from the project's GitHub release into `%LocalAppData%\Programs\claude-wow\bin` (checked against the release's `SHA256SUMS`; with `$env:CLAUDE_WOW_SOURCE = "1"`, or where there is no release yet, it installs the source there instead and runs it with Node.js, which it then checks for), adds that `bin` folder to your user `PATH` (no administrator rights), runs setup, and offers to start the bridge at login. Everything after that, including the service and updating, is in [INSTALL.md](INSTALL.md).
 
-By hand instead: `git clone https://github.com/rdimascio/claude-wow`, `cd claude-wow`, `node setup.js --project "C:\path\to\your\project"`, then `npm start`. `bridge\start-window.cmd` is the double-click version that opens its own window; `bridge\start.ps1` runs it in the current PowerShell.
+By hand instead (Node.js 22.2+ or Bun): `git clone https://github.com/rdimascio/claude-wow`, `cd claude-wow`, `node setup.js --project "C:\path\to\your\project"`, then `npm start`. `bridge\start-window.cmd` is the double-click version that opens its own window; `bridge\start.ps1` runs it in the current PowerShell.
 
 ## The `claude-wow` command on Windows
 

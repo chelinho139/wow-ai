@@ -52,7 +52,7 @@ The bridge drives whichever of these you have installed; each chat can use a dif
 
 - Windows (NTFS), or Linux with the game under Wine (see [docs/INSTALL-LINUX.md](docs/INSTALL-LINUX.md)), or macOS with a native client; python3 for the pixel-capture transport off Windows
 - World of Warcraft: Forever (tested on 1.60.1.69913 and 1.60.1.69977, TOC 16001), **windowed or borderless** (exclusive fullscreen blocks screen capture)
-- [Node.js](https://nodejs.org) 22.2 or newer
+- Nothing else for the installer and the Homebrew route: the bridge ships as one self-contained binary (macOS arm64 and x64, Linux x64, Windows x64). From a checkout it runs on [Node.js](https://nodejs.org) 22.2 or newer, or on [Bun](https://bun.sh)
 - At least one agent CLI, installed and logged in:
   - [Claude Code](https://claude.com/claude-code): `claude --version` works
   - [Codex](https://developers.openai.com/codex): `npm install -g @openai/codex`, then `codex` once to log in
@@ -76,7 +76,7 @@ Windows (PowerShell):
 irm https://raw.githubusercontent.com/rdimascio/claude-wow/main/install.ps1 | iex
 ```
 
-The installer checks for Node 22.2+, puts the code in `~/.claude-wow/app` (Windows: `%LocalAppData%\Programs\claude-wow`) and a `claude-wow` command on your PATH, runs the game-side setup (addon into `Interface/AddOns/ClaudeWoW`, `~/.claude-wow/config.json`, the slot pool: ≈15,000 tiny files, which is normal since the client only discovers addon files at launch), and offers to run the bridge in the background from now on. It never uses sudo, is safe to re-run (that is how you update), and stops with a message saying what to do if anything is missing. Pass `--wow "<client folder>"` if setup cannot find the client and `--project <folder>` for the default folder the agents work in (after `sh -s --`; on Windows through `$env:CLAUDE_WOW_WOW` and `$env:CLAUDE_WOW_PROJECT`).
+The installer downloads the `claude-wow` binary for your machine into `~/.local/bin` (Windows: `%LocalAppData%\Programs\claude-wow\bin`, on your user PATH), checks it against the release's checksums, runs the game-side setup (addon into `Interface/AddOns/ClaudeWoW`, `~/.claude-wow/config.json`, the slot pool: ≈15,000 tiny files, which is normal since the client only discovers addon files at launch), and offers to run the bridge in the background from now on. It never uses sudo, is safe to re-run (that is how you update), and stops with a message saying what to do if anything is missing. Pass `--wow "<client folder>"` if setup cannot find the client and `--project <folder>` for the default folder the agents work in (after `sh -s --`; on Windows through `$env:CLAUDE_WOW_WOW` and `$env:CLAUDE_WOW_PROJECT`). Where there is no binary for your machine (another platform, or no release yet), or with `--from-source` (`$env:CLAUDE_WOW_SOURCE = "1"`), it installs the source into `~/.claude-wow/app` (Windows: `%LocalAppData%\Programs\claude-wow`) and runs it with Node.js 22.2+, which it then checks for.
 
 Then **fully quit and relaunch WoW**, enable *Claude WoW* on the AddOns screen, and:
 
@@ -88,7 +88,7 @@ claude-wow service status     # running? pid, uptime, last log lines   (also: lo
 
 In game: `/claude-wow`. The bridge's banner lists every agent with where its executable was found, or what to install.
 
-Other routes: `brew tap rdimascio/claude-wow && brew install --HEAD claude-wow` then `claude-wow setup` (Homebrew cannot install the addon; see [docs/INSTALL.md](docs/INSTALL.md#route-2-homebrew-macos)), or `git clone` and `node setup.js` then `npm start` by hand. Platform notes: [docs/INSTALL-WINDOWS.md](docs/INSTALL-WINDOWS.md), [docs/INSTALL-LINUX.md](docs/INSTALL-LINUX.md), and the macOS section below.
+Other routes: `brew tap rdimascio/claude-wow && brew install claude-wow` (the binary; `--HEAD` for the checkout with Homebrew's node) then `claude-wow setup` (Homebrew cannot install the addon; see [docs/INSTALL.md](docs/INSTALL.md#route-2-homebrew-macos)), or `git clone` and `node setup.js` then `npm start` by hand (Node 22.2+ or Bun). Platform notes: [docs/INSTALL-WINDOWS.md](docs/INSTALL-WINDOWS.md), [docs/INSTALL-LINUX.md](docs/INSTALL-LINUX.md), and the macOS section below.
 
 ### macOS (native client)
 

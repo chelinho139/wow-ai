@@ -8,7 +8,7 @@ The addon is the same as on Windows; only the bridge's screen capture differs. O
 
 - The game under Wine (Lutris, Bottles, a hand-made prefix...), **windowed or borderless**.
 - For the pixel transport: an **X11** session (`echo $XDG_SESSION_TYPE` prints `x11`) and python3. Wayland blocks reading other windows' pixels; the screenshot transport works there.
-- Node.js 22.2+, and at least one agent CLI logged in (see [AGENTS.md](AGENTS.md)).
+- At least one agent CLI logged in (see [AGENTS.md](AGENTS.md)). Nothing else with the installer on x64: it fetches the `claude-wow` binary, which has its runtime inside. Another architecture, or a checkout run by hand, needs Node.js 22.2+ (or Bun).
 
 ## Install
 

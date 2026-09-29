@@ -18,7 +18,9 @@ const { spawn, spawnSync } = require('child_process');
 const R = require('./runtime');
 
 const argv = process.argv.slice(2);
-if (argv[0] === 'service') {
+if (argv[0] === '--version' || argv[0] === '-v') {
+  console.log(`claude-wow ${require('../package.json').version} (${R.describe()})`);
+} else if (argv[0] === 'service') {
   process.exitCode = require('./service').main(argv.slice(1));
 } else if (argv[0] === 'setup' && R.compiled) {
   // The binary has setup.js inside it: run it here rather than spawn ourselves.
