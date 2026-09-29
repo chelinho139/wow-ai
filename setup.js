@@ -26,10 +26,9 @@ const P = require('./bridge/protocol'); // the addon's name, and its old names
 const H = require('./bridge/home');     // CLAUDE_WOW_HOME: where config.json and the state live
 const R = require('./bridge/runtime');  // node, bun, or the compiled binary
 const A = require('./bridge/agents');   // which agent CLIs this PC has
-const ROOT = __dirname;
-const BRIDGE = path.join(ROOT, 'bridge');
-const ADDON_SRC = path.join(ROOT, 'addon', P.ADDON);
-const EXAMPLE = path.join(BRIDGE, 'config.example.json');
+const AS = require('./bridge/assets');  // the addon, the config template and the capture scripts, by path
+const ADDON_SRC = AS.dir('addon/' + P.ADDON);
+const EXAMPLE = AS.file('bridge/config.example.json');
 let CONFIG = H.resolve().config; // settled in main(), after the legacy layout has been migrated
 
 const args = {};
@@ -72,11 +71,11 @@ function resolveProject(raw) {
   if (!fs.statSync(abs).isDirectory()) throw new Error(`--project "${p}" is not a folder (${abs})`);
   return abs;
 }
+
 // A folder listing, sorted: Node's comes back alphabetical (libuv sorts it),
 // Bun's in the order the OS gives, and "the first account" or "the first
 // game executable" must be the same choice from a checkout and from the binary.
 const listDir = dir => fs.readdirSync(dir).sort();
-
 
 function isClient(dir) {
   try {
@@ -271,7 +270,7 @@ function pythonReport(cfg) {
 function macCaptureReport(cfg) {
   if (process.platform !== 'darwin') return;
   const py = (cfg.capture && cfg.capture.python) || 'python3';
-  const r = spawnSync(py, [path.join(BRIDGE, 'capture_mac.py'), '--check',
+  const r = spawnSync(py, [AS.file('bridge/capture_mac.py'), '--check',
     '--process-name', (cfg.capture && cfg.capture.processName) || 'World of Warcraft'], { encoding: 'utf8' });
   if (r.error) return; // python already reported missing
   const rows = String(r.stdout || '').trim().split('\n').filter(Boolean).map(l => {

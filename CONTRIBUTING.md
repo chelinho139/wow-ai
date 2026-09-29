@@ -16,11 +16,14 @@ bridge/               the companion process (Node.js, no runtime dependencies)
   agents.js             one entry per agent (Claude, Codex, Grok, Antigravity, Hermes): command line, prompt delivery, stream parser
   capture.ps1           screen capture and strip decoder (PowerShell)
   install-slots.js      creates the slot addons and signal files
-  supervisor.js         restarts bridge.js on crash; the `claude-wow` command (and `claude-wow setup` / `claude-wow service`)
+  supervisor.js         restarts bridge.js on crash; the `claude-wow` command (and `claude-wow setup` / `claude-wow service` / `claude-wow bridge`)
   service.js            `claude-wow service`: LaunchAgent / systemd unit / Startup launcher, log rotation, pid file
+  runtime.js            node, bun or the compiled binary: how the bridge runs its own scripts on each
+  assets.js             the capture scripts, the addon, the config template and the primer by path, from a checkout or out of the binary
   config.example.json   template setup.js copies to config.json
 setup.js              one-shot installer (the game side: addon, config.json, slot pool)
-install.sh, install.ps1  the one-line installers (curl | sh, irm | iex): Node check, download, command, setup, service
+build.js, build/      the binaries: `bun build --compile`, one self-contained file per platform, assets embedded (build/entry.js)
+install.sh, install.ps1  the one-line installers (curl | sh, irm | iex): the binary (or Node + source), command, setup, service
 homebrew/             the Homebrew tap layout (Formula/claude-wow.rb) and why it is the secondary route
 tests/                see below
 docs/                 INSTALL.md, ARCHITECTURE.md, AGENTS.md, CONFIGURATION.md, platform notes
@@ -57,10 +60,25 @@ To try changes in the game, run `node setup.js` (it re-copies the addon into `In
 | `node --test tests/service_test.js` | `bridge/service.js`: the LaunchAgent plist (and `plutil -lint` on macOS), the systemd unit and the Windows launcher it writes, `claude-wow service` argument parsing, log rotation and the self-rotating writer, the pid file, the launchctl output parser, and `status` on a clean machine. |
 | `node --test tests/install_test.js` | `install.sh` and `install.ps1`: they parse, the Node 22.2 gate accepts and rejects the right versions, unknown options and a missing Node fail with a hint, and `install.sh` runs nothing until fully read. |
 | `node --test tests/runtime_test.js` | `bridge/runtime.js`: the command that runs each of the bridge's own scripts from a checkout (this node and the script) and from the compiled binary (the binary and a subcommand), and where a JavaScript launcher finds a node in each case. |
+| `node --test tests/assets_test.js` | `bridge/assets.js`: every embedded file exists and the addon folder is covered in full, `build/entry.js` embeds exactly that list, an embedded set is written out once and rewritten only where it differs, and `build.js` names one binary per target. |
 | `node tests/codec_test.js` | `Codec.lua` in a Lua VM, rendered to PNG with noise and gamma, decoded by `capture.ps1` (Windows) or `capture_x11.py` (elsewhere). Writes scratch images to `tests/tmp/` (gitignored). |
 | `npm run test:live` | Not part of `npm test`. Builds a sandbox under `tests/tmp/inject/` with a 5-slot pool and runs the bridge with `--inject` against a real agent CLI: Claude by default, `-- --agent codex` or `-- --agent grok` for the others. Needs that CLI installed and logged in. |
 
 When you change behaviour, add or extend a test in the matching file. Pure logic belongs in `protocol.js` where `bridge_test.js` can reach it without spawning anything.
+
+## Building the binary
+
+The bridge ships as one self-contained file per platform, built with [Bun](https://bun.sh) (`curl -fsSL https://bun.sh/install | bash`, no sudo; Windows: `irm bun.sh/install.ps1 | iex`):
+
+```sh
+npm run build                       # dist/claude-wow-{darwin-arm64,darwin-x64,linux-x64,windows-x64.exe} + dist/SHA256SUMS
+node build.js --host                # only this machine's
+node build.js --target bun-linux-x64
+```
+
+`build.js` runs `bun build --compile` on `build/entry.js`, which imports the non-JavaScript files the bridge hands to other programs (the capture scripts, the addon, `config.example.json`, the primer) with `{ type: 'file' }` so they travel inside the binary, and then requires the supervisor. Cross-compiling downloads the target's Bun runtime once (about 30 MB each). The result is 60 to 85 MB, most of it Bun's runtime; it needs no Node, no npm and no checkout, finds its config through `CLAUDE_WOW_HOME` like the checkout does, and writes the embedded files out under `~/.claude-wow/assets` on first use (`bridge/assets.js`). `build.js` runs the binary for the building machine once (`service help`) to prove it starts. CI builds all four on every push and runs the Linux one. Releases attach the four files and `SHA256SUMS`; `install.sh`, `install.ps1` and the Homebrew formula fetch them from there.
+
+Two things are different inside the binary, and `bridge/runtime.js` is the one place that knows them (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)): `process.execPath` is the bridge itself, not a node, and `__dirname` is the folder the sources were built from. So: never spawn `process.execPath` with a script path (use `R.scriptCommand`), never hand a `__dirname`-relative file to another program (use `AS.file`), and require modules by literal path so the bundler sees them. A new non-JavaScript file the bridge needs goes into `assets.FILES` and `build/entry.js`; `tests/assets_test.js` fails until it is in both.
 
 ## Conventions
 

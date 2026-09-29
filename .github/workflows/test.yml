@@ -34,3 +34,20 @@ jobs:
         if: matrix.runtime == 'node'
       - run: npm run test:bun
         if: matrix.runtime == 'bun'
+
+  build:
+    # The binaries (build.js): all four targets compile from one Linux runner
+    # (Bun cross-compiles), and the one for that runner starts. They are kept
+    # as an artifact of the run; a release attaches them with SHA256SUMS.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun build.js
+      - run: ./dist/claude-wow-linux-x64 service help
+      - uses: actions/upload-artifact@v4
+        with:
+          name: claude-wow-binaries
+          path: dist/

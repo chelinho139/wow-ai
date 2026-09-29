@@ -43,6 +43,7 @@ const V = require('./vision');   // vision: the screenshot's game view, cropped 
 const PL = require('./plugins'); // the plugin registry and routing (tests/plugins_test.js)
 const H = require('./home');     // where config, state and logs live (tests/home_test.js)
 const R = require('./runtime');  // node, bun, or the compiled binary (tests/runtime_test.js)
+const AS = require('./assets');  // the capture scripts and the primer, by path, from a checkout or the binary (tests/assets_test.js)
 
 // The plugins this bridge has (docs/PLATFORM.md). Registration order is the
 // order match() is asked in, and the first one is the default unless
@@ -461,12 +462,15 @@ function gameContext() {
 
 // The addon/macro primer that goes into the system prompt with the context.
 // Read on every run so edits count without a restart; "" in the config turns
-// it off. Relative paths are taken from the repo (docs/WOW-ADDON-PRIMER.md).
+// it off. Relative paths are taken from the repo (docs/WOW-ADDON-PRIMER.md),
+// or from the binary's extracted copy of it (assets.js), where an edit lasts
+// until the next start.
 const PRIMER_FILE = cfg.primerFile === undefined ? 'docs/WOW-ADDON-PRIMER.md' : cfg.primerFile;
+const primerPath = () => (path.isAbsolute(PRIMER_FILE) ? PRIMER_FILE : AS.file(PRIMER_FILE));
 let warnedNoPrimer = false;
 function primer() {
   if (!PRIMER_FILE) return '';
-  const file = path.resolve(REPO, PRIMER_FILE);
+  const file = primerPath();
   try { return fs.readFileSync(file, 'utf8'); } catch (e) {
     if (!warnedNoPrimer) { warnedNoPrimer = true; log(`primer: cannot read ${file} (${e.code || e.message}); running without it`); }
     return '';
@@ -851,20 +855,21 @@ function pollSavedVariables() {
 }
 
 // Windows: capture.ps1 (GDI). macOS: capture_mac.py (CoreGraphics, screencapture fallback). Elsewhere: capture_x11.py (Wine/X11).
+// The scripts are next to this file in a checkout and written out of the binary otherwise (assets.js).
 function captureCommand() {
   if (process.platform === 'win32') {
-    return ['powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(HERE, 'capture.ps1'),
+    return ['powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', AS.file('bridge/capture.ps1'),
       '-Cell', String(cap.cellPx), '-Cells', String(cap.cellsPerRow), '-MaxRows', String(cap.maxRows),
       '-IntervalMs', String(cap.intervalMs), '-ProcessName', cap.processName]];
   }
   if (process.platform === 'darwin') {
-    const args = [path.join(HERE, 'capture_mac.py'),
+    const args = [AS.file('bridge/capture_mac.py'),
       '--cell', String(cap.cellPx), '--cells', String(cap.cellsPerRow), '--max-rows', String(cap.maxRows),
       '--interval-ms', String(cap.intervalMs), '--process-name', cap.processName];
     if (cap.windowName) args.push('--window-name', cap.windowName);
     return [cap.python || 'python3', args];
   }
-  const args = [path.join(HERE, 'capture_x11.py'),
+  const args = [AS.file('bridge/capture_x11.py'),
     '--cell', String(cap.cellPx), '--cells', String(cap.cellsPerRow), '--max-rows', String(cap.maxRows),
     '--interval-ms', String(cap.intervalMs), '--process-name', cap.processName];
   if (cap.windowName) args.push('--window-name', cap.windowName);
@@ -1028,7 +1033,7 @@ function banner() {
   console.log(`  sessions : ${Object.keys(state.sessions).length} saved`);
   const ctx = gameContext();
   console.log(`  context  : ${cfg.gameContext === false ? 'off (gameContext in config.json)' : ctx ? (ctx.split('\n').find(l => /^Character:/i.test(l)) || ctx.split('\n')[0]).slice(0, 100) : 'none yet (the addon sends it with its hello; /claude-wow context in game)'}`);
-  console.log(`  primer   : ${!PRIMER_FILE ? 'off (primerFile in config.json)' : primer() ? path.resolve(REPO, PRIMER_FILE) + ' (' + primer().length + ' chars, with the context)' : 'NOT FOUND: ' + path.resolve(REPO, PRIMER_FILE)}`);
+  console.log(`  primer   : ${!PRIMER_FILE ? 'off (primerFile in config.json)' : primer() ? primerPath() + ' (' + primer().length + ' chars, with the context)' : 'NOT FOUND: ' + primerPath()}`);
   console.log('Leave this window open while you play. Ctrl+C to stop.\n');
 }
 
