@@ -484,6 +484,16 @@ local function SyncScreenshotMode()
 end
 
 local RefreshStrip -- below; ScreenshotDone re-runs it for records that arrived mid-shot
+local ShotsPaused -- after BridgeState: whether the bridge has been dark too long to shoot for
+
+-- A line for the player in the game chat and in the window, for the few things
+-- that happen without them asking (screenshots paused, and resumed).
+local function TellPlayer(msg)
+	print("|cff66ccff[Claude WoW]|r " .. msg)
+	local c = ActiveChat()
+	if c then AddHistory(c, "system", msg) end
+	if ui.frame then ClaudeWoW.Render() end
+end
 
 -- ok = true (SCREENSHOT_SUCCEEDED), false (SCREENSHOT_FAILED or the call raised),
 -- nil (no event within SHOT_TIMEOUT: the file may or may not exist).
@@ -514,6 +524,7 @@ local function TakeScreenshot()
 	run.shotGen = (run.shotGen or 0) + 1
 	local gen = run.shotGen
 	run.shot = { gen = gen, frames = 0, fired = false }
+	run.shotOverride = nil -- a Connect click buys exactly one shot while the bridge is dark
 	-- OnUpdate only runs while the strip is shown, which is exactly when the
 	-- frames are being rendered with it.
 	s:SetScript("OnUpdate", function(self)
@@ -567,6 +578,21 @@ RefreshStrip = function()
 	if not ScreenshotMode() then
 		-- A shot still counting frames (the transport just changed) is called off.
 		if run.shot and not run.shot.fired then run.shot = nil end
+		ShowStrip(latest, table.concat(parts, RS))
+		return
+	end
+	if ShotsPaused() then
+		-- The bridge has been dark for a while: every shot would be a full-screen
+		-- file nobody deletes. The strip goes up pixel-style instead, as when
+		-- Screenshot() is missing, so the usual retries and then the reload
+		-- fallback take the message from here; nothing is dropped. Said once,
+		-- when a shot is actually withheld; Tick says when shooting resumes.
+		if run.shot and not run.shot.fired then run.shot = nil end
+		if not run.shotsPaused then
+			run.shotsPaused = true
+			local age = GetTime() - (run.bridgeSeen or run.startedAt or GetTime())
+			TellPlayer("bridge not seen for " .. FmtDur(age) .. ": screenshots paused so they don't pile up in your Screenshots folder. Messages wait (the strip stays up, as in pixel mode) and shooting resumes when the bridge is back; the Connect button takes one by hand.")
+		end
 		ShowStrip(latest, table.concat(parts, RS))
 		return
 	end
@@ -723,27 +749,46 @@ local function PresenceWorks()
 	return signalAvailable and db ~= nil and db.settings.signal
 end
 
--- Returns state ("ok" | "stale" | "down" | "unknown"), a color and a description.
+-- How long the bridge may go unheard before it counts as stale, then down.
 -- With presence beats the bridge is heard from every 30 s, so 90 s of silence is
 -- suspicious. Without them the addon only hears from it every IDLE_POLL_SECONDS,
 -- so the windows have to be wider or the light could never stay green between
 -- messages and every reply would be followed by a Reconnect.
+local function PresenceWindows()
+	if PresenceWorks() then return 90, 300 end
+	return IDLE_POLL_SECONDS + 120, IDLE_POLL_SECONDS * 2 + 120
+end
+
+-- Returns state ("ok" | "stale" | "down" | "unknown"), a color and a description.
 function ClaudeWoW.BridgeState()
 	local seen = run.bridgeSeen
 	if not seen then
 		return "unknown", 0.6, 0.6, 0.6, "Bridge: not seen yet this session"
 	end
 	local age = GetTime() - seen
-	local okFor, staleFor = 90, 300
-	if not PresenceWorks() then
-		okFor, staleFor = IDLE_POLL_SECONDS + 120, IDLE_POLL_SECONDS * 2 + 120
-	end
+	local okFor, staleFor = PresenceWindows()
 	if age < okFor then
 		return "ok", 0.2, 0.9, 0.3, "Bridge: connected (seen " .. FmtDur(age) .. " ago)"
 	elseif age < staleFor then
 		return "stale", 0.95, 0.8, 0.2, "Bridge: last seen " .. FmtDur(age) .. " ago"
 	end
 	return "down", 0.9, 0.25, 0.25, "Bridge: not seen for " .. FmtDur(age) .. " - is the bridge running?"
+end
+
+-- Screenshot transport: no more shots once the bridge would count as down (the
+-- same window BridgeState uses: 5 minutes of silence with the presence beats,
+-- 22 minutes without them), measured from the last sign of it or, before any,
+-- from login. Each shot is a full-screen file only the bridge deletes, so a
+-- dead bridge and a player still typing would otherwise fill the disk. A
+-- Connect click (run.shotOverride) buys one shot regardless, which is how a
+-- bridge that came back is found again when the presence beats can't say so.
+-- `raw` ignores the override: what the bridge's silence alone says.
+ShotsPaused = function(raw)
+	if run.shotOverride and not raw then return false end
+	local since = run.bridgeSeen or run.startedAt
+	if not since then return false end
+	local _, staleFor = PresenceWindows()
+	return GetTime() - since >= staleFor
 end
 
 -- Same icons the friends list uses for online / away / busy / offline.
@@ -778,7 +823,11 @@ end
 
 -- Connect button: say hello to the bridge (it acks, refreshes the slots and
 -- offers a restore), ignoring SayHello's throttle so a click always does something.
-function ClaudeWoW.Connect()
+-- `manual` is the button itself (Send calls this too, for a message typed while
+-- disconnected): a deliberate click may take one screenshot even while shots
+-- are paused; the automatic path never does, or a dark bridge would still get
+-- a file per message typed.
+function ClaudeWoW.Connect(manual)
 	if db.settings.mode ~= "pixel" then
 		SafeReload()
 		return
@@ -787,6 +836,7 @@ function ClaudeWoW.Connect()
 	run.pixelFailed = nil
 	run.connectFailed = nil
 	run.connectingAt = GetTime()
+	if manual == true and ScreenshotMode() then run.shotOverride = true end
 	ClaudeWoW.SayHello()
 end
 
@@ -816,6 +866,7 @@ function ClaudeWoW.CheckConnection()
 		elseif GetTime() - run.connectingAt > CONNECT_WAIT then
 			run.connectingAt, run.connectFailed = nil, true
 			run.sendOnConnect = nil -- the text is still in the box
+			run.shotOverride = nil -- an unused click does not carry over to a later shot
 		end
 	elseif run.connectFailed and ClaudeWoW.IsConnected() then
 		run.connectFailed = nil
@@ -1040,6 +1091,12 @@ local function Tick()
 	end
 	ClaudeWoW.UpdateDot()
 	ClaudeWoW.CheckConnection()
+	if run.shotsPaused and not ShotsPaused(true) then
+		-- Heard from the bridge again (a beat, an ack, a slot): shoot what waited.
+		run.shotsPaused = nil
+		TellPlayer("bridge is back: screenshots resume")
+		RefreshStrip()
+	end
 	if db.settings.mode ~= "pixel" then return end
 	local changed = false
 	if run.helloPollAt and now >= run.helloPollAt then
@@ -3380,7 +3437,7 @@ local function BuildUI()
 	ui.send = send
 
 	-- Connect stands in for Send until the bridge has been seen (see UpdateConnect).
-	local connect = MakeButton(f, "Connect", SEND_W, ClaudeWoW.Connect)
+	local connect = MakeButton(f, "Connect", SEND_W, function() ClaudeWoW.Connect(true) end)
 	connect:SetHeight(30)
 	connect:SetPoint("LEFT", inputBg, "RIGHT", 6, 0)
 	connect:SetScript("OnEnter", function(self)
@@ -3860,6 +3917,7 @@ SlashCmdList["CLAUDEWOW"] = function(msg)
 			"transport: " .. tostring(s.transport or "pixel") .. (s.transport == "screenshot" and type(Screenshot) ~= "function" and " (Screenshot() missing: strip stays up)" or "")
 				.. (s.transport == "screenshot" and s.stripLevels and string.format(", strip levels %d/%d", s.stripLevels.off, s.stripLevels.on) or "")
 				.. (run.shotStats and string.format(", screenshots: %d taken, %d confirmed, %d failed, %d without event", run.shotStats.taken, run.shotStats.ok, run.shotStats.failed, run.shotStats.timeouts) or "")
+				.. (run.shotsPaused and ", screenshots PAUSED (bridge not seen for " .. FmtDur(GetTime() - (run.bridgeSeen or run.startedAt or GetTime())) .. ")" or "")
 				.. (s.shotFormatSaved and (", screenshotFormat saved: " .. s.shotFormatSaved) or ""),
 			"vision: " .. (s.vision and "on" or "off") .. (s.vision and s.transport ~= "screenshot" and " (needs the screenshot transport; the pixel capture never sees more than the strip)" or ""),
 			"plugin: " .. ((c.plugin and c.plugin ~= "") and c.plugin or ("bridge default, " .. (run.bridgePlugin or "unknown until connected"))) .. " (bridge has: " .. PluginList() .. ")",
@@ -3926,7 +3984,7 @@ ev:SetScript("OnEvent", function(self, event, arg1)
 	elseif event == "PLAYER_LOGIN" then
 		if not db then InitDB() end
 		BuildUI()
-		run = { outbound = {} }
+		run = { outbound = {}, startedAt = GetTime() }
 		SelfTestSignals()
 		ProcessInbox()
 		SyncScreenshotMode()

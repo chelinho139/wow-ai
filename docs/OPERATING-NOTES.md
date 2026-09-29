@@ -27,8 +27,15 @@ Two softer points, worth knowing:
 **Screenshots pile up when the bridge is down.** The addon shoots on every send; the
 bridge is what deletes them. Bridge stopped, game still running, player still typing
 → the folder grows by a full-screen PNG per message, and at the default TGA it is
-~8 MB each. The addon should stop shooting when presence has been dark for a while,
-and the bridge should sweep leftovers at startup.
+~8 MB each. Handled on both ends: the addon stops shooting once the bridge has been
+silent for as long as its light takes to go red (5 minutes with the presence beats,
+22 without), says so once in the game chat, and puts the strip up pixel-style instead
+so the usual retries and the reload fallback carry the message; it says when shooting
+resumes, and the Connect button still takes exactly one shot by hand, which is how a
+bridge that came back is found when the beats can't say so. The bridge sweeps the
+folder at startup and every 5 minutes, deleting only client-named files whose pixels
+hold a decodable strip (the magic header and checksum nothing but the addon draws)
+and older than a minute; a file without a strip is the player's and is never touched.
 
 **A screenshot is a screenshot.** With vision on, whatever is on screen goes to the
 model: other players' names, guild chat, whispers, an alt-tabbed window caught in a

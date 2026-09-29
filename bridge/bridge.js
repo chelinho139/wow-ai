@@ -904,7 +904,7 @@ function startCapture() {
 // deleted after it was read (whatever the strip's verdict once the magic is
 // there, so a retried shot doesn't pile up); one without a strip is the
 // player's own screenshot and stays. Files from before the bridge started are
-// never touched.
+// the sweep's business (sweepScreenshots below): strip-bearing ones go, the rest stay.
 const stripOptions = () => ({ cell: cap.cellPx, cells: cap.cellsPerRow, maxRows: cap.maxRows, threshold: LEVELS.threshold });
 let shotHint = null;
 function handleScreenshot(file) {
@@ -963,6 +963,28 @@ function pruneVisionFiles(keep) {
 }
 pruneVisionFiles(0); // leftovers from a bridge that died mid-run
 
+// Leftover shots. The watcher only sees files that appear while it runs, and
+// the addon shoots on every send, so a bridge that was down (or died) while the
+// player kept typing leaves a full-screen file per message in the Screenshots
+// folder. At startup, and then every SWEEP_MS, S.sweepOrphans deletes the files
+// that hold a decodable strip (the same reader and finder handleScreenshot
+// uses: magic header plus checksum, which nothing but the addon draws) and
+// leaves every other file, i.e. the player's own screenshots, alone. A file
+// younger than a minute is the watcher's business, not the sweep's.
+const SWEEP_MS = 5 * 60 * 1000;
+const sweepMemo = new Map();
+function holdsStrip(buf) {
+  const img = D.readImage(buf);
+  return !!D.findStrip(img, stripOptions(), shotHint).msg;
+}
+function sweepScreenshots(why) {
+  const r = S.sweepOrphans(SCREENSHOT_DIR, holdsStrip, { memo: sweepMemo, log, minAgeMs: why === 'startup' ? 2000 : 60000 });
+  if (r.removed.length || r.more) {
+    log(`screenshot sweep (${why}): removed ${r.removed.length} leftover strip screenshot(s), ${(r.bytes / 1048576).toFixed(1)} MB` +
+      (r.kept ? `; ${r.kept} without a strip left alone` : '') + (r.more ? '; more next time' : ''));
+  }
+}
+
 function startScreenshotWatch() {
   if (!SCREENSHOT_DIR) { log('screenshot transport: no addonDir in config.json, so no Screenshots folder to watch'); return; }
   if (!fs.existsSync(SCREENSHOT_DIR)) {
@@ -973,6 +995,9 @@ function startScreenshotWatch() {
   }
   S.watchScreenshots(SCREENSHOT_DIR, handleScreenshot, { log });
   log(`screenshot transport: watching ${SCREENSHOT_DIR} (strip levels ${LEVELS.off}/${LEVELS.on}, threshold ${LEVELS.threshold})`);
+  sweepScreenshots('startup');
+  const sweeper = setInterval(() => sweepScreenshots('periodic'), SWEEP_MS);
+  if (sweeper.unref) sweeper.unref();
 }
 
 function agentLine(id) {

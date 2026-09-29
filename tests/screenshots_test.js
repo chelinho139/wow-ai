@@ -66,3 +66,56 @@ test('the watcher reports a new file once its size settles, and never the files 
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// The sweep: what a bridge that was down while the player kept sending finds
+// in the folder. Only client-named files whose pixels hold a strip go (the
+// predicate stands in for decode.js here: "strip" in the file is a strip),
+// never a file without one, never a file too young for the watcher to have
+// had its turn, never a name the client would not have written.
+test('the sweep deletes leftover strip screenshots and nothing else, decodes each file once, and works in bounded batches', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wowai-sweep-'));
+  const old = new Date(Date.now() - 3600 * 1000);
+  const write = (name, body, when = old) => { fs.writeFileSync(path.join(dir, name), body); fs.utimesSync(path.join(dir, name), when, when); };
+  const seen = [];
+  const hasStrip = buf => { seen.push(buf.toString()); return buf.toString().includes('strip'); };
+  try {
+    write('WoWScrnShot_010126_000001.png', 'strip #1');       // the addon's, from a hello nobody read
+    write('WoWScrnShot_010126_000002.tga', 'strip #2');       // the addon's, a retried message
+    write('WoWScrnShot_010126_000003.png', 'a nice sunset');  // the player's
+    write('WoWScrnShot_010126_000004.png', 'strip #4', new Date()); // just written: the watcher's, not the sweep's
+    write('WoWScrnShot_010126_000005.jpg', 'strip #5');       // not a format the addon asks for: never opened
+    write('holiday.png', 'strip in a file the client did not name'); // never opened either
+    write('WoWScrnShot_010126_000006.png', '');               // empty: left for the watcher (still being written)
+    const memo = new Map();
+    const r = S.sweepOrphans(dir, hasStrip, { memo, minAgeMs: 60000 });
+    assert.deepEqual(r.removed, ['WoWScrnShot_010126_000001.png', 'WoWScrnShot_010126_000002.tga']);
+    assert.equal(r.kept, 1, 'the sunset');
+    assert.equal(r.bytes, 16);
+    assert.equal(r.more, false);
+    assert.deepEqual(seen.sort(), ['a nice sunset', 'strip #1', 'strip #2'], 'only client-named, settled, non-empty files are ever opened');
+    assert.deepEqual(fs.readdirSync(dir).sort(), ['WoWScrnShot_010126_000003.png', 'WoWScrnShot_010126_000004.png', 'WoWScrnShot_010126_000005.jpg', 'WoWScrnShot_010126_000006.png', 'holiday.png']);
+    // The next sweep does not decode the sunset again; a rewritten file is looked at afresh.
+    seen.length = 0;
+    assert.deepEqual(S.sweepOrphans(dir, hasStrip, { memo, minAgeMs: 60000 }).removed, []);
+    assert.deepEqual(seen, [], 'remembered as the player\'s');
+    write('WoWScrnShot_010126_000003.png', 'strip now'); // same name, new content and mtime
+    assert.deepEqual(S.sweepOrphans(dir, hasStrip, { memo, minAgeMs: 60000 }).removed, ['WoWScrnShot_010126_000003.png']);
+    // An unreadable file is never ours; a predicate that throws deletes nothing.
+    write('WoWScrnShot_010126_000007.png', 'strip #7');
+    const r2 = S.sweepOrphans(dir, () => { throw new Error('truncated'); }, { memo: new Map(), minAgeMs: 60000 });
+    assert.deepEqual(r2.removed, []);
+    assert.ok(fs.existsSync(path.join(dir, 'WoWScrnShot_010126_000007.png')));
+    // A pile is taken down a batch at a time, so the bridge never stalls on it.
+    for (let i = 10; i < 20; i++) write(`WoWScrnShot_010126_0000${i}.png`, `strip #${i}`);
+    const batch = S.sweepOrphans(dir, hasStrip, { memo: new Map(), minAgeMs: 60000, maxDecodes: 4 });
+    assert.equal(batch.removed.length, 4);
+    assert.equal(batch.more, true);
+    const rest = S.sweepOrphans(dir, hasStrip, { memo: new Map(), minAgeMs: 60000, maxDecodes: 100 });
+    assert.equal(rest.removed.length, 7, 'the other six of the pile plus #7');
+    assert.equal(rest.more, false);
+    // A folder that is not there is not an error.
+    assert.deepEqual(S.sweepOrphans(path.join(dir, 'nope'), hasStrip).removed, []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
