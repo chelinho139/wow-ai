@@ -249,7 +249,7 @@ test('the definition runs node + supervisor.js from a checkout, and the binary a
   const R = require('../bridge/runtime');
   const checkout = { compiled: false, execPath: '/opt/homebrew/bin/node', root: '/Users/p/claude-wow' };
   const binary = { compiled: true, execPath: '/Users/p/.local/bin/claude-wow', root: '/build/machine/claude-wow' };
-  assert.deepEqual(S.program(checkout), { node: '/opt/homebrew/bin/node', script: '/Users/p/claude-wow/bridge/supervisor.js', cwd: '/Users/p/claude-wow' });
+  assert.deepEqual(S.program(checkout), { node: '/opt/homebrew/bin/node', script: path.join('/Users/p/claude-wow', 'bridge', 'supervisor.js'), cwd: '/Users/p/claude-wow' });
   const b = S.program(binary);
   assert.equal(b.node, '/Users/p/.local/bin/claude-wow');
   assert.equal(b.script, '', 'no script: the binary is the supervisor');
@@ -261,7 +261,7 @@ test('the definition runs node + supervisor.js from a checkout, and the binary a
   const plist = S.definition('darwin', d, binary);
   assert.match(plist, /<key>ProgramArguments<\/key>\s*<array>\s*<string>\/Users\/p\/\.local\/bin\/claude-wow<\/string>\s*<\/array>/, 'one argument, no script');
   assert.ok(!/supervisor\.js/.test(plist));
-  assert.match(S.definition('darwin', d, checkout), /<string>\/opt\/homebrew\/bin\/node<\/string>\s*<string>\/Users\/p\/claude-wow\/bridge\/supervisor\.js<\/string>/);
+  assert.match(S.definition('darwin', d, checkout), /<string>\/opt\/homebrew\/bin\/node<\/string>\s*<string>[\\/]Users[\\/]p[\\/]claude-wow[\\/]bridge[\\/]supervisor\.js<\/string>/);
   assert.match(S.definition('linux', S.dirs('linux', {}, '/home/p'), binary), /^ExecStart="\/Users\/p\/\.local\/bin\/claude-wow"$/m);
   assert.match(S.definition('win32', S.dirs('win32', {}, 'C:\\Users\\p'), { ...binary, execPath: 'C:\\Users\\p\\bin\\claude-wow.exe' }), /sh\.Run """C:\\Users\\p\\bin\\claude-wow\.exe""", 0, False/);
   assert.match(S.launchdPlist({ node: '/n', script: '', cwd: '/c', logFile: '/l' }), /<array>\s*<string>\/n<\/string>\s*<\/array>/);

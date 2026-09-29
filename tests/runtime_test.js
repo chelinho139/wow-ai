@@ -19,10 +19,10 @@ test('this test run is not the compiled binary, and describe() names what it is'
 });
 
 test('from a checkout, a script is run with this interpreter and its path, as before', () => {
-  assert.deepEqual(R.scriptCommand('bridge', ['--once'], checkout), ['/usr/local/bin/node', ['/home/p/claude-wow/bridge/bridge.js', '--once']]);
-  assert.deepEqual(R.scriptCommand('setup', ['--wow', 'x'], checkout), ['/usr/local/bin/node', ['/home/p/claude-wow/setup.js', '--wow', 'x']]);
-  assert.deepEqual(R.scriptCommand('install-slots', [], checkout), ['/usr/local/bin/node', ['/home/p/claude-wow/bridge/install-slots.js']]);
-  assert.deepEqual(R.scriptCommand('supervisor', [], checkout), ['/usr/local/bin/node', ['/home/p/claude-wow/bridge/supervisor.js']]);
+  assert.deepEqual(R.scriptCommand('bridge', ['--once'], checkout), ['/usr/local/bin/node', [path.join('/home/p/claude-wow', 'bridge', 'bridge.js'), '--once']]);
+  assert.deepEqual(R.scriptCommand('setup', ['--wow', 'x'], checkout), ['/usr/local/bin/node', [path.join('/home/p/claude-wow', 'setup.js'), '--wow', 'x']]);
+  assert.deepEqual(R.scriptCommand('install-slots', [], checkout), ['/usr/local/bin/node', [path.join('/home/p/claude-wow', 'bridge', 'install-slots.js')]]);
+  assert.deepEqual(R.scriptCommand('supervisor', [], checkout), ['/usr/local/bin/node', [path.join('/home/p/claude-wow', 'bridge', 'supervisor.js')]]);
   const [file, args] = R.scriptCommand('bridge');
   assert.equal(file, process.execPath);
   assert.equal(args[0], path.join(R.ROOT, 'bridge', 'bridge.js'));

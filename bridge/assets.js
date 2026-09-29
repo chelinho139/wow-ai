@@ -76,5 +76,9 @@ function root(home) {
 function file(rel, home) { return path.join(root(home), rel); }
 const dir = file;
 const isEmbedded = () => !!embedded;
+function unembed() {
+  embedded = null;
+  checked = '';
+}
 
-module.exports = { FILES, DIR_NAME, embed, extract, root, file, dir, isEmbedded };
+module.exports = { FILES, DIR_NAME, embed, unembed, extract, root, file, dir, isEmbedded };

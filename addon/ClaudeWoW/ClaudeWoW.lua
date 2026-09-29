@@ -781,6 +781,21 @@ local function CheckSignal(kind, id)
 	return SoundValid(string.format("Interface\\AddOns\\ClaudeWoW\\%s\\%03d.wav", kind, SlotNumber(id)))
 end
 
+local function NoteStaleSignals(id)
+	local rec = run.outbound[id]
+	if not rec then return end
+	rec.staleAck = CheckSignal("ack", id) or nil
+	if CheckSignal("sig", id) then
+		run.staleSig = run.staleSig or {}
+		run.staleSig[id] = true
+	end
+end
+
+local function FreshSignal(kind, id)
+	if kind == "sig" and run.staleSig and run.staleSig[id] then return false end
+	return CheckSignal(kind, id)
+end
+
 -- Heartbeat: the bridge flips act/NNN/kk.wav for the k-th action of message NNN.
 local function ActPath(id, k)
 	return string.format("Interface\\AddOns\\ClaudeWoW\\act\\%03d\\%02d.wav", SlotNumber(id), k)
@@ -1251,9 +1266,15 @@ local function TryLoadSlot(why)
 	local loaded, reason = C_AddOns.LoadAddOn(name)
 	if not loaded then
 		run.slotError = reason
-		if reason == "MISSING" or reason == "DISABLED" then
-			run.slotsMissing = true
-			ClaudeWoW.ArmAutoRefresh()
+		run.slotsMissing = true
+		ClaudeWoW.ArmAutoRefresh()
+		if reason ~= "MISSING" and reason ~= "DISABLED" and not run.slotErrorTold then
+			run.slotErrorTold = true
+			local build = select(4, GetBuildInfo())
+			local fix = reason == "INTERFACE_VERSION"
+				and ("the slot addons were made for another game version (this client is " .. tostring(build) .. "). Set tocInterface to " .. tostring(build) .. " in the bridge's config.json, run \"npm run slots\", then restart WoW.")
+				or "run \"npm run slots\" on the bridge's machine, then restart WoW."
+			TellPlayer("reply slots do not load (" .. tostring(reason) .. "): " .. fix .. " Until then replies arrive on /reload.")
 		end
 		ClaudeWoW.UpdateStatus()
 		return
@@ -1267,6 +1288,7 @@ local function TryLoadSlot(why)
 	end
 	if type(data) == "table" and type(data.cwd) == "string" and data.cwd ~= "" then run.bridgeCwd = data.cwd end
 	if type(data) == "table" then
+		if data.cancel == true then run.bridgeCancel = true end
 		if type(data.agent) == "string" and data.agent ~= "" then run.bridgeAgent = data.agent end
 		if type(data.agents) == "table" and #data.agents > 0 then run.bridgeAgents = data.agents end
 		if type(data.plugin) == "string" and data.plugin ~= "" then run.bridgePlugin = data.plugin end
@@ -1324,7 +1346,8 @@ local function Tick()
 		ClaudeWoW.Render()
 	end
 	for id, rec in pairs(run.outbound) do
-		if not rec.acked and CheckSignal("ack", id) then
+		if rec.staleAck and not CheckSignal("ack", id) then rec.staleAck = nil end
+		if not rec.acked and not rec.staleAck and CheckSignal("ack", id) then
 			NoteAcked(rec)
 			changed = true
 			NotedBridge()
@@ -1351,7 +1374,7 @@ local function Tick()
 				rec.sentAt = now
 				rec.shot = nil
 				changed = true
-			elseif rec.forget then
+			elseif rec.forget or rec.cancelOf then
 				-- The bridge is away; db.forget keeps it for the next hello.
 				run.outbound[id] = nil
 				changed = true
@@ -1375,7 +1398,8 @@ local function Tick()
 	end
 	if moved then ClaudeWoW.Render() end
 	for _, c in ipairs(db.chats) do
-		if c.pendingId and CheckSignal("sig", c.pendingId) then
+		if c.pendingId and run.staleSig and run.staleSig[c.pendingId] and not CheckSignal("sig", c.pendingId) then run.staleSig[c.pendingId] = nil end
+		if c.pendingId and FreshSignal("sig", c.pendingId) then
 			TryLoadSlot("signal")
 			return
 		end
@@ -1390,6 +1414,7 @@ local function ProcessInbox()
 	local inbox = ClaudeWoW_Inbox
 	if type(inbox) ~= "table" then return end
 	if type(inbox.cwd) == "string" and inbox.cwd ~= "" then run.bridgeCwd = inbox.cwd end
+	if inbox.cancel == true then run.bridgeCancel = true end
 	if type(inbox.agent) == "string" and inbox.agent ~= "" then run.bridgeAgent = inbox.agent end
 	if type(inbox.agents) == "table" and #inbox.agents > 0 then run.bridgeAgents = inbox.agents end
 	if type(inbox.plugin) == "string" and inbox.plugin ~= "" then run.bridgePlugin = inbox.plugin end
@@ -2221,6 +2246,7 @@ function ClaudeWoW.Send(text, allow, opts)
 
 	if db.settings.mode == "pixel" then
 		run.outbound[id] = { chat = c.id, cwd = c.cwd, flags = flags, name = c.name, text = text, ctx = ctx, sentAt = GetTime() }
+		NoteStaleSignals(id)
 		run.sentAt = GetTime()
 		run.polls = 0
 		StartActivity(c, id)
@@ -2244,6 +2270,15 @@ local function SendForget(chatId)
 	local info = db.forget[chatId] or {}
 	db.lastSeq = db.lastSeq + 1
 	run.outbound[db.lastSeq] = { chat = chatId, cwd = info.cwd or "", flags = "d", name = info.name or "", text = "", sentAt = GetTime(), forget = chatId }
+	NoteStaleSignals(db.lastSeq)
+	RefreshStrip()
+end
+
+local function SendCancel(chat, id)
+	if db.settings.mode ~= "pixel" or not id or not run.bridgeCancel then return end
+	db.lastSeq = db.lastSeq + 1
+	run.outbound[db.lastSeq] = { chat = chat.id, cwd = chat.cwd or "", flags = "cancel=" .. id, name = chat.name or "", text = "", sentAt = GetTime(), cancelOf = id }
+	NoteStaleSignals(db.lastSeq)
 	RefreshStrip()
 end
 
@@ -2267,6 +2302,7 @@ function ClaudeWoW.SayHello()
 	local c = ActiveChat()
 	local ctx = db.settings.context and ClaudeWoW.GameContext() or ""
 	run.outbound[db.lastSeq] = { chat = c and c.id or "", cwd = c and c.cwd or "", flags = "h", name = c and c.name or "", text = "", ctx = ctx, sentAt = now, hello = true }
+	NoteStaleSignals(db.lastSeq)
 	run.helloPollAt = now + 5
 	-- Deletions the bridge never confirmed ride along with the hello.
 	for id in pairs(db.forget) do SendForget(id) end
@@ -2299,6 +2335,7 @@ function ClaudeWoW.Resend()
 	if c.plugin and c.plugin ~= "" then table.insert(tokens, "plugin=" .. c.plugin) end
 	if db.settings.vision then table.insert(tokens, "v") end -- a resend is a fresh screenshot
 	run.outbound[c.pendingId] = { chat = c.id, cwd = c.cwd, flags = table.concat(tokens, ";"), name = c.name, text = text, sentAt = GetTime() }
+	NoteStaleSignals(c.pendingId)
 	run.sentAt = GetTime()
 	run.polls = 0
 	ScheduleNextPoll()
@@ -2815,7 +2852,7 @@ function ClaudeWoW.UpdateStatus()
 		local rec = run.outbound[id]
 		if mode == "pixel" then
 			if run.slotsMissing then
-				s = "Reply slots not installed (run install-slots.js, restart WoW). Using reload instead: Enter or Refresh"
+				s = ((run.slotError and run.slotError ~= "MISSING" and run.slotError ~= "DISABLED") and ("Reply slots do not load (" .. tostring(run.slotError) .. "; run install-slots.js, restart WoW)") or "Reply slots not installed (run install-slots.js, restart WoW)") .. ". Using reload instead: Enter or Refresh"
 			elseif run.slotsExhausted then
 				s = "Slot pool used up this session - next keypress reloads to free it"
 			elseif run.pixelFailed then
@@ -4225,11 +4262,13 @@ SlashCmdList["CLAUDEWOW"] = function(msg)
 		ClaudeWoW.Toggle(true)
 	elseif cmd == "cancel" then
 		if c.pendingId then
-			AddHistory(c, "system", "Gave up waiting on #" .. c.pendingId)
+			local cancelled = c.pendingId
+			AddHistory(c, "system", "Gave up waiting on #" .. c.pendingId .. (run.bridgeCancel and "; the bridge is told to stop it" or "; this bridge cannot stop it, so it may still finish in the background"))
 			run.outbound[c.pendingId] = nil
 			if run.act then run.act[c.id] = nil end
 			c.pendingId = nil
 			c.progress = nil
+			SendCancel(c, cancelled)
 			RefreshStrip()
 			if not AnyPending() then keyCatcher:Hide() end
 		end

@@ -41,6 +41,19 @@ function comparableWindowsPath(p) {
 // Reply slot / signal file number for a message id (1-based, wraps at `slots`).
 function slotNumber(id, slots) { return ((id - 1) % slots) + 1; }
 
+const SIGNAL_CLEAR_AHEAD = 50;
+function slotsToClearAhead(id, slots, keepIds = [], ahead = SIGNAL_CLEAR_AHEAD) {
+  const reach = Math.min(ahead, Math.floor(slots / 2));
+  const keep = new Set(keepIds.filter(Number.isFinite).map(k => slotNumber(k, slots)));
+  keep.add(slotNumber(id, slots));
+  const out = [];
+  for (let j = 1; j <= reach; j++) {
+    const s = slotNumber(id + j, slots);
+    if (!keep.has(s)) out.push(s);
+  }
+  return out;
+}
+
 // A chat as the bridge tracks it: the addon's session token plus the chat id.
 function chatKey(job) { return `${job.session || ''}:${job.chat || 'default'}`; }
 // Agent sessions are keyed by chat id alone, which survives an addon data reset.
@@ -120,7 +133,7 @@ function noteUsage(state, key, { usage, fresh, agent, startedAt, now = Date.now(
     if (prev.window) rec.window = prev.window;
   }
   if (prev && prev.cost !== undefined) rec.cost = prev.cost;
-  if (usage && Number.isFinite(usage.cost)) rec.cost = (rec.cost || 0) + usage.cost;
+  if (usage && Number.isFinite(usage.cost)) rec.cost = usage.costIsSessionTotal ? usage.cost : (rec.cost || 0) + usage.cost;
   if ((usage && usage.costUnknown) || (prev && prev.costUnknown)) rec.costUnknown = true;
   all[key] = rec;
   return rec;
@@ -194,6 +207,7 @@ function parseFlags(flags) {
     else if (tok === 'v') out.vision = true; // attach the screenshot's game view to the run (screenshot transport only)
     else if (tok.startsWith('allow=')) out.allow.push(...tok.slice(6).split(',').map(s => s.trim()).filter(Boolean));
     else if (tok.startsWith('agent=')) out.agent = tok.slice(6).trim().toLowerCase();
+    else if (tok.startsWith('cancel=')) { const n = Number(tok.slice(7)); if (Number.isInteger(n) && n > 0) out.cancel = n; }
     else if (tok.startsWith('plugin=')) { const p = tok.slice(7).trim().toLowerCase(); if (p) out.plugin = p; }
     // "shot=missing" / "shot=failed": the addon is on the screenshot transport but
     // cannot take the shot (no Screenshot() in this client, or SCREENSHOT_FAILED on
@@ -535,6 +549,7 @@ function luaTable(globalName, records, opts = {}) {
     `\tplugin = ${luaStr(opts.plugin || '')},`,
     `\tplugins = { ${plugins.map(luaStr).join(', ')} },`,
     `\ttransport = ${luaStr(transport)},`,
+    '\tcancel = true,',
     '\treplies = {',
   ];
   if (transport === 'screenshot') {
@@ -787,7 +802,7 @@ function luaMacros(macros) {
 
 module.exports = {
   ADDON, OLD_ADDONS, OLD_ADDON_PATH, OLD_SAVED_FILE,
-  fromHex, pad3, slotNumber, chatKey, sessKey,
+  fromHex, pad3, slotNumber, SIGNAL_CLEAR_AHEAD, slotsToClearAhead, chatKey, sessKey,
   alreadyHandled, markHandled, pruneStale, MONTH_MS,
   noteUsage, usageFields, tokensLabel,
   resolveCwd, sameFolder, baseName,

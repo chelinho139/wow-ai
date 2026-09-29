@@ -405,7 +405,7 @@ test('Claude stream: usage on the assistant messages is the context the next tur
     modelUsage: { 'claude-haiku-4-5-20251001': { inputTokens: 10, outputTokens: 44, cacheReadInputTokens: 13689, cacheCreationInputTokens: 17366, contextWindow: 200000, maxOutputTokens: 32000 } } });
   // The run's price at list rates is exactly what Claude Code itself reported (total_cost_usd 0.0363309):
   // haiku 4.5 at $1/M input, $5/M output, cache reads at 0.1x, this run's cache writes all 1-hour at 2x.
-  assert.deepEqual(end1.usage, { context: 31065, output: 1, window: 200000, cost: 0.0363309 });
+  assert.deepEqual(end1.usage, { context: 31065, output: 1, window: 200000, cost: 0.0363309, costIsSessionTotal: true });
   assert.deepEqual(end1.done, { text: 'pong', error: false });
 
   // Turn 2: the first call reads exactly turn 1's total plus the new message; the

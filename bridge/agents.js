@@ -130,7 +130,7 @@ function claudeCost(ev, model) {
       const write = n(x, 'cacheCreationInputTokens');
       usd += priceTokens(rate, { input: n(x, 'inputTokens'), output: n(x, 'outputTokens'), cacheRead: n(x, 'cacheReadInputTokens'), cache1h: write * share1h, cache5m: write * (1 - share1h) });
     }
-    return { usd, models, unknown };
+    return { usd, models, unknown, sessionTotal: true };
   }
   if (!u || !model) return null;
   const rate = claudeRate(model);
@@ -179,10 +179,12 @@ function claudeParser() {
           out.usage = window ? { ...u, window } : { ...u };
           // The run's API-equivalent price: the result's usage is the sum over its calls.
           const cost = claudeCost(ev, model);
-          if (cost && !cost.unknown.length) out.usage.cost = cost.usd;
+          if (cost && !cost.unknown.length) { out.usage.cost = cost.usd; if (cost.sessionTotal) out.usage.costIsSessionTotal = true; }
           else out.usage.costUnknown = cost ? cost.unknown : ['no model named'];
         }
-        const text = typeof ev.result === 'string' ? ev.result : JSON.stringify(ev.result ?? '', null, 2);
+        const missing = ev.result === undefined || ev.result === null || ev.result === '';
+        const text = missing && ev.is_error ? `Claude Code ended with an error (${ev.subtype || 'no detail given'}) and no message.`
+          : typeof ev.result === 'string' ? ev.result : JSON.stringify(ev.result ?? '', null, 2);
         const denials = Array.isArray(ev.permission_denials) ? ev.permission_denials : [];
         if (denials.length) {
           out.denied = [...new Set(denials.map(ruleFor))];

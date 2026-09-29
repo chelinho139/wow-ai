@@ -44,15 +44,29 @@ function watchScreenshots(dir, onFile, opts = {}) {
   function check(name) {
     if (closed || !isScreenshotFile(name)) return;
     const entry = seen.get(name) || { size: -1, stable: 0, done: false };
-    if (entry.done) return;
+    if (entry.done) {
+      if (!entry.doneKey) return;
+      let now;
+      try { now = fs.statSync(path.join(dir, name)); } catch { seen.delete(name); return; }
+      if (`${now.size}:${now.mtimeMs}` === entry.doneKey) return;
+      seen.delete(name);
+      check(name);
+      return;
+    }
     seen.set(name, entry);
     let st;
     try { st = fs.statSync(path.join(dir, name)); } catch { seen.delete(name); return; }
-    if (st.size > 0 && st.size === entry.size) entry.stable++;
-    else { entry.size = st.size; entry.stable = 0; }
+    const now = Date.now();
+    if (st.size > 0 && st.size === entry.size && st.mtimeMs === entry.mtimeMs) {
+      if (now - entry.at >= settleMs) entry.stable++;
+    } else { entry.size = st.size; entry.mtimeMs = st.mtimeMs; entry.at = now; entry.stable = 0; }
     if (entry.stable >= 1) {
       entry.done = true;
       try { onFile(path.join(dir, name)); } catch (e) { log(`screenshot handler failed: ${e.message}`); }
+      let after = null;
+      try { after = fs.statSync(path.join(dir, name)); } catch {}
+      if (!after) seen.delete(name);
+      else entry.doneKey = `${after.size}:${after.mtimeMs}`;
       return;
     }
     setTimeout(() => check(name), settleMs);
