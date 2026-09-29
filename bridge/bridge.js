@@ -672,7 +672,7 @@ function runAgent(job, opts = {}) {
   }
   job.agent = agentId;
   const agent = A.AGENTS[agentId];
-  const acfg = A.agentConfig(cfg, agentId);
+  const acfg = P.withRunOnlyRules(A.agentConfig(cfg, agentId), job.allowOnce);
   const cmd = A.resolveCommand(agentId, acfg);
   if (!cmd.found) {
     log(`${tag} ${agentId} not found: ${cmd.note}`);
@@ -702,6 +702,9 @@ function runAgent(job, opts = {}) {
   if (Array.isArray(job.allow) && job.allow.length) {
     const added = allowRules(agentId, job.allow);
     log(`${tag} allowed for ${agentId}: ${job.allow.join(', ')}${added.length ? '' : ' (already allowed)'}`);
+  }
+  if (Array.isArray(job.allowOnce) && job.allowOnce.length) {
+    log(`${tag} allowed for this run only (${agentId}): ${job.allowOnce.join(', ')}`);
   }
   maybeOfferRestore(job);
   noteMessage(job, 'user', job.text);

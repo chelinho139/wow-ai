@@ -1421,6 +1421,7 @@ Finish = function(chat, role, text, denied, agent, summary, macros)
 		chat.draft = nil
 	end
 	ClaudeWoW.Render()
+	if denied and ClaudeWoW.LootRollEnabled() then ClaudeWoWRoll.Offer(chat.id) end
 	ClaudeWoW.Notify(chat, text, agent, summary, role, denied)
 end
 
@@ -1919,7 +1920,8 @@ function Whisper.Reply(chat, text, agent, role, denied)
 		if first then WhisperWrite(frame, prefix, r, g, b) end
 	end
 	if denied then
-		WhisperWrite(frame, who .. " needs permission for " .. Display(table.concat(denied, ", ")) .. ": click " .. open .. " and press Allow", WhisperColor("SYSTEM", 1, 1, 0))
+		local howToAnswer = ClaudeWoW.LootRollEnabled() and "roll Need, Greed or Pass" or ("click " .. open .. " and press Allow")
+		WhisperWrite(frame, who .. " needs permission for " .. Display(table.concat(denied, ", ")) .. ": " .. howToAnswer, WhisperColor("SYSTEM", 1, 1, 0))
 	end
 	if run.whisperProgress then run.whisperProgress[chat.id] = nil end
 	Whisper.Flash(frame)
@@ -2182,10 +2184,15 @@ function ClaudeWoW.Send(text, allow, opts)
 	if c.plugin and c.plugin ~= "" then table.insert(tokens, "plugin=" .. c.plugin) end
 	if db.settings.vision or (opts and opts.vision) then table.insert(tokens, "v") end
 	if opts and opts.kind then table.insert(tokens, "kind=" .. opts.kind) end
-	local allowHex
+	local allowHex, allowOnceHex
 	if type(allow) == "table" and #allow > 0 then
-		table.insert(tokens, "allow=" .. table.concat(allow, ","))
-		allowHex = ToHex(table.concat(allow, US))
+		if opts and opts.allowForThisRunOnly then
+			table.insert(tokens, "once=" .. table.concat(allow, ","))
+			allowOnceHex = ToHex(table.concat(allow, US))
+		else
+			table.insert(tokens, "allow=" .. table.concat(allow, ","))
+			allowHex = ToHex(table.concat(allow, US))
+		end
 	end
 	local flags = table.concat(tokens, ";")
 	local newSession = c.resetNext and true or nil
@@ -2200,6 +2207,7 @@ function ClaudeWoW.Send(text, allow, opts)
 		agent = (c.agent and c.agent ~= "") and c.agent or nil,
 		plugin = (c.plugin and c.plugin ~= "") and c.plugin or nil,
 		allow = allowHex,
+		allowOnce = allowOnceHex,
 		newSession = newSession,
 		-- The bridge wants screenshots and this client cannot take one: the
 		-- reload fallback tells it so, and it switches to the pixel capture.
@@ -2326,6 +2334,37 @@ function ClaudeWoW.Allow(chatId, rules)
 	for _, m in ipairs(c.history) do m.denied = nil end
 	AddHistory(c, "system", "Allowed: " .. table.concat(rules, ", "))
 	ClaudeWoW.Send("Those actions are allowed now. Continue from where you left off.", rules)
+end
+
+function ClaudeWoW.AllowOnce(chatId, rules)
+	local c = FindChat(chatId)
+	if not c or c.pendingId or not rules or #rules == 0 then return end
+	if db.activeChat ~= c.id then ClaudeWoW.SwitchChat(c.id) end
+	for _, m in ipairs(c.history) do m.denied = nil end
+	AddHistory(c, "system", "Allowed for this retry only: " .. table.concat(rules, ", "))
+	ClaudeWoW.Send("Those actions are allowed for this run. Continue from where you left off.", rules, { allowForThisRunOnly = true })
+end
+
+function ClaudeWoW.PassOnDenial(chatId, rules, reason)
+	local c = FindChat(chatId)
+	if not c or not rules or #rules == 0 then return end
+	for _, m in ipairs(c.history) do m.denied = nil end
+	AddHistory(c, "system", "Passed on: " .. table.concat(rules, ", ") .. (reason and (" (" .. reason .. ")") or ""))
+	ClaudeWoW.Render()
+end
+
+function ClaudeWoW.OpenDenial(chatId)
+	local c = FindChat(chatId)
+	if not c or c.pendingId then return nil end
+	local latest = c.history[#c.history]
+	if latest and type(latest.denied) == "table" and #latest.denied > 0 then
+		return latest.denied, latest.id, latest.agent
+	end
+	return nil
+end
+
+function ClaudeWoW.LootRollEnabled()
+	return db ~= nil and db.settings.lootRoll ~= false and ClaudeWoWRoll ~= nil
 end
 
 ---------------------------------------------------------------------------
@@ -2983,7 +3022,10 @@ function ClaudeWoW.Render()
 			local h = b.body:GetStringHeight()
 			if not h or h < 1 then h = 14 end
 			local extra = 0
-			if denied then
+			if denied and ClaudeWoW.LootRollEnabled() then
+				b.allow:Hide()
+				ClaudeWoWRoll.Offer(c.id)
+			elseif denied then
 				local label = "Allow " .. table.concat(denied, ", ") .. " & retry"
 				b.allow:SetText(label)
 				b.allow:SetWidth(math.min(width - 24, math.max(160, b.allow:GetFontString():GetStringWidth() + 30)))
@@ -3890,6 +3932,7 @@ local HELP = table.concat({
 	"/claude-wow whisper on|off        each chat as a native whisper tab: replies flash it like a player's whisper, typing in it goes to the agent (off by default)",
 	"/claude-wow echo summary|full|short|off|<chars>   how much of each reply to print in the game chat (summary = the agent's closing TL;DR lines)",
 	"/claude-wow longchat on|off        let the game chat box take 4000 characters (for long /claude messages)",
+	"/claude-wow roll on|off            a denied command pops a Need/Greed/Pass roll frame (on), or an Allow & retry button in the reply (off)",
 	"/claude-wow new [name]             start a new chat (its own agent session, like a new terminal)",
 	"/claude-wow chat <n|name>          switch chats (or click one in the left panel)",
 	"/claude-wow rename [name]          rename the current chat (no name = dialog; right-clicking the chat in the left panel offers it too)",
@@ -3943,6 +3986,7 @@ local COMMAND_ARGS = {
 	ctx = function(rest) return rest == "" or rest == "on" or rest == "off" or ParseTokens(rest) ~= nil end,
 	mode = { [""] = true, pixel = true, reload = true },
 	signal = { [""] = true, on = true, off = true }, longchat = { [""] = true, on = true, off = true },
+	roll = { [""] = true, on = true, off = true },
 	whisper = { [""] = true, on = true, off = true },
 	vision = { [""] = true, on = true, off = true },
 	look = true, -- /claude-wow look <question>: one message with a picture of the screen
@@ -4136,6 +4180,11 @@ SlashCmdList["CLAUDEWOW"] = function(msg)
 		if rest == "on" then s.longchat = true elseif rest == "off" then s.longchat = false end
 		ApplyLongChat()
 		AddHistory(c, "system", "game chat box limit: " .. (s.longchat and "4000 characters (fine for /claude; real chat over 255 may be rejected by the server)" or "255 (default)"))
+		ClaudeWoW.Render()
+	elseif cmd == "roll" then
+		if rest == "on" then s.lootRoll = true elseif rest == "off" then s.lootRoll = false end
+		if s.lootRoll == false and ClaudeWoWRoll then ClaudeWoWRoll.CloseAll() end
+		print("|cff66ccff[Claude WoW]|r denied commands: " .. (ClaudeWoW.LootRollEnabled() and "Need/Greed/Pass roll frame" or "Allow & retry button in the reply"))
 		ClaudeWoW.Render()
 	elseif cmd == "signal" then
 		if rest == "on" then s.signal = true elseif rest == "off" then s.signal = false end

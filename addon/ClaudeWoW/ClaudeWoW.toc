@@ -12,3 +12,4 @@ ClaudeWoW.lua
 Map.lua
 Roast.lua
 Voice.lua
+LootRoll.lua
