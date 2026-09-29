@@ -648,16 +648,17 @@ test('chat names in non-Latin scripts: no broken first letter, cut on a whole ch
   const vm = newVM();
   login(vm);
   connect(vm);
-  // The client's string.upper garbles a lone byte of a multibyte letter (a ruRU
-  // client titled a chat "□де у меня"); the stub's ASCII-only upper doesn't, so model it.
+  // The client's string.upper capitalizes a whole Cyrillic letter (/run print(("где"):upper())
+  // prints "ГДЕ" on a ruRU client) but garbles its lone first byte (a chat was titled
+  // "□де у меня"); the stub's upper is ASCII-only, so model both.
   vm.run(`
     local upper = string.upper
     string.upper = function(s)
       if #s == 1 and s:byte() >= 128 then return "\\239\\191\\189" end
-      return upper(s)
+      return (upper(s):gsub("г", "Г"):gsub("д", "Д"):gsub("е", "Е"))
     end`);
   vm.run('WoWAI.Send("где у меня медь")');
-  assert.equal(vm.evaluate('WoWAIDB.chats[1].name'), 'где у меня медь');
+  assert.equal(vm.evaluate('WoWAIDB.chats[1].name'), 'Где у меня медь');
 
   // Titles and names hold 24 characters, not 24 bytes, and never end inside one.
   const other = newVM();

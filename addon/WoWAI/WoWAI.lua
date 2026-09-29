@@ -179,10 +179,10 @@ local function AutoTitle(text)
 	local cut = Utf8Head(title, 24)
 	if cut ~= title then title = cut:gsub("%s+%S*$", "") end
 	if title == "" then return nil end
-	-- Capitalize an ASCII first letter only: the client's string.upper garbles the
-	-- lone first byte of a multibyte one ("где" came out as "□де").
-	if title:byte(1) < 128 then title = title:sub(1, 1):upper() .. title:sub(2) end
-	return title
+	-- Capitalize the whole first character: the client's string.upper handles a
+	-- UTF-8 letter ("где" gives "ГДЕ") but garbles its lone first byte ("□де").
+	local first = Utf8Head(title, 1)
+	return first:upper() .. title:sub(#first + 1)
 end
 
 local function NewId()
