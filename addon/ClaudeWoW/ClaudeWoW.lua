@@ -2035,6 +2035,21 @@ function Whisper.Intercept(eb, layer)
 		return true
 	end
 	if text == "" then return true end
+	-- The tab swallows everything typed in it, so our own slash commands typed
+	-- there would otherwise reach the agent as literal text. Bare /claude in a
+	-- whisper tab is the only way to begin a fresh thread from one, so it has to
+	-- run as a command. Anything else still goes to the agent.
+	local cmd, rest = text:match("^(/[%w%-]+)%s*(.-)$")
+	if cmd then
+		cmd = cmd:lower()
+		if cmd == "/claude" then
+			if Trim(rest) == "" then ClaudeWoW.NewChat() else SlashCmdList["CLAUDEWOW"](rest) end
+			return true
+		elseif cmd == "/claude-wow" or cmd == "/claudewow" then
+			SlashCmdList["CLAUDEWOW"](rest)
+			return true
+		end
+	end
 	if db.activeChat ~= chat.id then ClaudeWoW.SwitchChat(chat.id) end
 	if chat.pendingId then
 		Whisper.System(chat, ChatAgentName(chat) .. " is still working on your last message; this one is kept as a draft in the window (/claude-wow cancel gives up on the last one)")
@@ -4182,6 +4197,28 @@ SlashCmdList["CLAUDEWOW"] = function(msg)
 			if growth ~= "" or turns ~= "" then
 				table.insert(lines, ch.name .. ": " .. growth .. ((growth ~= "" and turns ~= "") and ", " or "") .. turns .. (ch.ctxWarned and " (warned)" or ""))
 			end
+		end
+		-- Cost of the addon itself. Memory is always available; CPU needs
+		-- scriptProfile, which only takes effect after a restart.
+		if UpdateAddOnMemoryUsage then
+			UpdateAddOnMemoryUsage()
+			local kb = GetAddOnMemoryUsage and GetAddOnMemoryUsage("ClaudeWoW") or 0
+			local line = string.format("addon memory: %.1f MB", kb / 1024)
+			if UpdateAddOnCPUUsage and GetAddOnCPUUsage then
+				UpdateAddOnCPUUsage()
+				local ms = GetAddOnCPUUsage("ClaudeWoW")
+				local total = 0
+				for i = 1, (C_AddOns and C_AddOns.GetNumAddOns and C_AddOns.GetNumAddOns() or 0) do
+					total = total + (GetAddOnCPUUsage(i) or 0)
+				end
+				if ms and ms > 0 then
+					line = line .. string.format("; cpu %.0f ms%s", ms,
+						total > 0 and string.format(" (%.0f%% of all addons)", ms / total * 100) or "")
+				else
+					line = line .. "; cpu profiling off (/console scriptProfile 1, then restart WoW)"
+				end
+			end
+			lines[#lines + 1] = line
 		end
 		AddHistory(c, "system", "Diagnostics:\n" .. table.concat(lines, "\n"))
 		ClaudeWoW.Render()

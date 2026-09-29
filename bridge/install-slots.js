@@ -7,7 +7,8 @@
 const fs = require('fs');
 const path = require('path');
 
-const cfg = JSON.parse(fs.readFileSync(require('./home').resolve().config, 'utf8'));
+const HOME = require('./home').resolve();
+const cfg = JSON.parse(fs.readFileSync(HOME.config, 'utf8'));
 const addons = cfg.addonDir;
 const N = cfg.slots || 200;
 const ACT = cfg.actMax || 60;
@@ -66,8 +67,21 @@ ensureDir(path.join(addons, 'ClaudeWoW', 'ack'));
 
 // Presence: the bridge creates one every 30 s so the game can show "connected".
 ensureDir(path.join(addons, 'ClaudeWoW', 'presence'));
+// The addon finds the bridge by the HIGHEST presence file that exists, so a file
+// ahead of the counter makes it wait for a beat that will never come and read the
+// bridge as gone. Older installs wrote these as valid .wav files, which the
+// zero-byte sweep above cannot catch, so clear everything past the counter.
+let counter = 0;
+try {
+  counter = Number(JSON.parse(fs.readFileSync(HOME.state, 'utf8')).presence) || 0;
+} catch {}
 for (let k = 1; k <= PRESENCE; k++) {
-  cleanEmpty(path.join(addons, 'ClaudeWoW', 'presence', String(k).padStart(4, '0') + '.wav'));
+  const file = path.join(addons, 'ClaudeWoW', 'presence', String(k).padStart(4, '0') + '.wav');
+  if (k > counter) {
+    try { if (fs.existsSync(file)) { fs.rmSync(file, { force: true }); cleaned++; } } catch {}
+  } else {
+    cleanEmpty(file);
+  }
 }
 
 // Control files for the addon's self-test: one that must never exist, one always
