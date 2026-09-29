@@ -13,7 +13,8 @@ Chat with your local coding agents from inside **World of Warcraft: Forever**: [
 - The agent can draw on your world map: numbered routes, quest stops and marks, with a navigator arrow that walks you from stop to stop
 - Herb and ore spawns on the world map, filtered by your gathering skill (`/claude-wow map ore`, `/claude-wow map herb`)
 - Ready-made macros: ask for one and the reply carries a **Create macro** button that saves it and puts it on your cursor, ready to drop on an action bar (`/claude-wow macro undo` reverts it)
-- An **Allow & retry** button when Claude or Grok needs a command outside your allowlist
+- Live UI widgets: ask for *"a DPS meter"* or *"a timer bar for my buffs"* and the agent's Lua loads in the game at once, no `/reload`; display-only, listed and removed with `/claude-wow ui`
+- **Need / Greed / Pass** on permissions: when Claude or Grok needs a command outside your allowlist, it drops as an epic item in a group-loot roll frame
 - A status light for the bridge, automatic retries, and recovery of your chats (and map layers) if the beta client wipes addon data
 - Runs on Windows, on Linux with the game under Wine, and on macOS with a native client
 
@@ -31,6 +32,7 @@ What a chat *does* with your message is a plugin's business; the window, the whi
 |---|---|
 | `ask` (default) | General in-game AI chat: game questions, quest research, routes on the map, macros. No project, no folder: the agent runs in a scratch folder of its own and is told it is your in-game assistant, not a coding session. |
 | `claude-code` | An agent session in a folder, what the bridge was before plugins: `/claude-wow cd` picks the project, the agent edits and runs things there. |
+| `live` | A Claude Code session you already have open in a terminal: the whisper tab talks straight into it through a Claude Code channel, its answers come back to the tab, and its permission prompts come up as a Need/Greed roll. Start the session with `claude --dangerously-load-development-channels server:claude-wow` from this repo; see [docs/LIVE-SESSION.md](docs/LIVE-SESSION.md). |
 
 A chat is bound to a plugin the way it is bound to an agent: `/claude-wow plugin claude-code`, or right-click the chat and pick **Plugin...**; a chat bound to nothing follows the bridge's default (`plugins.default` in `~/.claude-wow/config.json`, `ask` unless you change it). Chats you made before plugins existed stay bound to `claude-code`, so nothing changes for them; a new chat inherits the binding of the chat you were in. A message that starts with `@ask ` or `@claude ` (in the window or a whisper tab) goes to that plugin whatever the chat is bound to. Either plugin runs whichever agent the chat picked.
 
@@ -121,13 +123,15 @@ Right-clicking a chat in the left panel opens a small menu with **Rename...**, *
 
 | Command | What it does |
 |---|---|
-| `/claude-wow` | toggle the window (`/claude` is the same command; the old `/wow-ai`, `/ai`, `/ask`, `/wowai` and `/wow-claude` are gone); the minimize button (top right) or Esc collapses it to a small bar, click the bar to expand |
-| `/claude <text>` | send from the normal chat box (`/claude-wow <text>` is the same). `/claude` is the same command, so `/claude agent grok` or `/claude cd realms` work too; a message that merely starts with a command word, like `/claude help me with this macro` or `/claude delete the unused imports`, is still sent as a message because the rest of the line doesn't fit that command |
+| `/claude-wow` | toggle the window (the old `/wow-ai`, `/ai`, `/ask`, `/wowai` and `/wow-claude` are gone); the minimize button (top right) or Esc collapses it to a small bar, click the bar to expand |
+| `/claude <text>` | start a new chat and send `<text>` there, straight from the normal chat box, like opening a new terminal. A command word that fits its command still runs it (`/claude diag`, `/claude agent grok`, `/claude cd realms`); a message that merely starts with one, like `/claude delete the unused imports`, is a message for the new chat. At the chat limit (16) the game chat says so and the text waits in the window's input box. Bare `/claude` opens an empty new chat |
+| `/claude-wow <text>` | send `<text>` to the current chat from the normal chat box, with the same command-word rule |
 | `/r <text>` | replies to the agent when it was the last to message you; otherwise the normal whisper reply |
-| `/claude-wow whisper on\|off` | each chat as a native whisper tab in the chat dock (off by default): replies arrive there as whispers and flash the tab, what you type there goes to the agent, never to the server. The window stays the full record |
+| `/claude-wow whisper on\|off` | each chat as a native whisper tab in the chat dock (off by default): replies arrive there as whispers and flash the tab, what you type there goes to the agent, never to the server, and slash commands typed there (`/claude ...`, `/claude-wow ...`, `/cast ...`) run as usual. The window stays the full record |
 | `/claude-wow new [name]` | new chat = new agent session. Unnamed chats take their title from your first message |
 | `/claude-wow chat <n\|name>` | switch chats (or click the left panel; right-click a row for Rename, Folder, Agent and Plugin, its trash can deletes it) |
 | `/claude-wow plugin [ask\|claude-code]` | what this chat is for: `ask` (general in-game chat, the default) or `claude-code` (an agent session in a folder); no name shows the current one and the bridge's default, `default` goes back to the bridge's. A chat that changes plugin starts a fresh session with it |
+| `/claude-wow live` | the running Claude Code sessions a chat bound to `live` talks to, or the command that starts one ([docs/LIVE-SESSION.md](docs/LIVE-SESSION.md)) |
 | `/claude-wow agent [claude\|codex\|grok\|agy\|hermes]` | which agent this chat talks to; no name shows the current one and the bridge's default, `default` goes back to the bridge's. A chat that changes agent starts a fresh session with it |
 | `/claude-wow cd <folder>` | folder this chat's agent works in (**Folder...** after right-clicking the chat opens the same thing as a dialog). Relative to the bridge's folder (`/claude-wow cd realms`, `/claude-wow cd ../other`), `~` works, a full path too; `/claude-wow cd` alone goes back to the bridge's default. A chat that changes folder starts a fresh session there |
 | `/claude-wow reset` | wipe this chat's agent memory, keep the transcript |
@@ -135,6 +139,8 @@ Right-clicking a chat in the left panel opens a small menu with **Rename...**, *
 | `/claude-wow context <n>` | warn once, with a **New chat** button, when a chat's context passes `n` tokens (`100k` by default, `0` = never). Every message resumes the chat's agent session, so its context only grows and each reply costs more than the last; the window's footer shows it like Claude Code's own status line (`11m 58s · ↓ 106.9k tokens · ≈$2.41 API`: time since the session started, the context, the session at API list prices, a comparison and not a bill), and `/claude-wow diag` lists it per chat |
 | `/claude-wow vision [on\|off]` | send a picture of your screen with each message, so the agent sees what you see: "what is this item?", "why is this boss killing me?", "read this quest" (off by default; needs the screenshot transport) |
 | `/claude-wow look <question>` | one message with a picture of your screen, whatever the setting (`/claude look what is this?` from the chat box too) |
+| `/claude-wow roast [on\|off]` | when you die, the agent gets a recap of what killed you and writes a short roast in the **Death roasts** chat (off by default; at most one every 2 minutes). See [Death roast](#death-roast) |
+| `/claude-wow achievements [on\|off\|test]` | list the achievements your agents earned; `on`/`off` turns the toasts on or off, `test` shows a sample (see [Achievement toasts](#achievement-toasts)) |
 | `/claude-wow rename`, `/claude-wow delete`, `/claude-wow clear` | manage the current chat |
 | `/claude-wow echo summary\|full\|short\|off\|<chars>` | how much of each reply to print into the game chat. `summary` (the default) prints only the agent's closing TL;DR lines, the full reply is in the window behind `[open]`; `full` prints up to 4000 chars, `short` one preview line |
 | `/claude-wow longchat on` | let the game chat box take 4000 characters, for long `/claude` messages |
@@ -166,6 +172,15 @@ Click the input box, then **shift-click** an item in your bags, a spell in the s
 
 On the screenshot transport (`capture.mode: "screenshot"`) the game already takes a screenshot of the whole screen for every message you send; the strip is only its top-left corner. `/claude-wow vision on` tells the bridge to keep the rest: it crops the strip's rows off, scales the frame down (1280 pixels wide by default, 1-2 MB as PNG) and attaches it to the agent's message as an image, with a paragraph at the top of the message saying an image of your screen is attached and what it is (only when one is). So "what is this item, should I equip it?", "why does this boss keep killing me?" or "read me this quest text" are answered from what is actually on your screen, tooltips and open windows included. `/claude-wow look <question>` does it for one message with the setting off. Off by default; the window's footer and `/claude-wow diag` show the state. Claude Code gets the pixels inline (an `image` block in a stream-json user message, no tool call); Codex, Grok and Hermes get the PNG's path in `~/.claude-wow/tmp`, where it is deleted after the run. With it off nothing changes, and the pixel transport never sees more than the strip.
 
+### Death roast
+
+`/claude-wow roast on` (off by default) turns your deaths into content. When you die, the addon takes the last 10 seconds of the combat log that hit you (who, with what, how much, crits, overkill, the killing blow), adds your level, zone and the attackers' levels when it can see them, and sends that recap to the agent in a **Death roasts** chat of its own. The reply is a two or three sentence roast, affectionate and aimed at the play, never the person, and it lands in the window and the game chat like any other reply. With vision on, the agent also sees your screen at the moment of death.
+
+- At most one roast every 2 minutes, so a wipe does not spam the agent. A death while the last roast is still being written, or while the bridge is not connected, is skipped.
+- The recap stays under 900 bytes, so it fits the strip with the game context next to it.
+- The chat is bound to the bridge's `roast` plugin and runs in the same scratch folder as `ask` (`plugins.roast.cwd` to change it). Type in that chat to talk back.
+- `/claude-wow roast` shows the state, the cooldown, and why the last death was not roasted.
+
 ### Transports
 
 How a message leaves the game. The bridge listens on one of two, named in `capture.mode` in `~/.claude-wow/config.json` and told to the addon in every slot file:
@@ -174,6 +189,24 @@ How a message leaves the game. The bridge listens on one of two, named in `captu
 - **`pixel`, deprecated.** `capture.ps1` (Windows), `capture_mac.py` (macOS) or `capture_x11.py` (Linux) screen-captures the strip four times a second. It exists only until `Screenshot()` is confirmed on Windows and on Linux under Wine, and will be removed then. It needs python3 off Windows, the two permissions on macOS, and an X11 session on Linux.
 
 A new install starts on `screenshot`; an existing `config.json` with an explicit `mode` keeps it. **If the screenshot transport cannot work on your client, the bridge falls back on its own:** when the addon reports that the client has no `Screenshot()` function, or that every shot failed (`SCREENSHOT_FAILED`), the bridge switches to the pixel capture, says so in its log and terminal (`TRANSPORT FALLBACK: ...`), remembers it in `state.json` so the next start goes straight to pixels, and names the reason in its slot files, where `/claude-wow diag` in game shows it as `transport: pixel (bridge: pixel transport, fallen back to since ... because ...)`. The addon says once in the game chat that the report is on its way; the first time, that report reaches the bridge through the reload fallback (a couple of minutes), because a bridge waiting for screenshots is not watching the screen. To settle it for good, set `capture.mode` to `"pixel"` (no more note) or `"screenshot"` (try again; an explicit value always wins over the memory). Nobody is left without a transport.
+
+### Achievement toasts
+
+Dev milestones pop an achievement-style toast in game: a gold banner with an icon, a title, points and the achievement sound. The bridge watches the shell commands the agent runs and their results (Claude Code and Codex), so every award is a fact, not a guess:
+
+| Achievement | When |
+|---|---|
+| Hello, World / Questing Buddy / Loremaster of the Repo | 1, 10 and 100 finished tasks |
+| Back From the Dead | the tests pass after failing (npm, yarn, pnpm, bun, jest, vitest, pytest, go, cargo, `node --test` and more); every time it happens |
+| Signed and Sealed / Commit Streak / Centurion | 1, 10 and 100 git commits by the agent |
+| Ship It / Frequent Flyer | 1 and 10 pushes |
+| Merged on a Friday | a commit or push on a Friday |
+| Night Owl | a task finished after midnight (before 5 a.m.) |
+| It Works On My Machine | a push in a run that never ran the tests |
+| Rubber Duck | 50 messages in one chat |
+| Leeroy Jenkins | the agent ran a command with `--force` (or `git push -f`) |
+
+Each one-time award is given once and kept in the bridge's `state.json`, so it survives restarts and the beta's saved-data wipes. `/claude-wow achievements` lists what you earned; `/claude-wow achievements off` (or `toasts off`) keeps them quiet; `/claude-wow achievements test` shows a sample toast. `"achievements": false` in `~/.claude-wow/config.json` turns the detection off. The banner uses client textures and plays the sound by its FileDataID; no Blizzard asset ships with the addon.
 
 ### Macros, ready to use
 
@@ -205,9 +238,50 @@ The system prompt tells every agent how to hand marks to the bridge: append comm
 
 `/aimap` is a shorter alias. To remove layers for good, ask the agent ("clear the map", "remove the mining route").
 
+### Voice lines
+
+Your character talks back while the agent works. By default the lines are your own race and gender's emote and error voices: a *yes* when a message goes out, a *hello* when the bridge picks it up, a *cheer* when the reply lands, the "can't use that item" error voice when a run fails, and the "ability not ready yet" error voice when a reply waits on **Allow & retry**. Two other packs swap in the Warcraft III workers: `peasant` (*"Ready to work"*, *"More work?"*) and `peon` (*"Work work"*, *"Work complete"*). Lines closer than 2 seconds apart are dropped, except that a reply cuts off an ack.
+
+Nothing is shipped: the addon plays sounds the game client already has, by FileDataID. The WoW client has no *"Job's done!"* recording, so the peasant's done line is *"More work?"*.
+
+| Command | What it does |
+|---|---|
+| `/claude-wow voice` | show the pack and the line for each event (`sent`, `started`, `done`, `error`, `permission`) |
+| `/claude-wow voice race\|peasant\|peon\|off` | pick the pack; `race` follows the character you are logged in on |
+| `/claude-wow voice set <event> <line>` | override one event: a line of the current pack (`cheer`), of a named pack (`peon:workcomplete`), `off`, or `default` |
+| `/claude-wow voice lines [pack]` | the line names a pack has |
+| `/claude-wow voice test <event\|line>` | play it now |
+| `/claude-wow voice reset` | back to the race pack with no overrides |
+
+The settings are saved with the addon's other settings (`ClaudeWoWDB.voice`).
+
+### Live UI widgets
+
+Ask for a small UI element (*"give me a DPS meter"*, *"a timer bar for my buffs"*) and it shows up in the game a moment later, without `/reload`. The agent writes addon Lua in a ```` ```wowui <name> ```` block (or appends it to the file in `CLAUDE_WOW_UI_FILE`). The bridge refuses anything that names a protected or outward action (casting, targeting, movement, chat, macros, bindings, secure templates), keeps the rest versioned in `state.json` and ships it in the slot files, like map layers. The addon runs each widget in its own sandbox inside a `pcall`; an error stops the widget and shows up in the chat window.
+
+| Command | What it does |
+|---|---|
+| `/claude-wow ui` | list the widgets and their state (running, removed, failed) |
+| `/claude-wow ui remove <name>` | stop a widget and keep it off after login, until the agent sends a new version |
+| `/claude-wow ui run <name>` | start a widget again |
+
+Widgets start again at login. The contract, the deny-list and the limits are in [docs/UI-WIDGETS.md](docs/UI-WIDGETS.md).
+
 ### Permissions
 
 The agents run headless, so they can't ask you to approve a tool. Each agent's block in `~/.claude-wow/config.json` has a `permissionMode`, `acceptEdits` by default: file edits inside the project are auto-approved, `allowedTools` lists the commands it may run (`Bash(git:*)` is any command starting with `git`; the same rule syntax for every agent, translated for Grok), and `deniedTools` the ones it never may. What happens to anything else differs. Claude denies it. Codex has no allowlist: it runs commands in a sandbox that can write the project folder but not reach the network (unless `networkAccess` is on), and explains a blocked command in its reply. Grok's headless mode runs ordinary commands on its own and blocks the dangerous ones (deleting a project file, pushing) unless a rule allows them. With Claude and Grok the reply then grows an **Allow WebSearch, Bash(cargo:*) & retry** button: click it, the rules are added to that agent's list in your config permanently, and the agent resumes where it stopped. The rule is a prefix (`Bash(rm:*)` allows any `rm`), so read the button before clicking. `bypassPermissions` gives any agent full autonomy; you decide. The mapping per agent, as measured against the real CLIs, is in [docs/AGENTS.md](docs/AGENTS.md).
+
+#### Need, Greed or Pass
+
+By default a denial does not show that button. It pops a frame in the style of the group loot roll instead. The denied command is the item, in epic purple: a scroll for a shell command, a gear for any other tool. Hover the icon to read the exact rules.
+
+| Button | What it does |
+|---|---|
+| **Need** (dice) | Allow & retry: the rules go into your config for good |
+| **Greed** (coin) | Allow for this one retry only: the bridge passes the rules to that run and saves nothing |
+| **Pass** (X) | Deny: nothing is sent, the agent is not retried |
+
+The bar under the item counts down 60 seconds. When it runs out, that is a Pass. Each choice plays the game's own loot sounds. `/claude-wow roll off` brings back the **Allow & retry** button, and `/claude-wow roll on` returns to the roll frame.
 
 ## Configuration (`~/.claude-wow/config.json`)
 
@@ -252,6 +326,7 @@ The keys you are most likely to touch. Every key, flag and environment variable 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): how the pixel strip, slot pool and signal files work, and why
 - [docs/INSTALL-LINUX.md](docs/INSTALL-LINUX.md): Linux + Wine notes, systemd, and how to check the screen capture
 - [docs/MAP.md](docs/MAP.md): map layers, the navigator and herb/ore nodes
+- [docs/UI-WIDGETS.md](docs/UI-WIDGETS.md): live UI widgets the agent writes, their contract and the display-only checks
 - [CONTRIBUTING.md](CONTRIBUTING.md): repo layout, running the tests, conventions
 - [CHANGELOG.md](CHANGELOG.md): release notes
 

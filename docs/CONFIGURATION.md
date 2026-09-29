@@ -41,6 +41,11 @@ A `config.json` from before agents existed kept Claude's settings at the top lev
 | `plugins.default` | `"ask"` | The plugin for chats that are not bound to one (`plugin=` flag): `ask` (general in-game chat) or `claude-code` (an agent session in a folder). The bridge refuses to start on a name it does not have; `--help` lists them. |
 | `plugins.ask.cwd` | `""` | The scratch folder the `ask` plugin runs the agent in (it has no project). Empty = the per-user application data folder (`~/Library/Application Support/claude-wow/ask` on macOS, `%LOCALAPPDATA%\claude-wow\ask` on Windows, `~/.local/share/claude-wow/ask` on Linux), created on demand. |
 
+| `plugins.live.enabled` | `true` | `false` keeps the bridge from opening the live-session socket (`live.sock` in the home folder). |
+| `plugins.live.waitMs` | `3000` | How long a message on a `live` chat waits for a Claude Code session to connect before the chat is told there is none. |
+| `plugins.live.timeoutMs` | `timeoutMs` | How long a `live` message waits for the session's `wow_reply`. |
+| `plugins.live.permissionTimeoutMs` | `120000` | How long a permission prompt relayed as a roll waits before it is denied. See [LIVE-SESSION.md](LIVE-SESSION.md). |
+
 A `config.json` without a `plugins` block keeps working: the default applies. Chats made before plugins existed are bound to `claude-code` by the addon, so they behave as before whatever the default is.
 
 ## Runs
@@ -49,6 +54,7 @@ A `config.json` without a `plugins` block keeps working: the default applies. Ch
 |---|---|---|
 | `gameContext` | `true` | Put the character/zone context the addon sends at the top of every message as a marked situation block (and the rules for reading it, the map and macro instructions and the primer into the agent's system prompt). `false` ignores it, for a bridge only ever used on unrelated projects. The addon has its own switch, `/claude-wow context off`, which also clears what the bridge holds. |
 | `primerFile` | `"docs/WOW-ADDON-PRIMER.md"` | A markdown file appended to the system prompt while the addon sends a game context, whatever folder the chat works in: how to write addons and macros for this client. Relative to the claude-wow folder (from the binary: to `~/.claude-wow/assets`, where the binary writes its copy, so an edit there lasts until a new binary replaces it), or absolute. Re-read on every run, so edits count at once for new chats (Claude Code records a chat's system prompt at its first message and keeps it for the chat's life). `""` sends none. Off whenever the context is off. |
+| `achievements` | `true` | Award achievement toasts for dev milestones the bridge sees in the agent's tool calls (see README, "Achievement toasts"). `false` stops the detection and ships no toasts. The earned list is kept in `state.json` under `achievements`. |
 | `maxParallel` | `3` | How many chats may run an agent at the same time. Further messages queue per chat. |
 | `timeoutMs` | `1800000` (30 min) | A run longer than this is killed (with its children) and reported as an error in game. |
 | `killGraceMs` | `5000` | When the bridge ends a run (the timeout above, or its own stop on Ctrl+C / `claude-wow service stop`), how long the run's process group gets after `SIGTERM` before `SIGKILL`. Every child the bridge starts leads its own process group on macOS and Linux, so the agent and whatever it shelled out to go together; a child that ignores `SIGTERM` is still gone after this. Windows uses `taskkill /T /F` at once. |
@@ -124,12 +130,13 @@ Exit codes: `0` normal, `1` the injected or one-shot job failed, `2` config miss
 
 | Variable | Meaning |
 |---|---|
-| `CLAUDE_WOW_HOME` | Where `config.json`, `state.json`, `transcripts.json`, `bridge.log`, `tmp/` and `mapjobs/` live. Default `~/.claude-wow`; see [Where the bridge keeps its files](#where-the-bridge-keeps-its-files). |
+| `CLAUDE_WOW_HOME` | Where `config.json`, `state.json`, `transcripts.json`, `bridge.log`, `tmp/`, `mapjobs/` and `uijobs/` live. Default `~/.claude-wow`; see [Where the bridge keeps its files](#where-the-bridge-keeps-its-files). |
 | `CLAUDE_WOW_PROJECT` | Default working folder, below `--project` and above the start folder in precedence. The old name `WOW_AI_PROJECT` is still read. |
 | `CLAUDE_WOW_MAC_BACKEND` | macOS pixel capture: `native`, `screencapture` or `auto` (`capture_mac.py --backend`). The old name `WOWAI_MAC_BACKEND` is still read. |
 | `CLAUDECODE` | Removed from Claude's environment so a bridge started from inside a Claude Code session can still launch `claude -p`. |
 | `GROK_DISABLE_AUTOUPDATER` | Set to `1` for Grok runs, so a headless run never stops for an update. |
 | `GROK_HOME` | Honoured when looking for `grok.exe` (`<GROK_HOME>\bin`); Grok's own setting. |
+| `CLAUDE_WOW_UI_FILE` | Set by the bridge for each run of a plugin with the `ui` surface: a file where the agent's tools append UI widget commands, one JSON object per line (see [UI-WIDGETS.md](UI-WIDGETS.md)). |
 | `CLAUDE_WOW_MAP_FILE` | Set by the bridge for each run, whatever the agent: a file where the agent's tools append map commands, one JSON object per line (see [MAP.md](MAP.md)). |
 
 ## Which folder the agent works in
@@ -160,6 +167,7 @@ The bridge's banner prints the folder it chose (`home :`). The one-line installe
 | `~/.claude-wow/config.json` | Your configuration. |
 | `~/.claude-wow/state.json` | Agent session ids per chat, the folder and the agent each session ran with, each session's context growth (`sessionUsage`: the tokens the next message carries, turns, the model's window, when it started, its runs at API list prices), handled message ids per addon session token, the presence counter, and the latest game context the addon sent (`context`). Delete it to forget all sessions. |
 | `~/.claude-wow/transcripts.json` | The last 200 messages of every chat, with the agent that wrote each reply, so the addon can recover its chats after the client wipes saved data. |
+| `~/.claude-wow/uijobs/` | One widget command file per running job (`CLAUDE_WOW_UI_FILE`), read and deleted when the job ends. The widgets themselves live in `state.json` (`widgets`). |
 | `~/.claude-wow/mapjobs/` | One map command file per running job (`CLAUDE_WOW_MAP_FILE`), read and deleted when the job ends. Map layers themselves live in `state.json` (`map`). |
 | `~/.claude-wow/bridge.log` | Every line the bridge logs, with timestamps. Rotated by the supervisor at 5 MB (`bridge.log.1` … `.5` kept), so it never grows without bound. Under the background service the bridge's full output (banner, log lines, crashes) also goes to the service log: `~/Library/Logs/claude-wow/bridge.log` on macOS, `$XDG_STATE_HOME/claude-wow/bridge.log` (default `~/.local/state/claude-wow`) on Linux, `%LocalAppData%\claude-wow\logs\bridge.log` on Windows, rotated the same way; `claude-wow service logs` shows whichever applies. |
 | `~/.claude-wow/tmp/` | Prompt files for agents that read the prompt from disk (Grok). Each is deleted when its run ends. |

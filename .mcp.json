@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "claude-wow": {
+      "command": "node",
+      "args": ["bridge/channel.js"],
+      "alwaysLoad": true
+    }
+  }
+}

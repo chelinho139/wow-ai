@@ -24,6 +24,24 @@ test('parseFlags reads new-session, hello, forget, context, agent and allow list
   assert.deepEqual(P.parseFlags('n;allow=WebSearch, Bash(git:*),'), { ...none, newSession: true, allow: ['WebSearch', 'Bash(git:*)'] });
   assert.deepEqual(P.parseFlags('agent=Codex'), { ...none, agent: 'codex' });
   assert.deepEqual(P.parseFlags('n;agent=grok;allow=WebSearch'), { ...none, newSession: true, agent: 'grok', allow: ['WebSearch'] });
+  assert.deepEqual(P.parseFlags('once=Bash(rm:*), WebFetch'), { ...none, allowOnce: ['Bash(rm:*)', 'WebFetch'] });
+  assert.equal(P.parseFlags('allow=WebSearch').allowOnce, undefined, 'no allowOnce key at all without the flag');
+});
+
+test('withRunOnlyRules adds greed rules to one run without touching the saved agent config', () => {
+  const saved = { permissionMode: 'acceptEdits', allowedTools: ['WebSearch'] };
+  const run = P.withRunOnlyRules(saved, ['Bash(rm:*)', 'WebSearch', '']);
+  assert.deepEqual(run.allowedTools, ['WebSearch', 'Bash(rm:*)']);
+  assert.equal(run.permissionMode, 'acceptEdits');
+  assert.deepEqual(saved.allowedTools, ['WebSearch']);
+  assert.equal(P.withRunOnlyRules(saved, []), saved);
+  assert.equal(P.withRunOnlyRules(saved, undefined), saved);
+  assert.deepEqual(P.withRunOnlyRules({ model: 'x' }, ['WebFetch']).allowedTools, ['WebFetch']);
+  const A = require('../bridge/agents');
+  const claudeArgs = A.AGENTS.claude.args({ cfg: run, resume: '', cwd: 'x', system: '', promptFile: 'f' });
+  assert.ok(claudeArgs.includes('Bash(rm:*)'), 'Claude gets the greed rule in --allowedTools');
+  const grokArgs = A.AGENTS.grok.args({ cfg: run, resume: '', cwd: 'x', system: '', promptFile: 'f' });
+  assert.ok(grokArgs.includes('Bash(rm *)'), 'Grok gets the greed rule as an --allow glob');
 });
 
 test('parseFlags reads cancel=<id> and ignores a bad one', () => {
@@ -220,6 +238,10 @@ test('parseOutbox decodes the SavedVariables fallback', () => {
   assert.deepEqual(P.parseOutbox(src), { id: 7, session: 'abc123', chat: 'c1', text: 'héllo', cwd: 'realms', newSession: true, via: 'reload' });
   const withAllow = src.replace('["newSession"]', `["allow"] = "${hex('WebSearch\x1fBash(git:*)')}",\n["newSession"]`);
   assert.deepEqual(P.parseOutbox(withAllow).allow, ['WebSearch', 'Bash(git:*)']);
+  assert.equal(P.parseOutbox(withAllow).allowOnce, undefined);
+  const withAllowOnce = src.replace('["newSession"]', `["allowOnce"] = "${hex('Bash(rm:*)')}",\n["newSession"]`);
+  assert.deepEqual(P.parseOutbox(withAllowOnce).allowOnce, ['Bash(rm:*)']);
+  assert.equal(P.parseOutbox(withAllowOnce).allow, undefined);
   const withCtx = src.replace('["newSession"]', `["ctx"] = "${hex('Character: Testchar')}",\n["newSession"]`);
   assert.equal(P.parseOutbox(withCtx).ctx, 'Character: Testchar');
   const withAgent = src.replace('["newSession"]', '["agent"] = "codex",\n["newSession"]');

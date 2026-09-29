@@ -113,7 +113,7 @@ test('the shipped coding plugin: a folder resolved against the bridge\'s, refuse
   assert.equal(p.id, 'claude-code');
   assert.deepEqual(p.aliases, ['claude', 'code']);
   assert.equal(p.tools, '', 'the coding plugin adds nothing to the prompt: the prompt is what it was');
-  assert.deepEqual(p.surfaces, ['map', 'macro']);
+  assert.deepEqual(p.surfaces, ['map', 'macro', 'ui']);
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'wowai-plug-'));
   fs.mkdirSync(path.join(base, 'realms'));
   const calls = [];
@@ -146,7 +146,7 @@ test('the shipped ask plugin: no folder semantics, a scratch folder of its own, 
   const p = reg.register(ask);
   assert.equal(p.id, 'ask');
   assert.ok(p.tools.includes('not a coding session') && p.tools.includes('scratch space'));
-  assert.deepEqual(p.surfaces, ['map', 'macro'], 'map routes and macros are core surfaces the general chat uses');
+  assert.deepEqual(p.surfaces, ['map', 'macro', 'ui'], 'map routes, macros and live UI widgets are core surfaces the general chat uses');
   // The scratch folder: configured, else per-user application data; never the chat's folder.
   assert.equal(ask.scratchFolder({ cwd: '/x/y' }), path.resolve('/x/y'));
   const dflt = ask.scratchFolder({});

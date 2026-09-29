@@ -10,7 +10,7 @@ plugin among several.
 
 - Transport in and out (screenshot strip out, load-on-demand slots in).
 - Chats, sessions, transcripts, restore.
-- Surfaces: the addon window, whisper tabs, the game-chat echo, map layers, macros.
+- Surfaces: the addon window, whisper tabs, the game-chat echo, map layers, macros, live UI widgets.
 - Game context: character, zone, position, quest log, professions, shift-click links.
 - A plugin registry, and the routing that decides which plugin a message belongs to.
 
@@ -24,7 +24,7 @@ label              shown in the bridge's banner and logs (the addon shows the id
 aliases            other names a message may address it by: "@claude …"
 match(msg)         when a bare message on a chat bound to nothing belongs to it
 tools              extra instructions placed in the system prompt after the reply rules
-surfaces           which of the core's surfaces its replies may use: "map", "macro"
+surfaces           which of the core's surfaces its replies may use: "map", "macro", "ui"
                    (the window, the echo and the tab are how every reply reaches the player)
 handle(msg, core)  what to actually do; `core` lends it the agent runner, the
                    bridge's folder and the chat's session
@@ -44,6 +44,7 @@ are the core's model runner, shared by every plugin: `ask` runs the same CLI as
 |---|---|---|
 | `ask` | General AI chat. Game questions, quest research, map routes, macros. The default. | Core behaviour today, minus the coding assumptions |
 | `claude-code` | Agent sessions in a folder. What the bridge does now. | Existing bridge |
+| `live` | A Claude Code session already open in a terminal, reached through a Claude Code channel ([LIVE-SESSION.md](LIVE-SESSION.md)). No agent run: the plugin forwards the message and waits for the session's `wow_reply`. | `bridge/plugins/live.js`, `bridge/channel.js` |
 | `factory` | The approval queue: drafts waiting on a stamp, judge holds, merge-ready PRs | `factory-inbox`, `factory-ledger` |
 | `studio` | The task board: what is in flight, what is blocked | `studio-board`, `studio-orchestrator` |
 | `vision` | Answers about what is on screen | New; see below |

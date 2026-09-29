@@ -5,34 +5,62 @@
 // scratch folder. Needs that agent's CLI installed and logged in. Claude by default:
 //   node tests/inject_test.js [--agent claude|codex|grok] [--plugin ask|claude-code]
 'use strict';
-const fs = require('fs'), path = require('path');
+const fs = require('fs'), os = require('os'), path = require('path');
 const { execFileSync, spawnSync } = require('child_process');
 const luaparse = require('luaparse');
+const H = require('../bridge/home');
 
-const S = path.join(__dirname, 'tmp', 'inject');
 const SRC = path.join(__dirname, '..', 'bridge');
-fs.rmSync(S, { recursive: true, force: true });
-fs.mkdirSync(path.join(S, 'addons', 'ClaudeWoW'), { recursive: true });
+const REAL_HOME = path.resolve(H.defaultDir());
+const S = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-wow-inject-'));
+const SANDBOX_HOME = path.join(S, 'home');
+process.on('exit', () => fs.rmSync(S, { recursive: true, force: true }));
+
+function isInside(dir, p) {
+  const rel = path.relative(path.resolve(dir), path.resolve(p));
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+function abort(why) {
+  console.error(`>>> INJECT TEST ABORTED: ${why}`);
+  process.exit(1);
+}
+
+const env = { ...process.env, CLAUDE_WOW_HOME: SANDBOX_HOME };
+delete env.CLAUDECODE;
+delete env.CLAUDE_WOW_PROJECT;
+delete env.WOW_AI_PROJECT;
+const resolvedHome = H.resolve(env).dir;
+if (resolvedHome !== path.resolve(SANDBOX_HOME)) abort(`the bridge home resolves to ${resolvedHome}, not the sandbox ${SANDBOX_HOME}`);
+if (isInside(REAL_HOME, resolvedHome) || isInside(resolvedHome, REAL_HOME)) abort(`the bridge home ${resolvedHome} is the real ${REAL_HOME}`);
+if (isInside(REAL_HOME, S)) abort(`the sandbox ${S} is inside the real ${REAL_HOME}`);
+
+const ADDONS = path.join(S, 'wow', 'Interface', 'AddOns');
+fs.mkdirSync(path.join(ADDONS, 'ClaudeWoW'), { recursive: true });
 fs.mkdirSync(path.join(S, 'proj'), { recursive: true });
-for (const f of ['bridge.js', 'protocol.js', 'agents.js', 'plugins.js', 'decode.js', 'screenshots.js', 'vision.js', 'install-slots.js', 'capture.ps1']) fs.copyFileSync(path.join(SRC, f), path.join(S, f));
-fs.mkdirSync(path.join(S, 'plugins'), { recursive: true });
-for (const f of fs.readdirSync(path.join(SRC, 'plugins'))) fs.copyFileSync(path.join(SRC, 'plugins', f), path.join(S, 'plugins', f));
+fs.mkdirSync(SANDBOX_HOME, { recursive: true });
 const agentIdx = process.argv.indexOf('--agent');
 const agent = agentIdx >= 0 ? process.argv[agentIdx + 1] : 'claude';
 const pluginIdx = process.argv.indexOf('--plugin');
 const plugins = pluginIdx >= 0 ? [process.argv[pluginIdx + 1]] : ['claude-code', 'ask'];
-fs.writeFileSync(path.join(S, 'addons', 'ClaudeWoW', 'ClaudeWoW.toc'), '## Interface: 16001\n');
+fs.writeFileSync(path.join(ADDONS, 'ClaudeWoW', 'ClaudeWoW.toc'), '## Interface: 16001\n');
 
 const cfg = JSON.parse(fs.readFileSync(path.join(SRC, 'config.example.json'), 'utf8'));
-cfg.addonDir = path.join(S, 'addons');
-cfg.inboxFile = path.join(S, 'addons', 'ClaudeWoW', 'Inbox.lua');
-cfg.savedVariablesFile = path.join(S, 'nope.lua');
+cfg.addonDir = ADDONS;
+cfg.inboxFile = path.join(ADDONS, 'ClaudeWoW', 'Inbox.lua');
+cfg.savedVariablesFile = path.join(S, 'wow', 'WTF', 'nope.lua');
 cfg.defaultCwd = path.join(S, 'proj');
-cfg.plugins = { default: 'ask', ask: { cwd: path.join(S, 'scratch') } };
+cfg.capture = { ...cfg.capture, enabled: false, screenshotDir: path.join(S, 'wow', 'Screenshots') };
+cfg.plugins = { default: 'ask', ask: { cwd: path.join(S, 'scratch') }, roast: { cwd: path.join(S, 'roast') } };
 cfg.slots = 5;
-fs.writeFileSync(path.join(S, 'config.json'), JSON.stringify(cfg, null, 2));
+const configPaths = [cfg.addonDir, cfg.inboxFile, cfg.savedVariablesFile, cfg.defaultCwd, cfg.capture.screenshotDir, cfg.plugins.ask.cwd, cfg.plugins.roast.cwd];
+for (const p of configPaths) {
+  if (!isInside(S, p) || isInside(REAL_HOME, p)) abort(`config path ${p} is outside the sandbox ${S}`);
+}
+fs.writeFileSync(path.join(SANDBOX_HOME, 'config.json'), JSON.stringify(cfg, null, 2));
+console.log(`sandbox: ${S} (CLAUDE_WOW_HOME=${SANDBOX_HOME})`);
 
-console.log(execFileSync(process.execPath, ['install-slots.js'], { cwd: S, encoding: 'utf8' }).trim());
+console.log(execFileSync(process.execPath, [path.join(SRC, 'install-slots.js')], { cwd: S, env, encoding: 'utf8' }).trim());
 
 function readLua(file, globalName) {
   const src = fs.readFileSync(file, 'utf8');
@@ -56,9 +84,8 @@ function readLua(file, globalName) {
 // that block (the summary the game chat prints is split off as `summary`).
 const pong = text => /^PONG\b/.test(String(text || ''));
 // A signal is a valid .wav; "off" is no file at all.
-const size = f => { try { return fs.statSync(path.join(S, 'addons', 'ClaudeWoW', f)).size; } catch { return -1; } };
+const size = f => { try { return fs.statSync(path.join(ADDONS, 'ClaudeWoW', f)).size; } catch { return -1; } };
 const pad = n => String(n).padStart(3, '0');
-const env = { ...process.env }; delete env.CLAUDECODE;
 console.log(`agent: ${agent}`);
 
 let ok = true;
@@ -66,7 +93,7 @@ let n = 0; // message ids count up across runs (state.json lives in the sandbox)
 for (const plugin of plugins) {
   n++;
   console.log(`\n--- plugin ${plugin} (message #${n}) ---`);
-  const r = spawnSync(process.execPath, ['bridge.js', '--inject', 'Reply with exactly the word PONG and nothing else.', '--agent', agent, '--plugin', plugin], { cwd: S, encoding: 'utf8', env, timeout: 180000 });
+  const r = spawnSync(process.execPath, [path.join(SRC, 'bridge.js'), '--inject', 'Reply with exactly the word PONG and nothing else.', '--agent', agent, '--plugin', plugin, '--project', cfg.defaultCwd], { cwd: S, encoding: 'utf8', env, timeout: 180000 });
   const lines = r.stdout.split('\n').filter(l => l.includes(`#${n}`));
   console.log(lines.join('\n'));
   if (r.stderr.trim()) console.log('stderr:', r.stderr.trim().slice(0, 500));
@@ -75,7 +102,7 @@ for (const plugin of plugins) {
   if (!ran) console.log(`BAD: expected "[${plugin}] ... starting in ${where}" in the log`);
   ok = ok && ran;
   for (let i = 1; i <= 5; i++) {
-    const d = readLua(path.join(S, 'addons', 'ClaudeWoW_S00' + i, 'Inbox.lua'), 'ClaudeWoW_SlotData');
+    const d = readLua(path.join(ADDONS, 'ClaudeWoW_S00' + i, 'Inbox.lua'), 'ClaudeWoW_SlotData');
     const rec = (d.replies || [])[0] || {};
     const good = d.replies && d.replies.length === 1 && Number(rec.id) === n && rec.status === 'done' && pong(rec.text) && rec.agent === agent && rec.plugin === plugin;
     ok = ok && good;

@@ -49,6 +49,7 @@ function paths(dir, source) {
     log: path.join(dir, 'bridge.log'),
     tmp: path.join(dir, 'tmp'),
     mapjobs: path.join(dir, 'mapjobs'),
+    uijobs: path.join(dir, 'uijobs'),
   };
 }
 

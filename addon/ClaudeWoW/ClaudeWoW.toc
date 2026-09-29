@@ -3,10 +3,15 @@
 ## Notes: Talk to Claude Code, Codex, Grok, Antigravity or Hermes from inside the game, one session per chat; ready-made macros and map routes from the agent. Needs the companion bridge (see README).
 ## Author: chelinho139
 ## Version: 0.4.0
-## SavedVariables: ClaudeWoWDB, ClaudeWoWMapDB
+## SavedVariables: ClaudeWoWDB, ClaudeWoWMapDB, ClaudeWoWWidgetDB
 ## OptionalDeps: ClaudeWoW_Nodes
 
 Codec.lua
 Inbox.lua
 ClaudeWoW.lua
 Map.lua
+Roast.lua
+Voice.lua
+LootRoll.lua
+Achievements.lua
+Widgets.lua

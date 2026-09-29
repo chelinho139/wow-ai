@@ -16,6 +16,7 @@ tests/tmp/
 *.zip
 bridge/probe.png
 bridge/mapjobs/
+bridge/uijobs/
 __pycache__/
 
 # build output (node build.js)

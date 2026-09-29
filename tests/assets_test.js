@@ -65,7 +65,7 @@ test('with an embedded table, files are written out once, rewritten when they di
     assert.equal(AS.file('docs/WOW-ADDON-PRIMER.md', home2), path.join(home2, AS.DIR_NAME, 'docs', 'WOW-ADDON-PRIMER.md'));
     assert.ok(fs.existsSync(AS.file('bridge/capture.ps1', home2)));
     assert.ok(fs.existsSync(path.join(AS.dir('addon/ClaudeWoW', home2), 'ClaudeWoW.toc')));
-    assert.equal(fs.readdirSync(AS.dir('addon/ClaudeWoW', home2)).length, 5);
+    assert.equal(fs.readdirSync(AS.dir('addon/ClaudeWoW', home2)).length, AS.FILES.filter(rel => rel.startsWith('addon/ClaudeWoW/')).length);
   } finally {
     AS.unembed();
     fs.rmSync(tmp, { recursive: true, force: true });

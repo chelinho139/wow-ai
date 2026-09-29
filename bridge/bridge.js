@@ -49,6 +49,7 @@ const PL = require('./plugins'); // the plugin registry and routing (tests/plugi
 const H = require('./home');     // where config, state and logs live (tests/home_test.js)
 const R = require('./runtime');  // node, bun, or the compiled binary (tests/runtime_test.js)
 const AS = require('./assets');  // the capture scripts and the primer, by path, from a checkout or the binary (tests/assets_test.js)
+const ACH = require('./achievements');
 
 // The plugins this bridge has (docs/PLATFORM.md). Registration order is the
 // order match() is asked in, and the first one is the default unless
@@ -58,6 +59,9 @@ const AS = require('./assets');  // the capture scripts and the primer, by path,
 const registry = PL.createRegistry();
 registry.register(require('./plugins/ask'));
 registry.register(require('./plugins/claude-code'));
+registry.register(require('./plugins/roast'));
+registry.register(require('./plugins/live'));
+const LP = require('./liveproto');
 
 const HERE = __dirname;
 // Config, state, transcripts, log and scratch live in the home folder (home.js:
@@ -373,7 +377,8 @@ let captureChild = null; // the capture script on the pixel transport (startCapt
 function shutdown(sig) {
   if (shuttingDown) return;
   shuttingDown = true;
-  const kids = [...running.values()].map(r => r.child);
+  stopPlugins();
+  const kids = [...running.values()].map(r => r.child).filter(Boolean);
   if (captureChild) kids.push(captureChild);
   const n = kids.filter(PR.alive).length;
   log(`${sig}: stopping${n ? `; ending ${n} child process${n === 1 ? '' : 'es'} (SIGTERM, SIGKILL after ${KILL_GRACE_MS} ms)` : ''}`);
@@ -438,11 +443,61 @@ function takeMapCommands(job, text) {
   return { text: blocks.text, note: all.length ? `map: ${all.join('; ')}` : '' };
 }
 
+if (!state.widgets) state.widgets = P.newWidgetSet();
+const WIDGET_DIR = HOME.uijobs;
+const WIDGET_SHARE_MS = 3 * 60 * 1000;
+const WIDGET_PROGRESS_MAX = 20000;
+let widgetShareUntil = Object.keys(state.widgets.items).length ? Date.now() + WIDGET_SHARE_MS : 0;
+function widgetSourceBytes() {
+  return Object.values(state.widgets.items).reduce((sum, w) => sum + w.source.length, 0);
+}
+
+function widgetFileFor(job) {
+  return path.join(WIDGET_DIR, `${String(job.chat || 'default').replace(/[^\w-]/g, '_')}-${job.id}.jsonl`);
+}
+
+function takeWidgetCommands(job, text) {
+  const file = widgetFileFor(job);
+  let cmds = [], errors = [];
+  try {
+    const fromFile = P.parseWidgetFile(fs.readFileSync(file, 'utf8'));
+    cmds = fromFile.cmds; errors = fromFile.errors;
+  } catch {}
+  try { fs.unlinkSync(file); } catch {}
+  const blocks = P.extractWidgetBlocks(text);
+  cmds.push(...blocks.cmds);
+  if (!cmds.length && !errors.length) return { text: blocks.text, note: '' };
+  const { changed, notes } = P.applyWidgetCommands(state.widgets, cmds);
+  if (changed) { saveState(); widgetShareUntil = Date.now() + WIDGET_SHARE_MS; }
+  const all = [...notes, ...errors];
+  log(`#${job.id} ui: ${all.join('; ') || 'no change'} (version ${state.widgets.version})`);
+  return { text: blocks.text, note: all.length ? `ui: ${all.join('; ')}` : '' };
+}
+
 // Slot file / Inbox.lua body: see protocol.luaTable.
 function slotFile(globalName, records, urgent = true) {
   const map = Date.now() < mapShareUntil && (urgent || mapLuaSize() <= MAP_PROGRESS_MAX) ? state.map : null;
+  const widgets = Date.now() < widgetShareUntil && (urgent || widgetSourceBytes() <= WIDGET_PROGRESS_MAX) ? state.widgets : null;
   const transportNote = TRANSPORT_SOURCE === 'fallback' ? P.transportNote(state.transportFallback) : '';
-  return P.luaTable(globalName, records, { cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), plugin: DEFAULT_PLUGIN, plugins: registry.ids(), map, transport: TRANSPORT, levels: LEVELS, codec: STRIP_CODEC, transportNote });
+  const achievementsLua = ACHIEVEMENTS_ON ? ACH.luaAchievements(state) : '';
+  const lp = livePlugin();
+  const liveInfo = lp ? { sessions: lp.status(), start: liveStartCommand() } : null;
+  return P.luaTable(globalName, records, { live: liveInfo, cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), plugin: DEFAULT_PLUGIN, plugins: registry.ids(), map, widgets, transport: TRANSPORT, levels: LEVELS, codec: STRIP_CODEC, transportNote, achievementsLua });
+}
+
+const ACHIEVEMENTS_ON = cfg.achievements !== false;
+function awardAchievements(job, status) {
+  if (!ACHIEVEMENTS_ON || !ACH.pluginEarns(registry.get(job.plugin))) return;
+  const chatTranscript = job.chat && transcripts.chats[job.chat];
+  const chatMessages = chatTranscript ? chatTranscript.messages.filter(m => m.role === 'user').length : 0;
+  const commands = job.activity ? job.activity.commands() : [];
+  try {
+    const { awards, changed } = ACH.evaluate(state, { chat: chatKey(job), status, commands, chatMessages });
+    if (changed) saveState();
+    if (awards.length) log(`${tagOf(job)} achievement${awards.length === 1 ? '' : 's'}: ${awards.map(a => a.title).join(', ')}`);
+  } catch (e) {
+    log(`${tagOf(job)} achievements: ${e.message}`);
+  }
 }
 
 // The addon cannot take the screenshot the transport needs (no Screenshot() in
@@ -684,6 +739,7 @@ function submit(job) {
     maybeOfferRestore(job);
     // Even an empty set: a client holding layers from a reset bridge must drop them.
     mapShareUntil = Date.now() + MAP_SHARE_MS;
+    widgetShareUntil = Date.now() + WIDGET_SHARE_MS;
     publishNow();
     log(`hello from session ${job.session}${pendingRestore ? ' (restore offered)' : ''}`);
     return;
@@ -756,7 +812,13 @@ function runJob(job) {
   }
   job.plugin = r.plugin.id;
   if (r.text !== undefined) job.text = r.text; // "@ask ..." addressed it; the address is not part of the prompt
-  r.plugin.handle(job, core);
+  const failed = e => {
+    log(`${tag} ${r.plugin.id}: ${e && e.stack ? e.stack : e}`);
+    finish(job, 'error', `The ${r.plugin.id} plugin failed: ${e && e.message ? e.message : e}`);
+  };
+  let handled;
+  try { handled = r.plugin.handle(job, core); } catch (e) { failed(e); return; }
+  if (handled && typeof handled.then === 'function') handled.then(null, failed);
 }
 
 // What a plugin's handle(job, core) may use: the model runner, the bridge's
@@ -770,8 +832,39 @@ const core = {
   // The folder the chat's current agent session was made in, if any.
   sessionFolder: job => (state.sessionCwd && state.sessionCwd[sessKey(job)]) || '',
   fail: (job, text) => finish(job, 'error', text),
+  reply: (job, text, denied) => finish(job, 'done', text, undefined, denied),
+  progress: (job, text) => publish(chatKey(job), { chat: job.chat, id: job.id, status: 'working', text, cwd: job.cwd, session: '', agent: job.agent || '', plugin: job.plugin || '' }, true),
+  accept: (job) => { maybeOfferRestore(job); noteMessage(job, 'user', job.text); },
+  gameContext: () => gameContext(),
+  publish: () => publishNow(),
+  get home() { return HOME.dir; },
+  get timeoutMs() { return cfg.timeoutMs || 1800000; },
+  get liveStartCommand() { return liveStartCommand(); },
   runAgent,
 };
+
+function liveStartCommand() {
+  return LP.startCommand({ repo: REPO, home: HOME.source === 'CLAUDE_WOW_HOME' ? HOME.dir : '' });
+}
+
+function livePlugin() {
+  const p = registry.get('live');
+  return p && typeof p.status === 'function' ? p : null;
+}
+
+function startPlugins() {
+  for (const p of registry.all()) {
+    if (typeof p.start !== 'function') continue;
+    try { p.start(core); } catch (e) { log(`${p.id}: could not start (${e.message})`); }
+  }
+}
+
+function stopPlugins() {
+  for (const p of registry.all()) {
+    if (typeof p.stop !== 'function') continue;
+    try { p.stop(); } catch {}
+  }
+}
 
 // Run the chat's agent on the message, in opts.cwd, and publish what it says.
 // opts.freshSession() may name a reason to start a new session instead of
@@ -794,7 +887,7 @@ function runAgent(job, opts = {}) {
   }
   job.agent = agentId;
   const agent = A.AGENTS[agentId];
-  const acfg = A.agentConfig(cfg, agentId);
+  const acfg = P.withRunOnlyRules(A.agentConfig(cfg, agentId), job.allowOnce);
   const cmd = A.resolveCommand(agentId, acfg);
   if (!cmd.found) {
     log(`${tag} ${agentId} not found: ${cmd.note}`);
@@ -825,6 +918,9 @@ function runAgent(job, opts = {}) {
     const added = allowRules(agentId, job.allow);
     log(`${tag} allowed for ${agentId}: ${job.allow.join(', ')}${added.length ? '' : ' (already allowed)'}`);
   }
+  if (Array.isArray(job.allowOnce) && job.allowOnce.length) {
+    log(`${tag} allowed for this run only (${agentId}): ${job.allowOnce.join(', ')}`);
+  }
   maybeOfferRestore(job);
   noteMessage(job, 'user', job.text);
   const resume = state.sessions[skey] || state.sessions[key];
@@ -848,8 +944,8 @@ function runAgent(job, opts = {}) {
   // The stable system prompt (the same bytes on every run of this chat) and the
   // message, which carries what changes: the situation and the vision note.
   const ctx = gameContext();
-  const system = P.systemPrompt(ctx, primer(), { tools: plugin.tools });
-  const systemShort = P.systemPrompt(ctx, '');
+  const system = P.systemPrompt(ctx, primer(), { tools: plugin.tools, surfaces: plugin.surfaces });
+  const systemShort = P.systemPrompt(ctx, '', { surfaces: plugin.surfaces });
   const prompt = P.messagePrompt(job.text, ctx, { image });
   const promptFile = path.join(TMP_DIR, `prompt-${job.id}-${Date.now().toString(36)}.txt`);
   const input = agent.input({ prompt, system, systemShort, resume, cfg: acfg, images });
@@ -871,6 +967,13 @@ function runAgent(job, opts = {}) {
       env.CLAUDE_WOW_MAP_FILE = mapFileFor(job);
     } catch (e) { log(`${tag} map file unavailable: ${e.message}`); }
   }
+  if (surfaces.has('ui')) {
+    try {
+      fs.mkdirSync(WIDGET_DIR, { recursive: true });
+      fs.rmSync(widgetFileFor(job), { force: true });
+      env.CLAUDE_WOW_UI_FILE = widgetFileFor(job);
+    } catch (e) { log(`${tag} ui file unavailable: ${e.message}`); }
+  }
 
   log(`${tag} (${job.via}) [${plugin.id}] ${agent.name} starting in ${cwd}${resume ? ' (resume ' + resume.slice(0, 8) + ')' : ' (new session)'}${ctx ? ' [game context]' : ''}${image ? ` [screen ${image.width}x${image.height}, ${Math.round(image.bytes / 1024)} KB]` : ''}${running.size ? ' [' + (running.size + 1) + ' running]' : ''}`);
   const startedAt = Date.now(); // a fresh session's clock starts here (the footer's elapsed time)
@@ -881,6 +984,7 @@ function runAgent(job, opts = {}) {
   if (input.stdin !== undefined) { child.stdin.on('error', () => {}); child.stdin.end(input.stdin); }
 
   const parser = agent.parser();
+  job.activity = ACH.createRunLog(agentId);
   const progress = [];
   let sessionId = resume || '';
   let result = null;       // { text, error } once the agent has produced its reply
@@ -909,6 +1013,7 @@ function runAgent(job, opts = {}) {
     let ev;
     try { ev = JSON.parse(line); } catch { return; }
     if (!ev || typeof ev !== 'object') return;
+    job.activity.feed(ev);
     let r;
     try {
       r = parser.feed(ev);
@@ -992,6 +1097,11 @@ function runAgent(job, opts = {}) {
       if (result) result.text = mapped.text;
       if (mapped.note) notes.push(mapped.note);
     }
+    if (surfaces.has('ui')) {
+      const widgeted = takeWidgetCommands(job, result ? result.text : '');
+      if (result) result.text = widgeted.text;
+      if (widgeted.note) notes.push(widgeted.note);
+    }
     const extra = notes.length ? `\n\n[bridge] ${notes.join('\n\n[bridge] ')}` : '';
     if (result && !result.error) {
       const body = String(result.text || '').trim() || (notes.length ? '' : `(${agent.name} finished without a reply)`);
@@ -1062,6 +1172,7 @@ function finish(job, status, text, session, denied) {
     }
   }
   noteMessage(job, status === 'done' ? 'assistant' : 'system', status === 'done' ? text : 'Bridge error: ' + text);
+  awardAchievements(job, status);
   const usage = P.usageFields(job.usage);
   publish(chatKey(job), { chat: job.chat, id: job.id, status, text, summary, cwd: job.cwd, session, denied, macros, agent: job.agent || '', plugin: job.plugin || '', ...usage }, true);
   signal('sig', job.id, true);
@@ -1277,6 +1388,7 @@ function banner() {
 }
 
 banner();
+if (!once) startPlugins();
 if (inject !== null) {
   const job = { id: state.lastId + 1, session: '', chat: '', text: inject, cwd: '', newSession: false, via: 'inject', agent: injectAgent || '' };
   if (injectPlugin) job.plugin = injectPlugin;
