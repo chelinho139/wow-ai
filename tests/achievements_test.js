@@ -164,6 +164,18 @@ test('Night Owl after midnight, Rubber Duck at 50 messages', () => {
   assert.ok(ids(ACH.evaluate({}, { chat: 'k', status: 'done', chatMessages: ACH.RUBBER_DUCK_MESSAGES, now: TUESDAY_NOON })).includes('rubber-duck'));
 });
 
+test('the roast plugin opts out of achievements, so a death roast is no task, no Night Owl and no Rubber Duck message', () => {
+  const PL = require('../bridge/plugins');
+  const registry = PL.createRegistry();
+  registry.register(require('../bridge/plugins/ask'));
+  registry.register(require('../bridge/plugins/claude-code'));
+  registry.register(require('../bridge/plugins/roast'));
+  assert.equal(ACH.pluginEarns(registry.get('roast')), false);
+  assert.equal(ACH.pluginEarns(registry.get('claude-code')), true);
+  assert.equal(ACH.pluginEarns(registry.get('ask')), true);
+  assert.equal(ACH.pluginEarns(null), true);
+});
+
 test('every rule has a catalog entry, and every entry a rule', () => {
   assert.deepEqual(ACH.RULES.map(r => r.id).sort(), ACH.CATALOG.map(c => c.id).sort());
   for (const c of ACH.CATALOG) {

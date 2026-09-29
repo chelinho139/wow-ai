@@ -271,6 +271,10 @@ const RULES = [
   { id: 'leeroy', when: f => f.run.forced },
 ];
 
+function pluginEarns(plugin) {
+  return !(plugin && plugin.achievements === false);
+}
+
 function evaluate(state, { chat = '', status = '', commands = [], chatMessages = 0, now = Date.now() } = {}) {
   const ledger = ledgerOf(state);
   const run = summarizeRun(commands);
@@ -328,5 +332,5 @@ module.exports = {
   CATALOG, RULES, RUBBER_DUCK_MESSAGES,
   commandSegments, segmentWords, gitSubcommand, testRunner, isTestCommand, testVerdict,
   countCommits, countPushes, usesForce, isFriday, isAfterMidnight, summarizeRun, wentGreen,
-  claudeActivity, codexActivity, createRunLog, newLedger, ledgerOf, evaluate, totalPoints, luaAchievements,
+  claudeActivity, codexActivity, createRunLog, newLedger, ledgerOf, pluginEarns, evaluate, totalPoints, luaAchievements,
 };

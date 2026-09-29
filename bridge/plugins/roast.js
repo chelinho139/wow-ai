@@ -39,6 +39,7 @@ const plugin = {
   label: 'Death roast',
   tools: TOOLS,
   surfaces: [],
+  achievements: false,
   match: job => !!job && job.kind === KIND,
   scratchFolder,
   banner: options => `roasts your deaths (/claude-wow roast on), runs in ${scratchFolder(options)} (plugins.roast.cwd)`,

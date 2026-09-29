@@ -400,7 +400,7 @@ function slotFile(globalName, records, urgent = true) {
 
 const ACHIEVEMENTS_ON = cfg.achievements !== false;
 function awardAchievements(job, status) {
-  if (!ACHIEVEMENTS_ON) return;
+  if (!ACHIEVEMENTS_ON || !ACH.pluginEarns(registry.get(job.plugin))) return;
   const chatTranscript = job.chat && transcripts.chats[job.chat];
   const chatMessages = chatTranscript ? chatTranscript.messages.filter(m => m.role === 'user').length : 0;
   const commands = job.activity ? job.activity.commands() : [];
