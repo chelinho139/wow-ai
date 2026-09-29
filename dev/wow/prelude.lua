@@ -48,6 +48,7 @@ function GetTime() return DEV.now end
 function time(t) if t then return os.time(t) end return DEV.epoch end
 function date(fmt, t) return os.date(fmt, t or DEV.epoch) end
 function GetPhysicalScreenSize() return DEV.width, DEV.height end
+function GetBuildInfo() return "1.60.1", "70058", "Sep 1 2026", DEV.interface end
 
 C_Timer = {
 	After = function(delay, fn)

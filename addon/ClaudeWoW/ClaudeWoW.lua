@@ -1266,9 +1266,15 @@ local function TryLoadSlot(why)
 	local loaded, reason = C_AddOns.LoadAddOn(name)
 	if not loaded then
 		run.slotError = reason
-		if reason == "MISSING" or reason == "DISABLED" then
-			run.slotsMissing = true
-			ClaudeWoW.ArmAutoRefresh()
+		run.slotsMissing = true
+		ClaudeWoW.ArmAutoRefresh()
+		if reason ~= "MISSING" and reason ~= "DISABLED" and not run.slotErrorTold then
+			run.slotErrorTold = true
+			local build = select(4, GetBuildInfo())
+			local fix = reason == "INTERFACE_VERSION"
+				and ("the slot addons were made for another game version (this client is " .. tostring(build) .. "). Set tocInterface to " .. tostring(build) .. " in the bridge's config.json, run \"npm run slots\", then restart WoW.")
+				or "run \"npm run slots\" on the bridge's machine, then restart WoW."
+			TellPlayer("reply slots do not load (" .. tostring(reason) .. "): " .. fix .. " Until then replies arrive on /reload.")
 		end
 		ClaudeWoW.UpdateStatus()
 		return
@@ -1366,7 +1372,7 @@ local function Tick()
 				rec.sentAt = now
 				rec.shot = nil
 				changed = true
-			elseif rec.forget then
+			elseif rec.forget or rec.cancelOf then
 				-- The bridge is away; db.forget keeps it for the next hello.
 				run.outbound[id] = nil
 				changed = true
@@ -2252,6 +2258,14 @@ end
 -- the transcript (which a later restore would otherwise bring back) and the
 -- agent session. db.forget keeps the id until the bridge acks, so a delete made
 -- while the bridge was away is sent again with the next hello.
+local function SendCancel(chat, id)
+	if db.settings.mode ~= "pixel" or not id then return end
+	db.lastSeq = db.lastSeq + 1
+	run.outbound[db.lastSeq] = { chat = chat.id, cwd = chat.cwd or "", flags = "cancel=" .. id, name = chat.name or "", text = "", sentAt = GetTime(), cancelOf = id }
+	NoteStaleSignals(db.lastSeq)
+	RefreshStrip()
+end
+
 local function SendForget(chatId)
 	if db.settings.mode ~= "pixel" then return end
 	for _, rec in pairs(run.outbound) do
@@ -4244,11 +4258,13 @@ SlashCmdList["CLAUDEWOW"] = function(msg)
 		ClaudeWoW.Toggle(true)
 	elseif cmd == "cancel" then
 		if c.pendingId then
-			AddHistory(c, "system", "Gave up waiting on #" .. c.pendingId)
+			local cancelled = c.pendingId
+			AddHistory(c, "system", "Gave up waiting on #" .. c.pendingId .. "; the bridge is told to stop it")
 			run.outbound[c.pendingId] = nil
 			if run.act then run.act[c.id] = nil end
 			c.pendingId = nil
 			c.progress = nil
+			SendCancel(c, cancelled)
 			RefreshStrip()
 			if not AnyPending() then keyCatcher:Hide() end
 		end

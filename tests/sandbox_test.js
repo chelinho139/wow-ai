@@ -41,6 +41,22 @@ test('a sandbox keeps every path the bridge and the client use inside itself', (
   }
 });
 
+test('install-slots rewrites slot .toc files when tocInterface changes', () => {
+  const { spawnSync } = require('child_process');
+  const sb = SB.create('iface', { root: ROOT });
+  try {
+    const toc = path.join(sb.addons, 'ClaudeWoW_S007', 'ClaudeWoW_S007.toc');
+    assert.match(fs.readFileSync(toc, 'utf8'), /## Interface: 16001/);
+    SB.writeConfig(sb, { tocInterface: '16002' });
+    const r = spawnSync(process.execPath, [path.join(SB.REPO, 'bridge', 'install-slots.js')], { env: sb.env, encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /updated: 200/);
+    assert.match(fs.readFileSync(toc, 'utf8'), /## Interface: 16002/);
+  } finally {
+    fs.rmSync(ROOT, { recursive: true, force: true });
+  }
+});
+
 test('the fake agent answers in stream-json, resumes its session, and reports cumulative usage like the real CLI', () => {
   const { spawnSync } = require('child_process');
   const state = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-claude-'));

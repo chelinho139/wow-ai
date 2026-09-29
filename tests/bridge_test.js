@@ -26,6 +26,12 @@ test('parseFlags reads new-session, hello, forget, context, agent and allow list
   assert.deepEqual(P.parseFlags('n;agent=grok;allow=WebSearch'), { ...none, newSession: true, agent: 'grok', allow: ['WebSearch'] });
 });
 
+test('parseFlags reads cancel=<id> and ignores a bad one', () => {
+  assert.equal(P.parseFlags('cancel=42').cancel, 42);
+  assert.equal(P.parseFlags('cancel=x').cancel, undefined);
+  assert.equal(P.parseFlags('n').cancel, undefined);
+});
+
 test('parseFlags reads shot=missing / shot=failed (the addon cannot take the screenshot the transport needs) and nothing else under shot=', () => {
   assert.equal(P.parseFlags('h;c;shot=missing').shot, 'missing');
   assert.equal(P.parseFlags('shot=failed;v').shot, 'failed');

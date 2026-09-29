@@ -111,15 +111,23 @@ test('message ids past the slot count still get acked and answered without marki
   });
 });
 
-test('an agent error with no text tells the player something useful', { todo: 'Bridge error: "" today (agents.js done.text is empty)' }, async () => {
+test('an agent error with no text tells the player something useful', async () => {
   await withGame({}, async h => {
     const r = await h.client.say('go [[error]]');
     assert.equal(r.role, 'system');
-    assert.match(r.text, /error_during_execution|exited|failed/i);
+    assert.match(r.text, /error_during_execution/);
   });
 });
 
-test('/claude-wow cancel stops the agent run in the bridge', { todo: 'cancel only clears the addon side; the run continues for up to timeoutMs' }, async () => {
+test('a run that passes timeoutMs is stopped and the player is told the limit', async () => {
+  await withGame({ config: { timeoutMs: 3000 } }, async h => {
+    const r = await h.client.say('forever [[hang]]', { timeoutMs: 30000 });
+    assert.equal(r.role, 'system');
+    assert.match(r.text, /stopped after 3 s, the limit set by timeoutMs/);
+  });
+});
+
+test('/claude-wow cancel stops the agent run in the bridge', async () => {
   await withGame({}, async h => {
     await h.client.connect();
     const id = h.client.lastSeq() + 1;
@@ -129,10 +137,11 @@ test('/claude-wow cancel stops the agent run in the bridge', { todo: 'cancel onl
     const pid = h.agentCalls()[0].pid;
     h.client.slash('/claude-wow cancel');
     await h.client.waitFor(() => !isAlive(pid), { timeoutMs: 15000, label: 'the agent process to end' });
+    await h.bridge.waitForLine(new RegExp(`#${id}@\\S+ cancelled from the game`));
   });
 });
 
-test('a bridge that dies mid-run tells the player which message was lost', { todo: 'in-flight runs live only in memory; the chat waits forever' }, async () => {
+test('a bridge that dies mid-run tells the player which message was lost', async () => {
   await withGame({}, async h => {
     await h.client.connect();
     const id = h.client.lastSeq() + 1;
@@ -145,24 +154,25 @@ test('a bridge that dies mid-run tells the player which message was lost', { tod
       const c = h.client.activeChat();
       return c && (c.history || []).find(m => m.id === id && m.role === 'system');
     }, { timeoutMs: 30000, label: 'a note about the lost run' });
-    assert.match(note.text, /restart|lost|again/i);
+    assert.match(note.text, /stopped unexpectedly .* reply is lost\. Send it again/);
+    await h.client.waitFor(() => h.agentCalls().every(c => !isAlive(c.pid)), { timeoutMs: 5000, label: 'the orphaned agent to be ended' });
   });
 });
 
-test('a client whose interface version no longer matches the slots tells the player why replies stopped', { todo: 'only MISSING/DISABLED are reported; INTERFACE_VERSION is silent' }, async () => {
+test('a client whose interface version no longer matches the slots tells the player why replies stopped', async () => {
   await withGame({ client: { interface: 16002 } }, async h => {
-    await h.client.waitFor(() => h.client.prints().some(p => /interface|out of date|version/i.test(p)), { timeoutMs: 20000, label: 'a message about the slot version' });
+    await h.client.waitFor(() => h.client.prints().some(p => /INTERFACE_VERSION.*tocInterface to 16002/.test(p)), { timeoutMs: 20000, label: 'a message about the slot version' });
   });
 });
 
-test('a corrupt state.json is kept aside and reported, not silently reset', { todo: 'readJson returns {} and the next save overwrites the file' }, async () => {
+test('a corrupt state.json is kept aside and reported, not silently reset', async () => {
   await withGame({ beforeLaunch: sb => fs.writeFileSync(sb.state, '{"sessions": {"x": ') }, async h => {
     await h.bridge.waitForLine(/state\.json.*(corrupt|unreadable|not valid)/i, { timeoutMs: 5000 });
     assert.ok(fs.readdirSync(h.sb.home).some(f => /^state\.json\.corrupt/.test(f)));
   });
 });
 
-test('a second bridge on the same home refuses to start', { todo: 'no pid lock; two bridges share state.json and the Screenshots folder' }, async () => {
+test('a second bridge on the same home refuses to start', async () => {
   await withGame({}, async h => {
     const second = new H.BridgeProcess(h.sb);
     second.start();

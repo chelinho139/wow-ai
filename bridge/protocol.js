@@ -207,6 +207,7 @@ function parseFlags(flags) {
     else if (tok === 'v') out.vision = true; // attach the screenshot's game view to the run (screenshot transport only)
     else if (tok.startsWith('allow=')) out.allow.push(...tok.slice(6).split(',').map(s => s.trim()).filter(Boolean));
     else if (tok.startsWith('agent=')) out.agent = tok.slice(6).trim().toLowerCase();
+    else if (tok.startsWith('cancel=')) { const n = Number(tok.slice(7)); if (Number.isInteger(n) && n > 0) out.cancel = n; }
     else if (tok.startsWith('plugin=')) { const p = tok.slice(7).trim().toLowerCase(); if (p) out.plugin = p; }
     // "shot=missing" / "shot=failed": the addon is on the screenshot transport but
     // cannot take the shot (no Screenshot() in this client, or SCREENSHOT_FAILED on

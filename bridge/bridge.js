@@ -138,6 +138,31 @@ const cap = Object.assign({ enabled: true, processName: 'WowB', cellPx: 4, cells
 // script watches the screen (deprecated; an explicit capture.mode, or the
 // fallback a previous run had to make, remembered in state.json). It can
 // change while running: fallbackToPixel, when the addon reports it cannot shoot.
+const LOCK_FILE = path.join(HOME.dir, 'bridge.lock');
+function holdLock() {
+  const held = readJsonQuiet(LOCK_FILE);
+  if (held && held.pid !== process.pid && pidAlive(held.pid)) {
+    const msg = `another bridge is already running on ${HOME.dir} (pid ${held.pid}, started ${held.started || 'at an unknown time'}). Two bridges would overwrite each other's state and race for the same screenshots. Stop it first ("claude-wow service stop", or end pid ${held.pid}).`;
+    console.error(msg);
+    log(msg);
+    process.exit(3);
+  }
+  fs.mkdirSync(HOME.dir, { recursive: true });
+  fs.writeFileSync(LOCK_FILE, JSON.stringify({ pid: process.pid, started: new Date().toISOString() }));
+  process.on('exit', () => {
+    const now = readJsonQuiet(LOCK_FILE);
+    if (now && now.pid === process.pid) { try { fs.rmSync(LOCK_FILE, { force: true }); } catch {} }
+  });
+}
+function pidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
+}
+function readJsonQuiet(file) {
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
+}
+if (!exitWhenIdle) holdLock();
+
 const stateEarly = readJson(STATE_FILE, {});
 const chosen = P.chooseTransport(cap, stateEarly);
 if (!chosen.transport) {
@@ -185,7 +210,7 @@ if (P.pruneStale(state, transcripts)) { saveState(); saveTranscripts(); }
 let pendingRestore = null;
 
 function saveTranscripts() {
-  try { atomicWrite(TRANSCRIPT_FILE, JSON.stringify(transcripts)); } catch (e) { log('could not save transcripts:', e.message); }
+  try { durableWrite(TRANSCRIPT_FILE, JSON.stringify(transcripts)); } catch (e) { log('could not save transcripts:', e.message); }
 }
 
 // Chats the player deleted in game while a run for them was still going: the
@@ -256,11 +281,29 @@ let publishTimer = null;
 // ---------------------------------------------------------------------------
 
 function readJson(file, fallback) {
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; }
+  let text;
+  try { text = fs.readFileSync(file, 'utf8'); } catch (e) {
+    if (e.code !== 'ENOENT') log(`${path.basename(file)}: cannot read it (${e.code || e.message}); starting from empty`);
+    return fallback;
+  }
+  try { return JSON.parse(text); } catch (e) {
+    const aside = `${file}.corrupt-${Date.now()}`;
+    let kept = true;
+    try { fs.renameSync(file, aside); } catch { kept = false; }
+    log(`${path.basename(file)} is corrupt (${e.message}); ${kept ? `kept it as ${path.basename(aside)}` : 'could not move it aside'} and started from empty. To recover, stop the bridge, repair that copy, and put it back as ${path.basename(file)}.`);
+    return fallback;
+  }
+}
+
+function durableWrite(file, content) {
+  const tmp = `${file}.${process.pid}.tmp`;
+  const fd = fs.openSync(tmp, 'w');
+  try { fs.writeSync(fd, content); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+  fs.renameSync(tmp, file);
 }
 
 function saveState() {
-  atomicWrite(STATE_FILE, JSON.stringify(state, null, 2));
+  durableWrite(STATE_FILE, JSON.stringify(state, null, 2));
 }
 
 function log(...parts) {
@@ -307,6 +350,14 @@ function shutdown(sig) {
 }
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
+function crash(kind, err) {
+  try { log(`CRASH (${kind}): ${err && err.stack ? err.stack : err}`); } catch {}
+  const kids = [...running.values()].map(r => r.child).filter(Boolean);
+  for (const child of kids) { try { if (process.platform !== 'win32') process.kill(-child.pid, 'SIGKILL'); else child.kill('SIGKILL'); } catch {} }
+  process.exit(70);
+}
+process.on('uncaughtException', e => crash('uncaughtException', e));
+process.on('unhandledRejection', e => crash('unhandledRejection', e));
 
 // ---------------------------------------------------------------------------
 // What the game reads
@@ -461,7 +512,6 @@ function clearSignalsAhead(id) {
   for (const slot of P.slotsToClearAhead(id, SLOTS, pendingIds())) {
     for (const kind of ['ack', 'sig']) setSignalFile(path.join(cfg.addonDir, 'ClaudeWoW', kind, pad3(slot) + '.wav'), false);
   }
-  if (!(state.lastId >= id)) state.lastId = id;
 }
 
 // Heartbeat: act/NNN/kk.wav flips valid for the k-th action of message NNN. The
@@ -587,6 +637,13 @@ function submit(job) {
     signal('ack', job.id, true);
     return;
   }
+  if (job.cancel) {
+    markHandled(job);
+    saveState();
+    signal('ack', job.id, true);
+    cancelRun(job);
+    return;
+  }
   if (job.hello) {
     // The addon announcing itself: ack, offer a restore if its data is fresh,
     // and refresh the slots so it can read our clock. No agent run.
@@ -611,6 +668,26 @@ function submit(job) {
     return;
   }
   runJob(job);
+}
+
+function cancelRun(job) {
+  const key = chatKey(job);
+  const q = queued.get(key);
+  if (q && q.id === job.cancel) {
+    queued.delete(key);
+    markHandled(q);
+    saveState();
+    log(`${tagOf(q)} cancelled from the game before it started`);
+    return;
+  }
+  const cur = running.get(key);
+  if (cur && cur.job.id === job.cancel) {
+    cur.job.cancelled = true;
+    log(`${tagOf(cur.job)} cancelled from the game; ending it and everything it started`);
+    if (cur.child) killTree(cur.child);
+    return;
+  }
+  log(`${tagOf(job)} cancel for #${job.cancel}: nothing is running for that message`);
 }
 
 // Is this message already running or waiting its turn? (A retried strip.)
@@ -768,6 +845,7 @@ function runAgent(job, opts = {}) {
   const startedAt = Date.now(); // a fresh session's clock starts here (the footer's elapsed time)
   const child = PR.spawnChild(cmd.file, args, { cwd, env, windowsHide: true, stdio: [input.stdin !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
   running.set(key, { job, child });
+  noteInflight(key, job, child, agent.name);
   publish(key, { chat: job.chat, id: job.id, status: 'working', text: resume ? 'thinking...' : 'starting a new session...', cwd: job.cwd, session: resume, agent: agentId, plugin: plugin.id }, true);
   if (input.stdin !== undefined) { child.stdin.on('error', () => {}); child.stdin.end(input.stdin); }
 
@@ -838,6 +916,7 @@ function runAgent(job, opts = {}) {
   child.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8'); });
 
   const timer = setTimeout(() => {
+    job.timedOut = true;
     log(`${tag} timed out after ${cfg.timeoutMs || 1800000} ms; ending it and everything it started (SIGTERM, SIGKILL after ${KILL_GRACE_MS} ms)`);
     killTree(child);
   }, cfg.timeoutMs || 1800000);
@@ -887,19 +966,51 @@ function runAgent(job, opts = {}) {
       const body = String(result.text || '').trim() || (notes.length ? '' : `(${agent.name} finished without a reply)`);
       finish(job, 'done', (body + extra).trim(), sessionId, [...denied]);
     } else if (result) {
-      finish(job, 'error', (String(result.text || '') + extra).trim(), sessionId, [...denied]);
+      const said = String(result.text || '').trim() || `${agent.name} reported an error with no message (exit code ${code}).${stderr.trim() ? '\n' + stderr.trim().slice(-1500) : ''}`;
+      finish(job, 'error', (said + extra).trim(), sessionId, [...denied]);
     } else if (shuttingDown) {
       finish(job, 'error', `The bridge was stopped while ${agent.name} was still working. Send the message again once it is back.`, sessionId);
+    } else if (job.cancelled) {
+      finish(job, 'error', 'Cancelled from the game.', sessionId);
+    } else if (job.timedOut) {
+      const limitMs = cfg.timeoutMs || 1800000;
+      const limit = limitMs < 60000 ? `${Math.round(limitMs / 1000)} s` : `${Math.round(limitMs / 60000)} min`;
+      finish(job, 'error', `${agent.name} was stopped after ${limit}, the limit set by timeoutMs in config.json. Send the message again, or raise timeoutMs.`, sessionId);
     } else {
       finish(job, 'error', `${agent.name} exited with code ${code} and no result.\n${stderr.trim().slice(-1500)}`, sessionId);
     }
   });
 }
 
+function noteInflight(key, job, child, agentName) {
+  (state.inflight = state.inflight || {})[key] = { id: job.id, chat: job.chat, session: job.session, cwd: job.cwd, pid: child && child.pid, agent: agentName, startedAt: Date.now() };
+  saveState();
+}
+
+function recoverInflight() {
+  const lost = Object.entries(state.inflight || {});
+  if (!lost.length) return;
+  for (const [key, run] of lost) {
+    if (process.platform !== 'win32' && Number.isInteger(run.pid) && pidAlive(run.pid)) {
+      try { process.kill(-run.pid, 'SIGKILL'); log(`#${run.id}: ended the orphaned ${run.agent || 'agent'} process group ${run.pid} left by the previous bridge`); } catch {}
+    }
+    const since = new Date(run.startedAt || Date.now()).toISOString().slice(11, 19);
+    const text = `The bridge stopped unexpectedly while ${run.agent || 'the agent'} was working on this message (started ${since} UTC), so its reply is lost. Send it again. The reason is in ${LOG_FILE}.`;
+    P.markHandled(state, { session: run.session, chat: run.chat, id: run.id });
+    live.set(key, { chat: run.chat, id: run.id, status: 'error', text, cwd: run.cwd });
+    signal('ack', run.id, true);
+    signal('sig', run.id, true);
+    log(`#${run.id}@${run.session || ''} was running when the previous bridge stopped; told the game it is lost`);
+  }
+  state.inflight = {};
+  saveState();
+}
+
 function finish(job, status, text, session, denied) {
   if (job.finished) return; // spawn failures fire both 'error' and 'close'
   job.finished = true;
   running.delete(chatKey(job));
+  if (state.inflight) delete state.inflight[chatKey(job)];
   markHandled(job);
   saveState();
   // A finished reply ends with the "TL;DR:" block the system prompt asks for:
@@ -1155,6 +1266,7 @@ if (inject !== null) {
   } else {
     setInterval(pollSavedVariables, cfg.pollMs || 750);
     if (Number.isFinite(state.lastId)) clearSignalsAhead(state.lastId);
+    recoverInflight();
     presenceBeat();
     setInterval(presenceBeat, cfg.presenceIntervalMs || 30000);
     // Fresh slot files right away, so the addon's first slot read tells it which

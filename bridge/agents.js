@@ -182,7 +182,9 @@ function claudeParser() {
           if (cost && !cost.unknown.length) { out.usage.cost = cost.usd; out.usage.costIsSessionTotal = true; }
           else out.usage.costUnknown = cost ? cost.unknown : ['no model named'];
         }
-        const text = typeof ev.result === 'string' ? ev.result : JSON.stringify(ev.result ?? '', null, 2);
+        const missing = ev.result === undefined || ev.result === null || ev.result === '';
+        const text = missing && ev.is_error ? `Claude Code ended with an error (${ev.subtype || 'no detail given'}) and no message.`
+          : typeof ev.result === 'string' ? ev.result : JSON.stringify(ev.result ?? '', null, 2);
         const denials = Array.isArray(ev.permission_denials) ? ev.permission_denials : [];
         if (denials.length) {
           out.denied = [...new Set(denials.map(ruleFor))];
