@@ -460,14 +460,28 @@ end
 
 -- The client writes screenshots as JPEG by default, which is lossy; the
 -- transport needs PNG (or TGA). The player's own setting is kept in the saved
--- settings until we leave the mode (or log out), so a /reload in between can't
--- lose it and a crash is repaired at the next login.
+-- settings (shotFormatSaved) from the first time we change it until we leave
+-- the mode or log out, so a /reload in between can't lose it, and a crash,
+-- which skips the logout restore, is repaired at the next load (ADDON_LOADED
+-- and PLAYER_LOGIN both call SyncScreenshotMode). The two values we set are
+-- ours to recognise: a stored original is never replaced by one of them, or
+-- the player's real setting would be gone for good, and only a value that is
+-- still ours is ever put back, so a format the player chose since stays.
+local function IsAddonFormat(v)
+	return v == "png" or v == "tga"
+end
+
 local function ScreenshotCVarsOn()
 	if type(SetCVar) ~= "function" or type(GetCVar) ~= "function" then return end
-	if db.settings.shotFormatSaved == nil then
-		db.settings.shotFormatSaved = tostring(GetCVar("screenshotFormat") or "jpeg")
+	local cur = tostring(GetCVar("screenshotFormat") or "jpeg")
+	local saved = db.settings.shotFormatSaved
+	-- Nothing on record: this is the player's value. Something on record and a
+	-- current value that is neither it nor ours: the player changed it since
+	-- (after a crash, say), and that is the setting to give back later.
+	if saved == nil or (cur ~= saved and not IsAddonFormat(cur)) then
+		db.settings.shotFormatSaved = cur
 	end
-	if GetCVar("screenshotFormat") == "png" then return end
+	if cur == "png" then return end
 	local ok = pcall(SetCVar, "screenshotFormat", "png")
 	if not ok or GetCVar("screenshotFormat") ~= "png" then pcall(SetCVar, "screenshotFormat", "tga") end
 end
@@ -476,7 +490,10 @@ local function ScreenshotCVarsOff()
 	local saved = db.settings.shotFormatSaved
 	if saved == nil then return end
 	db.settings.shotFormatSaved = nil
-	if type(SetCVar) == "function" then pcall(SetCVar, "screenshotFormat", saved) end
+	if type(SetCVar) ~= "function" or type(GetCVar) ~= "function" then return end
+	-- Still ours (png, or the tga fallback): put the player's back. Anything
+	-- else the player set by hand in the meantime, and it stays.
+	if IsAddonFormat(tostring(GetCVar("screenshotFormat") or "")) then pcall(SetCVar, "screenshotFormat", saved) end
 end
 
 local function SyncScreenshotMode()
@@ -3970,6 +3987,10 @@ ev:SetScript("OnEvent", function(self, event, arg1)
 	if event == "ADDON_LOADED" then
 		if arg1 == ADDON_NAME then
 			InitDB()
+			-- The saved data is here: a screenshotFormat left behind by a crash
+			-- (no PLAYER_LOGOUT, no restore) goes back to the player's value now,
+			-- unless the remembered transport is about to need ours again.
+			SyncScreenshotMode()
 		end
 	elseif event == "SCREENSHOT_SUCCEEDED" then
 		ScreenshotDone(true)

@@ -18,9 +18,12 @@ Two softer points, worth knowing:
 
 - **`Screenshot()` on a timer** is fine but writes real files. Left unattended with a
   dead bridge it fills a disk (below).
-- **`SetCVar("screenshotFormat")`** changes a player-facing setting. The addon restores
-  it on logout; a client crash skips that, so the player's own screenshots silently
-  change format until the addon next runs. Restore on load as well as on logout.
+- **`SetCVar("screenshotFormat")`** changes a player-facing setting. The addon keeps
+  the player's own value in its saved settings from the first change and restores it
+  on logout and, since a client crash skips that, on load too (`ADDON_LOADED` and
+  `PLAYER_LOGIN`), when the value is still the addon's. A stored original is never
+  overwritten with the addon's own `png`/`tga`, and a value the player set by hand in
+  between is theirs and stays.
 
 ## Edge cases
 

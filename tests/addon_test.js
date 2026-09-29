@@ -876,6 +876,69 @@ test('screenshot transport: a remembered mode shoots the login hello, and a /rel
   assert.equal(vm.evaluate('ClaudeWoWDB.settings.shotFormatSaved'), 'tga');
 });
 
+// A client crash skips PLAYER_LOGOUT and its restore: the player's screenshots
+// would silently stay in our format. The original is in the saved settings from
+// the first change, and load gives it back when the value is still ours.
+test('screenshotFormat: a crash that skipped the logout restore is repaired at the next load, a value the player set since is kept, and the stored original is never clobbered by ours', () => {
+  // The bridge had moved on to the pixel transport (or never said): our png is
+  // still in place from the crash and the original is on record. Repaired at
+  // ADDON_LOADED, before PLAYER_LOGIN even runs.
+  let vm = newVM();
+  vm.run('ClaudeWoWDB = { settings = { shotFormatSaved = "jpeg" } }; STUB.cvars.screenshotFormat = "png"');
+  vm.run('STUB.FireEvent("ADDON_LOADED", "ClaudeWoW")');
+  assert.equal(vm.evaluate('STUB.cvars.screenshotFormat'), 'jpeg', 'restored as soon as the saved data is there');
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.shotFormatSaved'), null);
+  vm.run('STUB.FireEvent("PLAYER_LOGIN")');
+  assert.equal(vm.evaluate('STUB.cvars.screenshotFormat'), 'jpeg');
+  // The tga fallback is ours too.
+  vm = newVM();
+  vm.run('ClaudeWoWDB = { settings = { shotFormatSaved = "jpeg" } }; STUB.cvars.screenshotFormat = "tga"');
+  login(vm);
+  assert.equal(vm.evaluate('STUB.cvars.screenshotFormat'), 'jpeg');
+  // The player put a value of their own in place after the crash: it is theirs
+  // and stays; the stale original is dropped, not "restored" over it.
+  vm = newVM();
+  vm.run('ClaudeWoWDB = { settings = { shotFormatSaved = "tga" } }; STUB.cvars.screenshotFormat = "jpeg"');
+  login(vm);
+  assert.equal(vm.evaluate('STUB.cvars.screenshotFormat'), 'jpeg', 'not put back to tga');
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.shotFormatSaved'), null);
+  // Remembered screenshot mode: our png stays, the original is kept, and however
+  // many crashes and loads follow, it is never overwritten with png.
+  vm = newVM();
+  vm.run('ClaudeWoWDB = { settings = { transport = "screenshot", shotFormatSaved = "jpeg" } }; STUB.cvars.screenshotFormat = "png"');
+  for (let crash = 0; crash < 3; crash++) {
+    vm.run('STUB.FireEvent("ADDON_LOADED", "ClaudeWoW")');
+    assert.equal(vm.evaluate('ClaudeWoWDB.settings.shotFormatSaved'), 'jpeg', 'load ' + crash + ': the original is not clobbered');
+    assert.equal(vm.evaluate('STUB.cvars.screenshotFormat'), 'png', 'load ' + crash + ': the mode still needs ours');
+  }
+  vm.run('STUB.FireEvent("PLAYER_LOGIN")');
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.shotFormatSaved'), 'jpeg');
+  // Leaving the mode in game gives the real original back, not png.
+  vm.run('SlashCmdList.CLAUDEWOW("mode reload")');
+  assert.equal(vm.evaluate('STUB.cvars.screenshotFormat'), 'jpeg');
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.shotFormatSaved'), null);
+  // Remembered mode, but the player changed the format by hand after the crash:
+  // that is the new original, and it is what logout restores.
+  vm = newVM();
+  vm.run('ClaudeWoWDB = { settings = { transport = "screenshot", shotFormatSaved = "tga" } }; STUB.cvars.screenshotFormat = "jpeg"');
+  login(vm);
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.shotFormatSaved'), 'jpeg', 'the player\'s new choice replaces the stale original');
+  assert.equal(vm.evaluate('STUB.cvars.screenshotFormat'), 'png');
+  vm.run('STUB.FireEvent("PLAYER_LOGOUT")');
+  assert.equal(vm.evaluate('STUB.cvars.screenshotFormat'), 'jpeg');
+  // A player who already shoots png: nothing to change, and the restore is a no-op.
+  vm = newVM();
+  vm.run('STUB.cvars.screenshotFormat = "png"');
+  login(vm);
+  vm.run('STUB.RunTimers()');
+  nextSlot(vm, '{ now = time(), cwd = "", transport = "screenshot", replies = {} }');
+  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.shotFormatSaved'), 'png');
+  vm.run('STUB.FireEvent("PLAYER_LOGOUT")');
+  assert.equal(vm.evaluate('STUB.cvars.screenshotFormat'), 'png');
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.shotFormatSaved'), null);
+});
+
 // Every shot is a full-screen file that only the bridge deletes. Once the bridge
 // has been silent for as long as BridgeState's "down" window (5 min with presence
 // beats), the addon stops shooting, says so once, and puts the strip up
