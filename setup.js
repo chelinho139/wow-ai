@@ -21,10 +21,13 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
+// Literal requires: the compiled binary bundles what it can see (runtime.js).
+const P = require('./bridge/protocol'); // the addon's name, and its old names
+const H = require('./bridge/home');     // CLAUDE_WOW_HOME: where config.json and the state live
+const R = require('./bridge/runtime');  // node, bun, or the compiled binary
+const A = require('./bridge/agents');   // which agent CLIs this PC has
 const ROOT = __dirname;
 const BRIDGE = path.join(ROOT, 'bridge');
-const P = require(path.join(BRIDGE, 'protocol.js')); // the addon's name, and its old names
-const H = require(path.join(BRIDGE, 'home.js'));     // CLAUDE_WOW_HOME: where config.json and the state live
 const ADDON_SRC = path.join(ROOT, 'addon', P.ADDON);
 const EXAMPLE = path.join(BRIDGE, 'config.example.json');
 let CONFIG = H.resolve().config; // settled in main(), after the legacy layout has been migrated
@@ -39,9 +42,11 @@ function parseArgs(argv) {
 }
 
 // package.json says node >=22.2, but npm does not enforce engines by default, so a
-// too-old node otherwise fails later with something unrelated-looking.
+// too-old node otherwise fails later with something unrelated-looking. Bun (and
+// the binary, which is Bun) reports a node version of its own choosing: not checked.
 const MIN_NODE = [22, 2];
 function checkNode() {
+  if (R.bun) return;
   const [maj, min] = process.versions.node.split('.').map(Number);
   if (maj > MIN_NODE[0] || (maj === MIN_NODE[0] && min >= MIN_NODE[1])) return;
   throw new Error(`Node ${MIN_NODE.join('.')} or newer is required; this is ${process.versions.node}. ` +
@@ -281,7 +286,6 @@ function macCaptureReport(cfg) {
 
 // Which agent CLIs this PC has, so the last lines of setup can say what is missing.
 function agentReport(cfg) {
-  const A = require(path.join(BRIDGE, 'agents.js'));
   const lines = [];
   for (const id of A.agentIds()) {
     const r = A.resolveCommand(id, A.agentConfig(cfg, id));
@@ -324,7 +328,7 @@ try {
   pythonReport(cfg);
   macCaptureReport(cfg);
   console.log('slots    : building the reply-slot pool and signal files...');
-  const r = spawnSync(process.execPath, [path.join(BRIDGE, 'install-slots.js')], { stdio: 'inherit' });
+  const r = spawnSync(...R.scriptCommand('install-slots'), { stdio: 'inherit' });
   if (r.status !== 0) throw new Error('install-slots.js failed');
   if (warnings.length) {
     console.log(`\n${warnings.length} warning(s) to deal with first:`);
@@ -334,7 +338,7 @@ try {
 Done. Next:
   1. Fully quit and relaunch World of Warcraft (it only discovers new addon files at launch).
   2. Enable "Claude WoW" at the character select AddOns screen (the Claude WoW slot ### entries stay enabled).
-  3. Start the bridge:  npm start   (in this terminal${
+  3. Start the bridge:  ${R.compiled ? 'claude-wow' : 'npm start'}   (in this terminal${
     process.platform === 'win32' ? '; bridge\\start-window.cmd opens its own window'
     : process.platform === 'darwin' ? '; keep the game windowed or borderless, and check the capture with: npm run probe:mac'
     : '; keep the game borderless/windowed and check the capture with: npm run probe'})

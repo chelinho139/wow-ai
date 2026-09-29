@@ -18,8 +18,12 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const R = require('./runtime');
 
-const LEGACY_DIR = __dirname;
+// Inside the compiled binary __dirname is the folder the sources were built
+// from: a config.json that happens to be there (the build machine's own
+// checkout) must not be picked up. There is no legacy layout for a binary.
+const LEGACY_DIR = R.compiled ? '' : __dirname;
 const FILES = ['config.json', 'state.json', 'transcripts.json']; // what setup.js carries over
 const DIR_NAME = '.claude-wow';
 
@@ -32,6 +36,7 @@ function defaultDir(home = os.homedir()) {
 }
 
 function hasConfig(dir) {
+  if (!dir) return false;
   try { return fs.statSync(path.join(dir, 'config.json')).isFile(); } catch { return false; }
 }
 

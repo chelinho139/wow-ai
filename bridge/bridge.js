@@ -42,6 +42,7 @@ const S = require('./screenshots'); // the Screenshots folder watcher (tests/scr
 const V = require('./vision');   // vision: the screenshot's game view, cropped and downscaled for the agent (tests/vision_test.js)
 const PL = require('./plugins'); // the plugin registry and routing (tests/plugins_test.js)
 const H = require('./home');     // where config, state and logs live (tests/home_test.js)
+const R = require('./runtime');  // node, bun, or the compiled binary (tests/runtime_test.js)
 
 // The plugins this bridge has (docs/PLATFORM.md). Registration order is the
 // order match() is asked in, and the first one is the default unless
@@ -103,9 +104,14 @@ if (!DEFAULT_PLUGIN) {
 }
 
 // Default folder: --project, else the folder we were started from (unless that is
-// this repo, i.e. npm start), else the configured one.
-const REPO = path.dirname(HERE);
+// one of the bridge's own folders), else the configured one. Own folders: this
+// repo (npm start) and the home folder itself, which is where the service runs
+// the compiled binary (there is no repo then; service.js). Both mean "no
+// project of my own here": fall back to defaultCwd.
+const REPO = R.compiled ? '' : path.dirname(HERE);
 function insideRepo(dir) {
+  if (path.resolve(dir) === path.resolve(HOME.dir)) return true;
+  if (!REPO) return false;
   const rel = path.relative(REPO, dir);
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
@@ -980,6 +986,7 @@ function agentLine(id) {
 
 function banner() {
   console.log('Claude WoW bridge');
+  console.log(`  runtime  : ${R.describe()}`);
   console.log(`  home     : ${HOME.dir}  (${HOME.source === 'legacy' ? 'the layout from before CLAUDE_WOW_HOME; run setup to move it to ' + H.defaultDir() : HOME.source}; config, state, transcripts, log)`);
   console.log(`  folder   : ${DEFAULT_CWD}  (${DEFAULT_CWD_SOURCE}; chats can override with /claude-wow cd)`);
   console.log(`  addons   : ${cfg.addonDir}`);

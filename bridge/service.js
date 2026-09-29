@@ -25,6 +25,7 @@ const os = require('os');
 const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 const H = require('./home');
+const R = require('./runtime');
 
 const LABEL = 'io.claudewow.bridge';      // launchd label
 const UNIT = 'claude-wow-bridge';         // systemd unit name
@@ -33,8 +34,6 @@ const UNIT = 'claude-wow-bridge';         // systemd unit name
 // the slot files.
 const OLD_LABEL = 'io.wowai.bridge';
 const OLD_UNIT = 'wow-ai-bridge';
-const REPO = path.resolve(__dirname, '..');
-const SUPERVISOR = path.join(__dirname, 'supervisor.js');
 const LOG_MAX_BYTES = 5 * 1024 * 1024;
 const LOG_KEEP = 5;
 const COMMANDS = ['install', 'uninstall', 'start', 'stop', 'restart', 'status', 'logs'];
@@ -126,6 +125,11 @@ function xmlEscape(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+// What the service runs: `node` and `script` from a checkout (node
+// bridge/supervisor.js), the binary alone when the bridge is one (script is
+// empty then; runtime.js).
+const programArgs = ({ node, script }) => [node, script].filter(Boolean);
+
 // A LaunchAgent that launchd starts at login and restarts whenever it exits.
 // The user's PATH is baked in: launchd hands agents an almost empty one, and the
 // bridge finds the agent CLIs (claude, codex, ...) through it.
@@ -133,6 +137,7 @@ function launchdPlist({ label = LABEL, node, script, cwd, logFile, env = {} }) {
   const envRows = Object.entries({ CLAUDE_WOW_SERVICE: '1', ...env })
     .filter(([, v]) => v !== undefined && v !== null && v !== '')
     .map(([k, v]) => `      <key>${xmlEscape(k)}</key>\n      <string>${xmlEscape(v)}</string>`).join('\n');
+  const program = programArgs({ node, script }).map(a => `      <string>${xmlEscape(a)}</string>`).join('\n');
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -141,8 +146,7 @@ function launchdPlist({ label = LABEL, node, script, cwd, logFile, env = {} }) {
     <string>${xmlEscape(label)}</string>
     <key>ProgramArguments</key>
     <array>
-      <string>${xmlEscape(node)}</string>
-      <string>${xmlEscape(script)}</string>
+${program}
     </array>
     <key>WorkingDirectory</key>
     <string>${xmlEscape(cwd)}</string>
@@ -179,7 +183,7 @@ After=default.target
 
 [Service]
 Type=simple
-ExecStart=${q(node)} ${q(script)}
+ExecStart=${programArgs({ node, script }).map(q).join(' ')}
 WorkingDirectory=${cwd}
 Restart=always
 RestartSec=5
@@ -199,7 +203,7 @@ function startupVbs({ node, script, cwd }) {
 Set sh = CreateObject("WScript.Shell")\r
 sh.Environment("Process")("CLAUDE_WOW_SERVICE") = "1"\r
 sh.CurrentDirectory = ${q(cwd)}\r
-sh.Run ${q(`"${node}" "${script}"`)}, 0, False\r
+sh.Run ${q(programArgs({ node, script }).map(a => `"${a}"`).join(' '))}, 0, False\r
 `;
 }
 
@@ -304,8 +308,17 @@ function agentEnv() {
   return env;
 }
 
-function definition(platform, d) {
-  const base = { node: process.execPath, script: SUPERVISOR, cwd: REPO, env: agentEnv() };
+// The command the service runs and the folder it runs in. From a checkout:
+// this node, bridge/supervisor.js, the repo (so bridge.js falls back to
+// defaultCwd rather than taking the repo as the project). From the binary:
+// the binary alone, in the home folder, which bridge.js treats the same way.
+function program(r = R.DEFAULT) {
+  const [node, args] = R.scriptCommand('supervisor', [], r);
+  return { node, script: args[0] || '', cwd: r.compiled ? H.resolve().dir : r.root };
+}
+
+function definition(platform, d, r = R.DEFAULT) {
+  const base = { ...program(r), env: agentEnv() };
   if (platform === 'darwin') return launchdPlist({ ...base, logFile: launchdLogFile(d) });
   if (platform === 'win32') return startupVbs(base);
   return systemdUnit(base);
@@ -393,7 +406,7 @@ const mac = {
 const linux = {
   sys(args) {
     const r = run('systemctl', ['--user', ...args]);
-    if (r.error && r.error.code === 'ENOENT') throw new Error('systemctl was not found. Without systemd, start the bridge from your session startup with: node ' + SUPERVISOR);
+    if (r.error && r.error.code === 'ENOENT') throw new Error('systemctl was not found. Without systemd, start the bridge from your session startup with: ' + programArgs(program()).join(' '));
     return r;
   },
   removeOld(old = oldDirs('linux')) {
@@ -469,8 +482,9 @@ const win = {
   start(d) {
     const p = readPid(d);
     if (p && p.mode === 'service' && alive(p.pid)) return; // already running
-    const child = spawn(process.execPath, [SUPERVISOR], {
-      cwd: REPO, detached: true, stdio: 'ignore', windowsHide: true,
+    const { node, script, cwd } = program();
+    const child = spawn(node, programArgs({ node, script }).slice(1), {
+      cwd, detached: true, stdio: 'ignore', windowsHide: true,
       env: { ...process.env, CLAUDE_WOW_SERVICE: '1' },
     });
     child.unref();
@@ -594,7 +608,7 @@ function main(argv, { platform = process.platform, out = console.log, err = cons
 module.exports = {
   LABEL, UNIT, OLD_LABEL, OLD_UNIT, COMMANDS, LOG_MAX_BYTES, LOG_KEEP, HELP,
   dirs, oldDirs, backend, serviceLogFile, launchdLogFile, pidFile,
-  parseArgs, launchdPlist, systemdUnit, startupVbs, xmlEscape,
+  parseArgs, launchdPlist, systemdUnit, startupVbs, xmlEscape, program, definition,
   rotate, RotatingLog, writePid, readPid, clearPid, alive,
   parseLaunchctlPrint, formatUptime, lastLines, agentEnv,
   status, main,

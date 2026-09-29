@@ -16,6 +16,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { describeToolUse, ruleFor, baseName } = require('./protocol');
+const R = require('./runtime'); // which node runs a JavaScript launcher
 
 const PROGRESS_CHARS = 140;
 
@@ -543,9 +544,19 @@ function pathDirs() {
   return dirs;
 }
 
-// A configured path: a script is run with this node, anything else directly.
+// A JavaScript launcher (npm's codex.js, a configured .js path) is run with a
+// node: this one from a checkout, the one on the PATH from the compiled binary
+// (runtime.js), which cannot run a script of somebody else's.
+function withNode(script) {
+  const n = R.node();
+  const r = { file: n.file, args: [script], found: n.found && exists(script) };
+  if (!n.found) r.note = n.note;
+  return r;
+}
+
+// A configured path: a script is run with a node, anything else directly.
 function fromPath(p) {
-  if (/\.(c|m)?js$/i.test(p)) return { file: process.execPath, args: [p], found: exists(p) };
+  if (/\.(c|m)?js$/i.test(p)) return withNode(p);
   return { file: p, args: [], found: exists(p) };
 }
 
@@ -564,7 +575,7 @@ function unwrapShim(shim, agent) {
   if (!exists(script)) return null;
   for (const exe of nativeNextTo(script, agent)) if (exists(exe)) return { file: exe, args: [], found: true };
   if (/\.exe$/i.test(script)) return { file: script, args: [], found: true };
-  return { file: process.execPath, args: [script], found: true };
+  return withNode(script);
 }
 
 // Where a package's platform binary would be, relative to its launcher script.
