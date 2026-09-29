@@ -122,10 +122,11 @@ Right-clicking a chat in the left panel opens a small menu with **Rename...**, *
 
 | Command | What it does |
 |---|---|
-| `/claude-wow` | toggle the window (`/claude` is the same command; the old `/wow-ai`, `/ai`, `/ask`, `/wowai` and `/wow-claude` are gone); the minimize button (top right) or Esc collapses it to a small bar, click the bar to expand |
-| `/claude <text>` | send from the normal chat box (`/claude-wow <text>` is the same). `/claude` is the same command, so `/claude agent grok` or `/claude cd realms` work too; a message that merely starts with a command word, like `/claude help me with this macro` or `/claude delete the unused imports`, is still sent as a message because the rest of the line doesn't fit that command |
+| `/claude-wow` | toggle the window (the old `/wow-ai`, `/ai`, `/ask`, `/wowai` and `/wow-claude` are gone); the minimize button (top right) or Esc collapses it to a small bar, click the bar to expand |
+| `/claude <text>` | start a new chat and send `<text>` there, straight from the normal chat box, like opening a new terminal. A command word that fits its command still runs it (`/claude diag`, `/claude agent grok`, `/claude cd realms`); a message that merely starts with one, like `/claude delete the unused imports`, is a message for the new chat. At the chat limit (16) the game chat says so and the text waits in the window's input box. Bare `/claude` opens an empty new chat |
+| `/claude-wow <text>` | send `<text>` to the current chat from the normal chat box, with the same command-word rule |
 | `/r <text>` | replies to the agent when it was the last to message you; otherwise the normal whisper reply |
-| `/claude-wow whisper on\|off` | each chat as a native whisper tab in the chat dock (off by default): replies arrive there as whispers and flash the tab, what you type there goes to the agent, never to the server. The window stays the full record |
+| `/claude-wow whisper on\|off` | each chat as a native whisper tab in the chat dock (off by default): replies arrive there as whispers and flash the tab, what you type there goes to the agent, never to the server, and slash commands typed there (`/claude ...`, `/claude-wow ...`, `/cast ...`) run as usual. The window stays the full record |
 | `/claude-wow new [name]` | new chat = new agent session. Unnamed chats take their title from your first message |
 | `/claude-wow chat <n\|name>` | switch chats (or click the left panel; right-click a row for Rename, Folder, Agent and Plugin, its trash can deletes it) |
 | `/claude-wow plugin [ask\|claude-code]` | what this chat is for: `ask` (general in-game chat, the default) or `claude-code` (an agent session in a folder); no name shows the current one and the bridge's default, `default` goes back to the bridge's. A chat that changes plugin starts a fresh session with it |

@@ -17,8 +17,10 @@ const CELLS_PER_ROW = 200;
 function newVM() {
   const L = lauxlib.luaL_newstate();
   lualib.luaL_openlibs(L);
-  const run = (code, arg) => {
-    if (lauxlib.luaL_loadstring(L, to_luastring(code)) !== lua.LUA_OK) throw new Error('Lua load: ' + to_jsstring(lua.lua_tostring(L, -1)));
+  const run = (code, arg, chunk) => {
+    const buf = to_luastring(code);
+    const loaded = chunk ? lauxlib.luaL_loadbuffer(L, buf, buf.length, to_luastring('@' + chunk)) : lauxlib.luaL_loadstring(L, buf);
+    if (loaded !== lua.LUA_OK) throw new Error('Lua load: ' + to_jsstring(lua.lua_tostring(L, -1)));
     let nargs = 0;
     if (arg !== undefined) { lua.lua_pushstring(L, to_luastring(arg)); nargs = 1; }
     if (lua.lua_pcall(L, nargs, 0, 0) !== lua.LUA_OK) throw new Error('Lua error: ' + to_jsstring(lua.lua_tostring(L, -1)));
@@ -34,7 +36,7 @@ function newVM() {
   };
   const num = (expr) => Number(evaluate(expr));
   run(fs.readFileSync(path.join(__dirname, 'wow_stub.lua'), 'utf8'));
-  for (const f of ['Codec.lua', 'Inbox.lua', 'ClaudeWoW.lua']) run(fs.readFileSync(path.join(ADDON, f), 'utf8'), 'ClaudeWoW');
+  for (const f of ['Codec.lua', 'Inbox.lua', 'ClaudeWoW.lua']) run(fs.readFileSync(path.join(ADDON, f), 'utf8'), 'ClaudeWoW', 'addon/' + f);
   return { run, evaluate, num };
 }
 
@@ -1262,23 +1264,14 @@ const WHISPER_DOCK = `
   ChatTypeInfo = { WHISPER = { r = 1, g = 0.5, b = 1 }, WHISPER_INFORM = { r = 1, g = 0.5, b = 1 }, SYSTEM = { r = 1, g = 1, b = 0 } }
   CHAT_WHISPER_GET = "%s whispers: "
   CHAT_WHISPER_INFORM_GET = "To %s: "
-  STUB.serverSends, STUB.flashed, STUB.tempWindows, STUB.filters = 0, {}, 0, {}
+  STUB.flashed, STUB.tempWindows, STUB.filters = {}, 0, {}
   function ChatFrame_AddMessageEventFilter(ev, fn) STUB.filters[ev] = fn end
   function FCF_StartAlertFlash(f) table.insert(STUB.flashed, f:GetName()) end
   function FCF_SetWindowName(f, name) _G[f:GetName() .. "Tab"].text = name end
   function FCF_Close(f) f.inUse = false; f.isDocked = false; f.shown = false end
-  local function GameSend(self) STUB.serverSends = STUB.serverSends + 1; self.text = "" end
-  local function MakeBox(name, frame)
-    local eb = CreateFrame("EditBox", name, frame)
-    eb.chatFrame = frame
-    eb.attrs = { chatType = "SAY" }
-    eb.scripts.OnEnterPressed = GameSend
-    eb.SendText, eb.SendMessage = GameSend, GameSend
-    return eb
-  end
   ChatFrame1 = CreateFrame("Frame", "ChatFrame1", UIParent)
   ChatFrame1.isDocked = true
-  ChatFrame1.editBox = MakeBox("ChatFrame1EditBox", ChatFrame1)
+  ChatFrame1.editBox = STUB.ChatEditBox("ChatFrame1EditBox", ChatFrame1)
   DEFAULT_CHAT_FRAME = ChatFrame1
   function FCF_OpenTemporaryWindow(chatType, target, source, select)
     STUB.tempWindows = STUB.tempWindows + 1
@@ -1289,8 +1282,7 @@ const WHISPER_DOCK = `
     local tab = CreateFrame("Button", "ChatFrame" .. n .. "Tab", f)
     tab.text = target
     tab.glow = CreateFrame("Frame", nil, tab)
-    f.editBox = MakeBox("ChatFrame" .. n .. "EditBox", f)
-    f.editBox.attrs = { chatType = "WHISPER", tellTarget = target }
+    f.editBox = STUB.ChatEditBox("ChatFrame" .. n .. "EditBox", f, "WHISPER", target)
     table.insert(CHAT_FRAMES, f:GetName())
     return f
   end`;
@@ -1400,6 +1392,181 @@ test('whisper tabs: off by default; on, each chat is a tab, Enter there goes to 
   assert.equal(vm.evaluate('ChatFrame11.inUse'), 'false');
   enter('ChatFrame1EditBox', '/w Claude ping');
   assert.equal(vm.num('STUB.serverSends'), 3, 'off: a whisper is the game\'s again');
+});
+
+function whisperVM() {
+  const vm = newVM();
+  vm.run(WHISPER_DOCK);
+  vm.run(`SNAP = { g = {}, util = {}, enter = ChatFrame1EditBox:GetScript("OnEnterPressed") }
+    for k, v in pairs(_G) do if type(v) == "function" then SNAP.g[k] = v end end
+    for k, v in pairs(ChatFrameUtil) do SNAP.util[k] = v end`);
+  login(vm);
+  connect(vm);
+  return vm;
+}
+
+const typeIn = (vm, box, text) => vm.run(`${box}:SetText(${JSON.stringify(text)}); STUB.PressEnter(${box})`);
+const replyTo = (vm, id, body) => {
+  const pending = vm.num(`(function() for _, c in ipairs(ClaudeWoWDB.chats) do if c.id == "${id}" then return c.pendingId end end end)()`);
+  nextSlot(vm, `{ now = time(), cwd = "", replies = { { chat = "${id}", id = ${pending}, ${body} } } }`);
+  for (let i = 0; i < 8; i++) vm.run('STUB.now = STUB.now + 10; STUB.Tick()');
+};
+
+function replacedFunctions(vm) {
+  return vm.evaluate(`(function()
+    local bad = {}
+    local function secure(fn) return STUB.secureHooks[fn] == true end
+    for k, v in pairs(SNAP.g) do
+      if _G[k] ~= v and not secure(_G[k]) then bad[#bad + 1] = k end
+    end
+    for k, v in pairs(SNAP.util) do
+      if ChatFrameUtil[k] ~= v and not secure(ChatFrameUtil[k]) then bad[#bad + 1] = "ChatFrameUtil." .. k end
+    end
+    for _, name in ipairs(CHAT_FRAMES) do
+      local eb = _G[name].editBox
+      for k, v in pairs(ChatFrameEditBoxMixin) do
+        if eb[k] ~= v and not secure(eb[k]) then bad[#bad + 1] = name .. "EditBox:" .. k end
+      end
+      for script, fn in pairs(eb.scripts) do
+        if script ~= "OnEnterPressed" or fn ~= SNAP.enter then bad[#bad + 1] = name .. "EditBox script " .. script end
+      end
+      if next(eb.hooks) then bad[#bad + 1] = name .. "EditBox HookScript" end
+      for _, k in ipairs({ "OnEnterPressed", "SendMessage", "SendText", "ParseText", "OnPreSendText" }) do
+        if eb[k] ~= ChatFrameEditBoxMixin[k] then bad[#bad + 1] = name .. "EditBox:" .. k .. " (send path)" end
+      end
+    end
+    if ChatEdit_SendText ~= SNAP.g.ChatEdit_SendText then bad[#bad + 1] = "ChatEdit_SendText (send path)" end
+    if ChatFrameUtil.SendText ~= SNAP.util.SendText then bad[#bad + 1] = "ChatFrameUtil.SendText (send path)" end
+    return table.concat(bad, ", ")
+  end)()`);
+}
+
+test('whisper tabs replace nothing of the game\'s: no global, ChatFrameUtil entry, edit-box method or script is swapped for addon code', () => {
+  const vm = whisperVM();
+  vm.run('SlashCmdList.CLAUDEWOW("agent claude")');
+  vm.run('SlashCmdList.CLAUDEWOW("whisper on")');
+  assert.equal(vm.num('STUB.tempWindows'), 1);
+  vm.run('SlashCmdList.CLAUDEWOW("new Second")');
+  vm.run('ClaudeWoW.Send("open a second tab")');
+  assert.equal(vm.num('STUB.tempWindows'), 2);
+  assert.equal(replacedFunctions(vm), '');
+  assert.ok(vm.evaluate('ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].text').includes('Whisper tabs are ON'));
+  vm.run('SlashCmdList.CLAUDEWOW("diag")');
+  assert.ok(vm.evaluate('ClaudeWoWDB.chats[2].history[#ClaudeWoWDB.chats[2].history].text').includes('send hook: pre-send'));
+});
+
+test('protected slash commands typed in the game\'s box or a whisper tab reach the game\'s handler with no addon function on the stack', () => {
+  const vm = whisperVM();
+  vm.run('SlashCmdList.CLAUDEWOW("agent claude")');
+  vm.run('SlashCmdList.CLAUDEWOW("whisper on")');
+  for (const box of ['ChatFrame1EditBox', 'ChatFrame11EditBox']) {
+    vm.run('STUB.protectedCalls = {}');
+    typeIn(vm, box, '/cast Fireball');
+    typeIn(vm, box, '/gquit');
+    typeIn(vm, box, '/sit');
+    assert.equal(vm.evaluate('#STUB.protectedCalls'), '3', box);
+    assert.equal(vm.evaluate('STUB.protectedCalls[1].name .. ":" .. STUB.protectedCalls[1].arg'), 'CastSpellByName:Fireball', box);
+    assert.equal(vm.evaluate('STUB.protectedCalls[2].name'), 'GuildLeave', box);
+    for (let i = 1; i <= 3; i++) assert.equal(vm.evaluate(`STUB.protectedCalls[${i}].tainted`), 'false', `${box} call ${i} ran tainted: addon code ran earlier in this Enter`);
+  }
+  const sentBefore = vm.num('#STUB.chatSent');
+  typeIn(vm, 'ChatFrame1EditBox', 'hello everyone');
+  typeIn(vm, 'ChatFrame1EditBox', '/g guild hello');
+  assert.equal(vm.num('#STUB.chatSent'), sentBefore + 2);
+  assert.equal(vm.evaluate(`STUB.chatSent[${sentBefore + 1}].chatType .. ":" .. tostring(STUB.chatSent[${sentBefore + 1}].tainted)`), 'SAY:false');
+  assert.equal(vm.evaluate(`STUB.chatSent[${sentBefore + 2}].chatType .. ":" .. tostring(STUB.chatSent[${sentBefore + 2}].tainted)`), 'GUILD:false');
+  typeIn(vm, 'ChatFrame11EditBox', 'to the agent');
+  assert.equal(vm.num('#STUB.chatSent'), sentBefore + 2, 'the tab\'s whisper never reaches the server');
+  assert.ok(stripRecords(vm).find(r => r.text === 'to the agent'));
+  assert.equal(replacedFunctions(vm), '');
+});
+
+test('/claude <text> starts a new chat and sends there; /claude <command> runs it; /claude-wow <text> and a whisper tab continue the current chat', () => {
+  const vm = whisperVM();
+  const firstId = vm.evaluate('ClaudeWoWDB.chats[1].id');
+  typeIn(vm, 'ChatFrame1EditBox', '/claude hi');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 2, 'a new chat');
+  const secondId = vm.evaluate('ClaudeWoWDB.chats[2].id');
+  assert.equal(vm.evaluate('ClaudeWoWDB.activeChat'), secondId);
+  let rec = stripRecords(vm).find(r => r.text === 'hi');
+  assert.ok(rec, 'sent');
+  assert.equal(rec.chat, secondId, 'sent in the new chat');
+  assert.equal(vm.num('STUB.serverSends'), 0);
+  replyTo(vm, secondId, 'status = "done", text = "hello", agent = "claude"');
+
+  typeIn(vm, 'ChatFrame1EditBox', '/claude diag');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 2, 'a command is not a new chat');
+  assert.ok(vm.evaluate('ClaudeWoWDB.chats[2].history[#ClaudeWoWDB.chats[2].history].text').startsWith('Diagnostics:'));
+  vm.run('SlashCmdList.CLAUDE("delete the unused imports")');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 3, 'a command word that does not fit is a message for a new chat');
+  const thirdId = vm.evaluate('ClaudeWoWDB.chats[3].id');
+  assert.equal(stripRecords(vm).find(r => r.text === 'delete the unused imports').chat, thirdId);
+  replyTo(vm, thirdId, 'status = "done", text = "ok", agent = "claude"');
+
+  vm.run(`ClaudeWoW.SwitchChat("${firstId}")`);
+  typeIn(vm, 'ChatFrame1EditBox', '/claude-wow continue here');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 3, '/claude-wow is not a new chat');
+  assert.equal(stripRecords(vm).find(r => r.text === 'continue here').chat, firstId);
+  replyTo(vm, firstId, 'status = "done", text = "continued", agent = "claude"');
+
+  vm.run('SlashCmdList.CLAUDEWOW("agent claude")');
+  vm.run('SlashCmdList.CLAUDEWOW("whisper on")');
+  const tab = vm.evaluate(`(function() for _, name in ipairs(CHAT_FRAMES) do if _G[name].claudewowChatId == "${firstId}" then return name .. "EditBox" end end end)()`);
+  assert.ok(tab, 'the first chat has a tab');
+  typeIn(vm, tab, 'plain text in the tab');
+  assert.equal(stripRecords(vm).find(r => r.text === 'plain text in the tab').chat, firstId, 'the tab continues its chat');
+  replyTo(vm, firstId, 'status = "done", text = "tab reply", agent = "claude"');
+  vm.run(`ClaudeWoW.SwitchChat("${secondId}")`);
+  typeIn(vm, tab, '/claude-wow from the tab');
+  assert.equal(stripRecords(vm).find(r => r.text === 'from the tab').chat, firstId, '/claude-wow in a tab goes to that tab\'s chat');
+  replyTo(vm, firstId, 'status = "done", text = "tab reply 2", agent = "claude"');
+  typeIn(vm, tab, '/claude fresh thread from the tab');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 4, '/claude in a tab starts a new chat');
+  const fourthId = vm.evaluate('ClaudeWoWDB.chats[4].id');
+  assert.equal(stripRecords(vm).find(r => r.text === 'fresh thread from the tab').chat, fourthId);
+  assert.equal(vm.evaluate(`ClaudeWoWDB.chats[4].agent`), 'claude', 'the new chat inherits from the tab\'s chat');
+  assert.equal(vm.num('STUB.serverSends'), 0, 'nothing reached the server');
+});
+
+test('/claude <text> at the chat limit says so and keeps the text in the window\'s input box', () => {
+  const vm = whisperVM();
+  vm.run('for i = 2, 16 do ClaudeWoW.NewChat("c" .. i) end');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 16);
+  const active = vm.evaluate('ClaudeWoWDB.activeChat');
+  vm.run('STUB.prints = {}');
+  typeIn(vm, 'ChatFrame1EditBox', '/claude one too many');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 16);
+  assert.equal(vm.evaluate('ClaudeWoWDB.activeChat'), active);
+  assert.equal(vm.evaluate('ClaudeWoWInput:GetText()'), 'one too many');
+  assert.ok(vm.evaluate('table.concat(STUB.prints, "\\n")').includes('Chat limit reached (16)'));
+  assert.ok(!stripRecords(vm).find(r => r.text === 'one too many'), 'not sent anywhere');
+});
+
+test('/r goes to the agent that replied last through the pre-send hook, typed at once or after "/r ", and to the player again after a real whisper', () => {
+  const vm = whisperVM();
+  const chatId = vm.evaluate('ClaudeWoWDB.chats[1].id');
+  vm.run('SlashCmdList.CLAUDEWOW("agent claude")');
+  vm.run('ClaudeWoW.Send("question")');
+  replyTo(vm, chatId, 'status = "done", text = "answer", agent = "claude"');
+  typeIn(vm, 'ChatFrame1EditBox', '/r thanks');
+  assert.ok(stripRecords(vm).find(r => r.text === 'thanks'), '/r reached the agent');
+  assert.equal(vm.num('STUB.serverSends'), 0);
+  replyTo(vm, chatId, 'status = "done", text = "welcome", agent = "claude"');
+
+  vm.run('STUB.lastTell = "Bob"');
+  vm.run('ChatFrame1EditBox:SetText("/r "); ChatFrame1EditBox:ParseText(0)');
+  assert.equal(vm.evaluate('ChatFrame1EditBoxHeader:GetText()'), 'To Claude [Question]: ', 'the header names the agent');
+  vm.run('ChatFrame1EditBox:SetText("one more")');
+  vm.run('STUB.PressEnter(ChatFrame1EditBox)');
+  assert.ok(stripRecords(vm).find(r => r.text === 'one more'), 'typed after "/r " it reached the agent');
+  assert.equal(vm.num('STUB.serverSends'), 0, 'not whispered to Bob');
+  replyTo(vm, chatId, 'status = "done", text = "sure", agent = "claude"');
+
+  vm.run('STUB.FireEvent("CHAT_MSG_WHISPER", "hey", "Bob")');
+  typeIn(vm, 'ChatFrame1EditBox', '/r hi Bob');
+  assert.equal(vm.num('STUB.serverSends'), 1);
+  assert.equal(vm.evaluate('STUB.chatSent[1].target .. ":" .. STUB.chatSent[1].text'), 'Bob:hi Bob');
+  assert.equal(replacedFunctions(vm), '');
 });
 
 test('plugins: a fresh install follows the bridge\'s default and sends no flag; chats from before plugins stay bound to claude-code; a new chat inherits; a restore brings the binding', () => {

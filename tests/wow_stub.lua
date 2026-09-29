@@ -146,14 +146,19 @@ SlashCmdList = {}
 UISpecialFrames = {}
 tinsert = table.insert
 function wipe(t) for k in pairs(t) do t[k] = nil end return t end
+STUB.secureHooks = {}
 function hooksecurefunc(a, b, c)
+	local wrapper
 	if type(a) == "table" then
 		local orig = a[b]
-		a[b] = function(...) local r = orig(...); c(...); return r end
+		wrapper = function(...) local r = orig(...); local saved = STUB.tainted; c(...); STUB.tainted = saved; return r end
+		a[b] = wrapper
 	else
 		local orig = _G[a]
-		_G[a] = function(...) local r = orig(...); b(...); return r end
+		wrapper = function(...) local r = orig(...); local saved = STUB.tainted; b(...); STUB.tainted = saved; return r end
+		_G[a] = wrapper
 	end
+	STUB.secureHooks[wrapper] = true
 end
 function InCombatLockdown() return false end
 function ReloadUI() STUB.reloaded = true end
@@ -197,6 +202,198 @@ function SetItemRef() end
 -- ChatEdit_InsertLink is the older global name.
 ChatFrameUtil = { InsertLink = function(text) return false end }
 function ChatEdit_InsertLink(text) return ChatFrameUtil.InsertLink(text) end
+
+STUB.protectedCalls, STUB.chatSent, STUB.serverSends = {}, {}, 0
+
+function STUB.AddonOnStack()
+	for level = 2, 400 do
+		local info = debug.getinfo(level, "S")
+		if not info then return false end
+		if type(info.source) == "string" and info.source:match("^@addon/") then return true end
+	end
+	return false
+end
+
+function STUB.Tainted()
+	return STUB.tainted == true or STUB.AddonOnStack()
+end
+
+function STUB.Protected(name, arg)
+	table.insert(STUB.protectedCalls, { name = name, arg = arg, tainted = STUB.Tainted() })
+end
+
+function STUB.PressEnter(eb)
+	STUB.tainted = false
+	debug.sethook(function()
+		local info = debug.getinfo(2, "S")
+		if info and type(info.source) == "string" and info.source:match("^@addon/") then STUB.tainted = true end
+	end, "c")
+	local ok, err = pcall(eb:GetScript("OnEnterPressed"), eb)
+	debug.sethook()
+	STUB.tainted = nil
+	if not ok then error(err, 0) end
+end
+
+EventRegistry = { callbacks = {} }
+function EventRegistry:RegisterCallback(event, func, owner)
+	self.callbacks[event] = self.callbacks[event] or {}
+	table.insert(self.callbacks[event], { func = func, owner = owner })
+	return owner
+end
+function EventRegistry:TriggerEvent(event, ...)
+	for _, cb in ipairs(self.callbacks[event] or {}) do
+		local saved = STUB.tainted
+		cb.func(cb.owner, ...)
+		STUB.tainted = saved
+	end
+end
+
+STUB.secureCmds = {
+	["/CAST"] = function(msg) STUB.Protected("CastSpellByName", msg) end,
+}
+SLASH_GUILD_LEAVE1 = "/gquit"
+SlashCmdList.GUILD_LEAVE = function() STUB.Protected("GuildLeave") end
+SLASH_SIT1 = "/sit"
+SlashCmdList.SIT = function() table.insert(STUB.protectedCalls, { name = "DoEmote", arg = "SIT", tainted = STUB.Tainted() }) end
+
+local CHAT_TYPE_COMMANDS = {
+	["/S"] = "SAY", ["/SAY"] = "SAY", ["/G"] = "GUILD", ["/GUILD"] = "GUILD",
+	["/W"] = "WHISPER", ["/WHISPER"] = "WHISPER", ["/T"] = "WHISPER", ["/TELL"] = "WHISPER",
+	["/R"] = "REPLY", ["/REPLY"] = "REPLY",
+}
+
+local function FindSlashCommand(command)
+	for key, fn in pairs(SlashCmdList) do
+		local i = 1
+		while _G["SLASH_" .. key .. i] do
+			if _G["SLASH_" .. key .. i]:upper() == command then return fn end
+			i = i + 1
+		end
+	end
+end
+
+ChatFrameEditBoxMixin = {}
+local M = ChatFrameEditBoxMixin
+
+function M:GetChatType() return self:GetAttribute("chatType") end
+function M:SetChatType(t) self:SetAttribute("chatType", t) end
+function M:GetStickyType() return self:GetAttribute("stickyType") end
+function M:SetStickyType(t) self:SetAttribute("stickyType", t) end
+function M:GetTellTarget() return self:GetAttribute("tellTarget") end
+function M:SetTellTarget(t) self:SetAttribute("tellTarget", t) end
+function M:AddHistoryLine(text) self.historyLines = self.historyLines or {}; table.insert(self.historyLines, text) end
+function M:UpdateHeader() self.headerUpdates = (self.headerUpdates or 0) + 1 end
+function M:ClearChat()
+	self:SetChatType(self:GetStickyType())
+	self:SetText("")
+	self:Hide()
+end
+
+function M:ProcessChatType(msg, index, send)
+	if index == "WHISPER" then
+		local target, rest = msg:match("^(%S+)%s+(.*)$")
+		if target then
+			self:SetTellTarget(target)
+			self:SetChatType("WHISPER")
+			self:SetText(rest)
+			self:UpdateHeader()
+		elseif send == 1 then
+			self:ClearChat()
+		end
+	elseif index == "REPLY" then
+		if STUB.lastTell then
+			self:SetChatType("WHISPER")
+			self:SetTellTarget(STUB.lastTell)
+			self:SetText(msg)
+			self:UpdateHeader()
+		elseif send == 1 then
+			self:ClearChat()
+		end
+	else
+		self:SetChatType(index)
+		self:SetText(msg)
+		self:UpdateHeader()
+	end
+	return true
+end
+
+function M:ParseText(send)
+	local text = self:GetText()
+	if text == "" or text:sub(1, 1) ~= "/" then return end
+	if send ~= 1 and not text:find("%s") then return end
+	local command = text:match("^(/[^%s]+)") or ""
+	local msg = ""
+	if command ~= text then msg = (text:sub(#command + 2)):match("^%s*(.*)$") end
+	command = command:upper()
+	if send == 1 and STUB.secureCmds[command] then
+		STUB.secureCmds[command](strtrim(msg))
+		self:AddHistoryLine(text)
+		self:ClearChat()
+		return
+	end
+	if CHAT_TYPE_COMMANDS[command] then
+		self:ProcessChatType(msg, CHAT_TYPE_COMMANDS[command], send)
+		return
+	end
+	if send == 0 then return end
+	local fn = FindSlashCommand(command)
+	if fn then
+		fn(strtrim(msg), self)
+		self:AddHistoryLine(text)
+		self:ClearChat()
+		return
+	end
+	self:ClearChat()
+end
+
+function M:OnPreSendText()
+	EventRegistry:TriggerEvent("ChatFrame.OnEditBoxPreSendText", self)
+end
+
+function M:SendText(addHistory)
+	self:ParseText(1)
+	self:OnPreSendText()
+	local chatType = self:GetChatType()
+	local text = self:GetText()
+	if text:find("%s*[^%s]+") then
+		STUB.serverSends = STUB.serverSends + 1
+		table.insert(STUB.chatSent, { chatType = chatType, target = chatType == "WHISPER" and self:GetTellTarget() or nil, text = text, tainted = STUB.Tainted() })
+	end
+end
+
+function M:SendMessage()
+	self:SendText(1)
+	local frame = self.chatFrame
+	if frame and frame.isTemporary then
+		self:SetStickyType(frame.chatType)
+		if frame.chatType == "WHISPER" then self:SetTellTarget(frame.chatTarget) end
+	else
+		local info = ChatTypeInfo and ChatTypeInfo[self:GetChatType()]
+		if info and info.sticky == 1 then self:SetStickyType(self:GetChatType()) end
+	end
+	self:ClearChat()
+end
+
+function M:OnEnterPressed() self:SendMessage() end
+
+local function EnterScript(self) self:OnEnterPressed() end
+
+function strtrim(s) return (tostring(s or ""):gsub("^%s+", ""):gsub("%s+$", "")) end
+
+ChatEdit_SendText = M.SendText
+ChatEdit_ParseText = M.ParseText
+ChatFrameUtil.SendText = function(eb, addHistory) return eb:SendText(addHistory) end
+
+function STUB.ChatEditBox(name, frame, chatType, tellTarget)
+	local eb = CreateFrame("EditBox", name, frame)
+	for k, v in pairs(M) do eb[k] = v end
+	eb.chatFrame = frame
+	eb.attrs = { chatType = chatType or "SAY", stickyType = chatType or "SAY", tellTarget = tellTarget }
+	eb.header = eb:CreateFontString(name .. "Header")
+	eb:CreateFontString(name .. "HeaderSuffix")
+	eb:SetScript("OnEnterPressed", EnterScript)
+	return eb
+end
 
 -- The character, for the game context (ClaudeWoW.GameContext).
 function GetBuildInfo() return "1.60.1", "69913", "Sep 1 2026", 16001 end

@@ -1704,17 +1704,6 @@ end
 -- Enter in that tab goes to the agent. The addon window is untouched and stays
 -- the record of the chat. Tabs are temporary windows: gone with a reload,
 -- opened again on the next message.
---
--- Nothing here may reach the server. The tab's edit box holds a whisper to a
--- name no player has ("Claude"), so every send path is cut before the game's
--- own. Three layers, because this client's chat code is a mixin behind the old
--- globals and only the game knows which runs first: the box's OnEnterPressed
--- script (what Enter runs), its SendText and SendMessage methods (the /r hook
--- already lives there, and shipped), and the ChatEdit_SendText and
--- ChatFrameUtil.SendText entry points. Should a whisper still get out, the
--- server answers "No player named 'Claude'" as a system message: a filter turns
--- that into a loud LEAK line and counts it (/aiwhisper status), so a failure
--- can't pass for the game's business.
 
 local WHISPER_TEXT_MAX = 4000 -- characters of a reply written into the tab before it points at the window
 local WHISPER_PROBE_NAME = "Cwowprobe" -- /aiwhisper leak whispers this nobody to prove the leak filter works
@@ -1792,29 +1781,14 @@ function Whisper.Retitle(chat)
 	end
 end
 
--- Enter on a chat edit box. Wrapped once per box, ours and the game's own, so a
--- whisper to an agent goes to the addon wherever it is typed. The original
--- handler runs for everything else.
-local function WhisperHookBox(eb)
-	if type(eb) ~= "table" or eb.claudewowWhisperHooked then return end
-	eb.claudewowWhisperHooked = true
-	local script = eb.GetScript and eb:GetScript("OnEnterPressed")
-	eb.claudewowOrigEnter = script -- /aiwhisper send drives the game's own path with it
-	if eb.SetScript then
-		eb:SetScript("OnEnterPressed", function(self, ...)
-			if Whisper.Intercept(self, "script") then return end
-			if script then return script(self, ...) end
-		end)
-	end
-	for _, name in ipairs({ "SendText", "SendMessage" }) do
-		local orig = eb[name]
-		if type(orig) == "function" then
-			eb[name] = function(self, ...)
-				if Whisper.Intercept(self, name) then return end
-				return orig(self, ...)
-			end
-		end
-	end
+local PRE_SEND_EVENT = "ChatFrame.OnEditBoxPreSendText"
+local preSendHooked = false
+
+function Whisper.HookPreSend(handler)
+	if preSendHooked then return true end
+	if type(EventRegistry) ~= "table" or type(EventRegistry.RegisterCallback) ~= "function" then return false end
+	preSendHooked = pcall(EventRegistry.RegisterCallback, EventRegistry, PRE_SEND_EVENT, handler, Whisper) and true or false
+	return preSendHooked
 end
 
 local function WhisperAdopt(chat, frame)
@@ -1822,7 +1796,6 @@ local function WhisperAdopt(chat, frame)
 	frame.claudewowChatId = chat.id
 	frame.claudewowTarget = frame.claudewowTarget or ChatAgentName(chat)
 	run.whisperTabs[chat.id] = frame
-	WhisperHookBox(WhisperBox(frame))
 	Whisper.Retitle(chat)
 	return frame
 end
@@ -1833,6 +1806,10 @@ end
 -- flashes instead.
 function Whisper.FrameFor(chat, create, select)
 	if not WhisperOn() or not chat then return nil end
+	if not preSendHooked then
+		run.whisperError = "this client has no " .. PRE_SEND_EVENT .. " hook, so a tab could not keep its whispers off the server"
+		return nil
+	end
 	run.whisperTabs = run.whisperTabs or {}
 	local frame = run.whisperTabs[chat.id]
 	if WhisperOwns(chat, frame) then
@@ -1987,76 +1964,32 @@ local function WhisperAgentChat(target)
 	return best
 end
 
-local TELL_COMMANDS = { w = true, whisper = true, t = true, tell = true }
-
--- "/w Claude text" typed anywhere: the target and the text, when it is a tell.
-local function WhisperParseTell(text)
-	local cmd, target, rest = text:match("^%s*/(%a+)%s+(%S+)%s*(.*)$")
-	if cmd and TELL_COMMANDS[cmd:lower()] then return target, rest end
-end
-
--- The agent chat a box's Enter belongs to, or nil for the game's own send: a
--- tell to an agent's name, or a box whose whisper is aimed at one (our tab's
--- box by the tab it belongs to, any other by the name).
-function Whisper.ChatForBox(eb)
+function Whisper.TabChat(eb)
 	if not WhisperOn() or type(eb) ~= "table" then return nil end
-	local text = eb.GetText and eb:GetText() or ""
-	local target, rest = WhisperParseTell(text)
-	if target then
-		local chat = WhisperAgentChat(target)
-		if chat then return chat, rest end
-		return nil
-	end
-	if text:match("^%s*/") then return nil end
-	if not eb.GetAttribute or eb:GetAttribute("chatType") ~= "WHISPER" then return nil end
 	local frame = eb.chatFrame or (eb.GetParent and eb:GetParent())
 	local chat = type(frame) == "table" and frame.claudewowChatId and FindChat(frame.claudewowChatId)
-	if chat and run.whisperTabs and run.whisperTabs[chat.id] == frame then return chat, text end
-	return WhisperAgentChat(eb:GetAttribute("tellTarget")), text
+	if chat and run.whisperTabs and run.whisperTabs[chat.id] == frame then return chat end
+	return nil
 end
 
--- Enter on a box whose whisper belongs to an agent: the box is emptied and put
--- away the way a send does it, and the text goes to the addon. Returns true when
--- swallowed, and then the game's own path must not run.
+function Whisper.ChatForBox(eb)
+	if not WhisperOn() or type(eb) ~= "table" or not eb.GetAttribute then return nil end
+	if eb:GetAttribute("chatType") ~= "WHISPER" then return nil end
+	return Whisper.TabChat(eb) or WhisperAgentChat(eb:GetAttribute("tellTarget"))
+end
+
 function Whisper.Intercept(eb, layer)
-	local chat, text = Whisper.ChatForBox(eb)
+	local chat = Whisper.ChatForBox(eb)
 	if not chat then return false end
-	text = Trim(text or "")
+	local text = Trim(eb:GetText() or "")
+	pcall(eb.SetText, eb, "")
+	if text == "" then return true end
 	run.whisperSwallowed = (run.whisperSwallowed or 0) + 1
 	run.whisperLayer = layer
-	pcall(function()
-		if text ~= "" and eb.AddHistoryLine then eb:AddHistoryLine(text) end
-		eb:SetText("")
-		if type(eb.OnEscapePressed) == "function" then
-			eb:OnEscapePressed()
-		elseif type(ChatEdit_OnEscapePressed) == "function" then
-			ChatEdit_OnEscapePressed(eb)
-		elseif type(ChatEdit_DeactivateChat) == "function" then
-			ChatEdit_DeactivateChat(eb)
-		else
-			eb:ClearFocus()
-		end
-	end)
+	if eb.AddHistoryLine then pcall(eb.AddHistoryLine, eb, text) end
 	if run.whisperProbe then
-		-- /aiwhisper send: count the catch instead of bothering the agent.
 		run.whisperProbe(chat, text, layer)
 		return true
-	end
-	if text == "" then return true end
-	-- The tab swallows everything typed in it, so our own slash commands typed
-	-- there would otherwise reach the agent as literal text. Bare /claude in a
-	-- whisper tab is the only way to begin a fresh thread from one, so it has to
-	-- run as a command. Anything else still goes to the agent.
-	local cmd, rest = text:match("^(/[%w%-]+)%s*(.-)$")
-	if cmd then
-		cmd = cmd:lower()
-		if cmd == "/claude" then
-			if Trim(rest) == "" then ClaudeWoW.NewChat() else SlashCmdList["CLAUDEWOW"](rest) end
-			return true
-		elseif cmd == "/claude-wow" or cmd == "/claudewow" then
-			SlashCmdList["CLAUDEWOW"](rest)
-			return true
-		end
 	end
 	if db.activeChat ~= chat.id then ClaudeWoW.SwitchChat(chat.id) end
 	if chat.pendingId then
@@ -2098,38 +2031,14 @@ end
 
 local whisperInstalled = false
 
-function Whisper.HookBoxes()
-	for i = 1, (NUM_CHAT_WINDOWS or 10) do WhisperHookBox(_G["ChatFrame" .. i .. "EditBox"]) end
-	for _, f in ipairs(WhisperFrames()) do WhisperHookBox(WhisperBox(f)) end
-end
-
--- The hooks, once, the first time the setting is on (at login or when turned
--- on). They stay in place but do nothing while it is off.
 function Whisper.Install()
 	if whisperInstalled then return end
 	whisperInstalled = true
-	run.whisperLayers = { "OnEnterPressed", "SendText/SendMessage" }
-	if type(ChatEdit_SendText) == "function" then
-		local orig = ChatEdit_SendText
-		ChatEdit_SendText = function(eb, ...)
-			if Whisper.Intercept(eb, "ChatEdit_SendText") then return end
-			return orig(eb, ...)
-		end
-		table.insert(run.whisperLayers, "ChatEdit_SendText")
-	end
-	if type(ChatFrameUtil) == "table" and type(ChatFrameUtil.SendText) == "function" then
-		local orig = ChatFrameUtil.SendText
-		ChatFrameUtil.SendText = function(eb, ...)
-			if Whisper.Intercept(eb, "ChatFrameUtil.SendText") then return end
-			return orig(eb, ...)
-		end
-		table.insert(run.whisperLayers, "ChatFrameUtil.SendText")
-	end
+	run.whisperLayers = { preSendHooked and PRE_SEND_EVENT or ("no " .. PRE_SEND_EVENT) }
 	if type(ChatFrame_AddMessageEventFilter) == "function" then
 		pcall(ChatFrame_AddMessageEventFilter, "CHAT_MSG_SYSTEM", WhisperLeakFilter)
 		table.insert(run.whisperLayers, "leak filter")
 	end
-	Whisper.HookBoxes()
 end
 
 function Whisper.Status()
@@ -2137,7 +2046,8 @@ function Whisper.Status()
 	for _, c in ipairs(db.chats) do
 		if WhisperOwns(c, run.whisperTabs and run.whisperTabs[c.id]) then tabs = tabs + 1 end
 	end
-	return "whisper tabs: " .. (WhisperOn() and "on" or "off") .. ", " .. tabs .. " open, sends swallowed: " .. (run.whisperSwallowed or 0)
+	return "whisper tabs: " .. (WhisperOn() and "on" or "off") .. ", " .. tabs .. " open, send hook: " .. (preSendHooked and "pre-send" or "MISSING")
+		.. ", sends swallowed: " .. (run.whisperSwallowed or 0)
 		.. ", LEAKS: " .. (run.whisperLeaks or 0) .. (run.whisperError and (", last open error: " .. run.whisperError) or "")
 end
 
@@ -2407,10 +2317,11 @@ function ClaudeWoW.NewChat(name)
 		local a = ActiveChat()
 		AddHistory(a, "system", "Chat limit reached (" .. MAX_CHATS .. "). Delete one first with /claude-wow delete.")
 		ClaudeWoW.Render()
-		return
+		return nil
 	end
 	ClaudeWoW.SwitchChat(c.id)
 	ClaudeWoW.Toggle(true)
+	return c
 end
 
 -- Folder this chat's agent works in. Empty (or "-" / "default") = the bridge's
@@ -3100,7 +3011,7 @@ function ClaudeWoW.Render()
 			elseif not ClaudeWoW.IsConnected() then
 				Place("system", "Not connected to the bridge. Start it (npm start in the claude-wow folder, or claude-wow in your project), then click Connect below.", "", true)
 			else
-				Place("system", "Click the box below and type to start. Shift-click an item, spell or quest to link it into your message. /claude-wow help lists the commands; /claude <text> and /r work from the game chat too.", "", true)
+				Place("system", "Click the box below and type to start. Shift-click an item, spell or quest to link it into your message. /claude-wow help lists the commands. From the game chat, /claude <text> starts a new chat with that message, /claude-wow <text> and /r continue the current one.", "", true)
 			end
 		end
 		for i = n + 1, #ui.bubbles do
@@ -3306,22 +3217,19 @@ function ClaudeWoW.SystemNote(text)
 	ClaudeWoW.Render()
 end
 
--- /r goes to the agent when it was the last one to message you, exactly like
--- whisper reply, and the box shows a "To Codex [chat]:" header while you type.
---
--- The chat type underneath is left alone (a custom type would leak into chat
--- settings); instead the box remembers an agent target, the header is repainted
--- over the game's own, and the send entry points are intercepted. Any other chat
--- type, Tab, Esc or a cleared box drops the target again.
 local AGENT_R, AGENT_G, AGENT_B = 0.49, 0.78, 1.0
+
+local agentReply = setmetatable({}, { __mode = "k" })
+local agentPainting = setmetatable({}, { __mode = "k" })
+local replyHooked = setmetatable({}, { __mode = "k" })
 
 local function PaintAgentHeader(eb, chat)
 	local header = _G[eb:GetName() .. "Header"]
 	local suffix = _G[eb:GetName() .. "HeaderSuffix"]
 	if not header then return end
-	eb.agentPainting = true
-	eb:UpdateHeader() -- lay out normally first, then repaint
-	eb.agentPainting = nil
+	agentPainting[eb] = true
+	pcall(eb.UpdateHeader, eb)
+	agentPainting[eb] = nil
 	header:SetWidth(0)
 	header:SetText("To " .. ChatAgentName(chat) .. " [" .. Display(chat.name) .. "]: ")
 	header:SetTextColor(AGENT_R, AGENT_G, AGENT_B)
@@ -3330,11 +3238,8 @@ local function PaintAgentHeader(eb, chat)
 	eb:SetTextColor(AGENT_R, AGENT_G, AGENT_B)
 end
 
-local function SendBoxToAgent(eb)
-	local chat = FindChat(eb.agentTarget)
-	local text = Trim(eb:GetText() or "")
-	eb.agentTarget = nil
-	eb:ClearChat()
+local function ReplyToAgent(chatId, text)
+	local chat = FindChat(chatId)
 	if chat and db.activeChat ~= chat.id then ClaudeWoW.SwitchChat(chat.id) end
 	if text ~= "" then
 		ClaudeWoW.Send(text)
@@ -3344,57 +3249,59 @@ local function SendBoxToAgent(eb)
 	end
 end
 
+local function AfterProcessChatType(eb, msg, index, send)
+	if index ~= "REPLY" or not (db and run.lastMessenger == "agent") then
+		agentReply[eb] = nil
+		return
+	end
+	local chat = FindChat(run.lastReplyChat) or ActiveChat()
+	if not chat then return end
+	if send == 1 then
+		agentReply[eb] = { chat = chat.id, text = Trim(msg or "") }
+		return
+	end
+	if eb:GetText() ~= (msg or "") then eb:SetText(msg or "") end
+	agentReply[eb] = { chat = chat.id }
+	PaintAgentHeader(eb, chat)
+end
+
+local function OnPreSendText(_, eb)
+	if not db or type(eb) ~= "table" then return end
+	local reply = agentReply[eb]
+	if reply then
+		agentReply[eb] = nil
+		local text = Trim(eb:GetText() or "")
+		if text == "" then text = reply.text or "" end
+		eb:SetText("")
+		ReplyToAgent(reply.chat, text)
+		return
+	end
+	Whisper.Intercept(eb, "pre-send")
+end
+
 local function HookReplyCommand()
 	for i = 1, (NUM_CHAT_WINDOWS or 10) do
 		local eb = _G["ChatFrame" .. i .. "EditBox"]
-		if eb and eb.ProcessChatType and not eb.agentReplyHooked then
-			eb.agentReplyHooked = true
-
-			local origProcess = eb.ProcessChatType
-			eb.ProcessChatType = function(self, msg, index, send, ...)
-				if index ~= "REPLY" then
-					self.agentTarget = nil
-					return origProcess(self, msg, index, send, ...)
-				end
-				if not (db and run.lastMessenger == "agent") then
-					return origProcess(self, msg, index, send, ...)
-				end
-				local chat = FindChat(run.lastReplyChat) or ActiveChat()
-				if send == 1 then
-					self:SetText(msg or "")
-					self.agentTarget = chat and chat.id
-					SendBoxToAgent(self)
-					return true
-				end
-				self.agentTarget = chat and chat.id
-				self:SetText(msg or "")
-				if chat then PaintAgentHeader(self, chat) end
-				return true
+		if eb and not replyHooked[eb] and type(eb.ProcessChatType) == "function" then
+			replyHooked[eb] = true
+			hooksecurefunc(eb, "ProcessChatType", AfterProcessChatType)
+			if type(eb.UpdateHeader) == "function" then
+				hooksecurefunc(eb, "UpdateHeader", function(self)
+					if not agentPainting[self] then agentReply[self] = nil end
+				end)
 			end
-
-			-- Enter arrives here; nothing below us ever sees an agent-targeted box.
-			for _, name in ipairs({ "SendMessage", "SendText" }) do
-				local orig = eb[name]
-				if orig then
-					eb[name] = function(self, ...)
-						if self.agentTarget then
-							SendBoxToAgent(self)
-							return
-						end
-						return orig(self, ...)
-					end
-				end
+			if type(eb.ClearChat) == "function" then
+				hooksecurefunc(eb, "ClearChat", function(self)
+					agentReply[self] = nil
+				end)
 			end
-
-			-- Anything that repaints the header normally (Tab, /s, sticky reset) ends agent mode.
-			hooksecurefunc(eb, "UpdateHeader", function(self)
-				if not self.agentPainting then self.agentTarget = nil end
-			end)
-			hooksecurefunc(eb, "ClearChat", function(self)
-				self.agentTarget = nil
-			end)
 		end
 	end
+end
+
+local function InstallChatHooks()
+	Whisper.HookPreSend(OnPreSendText)
+	HookReplyCommand()
 end
 
 -- Clicks on our [reply] / [open] links in the chat frame.
@@ -3936,10 +3843,11 @@ end
 ---------------------------------------------------------------------------
 
 local HELP = table.concat({
-	"/claude-wow                        toggle the window (/claude is the same command)",
+	"/claude-wow                        toggle the window (bare /claude starts a new chat)",
 	"/claude-wow mini                   collapse to the small bar (click the bar to expand)",
 	"/claude-wow hide                   hide the window completely",
-	"/claude <text>                         send <text> to the current chat straight from the game chat box (/claude-wow <text> too). A message that starts with a command word is still sent when the rest of the line doesn't fit that command",
+	"/claude <text>                     start a new chat and send <text> there, straight from the game chat box (at the chat limit the text waits in the window's input box). A command word that fits, like /claude diag, runs that command instead",
+	"/claude-wow <text>                 send <text> to the current chat from the game chat box. A message that starts with a command word is still sent when the rest of the line doesn't fit that command",
 	"/r <text>                          replies to the agent when it was the last to message you (else normal whisper reply)",
 	"/claude-wow whisper on|off        each chat as a native whisper tab: replies flash it like a player's whisper, typing in it goes to the agent (off by default)",
 	"/claude-wow echo summary|full|short|off|<chars>   how much of each reply to print in the game chat (summary = the agent's closing TL;DR lines)",
@@ -4039,22 +3947,41 @@ local function ApplyLongChat()
 	box:SetMaxLetters(db.settings.longchat and 4000 or 255)
 end
 
--- Two spellings of the one command and nothing else: the names from before the
--- rename (/wow-ai, /wowai, /ai, /ask, /wow-claude) are gone, not aliased.
--- /claude-wow is the client: bare, it shows the window. /claude behaves like
--- opening a terminal: bare, it starts a new chat, which is the only way to begin
--- a fresh thread from inside a whisper tab.
+local function FollowTab(editBox)
+	local tabChat = Whisper.TabChat(editBox)
+	if tabChat and db.activeChat ~= tabChat.id then ClaudeWoW.SwitchChat(tabChat.id) end
+end
+
+function ClaudeWoW.NewChatWith(text)
+	if ClaudeWoW.NewChat() then
+		ClaudeWoW.Send(text)
+		return true
+	end
+	local a = ActiveChat()
+	if ui.input then ui.input:SetText(text) end
+	ClaudeWoW.Toggle(true)
+	print("|cff66ccff[Claude WoW]|r Chat limit reached (" .. MAX_CHATS .. "), so no new chat was started. Your message is in the window's input box: delete a chat with /claude-wow delete and send it with /claude again, or press Enter there to send it to " .. Display(a and a.name or "the current chat") .. ".")
+	return false
+end
+
 SLASH_CLAUDEWOW1 = "/claude-wow"
 SLASH_CLAUDE1 = "/claude"
 SlashCmdList["CLAUDE"] = function(msg, editBox)
-	if Trim(msg or "") == "" then
+	msg = Trim(msg or "")
+	FollowTab(editBox)
+	if msg == "" then
 		ClaudeWoW.NewChat()
 		return
 	end
-	return SlashCmdList["CLAUDEWOW"](msg, editBox)
+	local cmd, rest = msg:match("^(%S+)%s*(.-)$")
+	if IsCommand(cmd:lower(), rest) then
+		return SlashCmdList["CLAUDEWOW"](msg, editBox)
+	end
+	ClaudeWoW.NewChatWith(msg)
 end
 
-SlashCmdList["CLAUDEWOW"] = function(msg)
+SlashCmdList["CLAUDEWOW"] = function(msg, editBox)
+	FollowTab(editBox)
 	msg = Trim(msg or "")
 	local cmd, rest = msg:match("^(%S+)%s*(.-)$")
 	cmd = cmd and cmd:lower() or ""
@@ -4409,7 +4336,7 @@ ev:SetScript("OnEvent", function(self, event, arg1)
 		ClaudeWoW.ArmAutoRefresh()
 		ClaudeWoW.UpdateDot()
 		if db.settings.longchat then ApplyLongChat() end
-		HookReplyCommand()
+		InstallChatHooks()
 		if db.settings.whisper then Whisper.Install() end
 		C_Timer.NewTicker(TICK_SECONDS, Tick)
 		C_Timer.After(3, ClaudeWoW.SayHello)
