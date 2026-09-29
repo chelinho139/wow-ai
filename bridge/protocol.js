@@ -127,6 +127,24 @@ function parseFlags(flags) {
   return out;
 }
 
+// "!high plan my route" asks for more reasoning on this one reply, "!low" for a
+// quick one. The levels Claude Code and Codex both take; anything else
+// ("!highway", a bare "!high", "!ultra") stays part of the message.
+const EFFORT_RE = /^!(low|medium|high|xhigh|max)\s+(?=\S)/i;
+function splitEffort(text) {
+  const s = String(text || '');
+  const m = EFFORT_RE.exec(s);
+  return m ? { effort: m[1].toLowerCase(), text: s.slice(m[0].length) } : { effort: '', text: s };
+}
+
+// What one run takes from that prefix: the message without it, the level when
+// the agent's entry has an effort switch (`effort: true`), else a note for the reply.
+function effortForRun(text, agent) {
+  const { effort, text: prompt } = splitEffort(text);
+  if (!effort || agent.effort) return { prompt, effort, note: '' };
+  return { prompt, effort: '', note: `"!${effort}" was ignored: the bridge has no effort switch for ${agent.name}.` };
+}
+
 // Strip payload: records separated by \x1E, fields by \x1F:
 //   session, chat, id, cwd, flags, name, [ctx,] text
 // `cwd` is left as typed; the bridge resolves it against its default folder.
@@ -549,7 +567,7 @@ module.exports = {
   fromHex, pad3, slotNumber, chatKey, sessKey,
   alreadyHandled, markHandled, pruneStale, MONTH_MS,
   resolveCwd, sameFolder, baseName,
-  parseFlags, jobsFromStrip, parseOutbox, systemPrompt, splitSummary,
+  parseFlags, splitEffort, effortForRun, jobsFromStrip, parseOutbox, systemPrompt, splitSummary,
   ruleFor, describeToolUse,
   luaStr, luaTable, SILENT_WAV,
   MAP_LIMITS, validateMapCommand, newMap, applyMapCommands, extractMapBlocks, parseMapFile, luaMap,

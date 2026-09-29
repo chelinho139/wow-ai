@@ -343,6 +343,21 @@ test('the Folder... menu item (right-click a chat) opens a prompt that sets the 
   assert.equal(vm.evaluate('WoWAIDB.chats[1].cwd'), '');
 });
 
+test('an effort prefix goes out as typed (the bridge takes it off), and the chat title skips it', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run('WoWAI.Send("!high plan a route from 20 to 30")');
+  assert.ok(stripRecords(vm).find(r => r.text === '!high plan a route from 20 to 30'), 'message record on the strip, prefix included');
+  assert.equal(vm.evaluate('WoWAIDB.chats[1].name'), 'Plan a route from 20');
+  // Not a level, so the word stays in the title.
+  const other = newVM();
+  login(other);
+  connect(other);
+  other.run('WoWAI.Send("!highway to hell")');
+  assert.equal(other.evaluate('WoWAIDB.chats[1].name'), 'Highway to hell');
+});
+
 test('a sent message is encoded on the strip with the chat folder, then a slot reply finishes it', () => {
   const vm = newVM();
   login(vm);

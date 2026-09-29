@@ -140,6 +140,8 @@ Right-clicking a chat in the left panel opens a small menu with **Rename...**, *
 
 Click any message, or `/wow-ai copy` for the last reply, to open it in a selectable box for Ctrl+C.
 
+Start a message with `!high` (or `!low`, `!medium`, `!xhigh`, `!max`) to change how hard the agent thinks for that one reply: `/ai !high plan a route from 20 to 30 through Redridge`. Claude Code and Codex take it; the next message runs at the default again (the CLI's own setting, or what `extraArgs` sets). See [docs/AGENTS.md](docs/AGENTS.md#effort-for-one-reply).
+
 ### Short in the chat, full in the window
 
 Every run tells the agent that only a short summary of its reply is printed in the game chat, and asks it to end each reply with a `TL;DR:` block of one or two lines. The bridge splits that block off and the addon prints just those lines under `[Claude · chat]`, with the `[open]` link to the whole reply in the window (the window keeps the full text, TL;DR included). When an agent forgets the block, the first two lines of the reply are printed instead, with a hint to open the rest. `/wow-ai echo full` goes back to printing the whole reply.

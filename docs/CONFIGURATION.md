@@ -29,7 +29,7 @@ Keys under `agents.claude`, `agents.codex`, `agents.grok`, `agents.agy` and `age
 | `deniedTools` | `[]` | Rules the agent may never use, same syntax. Claude: `--disallowedTools`; Grok: `--deny`, which wins over everything, `bypassPermissions` included; ignored by Codex. |
 | `model` | `""` | Passed to the CLI (`--model` / `-m`) when non-empty. Empty uses the CLI's default. |
 | `path` | `""` | Full path to the executable. Empty means: look in the installer's folder, then (for Codex) `CODEX_BIN`, then `PATH`, then npm's launcher. A `.js` path is run with the bridge's Node. |
-| `extraArgs` | `[]` | More command-line arguments, added verbatim (before Codex's `resume` subcommand). |
+| `extraArgs` | `[]` | More command-line arguments, added verbatim (before Codex's `resume` subcommand). A default effort goes here too (`["--effort", "medium"]` for Claude, `["-c", "model_reasoning_effort=\"medium\""]` for Codex); a message's `!high` prefix overrides it for that reply ([AGENTS.md](AGENTS.md#effort-for-one-reply)). |
 | `networkAccess` (codex only) | `false` | `true` lets commands inside Codex's `workspace-write` sandbox reach the network (`-c sandbox_workspace_write.network_access=true`). |
 
 A `config.json` from before agents existed kept Claude's settings at the top level (`claudePath`, `model`, `permissionMode`, `allowedTools`). The bridge still reads them, under anything in `agents.claude`; `setup.js` moves them down.
