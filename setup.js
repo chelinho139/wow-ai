@@ -72,11 +72,16 @@ function resolveProject(raw) {
   if (!fs.statSync(abs).isDirectory()) throw new Error(`--project "${p}" is not a folder (${abs})`);
   return abs;
 }
+// A folder listing, sorted: Node's comes back alphabetical (libuv sorts it),
+// Bun's in the order the OS gives, and "the first account" or "the first
+// game executable" must be the same choice from a checkout and from the binary.
+const listDir = dir => fs.readdirSync(dir).sort();
+
 
 function isClient(dir) {
   try {
     if (!fs.existsSync(path.join(dir, 'Interface'))) return false;
-    const items = fs.readdirSync(dir);
+    const items = listDir(dir);
     // Windows: the game exe. macOS: the .app bundle. Linux (Wine): the Wine exe.
     return items.some(f => /^Wow.*\.exe$/i.test(f) || /\.app$/i.test(f));
   } catch { return false; }
@@ -111,7 +116,7 @@ function findClient() {
 function findAccount(client) {
   const base = path.join(client, 'WTF', 'Account');
   let names = [];
-  try { names = fs.readdirSync(base).filter(n => n !== 'SavedVariables' && fs.statSync(path.join(base, n)).isDirectory()); } catch {}
+  try { names = listDir(base).filter(n => n !== 'SavedVariables' && fs.statSync(path.join(base, n)).isDirectory()); } catch {}
   if (args.account) {
     if (!names.includes(args.account)) throw new Error(`Account "${args.account}" not found under ${base}`);
     return args.account;
@@ -219,14 +224,14 @@ function writeConfig(client, account) {
   cfg.inboxFile = path.join(cfg.addonDir, P.ADDON, 'Inbox.lua');
   cfg.savedVariablesFile = path.join(client, 'WTF', 'Account', account, 'SavedVariables', P.ADDON + '.lua');
   cfg.defaultCwd = args.project ? resolveProject(args.project) : process.cwd();
-  const exe = fs.readdirSync(client).find(f => /^Wow.*\.exe$/i.test(f) || /\.app$/i.test(f));
+  const exe = listDir(client).find(f => /^Wow.*\.exe$/i.test(f) || /\.app$/i.test(f));
   if (exe) {
     let processName = exe.replace(/\.exe$/i, '');
     // macOS: the process name is the executable inside the .app bundle, not the bundle name.
     if (process.platform === 'darwin' && exe.toLowerCase().endsWith('.app')) {
       const macosDir = path.join(client, exe, 'Contents', 'MacOS');
       try {
-        const bins = fs.readdirSync(macosDir).filter(f => fs.statSync(path.join(macosDir, f)).isFile());
+        const bins = listDir(macosDir).filter(f => fs.statSync(path.join(macosDir, f)).isFile());
         if (bins.length) processName = bins[0];
       } catch {}
     }

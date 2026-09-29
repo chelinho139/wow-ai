@@ -112,7 +112,9 @@ function sweepOrphans(dir, hasStrip, opts = {}) {
   const now = opts.now || Date.now();
   const out = { removed: [], kept: 0, bytes: 0, more: false };
   let names = [];
-  try { names = fs.readdirSync(dir); } catch { return out; }
+  // Sorted: Node hands a listing back alphabetical (libuv), Bun in the order
+  // the OS gives, and which files a batch takes should not depend on that.
+  try { names = fs.readdirSync(dir).sort(); } catch { return out; }
   const present = new Set(names);
   for (const name of [...memo.keys()]) if (!present.has(name)) memo.delete(name);
   let decodes = 0;
