@@ -193,6 +193,7 @@ function parseFlags(flags) {
     else if (tok === 'c') out.context = true;
     else if (tok === 'v') out.vision = true; // attach the screenshot's game view to the run (screenshot transport only)
     else if (tok.startsWith('allow=')) out.allow.push(...tok.slice(6).split(',').map(s => s.trim()).filter(Boolean));
+    else if (tok.startsWith('once=')) (out.allowOnce = out.allowOnce || []).push(...tok.slice(5).split(',').map(s => s.trim()).filter(Boolean));
     else if (tok.startsWith('agent=')) out.agent = tok.slice(6).trim().toLowerCase();
     else if (tok.startsWith('plugin=')) { const p = tok.slice(7).trim().toLowerCase(); if (p) out.plugin = p; }
     // "shot=missing" / "shot=failed": the addon is on the screenshot transport but
@@ -249,9 +250,18 @@ function parseOutbox(src) {
   if (plugin && plugin[1]) job.plugin = plugin[1].toLowerCase();
   const allow = b.match(/\["allow"\]\s*=\s*"([0-9a-fA-F]*)"/);
   if (allow && allow[1]) job.allow = fromHex(allow[1]).split('\x1F').filter(Boolean);
+  const allowOnce = b.match(/\["allowOnce"\]\s*=\s*"([0-9a-fA-F]*)"/);
+  if (allowOnce && allowOnce[1]) job.allowOnce = fromHex(allowOnce[1]).split('\x1F').filter(Boolean);
   const shot = b.match(/\["shot"\]\s*=\s*"([a-z]*)"/);
   if (shot && FALLBACK_REASONS[shot[1]]) job.shot = shot[1];
   return job;
+}
+
+function withRunOnlyRules(agentCfg, rules) {
+  const extra = Array.isArray(rules) ? rules.filter(Boolean) : [];
+  if (!extra.length) return agentCfg;
+  const current = Array.isArray(agentCfg.allowedTools) ? agentCfg.allowedTools : [];
+  return { ...agentCfg, allowedTools: [...new Set([...current, ...extra])] };
 }
 
 // ---------------------------------------------------------------------------
@@ -791,7 +801,7 @@ module.exports = {
   alreadyHandled, markHandled, pruneStale, MONTH_MS,
   noteUsage, usageFields, tokensLabel,
   resolveCwd, sameFolder, baseName,
-  parseFlags, jobsFromStrip, parseOutbox, systemPrompt, messagePrompt, visionHint, splitSummary,
+  parseFlags, jobsFromStrip, parseOutbox, withRunOnlyRules, systemPrompt, messagePrompt, visionHint, splitSummary,
   ruleFor, describeToolUse,
   luaStr, luaTable, SILENT_WAV, TRANSPORTS, DEFAULT_TRANSPORT, transportName, chooseTransport, FALLBACK_REASONS, transportFallback, transportNote, DEFAULT_LEVELS, screenshotLevels, STRIP_CODECS, DEFAULT_STRIP_CODEC, stripCodec, denseLevels,
   MAP_LIMITS, validateMapCommand, newMap, applyMapCommands, extractMapBlocks, parseMapFile, luaMap,
