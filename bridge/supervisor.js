@@ -34,11 +34,13 @@ if (argv[0] === '--version' || argv[0] === '-v') {
 } else if (argv[0] === 'bridge') {
   process.argv.splice(2, 1); // bridge.js reads its flags from process.argv
   require('./bridge');
+} else if (argv[0] === 'channel') {
+  require('./channel').main();
 } else if (argv[0] === 'install-slots') {
   process.argv.splice(2, 1);
   require('./install-slots');
 } else {
-  if (argv.includes('--help') || argv.includes('-h')) console.log('claude-wow setup [...]   game-side install (setup.js)\nclaude-wow service <cmd> background service (install, uninstall, start, stop, restart, status, logs)\nclaude-wow bridge [...]  the bridge alone in this process, without the restarts\n');
+  if (argv.includes('--help') || argv.includes('-h')) console.log('claude-wow setup [...]   game-side install (setup.js)\nclaude-wow service <cmd> background service (install, uninstall, start, stop, restart, status, logs)\nclaude-wow bridge [...]  the bridge alone in this process, without the restarts\nclaude-wow channel      the live-session channel server Claude Code starts (docs/LIVE-SESSION.md)\n');
   supervise();
 }
 

@@ -58,6 +58,8 @@ const registry = PL.createRegistry();
 registry.register(require('./plugins/ask'));
 registry.register(require('./plugins/claude-code'));
 registry.register(require('./plugins/roast'));
+registry.register(require('./plugins/live'));
+const LP = require('./liveproto');
 
 const HERE = __dirname;
 // Config, state, transcripts, log and scratch live in the home folder (home.js:
@@ -301,7 +303,8 @@ let captureChild = null; // the capture script on the pixel transport (startCapt
 function shutdown(sig) {
   if (shuttingDown) return;
   shuttingDown = true;
-  const kids = [...running.values()].map(r => r.child);
+  stopPlugins();
+  const kids = [...running.values()].map(r => r.child).filter(Boolean);
   if (captureChild) kids.push(captureChild);
   const n = kids.filter(PR.alive).length;
   log(`${sig}: stopping${n ? `; ending ${n} child process${n === 1 ? '' : 'es'} (SIGTERM, SIGKILL after ${KILL_GRACE_MS} ms)` : ''}`);
@@ -395,7 +398,9 @@ function slotFile(globalName, records, urgent = true) {
   const widgets = Date.now() < widgetShareUntil && (urgent || widgetSourceBytes() <= WIDGET_PROGRESS_MAX) ? state.widgets : null;
   const transportNote = TRANSPORT_SOURCE === 'fallback' ? P.transportNote(state.transportFallback) : '';
   const achievementsLua = ACHIEVEMENTS_ON ? ACH.luaAchievements(state) : '';
-  return P.luaTable(globalName, records, { cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), plugin: DEFAULT_PLUGIN, plugins: registry.ids(), map, widgets, transport: TRANSPORT, levels: LEVELS, codec: STRIP_CODEC, transportNote, achievementsLua });
+  const lp = livePlugin();
+  const liveInfo = lp ? { sessions: lp.status(), start: liveStartCommand() } : null;
+  return P.luaTable(globalName, records, { live: liveInfo, cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), plugin: DEFAULT_PLUGIN, plugins: registry.ids(), map, widgets, transport: TRANSPORT, levels: LEVELS, codec: STRIP_CODEC, transportNote, achievementsLua });
 }
 
 const ACHIEVEMENTS_ON = cfg.achievements !== false;
@@ -684,7 +689,13 @@ function runJob(job) {
   }
   job.plugin = r.plugin.id;
   if (r.text !== undefined) job.text = r.text; // "@ask ..." addressed it; the address is not part of the prompt
-  r.plugin.handle(job, core);
+  const failed = e => {
+    log(`${tag} ${r.plugin.id}: ${e && e.stack ? e.stack : e}`);
+    finish(job, 'error', `The ${r.plugin.id} plugin failed: ${e && e.message ? e.message : e}`);
+  };
+  let handled;
+  try { handled = r.plugin.handle(job, core); } catch (e) { failed(e); return; }
+  if (handled && typeof handled.then === 'function') handled.then(null, failed);
 }
 
 // What a plugin's handle(job, core) may use: the model runner, the bridge's
@@ -698,8 +709,39 @@ const core = {
   // The folder the chat's current agent session was made in, if any.
   sessionFolder: job => (state.sessionCwd && state.sessionCwd[sessKey(job)]) || '',
   fail: (job, text) => finish(job, 'error', text),
+  reply: (job, text, denied) => finish(job, 'done', text, undefined, denied),
+  progress: (job, text) => publish(chatKey(job), { chat: job.chat, id: job.id, status: 'working', text, cwd: job.cwd, session: '', agent: job.agent || '', plugin: job.plugin || '' }, true),
+  accept: (job) => { maybeOfferRestore(job); noteMessage(job, 'user', job.text); },
+  gameContext: () => gameContext(),
+  publish: () => publishNow(),
+  get home() { return HOME.dir; },
+  get timeoutMs() { return cfg.timeoutMs || 1800000; },
+  get liveStartCommand() { return liveStartCommand(); },
   runAgent,
 };
+
+function liveStartCommand() {
+  return LP.startCommand({ repo: REPO, home: HOME.source === 'CLAUDE_WOW_HOME' ? HOME.dir : '' });
+}
+
+function livePlugin() {
+  const p = registry.get('live');
+  return p && typeof p.status === 'function' ? p : null;
+}
+
+function startPlugins() {
+  for (const p of registry.all()) {
+    if (typeof p.start !== 'function') continue;
+    try { p.start(core); } catch (e) { log(`${p.id}: could not start (${e.message})`); }
+  }
+}
+
+function stopPlugins() {
+  for (const p of registry.all()) {
+    if (typeof p.stop !== 'function') continue;
+    try { p.stop(); } catch {}
+  }
+}
 
 // Run the chat's agent on the message, in opts.cwd, and publish what it says.
 // opts.freshSession() may name a reason to start a new session instead of
@@ -1189,6 +1231,7 @@ function banner() {
 }
 
 banner();
+if (!once) startPlugins();
 if (inject !== null) {
   const job = { id: state.lastId + 1, session: '', chat: '', text: inject, cwd: '', newSession: false, via: 'inject', agent: injectAgent || '' };
   if (injectPlugin) job.plugin = injectPlugin;

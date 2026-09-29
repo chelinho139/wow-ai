@@ -557,6 +557,10 @@ function luaTable(globalName, records, opts = {}) {
   // Why a bridge is on the pixel transport when nobody asked for it (transportFallback);
   // the addon shows it in /claude-wow diag.
   if (opts.transportNote) lines.splice(lines.length - 1, 0, `\ttransportNote = ${luaStr(opts.transportNote)},`);
+  if (opts.live && typeof opts.live === 'object') {
+    const sessions = Array.isArray(opts.live.sessions) ? opts.live.sessions : [];
+    lines.splice(lines.length - 1, 0, `\tlive = { sessions = { ${sessions.map(luaStr).join(', ')} }, start = ${luaStr(opts.live.start || '')} },`);
+  }
   for (const r of records) {
     lines.push('\t\t{');
     lines.push(`\t\t\tchat = ${luaStr(r.chat || '')},`);
