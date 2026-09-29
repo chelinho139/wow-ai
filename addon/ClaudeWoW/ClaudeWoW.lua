@@ -781,6 +781,21 @@ local function CheckSignal(kind, id)
 	return SoundValid(string.format("Interface\\AddOns\\ClaudeWoW\\%s\\%03d.wav", kind, SlotNumber(id)))
 end
 
+local function NoteStaleSignals(id)
+	local rec = run.outbound[id]
+	if not rec then return end
+	rec.staleAck = CheckSignal("ack", id) or nil
+	if CheckSignal("sig", id) then
+		run.staleSig = run.staleSig or {}
+		run.staleSig[id] = true
+	end
+end
+
+local function FreshSignal(kind, id)
+	if kind == "sig" and run.staleSig and run.staleSig[id] then return false end
+	return CheckSignal(kind, id)
+end
+
 -- Heartbeat: the bridge flips act/NNN/kk.wav for the k-th action of message NNN.
 local function ActPath(id, k)
 	return string.format("Interface\\AddOns\\ClaudeWoW\\act\\%03d\\%02d.wav", SlotNumber(id), k)
@@ -1324,7 +1339,7 @@ local function Tick()
 		ClaudeWoW.Render()
 	end
 	for id, rec in pairs(run.outbound) do
-		if not rec.acked and CheckSignal("ack", id) then
+		if not rec.acked and not rec.staleAck and CheckSignal("ack", id) then
 			NoteAcked(rec)
 			changed = true
 			NotedBridge()
@@ -1375,7 +1390,7 @@ local function Tick()
 	end
 	if moved then ClaudeWoW.Render() end
 	for _, c in ipairs(db.chats) do
-		if c.pendingId and CheckSignal("sig", c.pendingId) then
+		if c.pendingId and FreshSignal("sig", c.pendingId) then
 			TryLoadSlot("signal")
 			return
 		end
@@ -2221,6 +2236,7 @@ function ClaudeWoW.Send(text, allow, opts)
 
 	if db.settings.mode == "pixel" then
 		run.outbound[id] = { chat = c.id, cwd = c.cwd, flags = flags, name = c.name, text = text, ctx = ctx, sentAt = GetTime() }
+		NoteStaleSignals(id)
 		run.sentAt = GetTime()
 		run.polls = 0
 		StartActivity(c, id)
@@ -2244,6 +2260,7 @@ local function SendForget(chatId)
 	local info = db.forget[chatId] or {}
 	db.lastSeq = db.lastSeq + 1
 	run.outbound[db.lastSeq] = { chat = chatId, cwd = info.cwd or "", flags = "d", name = info.name or "", text = "", sentAt = GetTime(), forget = chatId }
+	NoteStaleSignals(db.lastSeq)
 	RefreshStrip()
 end
 
@@ -2267,6 +2284,7 @@ function ClaudeWoW.SayHello()
 	local c = ActiveChat()
 	local ctx = db.settings.context and ClaudeWoW.GameContext() or ""
 	run.outbound[db.lastSeq] = { chat = c and c.id or "", cwd = c and c.cwd or "", flags = "h", name = c and c.name or "", text = "", ctx = ctx, sentAt = now, hello = true }
+	NoteStaleSignals(db.lastSeq)
 	run.helloPollAt = now + 5
 	-- Deletions the bridge never confirmed ride along with the hello.
 	for id in pairs(db.forget) do SendForget(id) end
@@ -2299,6 +2317,7 @@ function ClaudeWoW.Resend()
 	if c.plugin and c.plugin ~= "" then table.insert(tokens, "plugin=" .. c.plugin) end
 	if db.settings.vision then table.insert(tokens, "v") end -- a resend is a fresh screenshot
 	run.outbound[c.pendingId] = { chat = c.id, cwd = c.cwd, flags = table.concat(tokens, ";"), name = c.name, text = text, sentAt = GetTime() }
+	NoteStaleSignals(c.pendingId)
 	run.sentAt = GetTime()
 	run.polls = 0
 	ScheduleNextPoll()

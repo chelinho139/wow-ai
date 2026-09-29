@@ -320,6 +320,23 @@ test('screenshot mode ships its strip levels; pixel mode never does', () => {
   assert.deepEqual(P.denseLevels({ off: 0, on: 255 }), [0, 85, 170, 255]);
 });
 
+test('noteUsage keeps a session-total cost as the total instead of adding it again on every resumed turn', () => {
+  const state = {};
+  P.noteUsage(state, 'chat:b', { usage: { context: 20000, cost: 0.04, costIsSessionTotal: true }, fresh: true, agent: 'claude', now: 1000 });
+  P.noteUsage(state, 'chat:b', { usage: { context: 21500, cost: 0.09, costIsSessionTotal: true }, agent: 'claude', now: 2000 });
+  const rec = P.noteUsage(state, 'chat:b', { usage: { context: 23000, cost: 0.15, costIsSessionTotal: true }, agent: 'claude', now: 3000 });
+  assert.equal(rec.cost, 0.15);
+  assert.equal(P.usageFields(rec).cost, 0.15);
+});
+
+test('slotsToClearAhead names the next slots past an id, wraps at the slot count, and spares pending ids', () => {
+  assert.deepEqual(P.slotsToClearAhead(10, 200, [], 3), [11, 12, 13]);
+  assert.deepEqual(P.slotsToClearAhead(199, 200, [], 3), [200, 1, 2]);
+  assert.deepEqual(P.slotsToClearAhead(199, 200, [401], 3), [200, 2], 'id 401 still pending sits in slot 1');
+  assert.equal(P.slotsToClearAhead(5, 200).length, P.SIGNAL_CLEAR_AHEAD);
+  assert.deepEqual(P.slotsToClearAhead(3, 4, []), [4, 1], 'never more than half the pool');
+});
+
 test('context growth: noteUsage counts turns per session, keeps the last known size, and the slot file carries it', () => {
   const state = {};
   // A fresh session: turn 1, with what the agent reported.

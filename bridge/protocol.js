@@ -41,6 +41,19 @@ function comparableWindowsPath(p) {
 // Reply slot / signal file number for a message id (1-based, wraps at `slots`).
 function slotNumber(id, slots) { return ((id - 1) % slots) + 1; }
 
+const SIGNAL_CLEAR_AHEAD = 50;
+function slotsToClearAhead(id, slots, keepIds = [], ahead = SIGNAL_CLEAR_AHEAD) {
+  const reach = Math.min(ahead, Math.floor(slots / 2));
+  const keep = new Set(keepIds.filter(Number.isFinite).map(k => slotNumber(k, slots)));
+  keep.add(slotNumber(id, slots));
+  const out = [];
+  for (let j = 1; j <= reach; j++) {
+    const s = slotNumber(id + j, slots);
+    if (!keep.has(s)) out.push(s);
+  }
+  return out;
+}
+
 // A chat as the bridge tracks it: the addon's session token plus the chat id.
 function chatKey(job) { return `${job.session || ''}:${job.chat || 'default'}`; }
 // Agent sessions are keyed by chat id alone, which survives an addon data reset.
@@ -120,7 +133,7 @@ function noteUsage(state, key, { usage, fresh, agent, startedAt, now = Date.now(
     if (prev.window) rec.window = prev.window;
   }
   if (prev && prev.cost !== undefined) rec.cost = prev.cost;
-  if (usage && Number.isFinite(usage.cost)) rec.cost = (rec.cost || 0) + usage.cost;
+  if (usage && Number.isFinite(usage.cost)) rec.cost = usage.costIsSessionTotal ? usage.cost : (rec.cost || 0) + usage.cost;
   if ((usage && usage.costUnknown) || (prev && prev.costUnknown)) rec.costUnknown = true;
   all[key] = rec;
   return rec;
@@ -787,7 +800,7 @@ function luaMacros(macros) {
 
 module.exports = {
   ADDON, OLD_ADDONS, OLD_ADDON_PATH, OLD_SAVED_FILE,
-  fromHex, pad3, slotNumber, chatKey, sessKey,
+  fromHex, pad3, slotNumber, SIGNAL_CLEAR_AHEAD, slotsToClearAhead, chatKey, sessKey,
   alreadyHandled, markHandled, pruneStale, MONTH_MS,
   noteUsage, usageFields, tokensLabel,
   resolveCwd, sameFolder, baseName,

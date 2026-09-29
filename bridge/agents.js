@@ -179,7 +179,7 @@ function claudeParser() {
           out.usage = window ? { ...u, window } : { ...u };
           // The run's API-equivalent price: the result's usage is the sum over its calls.
           const cost = claudeCost(ev, model);
-          if (cost && !cost.unknown.length) out.usage.cost = cost.usd;
+          if (cost && !cost.unknown.length) { out.usage.cost = cost.usd; out.usage.costIsSessionTotal = true; }
           else out.usage.costUnknown = cost ? cost.unknown : ['no model named'];
         }
         const text = typeof ev.result === 'string' ? ev.result : JSON.stringify(ev.result ?? '', null, 2);

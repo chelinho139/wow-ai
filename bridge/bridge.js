@@ -450,6 +450,20 @@ function signal(kind, id, on) {
   setSignalFile(path.join(cfg.addonDir, 'ClaudeWoW', kind, pad3(slotNumber(id)) + '.wav'), on);
 }
 
+function pendingIds() {
+  const ids = [...running.values()].map(r => r.job.id).concat([...queued.values()].map(j => j.id));
+  for (const r of live.values()) if (r && r.status === 'working') ids.push(r.id);
+  return ids;
+}
+
+function clearSignalsAhead(id) {
+  if (!Number.isFinite(id)) return;
+  for (const slot of P.slotsToClearAhead(id, SLOTS, pendingIds())) {
+    for (const kind of ['ack', 'sig']) setSignalFile(path.join(cfg.addonDir, 'ClaudeWoW', kind, pad3(slot) + '.wav'), false);
+  }
+  if (!(state.lastId >= id)) state.lastId = id;
+}
+
 // Heartbeat: act/NNN/kk.wav flips valid for the k-th action of message NNN. The
 // game polls the next one for free, so it can show "12 actions, last one 5 s ago"
 // without spending a reply slot.
@@ -563,6 +577,7 @@ function allowRules(agentId, rules) {
 function submit(job) {
   if (job.shot) fallbackToPixel(job.shot, job); // even for a message already handled: the report stands
   if (alreadyHandled(job)) return;
+  clearSignalsAhead(job.id);
   if (job.ctx !== undefined) setContext(job);
   if (job.forget) {
     // A deleted chat: forget it and ack. No agent run.
@@ -1139,6 +1154,7 @@ if (inject !== null) {
     if (running.size === 0) { console.log('nothing pending'); process.exit(0); }
   } else {
     setInterval(pollSavedVariables, cfg.pollMs || 750);
+    if (Number.isFinite(state.lastId)) clearSignalsAhead(state.lastId);
     presenceBeat();
     setInterval(presenceBeat, cfg.presenceIntervalMs || 30000);
     // Fresh slot files right away, so the addon's first slot read tells it which
