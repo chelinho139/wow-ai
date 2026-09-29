@@ -1,5 +1,5 @@
--- WoWAI map: layers the agent draws (routes, quest stops, marks), synced from the
--- bridge, plus herb and ore locations from the optional WoWAI_Nodes addon.
+-- ClaudeWoW map: layers the agent draws (routes, quest stops, marks), synced from the
+-- bridge, plus herb and ore locations from the optional ClaudeWoW_Nodes addon.
 --
 -- Layers arrive in slot files as { epoch, version, layers = { { name, title,
 -- ordered, loop, points = { { uiMapID, x, y, label, kind }, ... } } } }; x/y are
@@ -9,7 +9,7 @@
 
 local ADDON_NAME = ...
 local M = {}
-WoWAIMap = M
+ClaudeWoWMap = M
 
 local ARRIVE_YARDS = 12
 local NODE_SIZE, PIN_SIZE = 9, 16
@@ -25,7 +25,7 @@ local KIND_COLOR = {
 	flight = { 0.55, 0.75, 1 }, poi = { 1, 1, 1 },
 }
 
-local mdb -- WoWAIMapDB: { map, hidden = { [layer] = true }, nodes = { ore, herb, filter }, nav = { layer, index }, navPos }
+local mdb -- ClaudeWoWMapDB: { map, hidden = { [layer] = true }, nodes = { ore, herb, filter }, nav = { layer, index }, navPos }
 
 local function Try(fn, ...)
 	if type(fn) ~= "function" then return nil end
@@ -34,13 +34,13 @@ local function Try(fn, ...)
 end
 
 local function Print(msg)
-	print("|cff66ccff[WoW AI map]|r " .. msg)
+	print("|cff66ccff[Claude WoW map]|r " .. msg)
 end
 
 local function DB()
 	if not mdb then
-		WoWAIMapDB = WoWAIMapDB or {}
-		mdb = WoWAIMapDB
+		ClaudeWoWMapDB = ClaudeWoWMapDB or {}
+		mdb = ClaudeWoWMapDB
 		mdb.hidden = mdb.hidden or {}
 		mdb.nodes = mdb.nodes or { ore = false, herb = false, filter = "skill" }
 	end
@@ -212,7 +212,7 @@ end
 local SKILL_IDS = { mining = 186, herbalism = 182 }
 local SKILL_NAMES = { mining = MINING or "Mining", herbalism = HERBALISM or "Herbalism" }
 local function SkillRank(prof)
-	local lines = WoWAI and WoWAI.SkillLines and WoWAI.SkillLines() or {}
+	local lines = ClaudeWoW and ClaudeWoW.SkillLines and ClaudeWoW.SkillLines() or {}
 	for _, sk in ipairs(lines) do
 		if not sk.isHeader and (sk.skillID == SKILL_IDS[prof] or sk.name == SKILL_NAMES[prof]) then return sk.rank end
 	end
@@ -227,7 +227,7 @@ local function NodeFilter()
 end
 
 local function DrawNodes(mapID, scale)
-	local data = WoWAINodes
+	local data = ClaudeWoWNodes
 	local want, filter = NodeFilter()
 	if not data or not next(want) then return end
 	local perMap = data.maps and data.maps[mapID]
@@ -342,7 +342,7 @@ local function NavPoint()
 end
 
 local function BuildNavigator()
-	nav = CreateFrame("Frame", "WoWAINavigator", UIParent, "BackdropTemplate")
+	nav = CreateFrame("Frame", "ClaudeWoWNavigator", UIParent, "BackdropTemplate")
 	nav:SetSize(250, 44)
 	nav:SetBackdrop({ bgFile = "Interface\\Tooltips\\UI-Tooltip-Background", edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border", tile = true, tileSize = 16, edgeSize = 12, insets = { left = 3, right = 3, top = 3, bottom = 3 } })
 	nav:SetBackdropColor(0, 0, 0, 0.7)
@@ -377,7 +377,7 @@ local function BuildNavigator()
 	nav:SetScript("OnEnter", function(self)
 		GameTooltip:SetOwner(self, "ANCHOR_BOTTOM")
 		GameTooltip:AddLine("Route")
-		GameTooltip:AddLine("Drag to move, right-click to skip this stop. /wow-ai map for options.", 1, 1, 1, true)
+		GameTooltip:AddLine("Drag to move, right-click to skip this stop. /claude-wow map for options.", 1, 1, 1, true)
 		GameTooltip:Show()
 	end)
 	nav:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -493,18 +493,18 @@ function M.Sync(m)
 end
 
 ---------------------------------------------------------------------------
--- /wow-ai map (and /aimap)
+-- /claude-wow map (and /aimap)
 ---------------------------------------------------------------------------
 
 local function Status()
 	local layers = Layers()
-	if #layers == 0 then Print("no layers yet. Ask the agent for a route, e.g. /ai route me through copper veins in Loch Modan") end
+	if #layers == 0 then Print("no layers yet. Ask the agent for a route, e.g. /claude route me through copper veins in Loch Modan") end
 	for _, l in ipairs(layers) do
 		Print(string.format("%s%s|r  %s (%d point(s))%s", mdb.hidden[l.name] and "|cff888888" or "|cffffffff", l.name, l.title or "", #l.points, (mdb.nav and mdb.nav.layer == l.name) and string.format("  navigating %d/%d", mdb.nav.index, #l.points) or ""))
 	end
 	local n = mdb.nodes
-	Print(string.format("nodes: ore %s, herb %s, filter %s%s", n.ore and "on" or "off", n.herb and "on" or "off", n.filter, WoWAINodes and "" or "  (WoWAI_Nodes data addon not installed)"))
-	Print("commands: /wow-ai map ore|herb [on|off], filter all|skill, show|hide <layer>, nav <layer> [n], next, prev, stop  (/aimap is the same)")
+	Print(string.format("nodes: ore %s, herb %s, filter %s%s", n.ore and "on" or "off", n.herb and "on" or "off", n.filter, ClaudeWoWNodes and "" or "  (ClaudeWoW_Nodes data addon not installed)"))
+	Print("commands: /claude-wow map ore|herb [on|off], filter all|skill, show|hide <layer>, nav <layer> [n], next, prev, stop  (/aimap is the same)")
 end
 
 function M.Command(msg)
@@ -534,8 +534,8 @@ function M.Command(msg)
 	else Status() end
 end
 
-SLASH_WOWAIMAP1 = "/aimap"
-SlashCmdList["WOWAIMAP"] = M.Command
+SLASH_CLAUDEWOWMAP1 = "/aimap"
+SlashCmdList["CLAUDEWOWMAP"] = M.Command
 
 local ev = CreateFrame("Frame")
 ev:RegisterEvent("ADDON_LOADED")

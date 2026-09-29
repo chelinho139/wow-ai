@@ -14,7 +14,7 @@ if (process.platform !== 'win32') {
   catch { console.log('SKIP Codec.lua round-trip: python3 is required off Windows.'); process.exit(0); }
 }
 
-const CODEC = path.join(__dirname, '..', 'addon', 'WoWAI', 'Codec.lua');
+const CODEC = path.join(__dirname, '..', 'addon', 'ClaudeWoW', 'Codec.lua');
 const CAPTURE = path.join(__dirname, '..', 'bridge', 'capture.ps1');
 const CAPTURE_X11 = path.join(__dirname, '..', 'bridge', 'capture_x11.py');
 const CAPTURE_MAC = path.join(__dirname, '..', 'bridge', 'capture_mac.py');
@@ -22,13 +22,13 @@ const TMP = path.join(__dirname, 'tmp');
 const CELL = 4, CELLS = 200, MAXROWS = 48;
 fs.mkdirSync(TMP, { recursive: true });
 
-function encodeWithLua(id, payload) {
+function encodeWithLua(id, payload, codec = 1) {
   const bytes = Buffer.from(payload, 'utf8');
   const lit = '"' + [...bytes].map(b => '\\' + b).join('') + '"';
   const L = lauxlib.luaL_newstate();
   lualib.luaL_openlibs(L);
   const code = fs.readFileSync(CODEC, 'utf8') +
-    `\nlocal cells, n = WoWAI_Codec.Encode(${id}, ${lit})\n` +
+    `\nlocal cells, n = ClaudeWoW_Codec.Encode(${id}, ${lit}, ${codec})\n` +
     `local t = {}\nfor i = 1, #cells do t[i] = string.format("%d", cells[i]) end\n` +
     `RESULT = table.concat(t, ",")\n`;
   if (lauxlib.luaL_dostring(L, to_luastring(code)) !== 0) {
@@ -108,5 +108,45 @@ for (const t of cases) {
     console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}  id=${t.id}  bytes=${Buffer.byteLength(t.payload)}  cells=${cells.length}  rows=${Math.ceil(cells.length / CELLS)}  noise=±${t.jitter} gamma=${t.gamma}` + (ok ? '' : `\n   got ${JSON.stringify(res).slice(0, 200)}`));
   }
 }
+
+// Codec 2, the screenshot transport's dense strip: the same Lua encoder asked
+// for codec 2, rendered at 2 px cells and four dark levels (what the addon draws
+// for `strip = { on = 60, off = 0, codec = 2 }`), read back by bridge/decode.js,
+// its only decoder (the capture scripts never see one). A screenshot is
+// bit-exact, so no noise; two cases draw the levels differently to show the
+// ramp calibrating the decoder.
+const D = require('../bridge/decode');
+const DCELL = 2, DCELLS = 400;
+function renderDense(cells, levels) {
+  const W = DCELLS * DCELL, H = MAXROWS * DCELL;
+  const rgb = Buffer.alloc(W * H * 3, 0x30);
+  cells.forEach((v, i) => {
+    const c = i % DCELLS, r = Math.floor(i / DCELLS);
+    const lv = [levels[(v >> 4) & 3], levels[(v >> 2) & 3], levels[v & 3]];
+    for (let y = 0; y < DCELL; y++) for (let x = 0; x < DCELL; x++) {
+      const o = ((r * DCELL + y) * W + (c * DCELL + x)) * 3;
+      for (let k = 0; k < 3; k++) rgb[o + k] = lv[k];
+    }
+  });
+  return png(W, H, rgb);
+}
+const denseCases = [
+  { id: 7, payload: cases[0].payload, levels: [0, 20, 40, 60] },
+  { id: 4242, payload: cases[1].payload, levels: [0, 20, 40, 60] },
+  { id: 9, payload: cases[2].payload, levels: [0, 26, 44, 75] },
+  { id: 65000, payload: cases[3].payload, levels: [12, 16, 20, 24] },
+];
+for (const t of denseCases) {
+  const cells = encodeWithLua(t.id, t.payload, 2);
+  const file = path.join(TMP, `dense_${t.id}.png`);
+  fs.writeFileSync(file, renderDense(cells, t.levels));
+  const { msg } = D.findStrip(D.readImage(fs.readFileSync(file)), {});
+  total++;
+  const ok = !!msg && msg.codec === 2 && msg.id === t.id && msg.text === t.payload;
+  if (ok) pass++;
+  const rows = Math.ceil(cells.length / DCELLS);
+  console.log(`${ok ? 'PASS' : 'FAIL'}  decode.js (codec 2)  id=${t.id}  bytes=${Buffer.byteLength(t.payload)}  cells=${cells.length}  rows=${rows} (${rows * DCELL} px tall)  levels=${t.levels.join('/')}` + (ok ? '' : `\n   got ${JSON.stringify(msg).slice(0, 200)}`));
+}
+
 console.log(pass === total ? '>>> CODEC ROUND-TRIP PASS' : '>>> CODEC ROUND-TRIP FAIL');
 process.exit(pass === total ? 0 : 1);

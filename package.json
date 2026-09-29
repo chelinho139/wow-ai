@@ -1,17 +1,18 @@
 {
-  "name": "wow-ai",
+  "name": "claude-wow",
   "version": "0.4.0",
   "private": true,
-  "description": "Chat with local coding agents (Claude Code, Codex, Grok Build, Antigravity, Hermes) from inside World of Warcraft: Forever, with no UI reloads. Pixel strip out, load-on-demand slots in.",
+  "description": "Claude in World of Warcraft: chat with Claude Code and other local coding agents (Codex, Grok Build, Antigravity, Hermes) from inside World of Warcraft: Forever, with no UI reloads. Pixel strip out, load-on-demand slots in.",
   "license": "MIT",
   "author": "chelinho139",
   "repository": {
     "type": "git",
-    "url": "https://github.com/chelinho139/wow-ai"
+    "url": "https://github.com/rdimascio/claude-wow"
   },
   "keywords": [
     "world-of-warcraft",
     "wow-addon",
+    "claude-wow",
     "claude-code",
     "claude",
     "codex",
@@ -23,16 +24,23 @@
     "node": ">=22.2"
   },
   "bin": {
-    "wow-ai": "bridge/supervisor.js"
+    "claude-wow": "bridge/supervisor.js"
   },
   "scripts": {
     "setup": "node setup.js",
     "start": "node bridge/supervisor.js",
     "slots": "node bridge/install-slots.js",
-    "test": "node tests/order_check.js && node --test tests/bridge_test.js tests/agents_test.js tests/restore_test.js tests/addon_test.js tests/map_test.js tests/map_addon_test.js tests/macro_test.js && node tests/codec_test.js",
+    "dev": "node dev/cli.js",
+    "doctor": "node dev/doctor.js",
+    "test:e2e": "node --test --test-concurrency=3 --test-timeout=180000 --test-reporter=spec tests/e2e/*_test.js",
+    "check": "npm test && npm run test:e2e",
+    "test": "node tests/order_check.js && node --test tests/bridge_test.js tests/plugins_test.js tests/agents_test.js tests/restore_test.js tests/addon_test.js tests/map_test.js tests/map_addon_test.js tests/macro_test.js tests/capture_mac_test.js tests/decode_test.js tests/screenshots_test.js tests/transport_test.js tests/vision_test.js tests/service_test.js tests/install_test.js tests/setup_test.js tests/home_test.js tests/runtime_test.js tests/procs_test.js tests/assets_test.js tests/doctor_test.js tests/sandbox_test.js && node tests/codec_test.js",
+    "test:bun": "bun tests/order_check.js && bun test --timeout 60000 tests/bridge_test.js tests/plugins_test.js tests/agents_test.js tests/restore_test.js tests/addon_test.js tests/map_test.js tests/map_addon_test.js tests/macro_test.js tests/capture_mac_test.js tests/decode_test.js tests/screenshots_test.js tests/transport_test.js tests/vision_test.js tests/service_test.js tests/install_test.js tests/setup_test.js tests/home_test.js tests/runtime_test.js tests/procs_test.js tests/assets_test.js tests/doctor_test.js tests/sandbox_test.js && bun tests/codec_test.js",
     "test:live": "node tests/inject_test.js",
+    "build": "node build.js",
     "probe": "python3 bridge/capture_x11.py --probe bridge/probe.png",
-    "probe:mac": "python3 bridge/capture_mac.py --probe bridge/probe.png"
+    "probe:mac": "python3 bridge/capture_mac.py --probe bridge/probe.png",
+    "check:mac": "python3 bridge/capture_mac.py --check"
   },
   "devDependencies": {
     "fengari": "^0.1.4",

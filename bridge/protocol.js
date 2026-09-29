@@ -6,6 +6,15 @@
 const os = require('os');
 const path = require('path');
 
+// The addon's name, as the game sees it: its folder under Interface/AddOns, its
+// .toc, its SavedVariables file (<ADDON>.lua) and the prefix of its globals.
+// The names it had before (wow-claude, then wow-ai) are what setup.js migrates
+// from and what an older config.json may still name.
+const ADDON = 'ClaudeWoW';
+const OLD_ADDONS = ['WoWAI', 'WoWClaude']; // newest first
+const OLD_ADDON_PATH = new RegExp('(^|[\\\\/])(' + OLD_ADDONS.join('|') + ')([\\\\/]|$)');
+const OLD_SAVED_FILE = new RegExp('(' + OLD_ADDONS.join('|') + ')\\.lua$');
+
 function fromHex(hex) {
   return Buffer.from(hex || '', 'hex').toString('utf8');
 }
@@ -31,6 +40,19 @@ function comparableWindowsPath(p) {
 
 // Reply slot / signal file number for a message id (1-based, wraps at `slots`).
 function slotNumber(id, slots) { return ((id - 1) % slots) + 1; }
+
+const SIGNAL_CLEAR_AHEAD = 50;
+function slotsToClearAhead(id, slots, keepIds = [], ahead = SIGNAL_CLEAR_AHEAD) {
+  const reach = Math.min(ahead, Math.floor(slots / 2));
+  const keep = new Set(keepIds.filter(Number.isFinite).map(k => slotNumber(k, slots)));
+  keep.add(slotNumber(id, slots));
+  const out = [];
+  for (let j = 1; j <= reach; j++) {
+    const s = slotNumber(id + j, slots);
+    if (!keep.has(s)) out.push(s);
+  }
+  return out;
+}
 
 // A chat as the bridge tracks it: the addon's session token plus the chat id.
 function chatKey(job) { return `${job.session || ''}:${job.chat || 'default'}`; }
@@ -80,6 +102,64 @@ function pruneStale(state, transcripts, now = Date.now(), maxAgeMs = MONTH_MS) {
 }
 
 // ---------------------------------------------------------------------------
+// Context growth
+// ---------------------------------------------------------------------------
+//
+// Every message resumes the chat's agent session, so what the model reads grows
+// with every turn and each message costs more than the last (measured: 107k
+// tokens after 8 turns, 312k after 213). state.sessionUsage[sessKey] keeps, per
+// chat, the tokens its next message will carry (as the agent reported after the
+// last run; agents that report nothing keep the last known value), the number
+// of runs in the current agent session, and the model's window when known. The
+// reply record carries it to the addon as ctx / turns / window.
+
+// Also kept: `since`, when the session started (a new chat or a reset brings
+// it back to now, so the footer's elapsed time visibly restarts), and `cost`,
+// the API-equivalent price of the session's runs so far (agents.js CLAUDE_RATES;
+// a subscription is not billed by the token, so it is shown as a comparison).
+// A run whose model has no rate marks the session costUnknown: tokens are still
+// shown, the cost is not, rather than guessed.
+function noteUsage(state, key, { usage, fresh, agent, startedAt, now = Date.now() } = {}) {
+  const all = (state.sessionUsage = state.sessionUsage || {});
+  const prev = !fresh && all[key] ? all[key] : null;
+  const rec = { turns: (prev ? prev.turns || 0 : 0) + 1, agent: agent || '', at: now, since: prev && prev.since ? prev.since : (startedAt || now) };
+  const u = usage && Number.isFinite(usage.context) && usage.context > 0 ? usage : null;
+  if (u) {
+    rec.context = Math.round(u.context);
+    if (Number.isFinite(u.window) && u.window > 0) rec.window = u.window;
+    else if (prev && prev.window) rec.window = prev.window;
+  } else if (prev && prev.context) {
+    rec.context = prev.context;
+    if (prev.window) rec.window = prev.window;
+  }
+  if (prev && prev.cost !== undefined) rec.cost = prev.cost;
+  if (usage && Number.isFinite(usage.cost)) rec.cost = usage.costIsSessionTotal ? usage.cost : (rec.cost || 0) + usage.cost;
+  if ((usage && usage.costUnknown) || (prev && prev.costUnknown)) rec.costUnknown = true;
+  all[key] = rec;
+  return rec;
+}
+
+// The reply-record fields for a chat's usage, or nothing when there is none.
+function usageFields(rec) {
+  if (!rec) return {};
+  const f = {};
+  if (rec.context > 0) f.ctx = rec.context;
+  if (rec.turns > 0) f.turns = rec.turns;
+  if (rec.window > 0) f.window = rec.window;
+  if (rec.since > 0) f.since = Math.floor(rec.since / 1000);
+  if (rec.cost !== undefined && !rec.costUnknown) f.cost = Math.round(rec.cost * 10000) / 10000;
+  return f;
+}
+
+// 186.7k, 9.5k, 850, 1.2M: tokens as Claude Code's status line shows them.
+function tokensLabel(n) {
+  n = Number(n) || 0;
+  if (n < 1000) return String(Math.round(n));
+  if (n < 1e6) return (n / 1000).toFixed(1) + 'k';
+  return (n / 1e6).toFixed(1) + 'M';
+}
+
+// ---------------------------------------------------------------------------
 // Folders
 // ---------------------------------------------------------------------------
 
@@ -113,16 +193,26 @@ function sameFolder(a, b) {
 // session (no prompt), "allow=Rule1,Rule2" = add these permission rules before
 // running, "c" = the record carries a game-context field before the text (an
 // empty one clears the context the bridge keeps), "agent=codex" = run this
-// chat with that agent instead of the bridge's default (see agents.js).
+// chat with that agent instead of the bridge's default (see agents.js),
+// "plugin=ask" = the chat is bound to that plugin instead of the bridge's
+// default (see plugins.js; only set when the flag is there, so a record from
+// an addon that predates plugins parses exactly as before).
 function parseFlags(flags) {
-  const out = { newSession: false, hello: false, forget: false, context: false, allow: [], agent: '' };
+  const out = { newSession: false, hello: false, forget: false, context: false, vision: false, allow: [], agent: '' };
   for (const tok of String(flags || '').split(';')) {
     if (tok === 'n') out.newSession = true;
     else if (tok === 'h') out.hello = true;
     else if (tok === 'd') out.forget = true;
     else if (tok === 'c') out.context = true;
+    else if (tok === 'v') out.vision = true; // attach the screenshot's game view to the run (screenshot transport only)
     else if (tok.startsWith('allow=')) out.allow.push(...tok.slice(6).split(',').map(s => s.trim()).filter(Boolean));
     else if (tok.startsWith('agent=')) out.agent = tok.slice(6).trim().toLowerCase();
+    else if (tok.startsWith('cancel=')) { const n = Number(tok.slice(7)); if (Number.isInteger(n) && n > 0) out.cancel = n; }
+    else if (tok.startsWith('plugin=')) { const p = tok.slice(7).trim().toLowerCase(); if (p) out.plugin = p; }
+    // "shot=missing" / "shot=failed": the addon is on the screenshot transport but
+    // cannot take the shot (no Screenshot() in this client, or SCREENSHOT_FAILED on
+    // every try). The bridge falls back to the pixel transport on it (transportFallback).
+    else if (tok.startsWith('shot=')) { const s = tok.slice(5).trim().toLowerCase(); if (FALLBACK_REASONS[s]) out.shot = s; }
   }
   return out;
 }
@@ -169,36 +259,64 @@ function parseOutbox(src) {
   if (ctx) job.ctx = fromHex(ctx[1]);
   const agent = b.match(/\["agent"\]\s*=\s*"([0-9a-zA-Z_-]*)"/);
   if (agent && agent[1]) job.agent = agent[1].toLowerCase();
+  const plugin = b.match(/\["plugin"\]\s*=\s*"([0-9a-zA-Z_-]*)"/);
+  if (plugin && plugin[1]) job.plugin = plugin[1].toLowerCase();
   const allow = b.match(/\["allow"\]\s*=\s*"([0-9a-fA-F]*)"/);
   if (allow && allow[1]) job.allow = fromHex(allow[1]).split('\x1F').filter(Boolean);
+  const shot = b.match(/\["shot"\]\s*=\s*"([a-z]*)"/);
+  if (shot && FALLBACK_REASONS[shot[1]]) job.shot = shot[1];
   return job;
 }
 
 // ---------------------------------------------------------------------------
-// System prompt: reply format, game context, primer
+// System prompt (stable) and message prompt (per message)
 // ---------------------------------------------------------------------------
 
-// What the agent is told on every run. First how the reply is shown: the full
-// reply goes to the addon's window and only its closing "TL;DR:" block is
-// printed in the game chat, so every reply must end with one. Then, while the
-// addon has sent a context (the player's character, location and so on; see
-// GameContext in WoWAI.lua), that context plus the addon/macro primer
-// (docs/WOW-ADDON-PRIMER.md) so it can write for this client whatever folder
-// the chat works in. Empty context = neither is appended, so a bridge used for
-// unrelated projects, or an addon with `/wow-ai context off`, only gets the
-// reply-format rule. Claude and Grok take this as a system prompt; for Codex,
-// agents.js puts it at the top of the prompt.
+// What the agent is told is split in two, by how often it changes:
+//
+//   systemPrompt(ctx, primer, opts)  the same bytes on every run of a chat:
+//     how the reply is shown (the full reply goes to the addon's window and only
+//     its closing "TL;DR:" block is printed in the game chat, so every reply
+//     must end with one), the plugin's own lines (opts.tools), and, while the
+//     addon sends a game context at all, the game rules (what the situation
+//     block and the [Name] links are, how to mark the map, how to hand over a
+//     macro) and the addon/macro primer (docs/WOW-ADDON-PRIMER.md). The
+//     context's presence turns those on; its text is not in here.
+//   messagePrompt(text, ctx, opts)   what changes per message: the player's
+//     in-game situation as the addon reported it when the message was written
+//     (character, zone, coordinates, quest log: coordinates change with every
+//     step), the vision paragraph when a screenshot really is attached, and
+//     the message itself.
+//
+// Why: Claude Code records the system prompt on a conversation's first request
+// and sends that record as-is on every resume (--system-prompt-snapshot, on by
+// default), so a context appended there was frozen at the chat's first message
+// and every position or quest change after it never reached the model; and
+// prompt caching is prefix-based, so anything that changes between messages
+// must sit after everything that does not. Both point the same way: volatile
+// text goes in the message, at the end. Claude and Grok take the stable part as
+// a system prompt; for Codex and the others agents.js puts it at the top of the
+// prompt on a new session. An empty context (a bridge used for unrelated
+// projects, or `/claude-wow context off`) leaves only the reply-format rule and
+// the plugin's lines, and a message with nothing attached is exactly the text.
 const SUMMARY_MARKER = 'TL;DR:';
 const REPLY_FORMAT = [
-  'The user is talking to you from inside World of Warcraft through the wow-ai addon. They type in a small in-game window and your reply is shown there as plain text (markdown is not rendered), so keep replies compact and formatting simple.',
+  'The user is talking to you from inside World of Warcraft through the claude-wow addon, usually while playing. They read your reply in a small window, or as one line in the game chat, often mid-fight. Markdown is not rendered.',
   '',
-  `Only a short summary of each reply is printed into the game chat, where the user actually sees it while playing; the full reply is only visible if they open the addon window. So end EVERY reply with a final block that starts with "${SUMMARY_MARKER}" on its own line and holds one or two short lines (under about 200 characters in total) saying what you did or what the answer is, and what you need from the user if anything. Write it as plain text. Do not repeat the summary elsewhere, and put nothing after it.`,
+  'Be SHORT. A good reply is one to three lines. Answer first, in the first line. No preamble, no restating the question, no summary of what you are about to say, no offers of further help unless you need a decision from them. Drop pleasantries. Prefer a concrete answer over a menu of options; if you must offer options, at most two.',
+  '',
+  'Only use a list when the answer really is several items, and then keep each item to one short line. Never use headings. Never use bold for emphasis. Numbers, names and coordinates are what matter; adjectives are not.',
+  '',
+  `Only the closing summary is printed into the game chat, which is where they will actually see it. End EVERY reply with a final block that starts with "${SUMMARY_MARKER}" on its own line, holding ONE line, under about 140 characters, that stands alone: the answer or what you did, plus what you need from them if anything. Do not repeat it elsewhere and put nothing after it.`,
+  '',
+  'If the whole answer fits in the summary, let the reply be just that one line and the summary. Length is a cost to them, not a sign of effort.',
 ];
+
 
 // How the agent draws on the world map (see "Map layers" below and docs/MAP.md).
 // Sent with the game context, since marks only make sense in a game chat.
 const MAP_HINT = [
-  'You can mark the player\'s world map. Either append commands to the file named by the WOW_AI_MAP_FILE environment variable (one JSON object per line) or, for a few marks, end the reply with a fenced block whose language tag is wowmap containing them. Commands:',
+  'You can mark the player\'s world map. Either append commands to the file named by the CLAUDE_WOW_MAP_FILE environment variable (one JSON object per line) or, for a few marks, end the reply with a fenced block whose language tag is wowmap containing them. Commands:',
   '{"op":"set","layer":"<name>","title":"<shown title>","ordered":true,"loop":false,"points":[{"m":<uiMapID>,"x":<0-100>,"y":<0-100>,"label":"<text>","kind":"quest"}]}  replaces that layer; "ordered" draws a numbered route with a navigator, "loop" closes it.',
   '{"op":"clear","layer":"<name>"} removes a layer; {"op":"clearall"} removes them all.',
   'x and y are map percent on the map with that uiMapID (the context gives the player\'s current one). kind is one of ore, herb, quest, turnin, kill, loot, object, explore, npc, trainer, vendor, dungeon, flight, poi. Only mark the map when asked for a route, marks or locations; say in the reply what you drew.',
@@ -214,25 +332,47 @@ const MACRO_HINT = [
   'The addon shows the player a button that creates the macro (or updates one with the same name) and puts it on their cursor. Explain outside the block what it does. Avoid /run and /script unless asked; the player is warned about them.',
 ];
 
-function systemPrompt(ctx, primer) {
+// What the agent is told when the player's screen rides along with the message
+// (vision, screenshot transport only). Only added when an image really is
+// attached, so a run without one is exactly what it was before.
+function visionHint(image) {
+  const size = image && image.width && image.height ? ` (${image.width}x${image.height}, downscaled)` : '';
+  return `A screenshot of the player's screen, taken by the game the moment they sent this message, is attached to the message as an image${size}. It is what the player was looking at: the game world, their UI, any open windows, tooltips, quest text, and the Claude WoW chat window itself; the addon's data strip along the top edge has been cropped off. Use it when the question is about something on screen ("what is this item", "why is this boss killing me", "read this quest") and say what you see when it matters; ignore it when the task is unrelated.`;
+}
+
+// What the situation block in a message is (the block itself is built by
+// messagePrompt). Sent while the addon sends a context at all.
+const SITUATION_RULE = 'A message may open with a block marked as the player\'s in-game situation, reported by the addon the moment they wrote it (not written by them): character, zone, map coordinates, money, professions, quest log. Use it when the request is about the game or the character (questions, macros, addon code, gear advice); ignore it when the task is unrelated. Every message carries a fresh one, so the latest block is where they are now. Items, spells or quests the player shift-clicked into a message appear as [Name] in the text, with their tooltip in a "Linked from the game" block at the end of the message.';
+
+// The stable part. `ctx` only decides whether the game rules and the primer are
+// in (an addon that sends no context is not a game chat); its text goes in the
+// message. Byte-identical from one run of a chat to the next, which is what
+// lets it be recorded once (Claude Code) and cached (every agent).
+function systemPrompt(ctx, primer, opts) {
   const lines = [...REPLY_FORMAT];
-  const text = String(ctx || '').trim();
-  if (text) {
-    lines.push('',
-      'Their in-game situation when the message was written, as reported by the addon:',
-      text,
-      '',
-      'Use this when the request is about the game or the character (questions, macros, addon code, gear advice); ignore it when the task is unrelated. Items, spells or quests the player shift-clicked into a message appear as [Name] in the text, with their tooltip in a "Linked from the game" block at the end of the message.',
-      '',
-      ...MAP_HINT,
-      '',
-      ...MACRO_HINT);
-  }
-  const ref = text ? String(primer || '').trim() : '';
+  const game = !!String(ctx || '').trim();
+  const tools = opts && String(opts.tools || '').trim();
+  if (tools) lines.push('', tools);
+  if (game) lines.push('', SITUATION_RULE, '', ...MAP_HINT, '', ...MACRO_HINT);
+  const ref = game ? String(primer || '').trim() : '';
   if (ref) {
     lines.push('', 'Reference for writing addons and macros for this client. Follow it when the task is about WoW, and check anything it marks as uncertain against the Blizzard UI source it names:', '', ref);
   }
   return lines.join('\n');
+}
+
+// The per-message part: the situation block (when the addon sends a context),
+// the vision paragraph (when an image really is attached, opts.image), then the
+// player's text. Nothing attached = exactly the text.
+const SITUATION_OPEN = '[In-game situation when this message was written, reported by the claude-wow addon, not written by the player]';
+const SITUATION_CLOSE = '[End of in-game situation]';
+function messagePrompt(text, ctx, opts) {
+  const parts = [];
+  const situation = String(ctx || '').trim();
+  if (situation) parts.push(`${SITUATION_OPEN}\n${situation}\n${SITUATION_CLOSE}`);
+  if (opts && opts.image) parts.push(visionHint(opts.image));
+  parts.push(String(text || ''));
+  return parts.join('\n\n');
 }
 
 // Pull the game-chat summary out of a reply: whatever follows the last "TL;DR:"
@@ -301,21 +441,124 @@ function luaStr(s) {
 }
 
 // The slot file / Inbox.lua body: the latest record of every chat, the bridge's
-// clock, default folder and default agent (plus the agents it knows), and
+// clock, default folder, default agent (plus the agents it knows), default
+// plugin (plus the plugins it has), the
+// outbound transport it listens on ("screenshot": the addon must call
+// Screenshot() with the strip up; "pixel": it screen-captures the strip), and
 // (right after a saved-data reset) a restore bundle.
+//
+// "screenshot" is the default: no screen capture, no permissions, no window
+// discovery, no python. "pixel" is deprecated and kept only until Screenshot()
+// is confirmed on Windows and on Linux under Wine; it is what the bridge falls
+// back to when the addon reports that it cannot shoot.
+const TRANSPORTS = ['pixel', 'screenshot'];
+const DEFAULT_TRANSPORT = 'screenshot';
+function transportName(v) {
+  const t = String(v || DEFAULT_TRANSPORT).toLowerCase();
+  return TRANSPORTS.includes(t) ? t : '';
+}
+
+// Which transport a bridge starts on. An explicit capture.mode in config.json
+// always wins (a bad one comes back as '' so the caller can refuse it). Without
+// one: the pixel transport if a previous run had to fall back to it (state.json
+// transportFallback, see transportFallback below; the reason has not gone away
+// just because the bridge restarted), else the default.
+//   -> { transport, source: 'config' | 'fallback' | 'default', fallback }
+function chooseTransport(capture, state) {
+  const explicit = capture && capture.mode !== undefined && capture.mode !== null && capture.mode !== '';
+  if (explicit) return { transport: transportName(capture.mode), source: 'config', fallback: null };
+  const fb = state && state.transportFallback && typeof state.transportFallback === 'object' ? state.transportFallback : null;
+  if (fb && FALLBACK_REASONS[fb.reason]) return { transport: 'pixel', source: 'fallback', fallback: fb };
+  return { transport: DEFAULT_TRANSPORT, source: 'default', fallback: null };
+}
+
+// The addon said the screenshot transport cannot work for it (a "shot=" flag on
+// a strip record, or "shot" in the reload outbox). Remember why in state.json,
+// so the next start goes straight to the pixel transport, and hand back the
+// note that goes into the log and, through the slot files, into the addon's
+// /claude-wow diag. Returns null when the bridge is already on pixels for that
+// reason (nothing to do); the caller switches transports on a non-null result.
+const FALLBACK_REASONS = {
+  missing: 'the game client has no Screenshot() function',
+  failed: 'the game client reported SCREENSHOT_FAILED on every try',
+};
+function transportFallback(state, reason, job, now = Date.now()) {
+  if (!FALLBACK_REASONS[reason]) return null;
+  const cur = state.transportFallback;
+  if (cur && cur.reason === reason) return null;
+  state.transportFallback = { reason, at: now, session: (job && job.session) || '' };
+  return transportNote(state.transportFallback);
+}
+function transportNote(fb) {
+  if (!fb || !FALLBACK_REASONS[fb.reason]) return '';
+  const when = fb.at ? new Date(fb.at).toISOString().slice(0, 16).replace('T', ' ') + ' UTC' : 'an earlier run';
+  return `pixel transport, fallen back to since ${when} because ${FALLBACK_REASONS[fb.reason]}; ` +
+    'the pixel capture is deprecated: set capture.mode in config.json to "pixel" to keep it without this note, or to "screenshot" to try the screenshot transport again';
+}
+
+// The strip's two levels per channel on the screenshot transport. A screenshot
+// is bit-exact, so "on" need not be 255: dark levels make the strip all but
+// invisible. The bridge reads with the threshold halfway between them. Anything
+// unusable falls back to the default; the pixel transport never uses these (it
+// draws full primaries and reads at 128, because a screen capture goes through
+// gamma and scaling).
+const DEFAULT_LEVELS = { off: 0, on: 60 };
+function screenshotLevels(raw) {
+  const r = raw && typeof raw === 'object' ? raw : {};
+  let off = Number.isInteger(r.off) ? r.off : DEFAULT_LEVELS.off;
+  let on = Number.isInteger(r.on) ? r.on : DEFAULT_LEVELS.on;
+  if (off < 0 || off > 255 || on < 0 || on > 255 || on - off < 8) ({ off, on } = DEFAULT_LEVELS);
+  return { off, on, threshold: Math.floor((off + on) / 2) + 1 };
+}
+
+// Which codec the addon draws on the screenshot transport (capture.screenshotCodec).
+// 2, the default: 2 px cells, four levels per channel between `off` and `on`,
+// six bits a cell, 400 cells a row, so a message of a few hundred bytes is one
+// 800x2 px line; 1: the capture scripts' 4 px cells with a bit per channel, for
+// a client whose screenshots should turn out not to be exact at 2 px. Shipped in
+// every slot file as `codec` next to the levels. An addon from before the field
+// draws codec 1, which the bridge reads as well (decode.js tries both magics),
+// so mixed versions keep talking; the magic tells the strips apart.
+const STRIP_CODECS = [1, 2];
+const DEFAULT_STRIP_CODEC = 2;
+function stripCodec(raw) {
+  return STRIP_CODECS.includes(raw) ? raw : DEFAULT_STRIP_CODEC;
+}
+
+// Codec 2's four levels, integers spread evenly from off to on (0/60 gives
+// 0, 20, 40, 60), the same arithmetic as the addon's Codec.DenseLevels. The
+// decoder reads the levels off each strip's ramp anyway; this is for the banner.
+function denseLevels(raw) {
+  const lv = screenshotLevels(raw);
+  return [0, 1, 2, 3].map(k => Math.floor(lv.off + k * (lv.on - lv.off) / 3 + 0.5));
+}
+
 function luaTable(globalName, records, opts = {}) {
   const now = opts.now || Date.now();
   const agents = Array.isArray(opts.agents) ? opts.agents : [];
+  const plugins = Array.isArray(opts.plugins) ? opts.plugins : [];
+  const transport = transportName(opts.transport) || DEFAULT_TRANSPORT;
   const lines = [
-    '-- Written by the wow-ai bridge (bridge/bridge.js). Do not edit by hand.',
+    '-- Written by the claude-wow bridge (bridge/bridge.js). Do not edit by hand.',
     `${globalName} = {`,
     `\tts = ${luaStr(new Date(now).toISOString())},`,
     `\tnow = ${Math.floor(now / 1000)},`,
     `\tcwd = ${luaStr(opts.cwd || '')},`,
     `\tagent = ${luaStr(opts.agent || '')},`,
     `\tagents = { ${agents.map(luaStr).join(', ')} },`,
+    `\tplugin = ${luaStr(opts.plugin || '')},`,
+    `\tplugins = { ${plugins.map(luaStr).join(', ')} },`,
+    `\ttransport = ${luaStr(transport)},`,
+    '\tcancel = true,',
     '\treplies = {',
   ];
+  if (transport === 'screenshot') {
+    const lv = screenshotLevels(opts.levels);
+    lines.splice(lines.length - 1, 0, `\tstrip = { on = ${lv.on}, off = ${lv.off}, codec = ${stripCodec(opts.codec)} },`);
+  }
+  // Why a bridge is on the pixel transport when nobody asked for it (transportFallback);
+  // the addon shows it in /claude-wow diag.
+  if (opts.transportNote) lines.splice(lines.length - 1, 0, `\ttransportNote = ${luaStr(opts.transportNote)},`);
   for (const r of records) {
     lines.push('\t\t{');
     lines.push(`\t\t\tchat = ${luaStr(r.chat || '')},`);
@@ -325,7 +568,14 @@ function luaTable(globalName, records, opts = {}) {
     lines.push(`\t\t\tcwd = ${luaStr(r.cwd || '')},`);
     lines.push(`\t\t\tsession = ${luaStr(r.session || '')},`);
     lines.push(`\t\t\tagent = ${luaStr(r.agent || '')},`);
+    if (r.plugin) lines.push(`\t\t\tplugin = ${luaStr(r.plugin)},`);
     if (r.summary) lines.push(`\t\t\tsummary = ${luaStr(r.summary)},`);
+    // Context growth (noteUsage): only on a final record, and only what is known.
+    if (Number(r.ctx) > 0) lines.push(`\t\t\tctx = ${Math.round(Number(r.ctx))},`);
+    if (Number(r.turns) > 0) lines.push(`\t\t\tturns = ${Math.round(Number(r.turns))},`);
+    if (Number(r.window) > 0) lines.push(`\t\t\twindow = ${Math.round(Number(r.window))},`);
+    if (Number(r.since) > 0) lines.push(`\t\t\tsince = ${Math.floor(Number(r.since))},`);
+    if (Number.isFinite(Number(r.cost)) && r.cost !== undefined && r.cost !== null && r.cost !== '') lines.push(`\t\t\tcost = ${Number(r.cost)},`);
     if (Array.isArray(r.denied) && r.denied.length) {
       lines.push(`\t\t\tdenied = { ${r.denied.map(luaStr).join(', ')} },`);
     }
@@ -338,7 +588,12 @@ function luaTable(globalName, records, opts = {}) {
   if (restore) {
     lines.push('\trestore = {', `\t\ttoken = ${luaStr(restore.token)},`, '\t\tchats = {');
     for (const c of restore.chats) {
-      lines.push('\t\t\t{', `\t\t\t\tid = ${luaStr(c.id)},`, `\t\t\t\tname = ${luaStr(c.name)},`, `\t\t\t\tcwd = ${luaStr(c.cwd)},`, '\t\t\t\tmessages = {');
+      lines.push('\t\t\t{', `\t\t\t\tid = ${luaStr(c.id)},`, `\t\t\t\tname = ${luaStr(c.name)},`, `\t\t\t\tcwd = ${luaStr(c.cwd)},`, `\t\t\t\tplugin = ${luaStr(c.plugin || '')},`);
+      if (Number(c.ctx) > 0) lines.push(`\t\t\t\tctx = ${Math.round(Number(c.ctx))},`);
+      if (Number(c.turns) > 0) lines.push(`\t\t\t\tturns = ${Math.round(Number(c.turns))},`);
+      if (Number(c.since) > 0) lines.push(`\t\t\t\tsince = ${Math.floor(Number(c.since))},`);
+      if (Number.isFinite(Number(c.cost)) && c.cost !== undefined && c.cost !== null && c.cost !== '') lines.push(`\t\t\t\tcost = ${Number(c.cost)},`);
+      lines.push('\t\t\t\tmessages = {');
       for (const m of c.messages) {
         lines.push(`\t\t\t\t\t{ role = ${luaStr(m.role)}, id = ${Number(m.id) || 0}, t = ${Number(m.t) || 0}, agent = ${luaStr(m.agent || '')}, text = ${luaStr(m.text)} },`);
       }
@@ -355,7 +610,7 @@ function luaTable(globalName, records, opts = {}) {
 // ---------------------------------------------------------------------------
 //
 // The agent marks the in-game map by writing commands, one JSON object per line,
-// to the file named by WOW_AI_MAP_FILE in its environment (a tool of its own can
+// to the file named by CLAUDE_WOW_MAP_FILE in its environment (a tool of its own can
 // do that), or with a ```wowmap fenced block in its reply for a few hand-made marks.
 // The system prompt (MAP_HINT) tells it so.
 // The bridge owns the resulting layers (state.json) and ships the whole set,
@@ -454,7 +709,7 @@ function extractMapBlocks(text) {
   return { text: stripped, cmds, errors };
 }
 
-// Commands the agent's tools appended to WOW_AI_MAP_FILE (one JSON per line).
+// Commands the agent's tools appended to CLAUDE_WOW_MAP_FILE (one JSON per line).
 function parseMapFile(src) {
   const cmds = [], errors = [];
   for (const line of String(src || '').split('\n')) {
@@ -546,12 +801,14 @@ function luaMacros(macros) {
 }
 
 module.exports = {
-  fromHex, pad3, slotNumber, chatKey, sessKey,
+  ADDON, OLD_ADDONS, OLD_ADDON_PATH, OLD_SAVED_FILE,
+  fromHex, pad3, slotNumber, SIGNAL_CLEAR_AHEAD, slotsToClearAhead, chatKey, sessKey,
   alreadyHandled, markHandled, pruneStale, MONTH_MS,
+  noteUsage, usageFields, tokensLabel,
   resolveCwd, sameFolder, baseName,
-  parseFlags, jobsFromStrip, parseOutbox, systemPrompt, splitSummary,
+  parseFlags, jobsFromStrip, parseOutbox, systemPrompt, messagePrompt, visionHint, splitSummary,
   ruleFor, describeToolUse,
-  luaStr, luaTable, SILENT_WAV,
+  luaStr, luaTable, SILENT_WAV, TRANSPORTS, DEFAULT_TRANSPORT, transportName, chooseTransport, FALLBACK_REASONS, transportFallback, transportNote, DEFAULT_LEVELS, screenshotLevels, STRIP_CODECS, DEFAULT_STRIP_CODEC, stripCodec, denseLevels,
   MAP_LIMITS, validateMapCommand, newMap, applyMapCommands, extractMapBlocks, parseMapFile, luaMap,
   MACRO_LIMITS, extractMacros, stripMacroBlocks, luaMacros,
 };

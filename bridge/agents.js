@@ -16,6 +16,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { describeToolUse, ruleFor, baseName } = require('./protocol');
+const R = require('./runtime'); // which node runs a JavaScript launcher
 
 const PROGRESS_CHARS = 140;
 
@@ -40,8 +41,104 @@ function shellInner(cmd) {
 // A fresh accumulator for one parsed line. progress: lines for the working
 // bubble; session: the agent's session id, for the next run's resume; denied:
 // allowlist rules (Claude syntax) the run was refused; notes: text the bridge
-// appends to the reply; done: the reply itself, once the run has produced it.
+// appends to the reply; done: the reply itself, once the run has produced it;
+// usage: { context, output, window? } when the event says how big the session
+// has grown (see claudeUsage). The bridge keeps the last usage it sees.
 function empty() { return { progress: [], denied: [], notes: [] }; }
+
+// Context growth. Every message resumes the chat's session, so what the model
+// reads grows with every turn, and each message costs more than the last. The
+// number the addon shows is what the NEXT message will carry: everything the
+// model read on its last call, which for Claude Code is input_tokens +
+// cache_read_input_tokens + cache_creation_input_tokens of the last assistant
+// message (verified on Claude Code 2.1 with `-p --output-format stream-json
+// --verbose`: a resumed turn's first call reads exactly the previous turn's
+// total plus the new message). The result event's usage is the SUM over the
+// turn's calls (two tool steps: cache_read 62k where each call read 31k), so it
+// is only a fallback for a turn that produced no assistant message.
+function claudeUsage(u) {
+  if (!u || typeof u !== 'object') return null;
+  const n = k => (Number.isFinite(u[k]) && u[k] > 0 ? u[k] : 0);
+  const context = n('input_tokens') + n('cache_read_input_tokens') + n('cache_creation_input_tokens');
+  return context > 0 ? { context, output: n('output_tokens') } : null;
+}
+
+// The model's context window, when a result names it (modelUsage.<model>.contextWindow).
+function claudeWindow(ev) {
+  const mu = ev && ev.modelUsage && typeof ev.modelUsage === 'object' ? Object.values(ev.modelUsage) : [];
+  const w = mu.map(m => m && Number(m.contextWindow)).filter(x => Number.isFinite(x) && x > 0);
+  return w.length ? Math.max(...w) : 0;
+}
+
+// What a run would have cost at API list prices. A Max or Pro subscription is
+// not billed by the token, so the addon shows this as "≈$2.41 API": a
+// comparison, never a bill. Rates are USD per million tokens, Anthropic's
+// first-party list prices as the claude-api skill's model table has them
+// (cached 2026-06-24; https://docs.claude.com/en/docs/about-claude/pricing).
+// Cache writes cost 1.25x the input rate (5-minute) or 2x (1-hour), cache
+// reads 0.1x, unless a model lists its own read rate (cacheRead). Checked
+// against Claude Code's own total_cost_usd for a real haiku run (tests).
+// A model not in this table gets no cost, only its tokens. Update here.
+const CLAUDE_RATES = [
+  { match: /claude-fable-5-1\b/, input: 10, output: 50, cacheRead: 0.25 },
+  { match: /claude-fable-5\b(?!-1)/, input: 10, output: 50 },
+  { match: /claude-opus-5\b/, input: 5, output: 25 },
+  { match: /claude-opus-4-[678]\b/, input: 5, output: 25 },
+  { match: /claude-sonnet-5\b/, input: 2, output: 10 },
+  { match: /claude-sonnet-4-6\b/, input: 3, output: 15 },
+  { match: /claude-haiku-4-5\b/, input: 1, output: 5 },
+];
+const CACHE_WRITE_5M = 1.25, CACHE_WRITE_1H = 2, CACHE_READ = 0.1;
+
+function claudeRate(model) {
+  const m = String(model || '');
+  return CLAUDE_RATES.find(r => r.match.test(m)) || null;
+}
+
+// USD for one model's tokens: { input, output, cacheRead, cache5m, cache1h }.
+function priceTokens(rate, t) {
+  return (t.input * rate.input + t.output * rate.output
+    + t.cacheRead * (rate.cacheRead !== undefined ? rate.cacheRead : rate.input * CACHE_READ)
+    + t.cache5m * rate.input * CACHE_WRITE_5M + t.cache1h * rate.input * CACHE_WRITE_1H) / 1e6;
+}
+
+// { usd, models, unknown } for a result event: per model from modelUsage
+// (inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens),
+// with the 5-minute / 1-hour split of the cache writes taken from the top-level
+// usage.cache_creation (it is not broken down per model). Without modelUsage,
+// the top-level usage priced at `model` (the last assistant message's). Null
+// when there is nothing to price; `unknown` lists the models with no rate.
+function claudeCost(ev, model) {
+  const u = ev && ev.usage && typeof ev.usage === 'object' ? ev.usage : null;
+  const n = (o, k) => (o && Number.isFinite(o[k]) && o[k] > 0 ? o[k] : 0);
+  const cc = u && u.cache_creation && typeof u.cache_creation === 'object' ? u.cache_creation : null;
+  const t1h = n(cc, 'ephemeral_1h_input_tokens'), t5m = n(cc, 'ephemeral_5m_input_tokens');
+  const share1h = t1h + t5m > 0 ? t1h / (t1h + t5m) : 0;
+  const mu = ev && ev.modelUsage && typeof ev.modelUsage === 'object' ? ev.modelUsage : null;
+  const models = mu ? Object.keys(mu) : [];
+  let usd = 0;
+  const unknown = [];
+  const counted = m => ['inputTokens', 'outputTokens', 'cacheReadInputTokens', 'cacheCreationInputTokens'].some(k => mu[m] && Number.isFinite(mu[m][k]));
+  // One model whose entry names no token counts: the top-level usage is its usage.
+  if (models.length === 1 && !counted(models[0])) model = models[0];
+  else if (models.length) {
+    for (const m of models) {
+      const rate = claudeRate(m);
+      if (!rate) { unknown.push(m); continue; }
+      if (!counted(m)) { unknown.push(m); continue; } // several models, this one without counts: cannot be priced
+      const x = mu[m];
+      const write = n(x, 'cacheCreationInputTokens');
+      usd += priceTokens(rate, { input: n(x, 'inputTokens'), output: n(x, 'outputTokens'), cacheRead: n(x, 'cacheReadInputTokens'), cache1h: write * share1h, cache5m: write * (1 - share1h) });
+    }
+    return { usd, models, unknown, sessionTotal: true };
+  }
+  if (!u || !model) return null;
+  const rate = claudeRate(model);
+  if (!rate) return { usd: 0, models: [model], unknown: [model] };
+  const write = n(u, 'cache_creation_input_tokens');
+  usd = priceTokens(rate, { input: n(u, 'input_tokens'), output: n(u, 'output_tokens'), cacheRead: n(u, 'cache_read_input_tokens'), cache1h: cc ? t1h : 0, cache5m: cc ? t5m : write });
+  return { usd, models: [model], unknown: [] };
+}
 
 // ---------------------------------------------------------------------------
 // Permission rules
@@ -61,6 +158,8 @@ function grokRules(rule) {
 // ---------------------------------------------------------------------------
 
 function claudeParser() {
+  let usage = null; // the last assistant message's usage: what the next turn will carry
+  let model = '';   // the model that wrote it, for pricing a result without modelUsage
   return {
     feed(ev) {
       const out = empty();
@@ -70,8 +169,22 @@ function claudeParser() {
           if (block.type === 'tool_use') out.progress.push(describeToolUse(block));
           else if (block.type === 'text' && block.text && block.text.trim()) out.progress.push(snippet(block.text));
         }
+        const u = claudeUsage(ev.message.usage);
+        if (u) { usage = u; out.usage = { ...u }; }
+        if (typeof ev.message.model === 'string' && ev.message.model) model = ev.message.model;
       } else if (ev.type === 'result') {
-        const text = typeof ev.result === 'string' ? ev.result : JSON.stringify(ev.result ?? '', null, 2);
+        const u = usage || claudeUsage(ev.usage);
+        const window = claudeWindow(ev);
+        if (u) {
+          out.usage = window ? { ...u, window } : { ...u };
+          // The run's API-equivalent price: the result's usage is the sum over its calls.
+          const cost = claudeCost(ev, model);
+          if (cost && !cost.unknown.length) { out.usage.cost = cost.usd; if (cost.sessionTotal) out.usage.costIsSessionTotal = true; }
+          else out.usage.costUnknown = cost ? cost.unknown : ['no model named'];
+        }
+        const missing = ev.result === undefined || ev.result === null || ev.result === '';
+        const text = missing && ev.is_error ? `Claude Code ended with an error (${ev.subtype || 'no detail given'}) and no message.`
+          : typeof ev.result === 'string' ? ev.result : JSON.stringify(ev.result ?? '', null, 2);
         const denials = Array.isArray(ev.permission_denials) ? ev.permission_denials : [];
         if (denials.length) {
           out.denied = [...new Set(denials.map(ruleFor))];
@@ -134,6 +247,9 @@ function codexParser() {
           }
         }
       } else if (ev.type === 'turn.completed') {
+        // ev.usage ({ input_tokens, cached_input_tokens, output_tokens }) is
+        // here too, but whether it is the last call or the turn's sum is not
+        // verified against a real Codex, so no context size is reported for it.
         out.done = { text: last ?? '', error: false };
       } else if (ev.type === 'turn.failed') {
         out.done = { text: (ev.error && ev.error.message) || 'Codex: the turn failed', error: true };
@@ -330,14 +446,37 @@ function hermesParser() {
 // The table
 // ---------------------------------------------------------------------------
 
-// The "system prompt" is the game context and the addon primer. Claude and Grok
-// take it as a real system prompt; Codex has no such flag, so it rides at the
-// top of the prompt, marked as context, in full for a new session and as the
-// short context-only version on a resumed one (the primer is already in the
-// thread).
+// The "system prompt" is the stable part: the reply rules, the game rules and
+// the addon primer (protocol.systemPrompt; the player's situation rides in the
+// prompt itself, protocol.messagePrompt). Claude and Grok take it as a real
+// system prompt; Codex has no such flag, so it rides at the top of the prompt,
+// marked as context, in full for a new session and as the short version
+// without the primer on a resumed one (the primer is already in the thread).
 function contextBlock(text) {
-  return `[Context from the WoW AI bridge, not written by the user]\n${text}\n[End of context]\n\n`;
+  return `[Context from the Claude WoW bridge, not written by the user]\n${text}\n[End of context]\n\n`;
 }
+
+// Images (vision): bridge.js hands each run `images`, a list of
+// { file, data (base64), mediaType, width, height } for the game view it cut
+// out of the screenshot. Claude takes the pixels inline: with
+// `--input-format stream-json` the prompt goes in as one JSON user message
+// whose content holds an Anthropic `image` block next to the text (verified on
+// Claude Code 2.1: the model sees the picture with no tool call at all). The
+// other CLIs take a path: Codex `-i`, Hermes `--image`, Grok reads it with its
+// own file tool from the note in the prompt. A bare string is a path too.
+function imagePaths(images) {
+  return (Array.isArray(images) ? images : []).map(i => (typeof i === 'string' ? i : i && i.file)).filter(Boolean);
+}
+function attachedNote(images) {
+  const paths = imagePaths(images);
+  return paths.length ? `\n\nAttached screenshots: ${paths.join(', ')} — read them with your Read tool.` : '';
+}
+// The line next to the image in the message itself. Claude Code records the
+// system prompt of a conversation's first request and resumes with that record
+// (--system-prompt-snapshot), so nothing about this message's picture goes
+// there: the caption rides with the picture, where it cannot be missed, and
+// the fuller vision paragraph is in the prompt (protocol.messagePrompt).
+const IMAGE_CAPTION = '[The image above is a screenshot of the player\'s screen, taken the moment they sent this message.]';
 
 const AGENTS = {
   claude: {
@@ -346,8 +485,10 @@ const AGENTS = {
     install: 'https://claude.com/claude-code, then run `claude` once and log in',
     windowsPaths: () => [path.join(os.homedir(), '.local', 'bin', 'claude.exe')],
     posixPaths: () => [path.join(os.homedir(), '.local', 'bin', 'claude')],
-    args({ cfg, resume, system }) {
+    args({ cfg, resume, system, images }) {
       const a = ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', cfg.permissionMode || 'acceptEdits'];
+      // With an image the prompt is a stream-json user message (see input below).
+      if (Array.isArray(images) && images.some(i => i && i.data)) a.push('--input-format', 'stream-json');
       const rules = Array.isArray(cfg.allowedTools) ? cfg.allowedTools.filter(Boolean) : [];
       if (rules.length) a.push('--allowedTools', ...rules);
       const denied = Array.isArray(cfg.deniedTools) ? cfg.deniedTools.filter(Boolean) : [];
@@ -358,8 +499,11 @@ const AGENTS = {
       return a.concat(Array.isArray(cfg.extraArgs) ? cfg.extraArgs : []);
     },
     input: ({ prompt, images }) => {
-      const attached = images && images.length ? `\n\nAttached screenshots: ${images.join(', ')} — read them with your Read tool` : '';
-      return { stdin: prompt + attached };
+      const inline = (Array.isArray(images) ? images : []).filter(i => i && typeof i === 'object' && i.data);
+      if (!inline.length) return { stdin: prompt + attachedNote(images) };
+      const content = inline.map(i => ({ type: 'image', source: { type: 'base64', media_type: i.mediaType || 'image/png', data: i.data } }));
+      content.push({ type: 'text', text: `${IMAGE_CAPTION}\n\n${prompt}` });
+      return { stdin: JSON.stringify({ type: 'user', message: { role: 'user', content } }) + '\n' };
     },
     env: (env) => { delete env.CLAUDECODE; return env; }, // a bridge started from inside Claude Code can still launch it
     parser: claudeParser,
@@ -382,14 +526,13 @@ const AGENTS = {
       if (cfg.model) a.push('-m', cfg.model);
       a.push(...(Array.isArray(cfg.extraArgs) ? cfg.extraArgs : []));
       if (resume) a.push('resume', resume);
-      for (const image of images || []) if (!String(image).startsWith('-')) a.push('-i', image);
+      for (const image of imagePaths(images)) if (!String(image).startsWith('-')) a.push('-i', image);
       a.push('-'); // the prompt comes on stdin
       return a;
     },
     input: ({ prompt, system, systemShort, resume, images }) => {
       const ctx = resume ? systemShort : system;
-      const attached = images && images.length ? `\n\nAttached screenshots: ${images.join(', ')} — read them with your Read tool.` : '';
-      return { stdin: (ctx ? contextBlock(ctx) : '') + prompt + attached };
+      return { stdin: (ctx ? contextBlock(ctx) : '') + prompt + attachedNote(images) };
     },
     env: (env) => env,
     parser: codexParser,
@@ -424,10 +567,7 @@ const AGENTS = {
       if (system) a.push('--append-system-prompt', system);
       return a.concat(Array.isArray(cfg.extraArgs) ? cfg.extraArgs : []);
     },
-    input: ({ prompt, images }) => {
-      const attached = images && images.length ? `\n\nAttached screenshots: ${images.join(', ')} — read them with your Read tool.` : '';
-      return { promptFile: prompt + attached };
-    },
+    input: ({ prompt, images }) => ({ promptFile: prompt + attachedNote(images) }),
     env: (env) => { env.GROK_DISABLE_AUTOUPDATER = '1'; return env; },
     parser: grokParser,
   },
@@ -463,14 +603,16 @@ const AGENTS = {
       const a = ['chat', '--query-file', '-', '-Q', '--in', cwd, '--source', 'tool'];
       if (resume) a.push('--resume', resume);
       if (cfg.model) a.push('-m', cfg.model);
-      if (images && images.length && !String(images[0]).startsWith('-')) a.push('--image', images[0]);
+      const paths = imagePaths(images);
+      if (paths.length && !String(paths[0]).startsWith('-')) a.push('--image', paths[0]);
       // R1: hermes never runs with --yolo from the bridge, even via extraArgs.
       return a.concat(Array.isArray(cfg.extraArgs) ? cfg.extraArgs.filter(x => !/^(-y|--yolo)(=.*)?$/.test(String(x))) : []);
     },
     input: ({ prompt, system, systemShort, resume, images, cfg }) => {
       const ctx = resume ? systemShort : system;
       let text = (ctx ? contextBlock(ctx) : '') + prompt;
-      if (images && images.length > 1) text += `\n\nAdditional attached screenshot paths: ${images.slice(1).join(', ')}`;
+      const paths = imagePaths(images);
+      if (paths.length > 1) text += `\n\nAdditional attached screenshot paths: ${paths.slice(1).join(', ')}`;
       const note = cfg && cfg.permissionMode === 'bypassPermissions' ? 'hermes never runs with --yolo from the bridge' : '';
       return { stdin: text, note };
     },
@@ -520,9 +662,19 @@ function pathDirs() {
   return dirs;
 }
 
-// A configured path: a script is run with this node, anything else directly.
+// A JavaScript launcher (npm's codex.js, a configured .js path) is run with a
+// node: this one from a checkout, the one on the PATH from the compiled binary
+// (runtime.js), which cannot run a script of somebody else's.
+function withNode(script) {
+  const n = R.node();
+  const r = { file: n.file, args: [script], found: n.found && exists(script) };
+  if (!n.found) r.note = n.note;
+  return r;
+}
+
+// A configured path: a script is run with a node, anything else directly.
 function fromPath(p) {
-  if (/\.(c|m)?js$/i.test(p)) return { file: process.execPath, args: [p], found: exists(p) };
+  if (/\.(c|m)?js$/i.test(p)) return withNode(p);
   return { file: p, args: [], found: exists(p) };
 }
 
@@ -541,7 +693,7 @@ function unwrapShim(shim, agent) {
   if (!exists(script)) return null;
   for (const exe of nativeNextTo(script, agent)) if (exists(exe)) return { file: exe, args: [], found: true };
   if (/\.exe$/i.test(script)) return { file: script, args: [], found: true };
-  return { file: process.execPath, args: [script], found: true };
+  return withNode(script);
 }
 
 // Where a package's platform binary would be, relative to its launcher script.
@@ -599,7 +751,7 @@ function resolveCommand(id, cfg = {}) {
 
 module.exports = {
   AGENTS, DEFAULT_AGENT, agentIds, normalizeAgent, displayName, agentConfig,
-  grokRules, snippet, contextBlock,
-  claudeParser, codexParser, grokParser, agyParser, hermesParser, codexItemLine, grokCall, grokRefusal, shellInner,
+  grokRules, snippet, contextBlock, imagePaths, IMAGE_CAPTION,
+  claudeParser, codexParser, grokParser, agyParser, hermesParser, codexItemLine, grokCall, grokRefusal, shellInner, claudeUsage, claudeWindow, claudeCost, claudeRate, CLAUDE_RATES,
   resolveCommand, unwrapShim, nativeNextTo,
 };

@@ -9,6 +9,7 @@ bridge/tmp/
 # tooling
 node_modules/
 tests/tmp/
+.dev/
 
 # OS / local artifacts
 .DS_Store
@@ -16,3 +17,6 @@ tests/tmp/
 bridge/probe.png
 bridge/mapjobs/
 __pycache__/
+
+# build output (node build.js)
+dist/

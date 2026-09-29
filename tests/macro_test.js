@@ -9,7 +9,7 @@ const path = require('path');
 const { lua, lauxlib, lualib, to_luastring, to_jsstring } = require('fengari');
 const P = require('../bridge/protocol');
 
-const ADDON = path.join(__dirname, '..', 'addon', 'WoWAI');
+const ADDON = path.join(__dirname, '..', 'addon', 'ClaudeWoW');
 
 // ---------------------------------------------------------------------------
 // Bridge side
@@ -54,9 +54,9 @@ test('a macro block after TL;DR stays out of the game-chat summary', () => {
 
 test('slot files carry macros on the reply record', () => {
   const macros = P.extractMacros('```wowmacro A "q"\n/cast X\n```\n```wowmacro B icon=7\n/run y()\n```').macros;
-  const src = P.luaTable('WoWAI_SlotData', [{ chat: 'c', id: 3, status: 'done', text: 't', macros }], { now: 1 });
+  const src = P.luaTable('ClaudeWoW_SlotData', [{ chat: 'c', id: 3, status: 'done', text: 't', macros }], { now: 1 });
   const got = runLua(src, `(function(r) local a, b = r.macros[1], r.macros[2]
-    return table.concat({ #r.macros, a.name, a.body, tostring(a.icon), tostring(a.char), b.icon, tostring(b.risky) }, "|") end)(WoWAI_SlotData.replies[1])`);
+    return table.concat({ #r.macros, a.name, a.body, tostring(a.icon), tostring(a.char), b.icon, tostring(b.risky) }, "|") end)(ClaudeWoW_SlotData.replies[1])`);
   assert.equal(got, '2|A q|/cast X|nil|false|7|true');
 });
 
@@ -122,20 +122,20 @@ function newVM() {
   };
   run(fs.readFileSync(path.join(__dirname, 'wow_stub.lua'), 'utf8'));
   run(MACRO_STUB);
-  for (const f of ['Codec.lua', 'Inbox.lua', 'WoWAI.lua']) run(fs.readFileSync(path.join(ADDON, f), 'utf8'), 'WoWAI');
-  run('STUB.FireEvent("ADDON_LOADED", "WoWAI"); STUB.FireEvent("PLAYER_LOGIN")');
+  for (const f of ['Codec.lua', 'Inbox.lua', 'ClaudeWoW.lua']) run(fs.readFileSync(path.join(ADDON, f), 'utf8'), 'ClaudeWoW');
+  run('STUB.FireEvent("ADDON_LOADED", "ClaudeWoW"); STUB.FireEvent("PLAYER_LOGIN")');
   return { run, evaluate };
 }
 
 // A reply carrying `macrosLua` lands through the reload path (Inbox.lua).
 function deliver(vm, macrosLua) {
   vm.run(`
-    local c = WoWAIDB.chats[1]
+    local c = ClaudeWoWDB.chats[1]
     c.pendingId = 5
-    WoWAI_Inbox = { replies = { { chat = c.id, id = 5, status = "done", text = "Here you go.", macros = ${macrosLua} } } }
+    ClaudeWoW_Inbox = { replies = { { chat = c.id, id = 5, status = "done", text = "Here you go.", macros = ${macrosLua} } } }
     STUB.FireEvent("PLAYER_LOGIN")
-    WoWAI.Toggle(true)
-    WoWAI.Render()`);
+    ClaudeWoW.Toggle(true)
+    ClaudeWoW.Render()`);
 }
 
 // The shown macro buttons, as "label" strings, and a way to click the n-th.
@@ -166,7 +166,7 @@ test('a reply with a macro shows a button that creates it and puts it on the cur
   const vm = newVM();
   vm.run('CreateMacro("Aaa", 1, "/sit", false); CreateMacro("Zzz", 1, "/dance", false); STUB.calls = {}');
   deliver(vm, '{ { name = "Mmm", body = "#showtooltip\\n/cast Charge", char = false } }');
-  assert.equal(vm.evaluate('#WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history].macros'), '1');
+  assert.equal(vm.evaluate('#ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].macros'), '1');
   assert.deepEqual(buttons(vm), ['Create macro: Mmm']);
   click(vm);
   assert.equal(vm.evaluate('table.concat(STUB.calls, ",")'), 'create Mmm');
@@ -185,13 +185,13 @@ test('replacing a different macro asks first, and undo brings the old one back',
   vm.run('CreateMacro("Charge", 99, "/cast Old", false); STUB.calls = {}');
   deliver(vm, '{ { name = "Charge", body = "/cast New", char = false } }');
   click(vm);
-  assert.equal(vm.evaluate('STUB.popup.which'), 'WOWAI_MACRO');
+  assert.equal(vm.evaluate('STUB.popup.which'), 'CLAUDEWOW_MACRO');
   assert.equal(vm.evaluate('select(3, GetMacroInfo(1))'), '/cast Old', 'nothing changed before OK');
   accept(vm);
   assert.equal(vm.evaluate('select(3, GetMacroInfo(1))'), '/cast New');
   assert.equal(vm.evaluate('select(2, GetMacroInfo(1))'), '99', 'the player\'s icon is kept when the agent set none');
   assert.equal(vm.evaluate('STUB.picked'), '1');
-  vm.run('SlashCmdList.WOWAI("macro undo")');
+  vm.run('SlashCmdList.CLAUDEWOW("macro undo")');
   assert.equal(vm.evaluate('select(3, GetMacroInfo(1))'), '/cast Old');
 });
 
@@ -200,15 +200,15 @@ test('undo removes a macro the button created', () => {
   deliver(vm, '{ { name = "New", body = "/sit", char = false } }');
   click(vm);
   assert.equal(vm.evaluate('(GetNumMacros())'), '1');
-  vm.run('SlashCmdList.WOWAI("macro undo")');
+  vm.run('SlashCmdList.CLAUDEWOW("macro undo")');
   assert.equal(vm.evaluate('(GetNumMacros())'), '0');
 });
 
-test('"/ai macro ..." with anything but undo is a message for the agent', () => {
+test('"/claude macro ..." with anything but undo is a message for the agent', () => {
   const vm = newVM();
-  vm.run('SENT = nil; WoWAI.Send = function(m) SENT = m end; SlashCmdList.WOWAI("macro para mi guerrero con carga")');
+  vm.run('SENT = nil; ClaudeWoW.Send = function(m) SENT = m end; SlashCmdList.CLAUDEWOW("macro para mi guerrero con carga")');
   assert.equal(vm.evaluate('SENT'), 'macro para mi guerrero con carga');
-  vm.run('SENT = nil; SlashCmdList.WOWAI("macro undo")');
+  vm.run('SENT = nil; SlashCmdList.CLAUDEWOW("macro undo")');
   assert.equal(vm.evaluate('SENT'), null);
 });
 
@@ -217,7 +217,7 @@ test('macros that run code ask first even when new', () => {
   deliver(vm, '{ { name = "Runner", body = "/run print(1)", char = false, risky = true } }');
   assert.match(buttons(vm)[0], /^Create macro: Runner .*runs code/);
   click(vm);
-  assert.equal(vm.evaluate('STUB.popup.which'), 'WOWAI_MACRO');
+  assert.equal(vm.evaluate('STUB.popup.which'), 'CLAUDEWOW_MACRO');
   assert.equal(vm.evaluate('(GetNumMacros())'), '0');
   accept(vm);
   assert.equal(vm.evaluate('(GetNumMacros())'), '1');
@@ -251,7 +251,7 @@ test('malformed macro entries from a slot are dropped', () => {
   const vm = newVM();
   deliver(vm, '{ { name = "", body = "/sit" }, { name = "Ok", body = "/sit", icon = {} }, "junk" }');
   assert.deepEqual(buttons(vm), ['Create macro: Ok']);
-  assert.equal(vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history].macros[1].icon'), null);
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].macros[1].icon'), null);
 });
 
 test('a macro the game refuses is reported and nothing is picked up', () => {
@@ -269,7 +269,7 @@ test('macro text in the confirm popup has its pipes made harmless', () => {
   vm.run('local orig = StaticPopup_Show; StaticPopup_Show = function(w, a, b, d) STUB.popupText = a; orig(w, a, b, d) end');
   deliver(vm, '{ { name = "Pipe", body = "/run print(\\"|cffff0000x|r\\")", char = false, risky = true } }');
   click(vm);
-  assert.equal(vm.evaluate('STUB.popup.which'), 'WOWAI_MACRO');
+  assert.equal(vm.evaluate('STUB.popup.which'), 'CLAUDEWOW_MACRO');
   assert.ok(vm.evaluate('STUB.popupText').includes('/run print("¦cffff0000x¦r")'));
   assert.ok(!vm.evaluate('STUB.popupText').includes('|'));
 });

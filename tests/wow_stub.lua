@@ -1,5 +1,5 @@
 -- A minimal stand-in for the WoW addon environment, enough to load and drive
--- WoWAI.lua outside the game (see addon_test.js). Frames are plain tables:
+-- ClaudeWoW.lua outside the game (see addon_test.js). Frames are plain tables:
 -- capitalized names that aren't listed below resolve to a no-op method, so any
 -- SetFoo/EnableBar call is accepted; lowercase names are ordinary fields.
 --
@@ -86,6 +86,13 @@ function Methods.ClearFocus(self) if STUB.focus == self then STUB.focus = nil en
 function Methods.HasFocus(self) return STUB.focus == self end
 function Methods.Insert(self, t) self.text = (self.text or "") .. tostring(t) end
 function Methods.GetEditBox(self) return self.editBox end
+function Methods.SetAttribute(self, k, v) self.attrs = self.attrs or {}; self.attrs[k] = v end
+function Methods.GetAttribute(self, k) return self.attrs and self.attrs[k] end
+-- Chat frames: AddMessage keeps every line with its colour in self.messages.
+function Methods.AddMessage(self, text, r, g, b)
+	self.messages = self.messages or {}
+	table.insert(self.messages, { text = tostring(text), r = r, g = g, b = b })
+end
 -- Tooltip scanning: SetHyperlink fills <name>TextLeft<i> / TextRight<i> from
 -- STUB.tooltips[link], a list of strings or { left, right } pairs.
 function Methods.ClearLines(self) self.lines = {} end
@@ -170,6 +177,17 @@ function PlaySound() end
 function PlaySoundFile(path) if STUB.sounds[path] then return true, 1 end return false end
 function StopSound() end
 function GetPhysicalScreenSize() return 1920, 1080 end
+-- CVars and screenshots, for the screenshot transport. STUB.screenshots counts
+-- Screenshot() calls; the addon hears SCREENSHOT_SUCCEEDED/FAILED from the test.
+STUB.cvars = { screenshotFormat = "jpeg", screenshotQuality = "3" }
+STUB.screenshots = 0
+function GetCVar(name) return STUB.cvars[name] end
+function SetCVar(name, value)
+	if name == "screenshotFormat" and not (value == "png" or value == "tga" or value == "jpeg") then error("invalid value") end
+	STUB.cvars[name] = tostring(value)
+	return true
+end
+function Screenshot() STUB.screenshots = STUB.screenshots + 1 end
 function SetBinding(key, cmd) STUB.bindings[key] = cmd end
 function SaveBindings() end
 function GetCurrentBindingSet() return 1 end
@@ -180,7 +198,7 @@ function SetItemRef() end
 ChatFrameUtil = { InsertLink = function(text) return false end }
 function ChatEdit_InsertLink(text) return ChatFrameUtil.InsertLink(text) end
 
--- The character, for the game context (WoWAI.GameContext).
+-- The character, for the game context (ClaudeWoW.GameContext).
 function GetBuildInfo() return "1.60.1", "69913", "Sep 1 2026", 16001 end
 function UnitName(unit) if unit == "player" then return "Testchar" end end
 function GetRealmName() return "Test Realm" end

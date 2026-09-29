@@ -7,10 +7,41 @@ on:
 jobs:
   test:
     # Windows: the codec round-trip runs the real capture.ps1 decoder.
-    # Linux: it runs the capture_x11.py decoder (python3 is on the runner).
+    # Linux and macOS: it runs both python decoders, capture_x11.py and
+    # capture_mac.py (python3 is on every runner, and --test-image needs only the
+    # stdlib). macOS is in the matrix because that is where capture_mac.py ships.
+    # Every OS runs the suite on Node (npm test) and on Bun (npm run test:bun):
+    # Node stays the fallback runtime, Bun is what the shipped binary is built
+    # with (build.js). Node is on the Bun rows too, for npm ci (the Lua VM the
+    # addon tests use is an npm package).
     strategy:
+      fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        os: [windows-latest, ubuntu-latest, macos-latest]
+        runtime: [node, bun]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: oven-sh/setup-bun@v2
+        if: matrix.runtime == 'bun'
+        with:
+          bun-version: 1.4.2
+      - run: npm ci
+      - run: npm test
+        if: matrix.runtime == 'node'
+      - run: npm run test:bun
+        if: matrix.runtime == 'bun'
+
+  e2e:
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -19,4 +50,21 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm test
+      - run: npm run test:e2e
+
+  build:
+    # The binaries (build.js): all four targets compile from one Linux runner
+    # (Bun cross-compiles), and the one for that runner starts. They are kept
+    # as an artifact of the run; a release attaches them with SHA256SUMS.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun build.js
+      - run: ./dist/claude-wow-linux-x64 service help
+      - uses: actions/upload-artifact@v4
+        with:
+          name: claude-wow-binaries
+          path: dist/

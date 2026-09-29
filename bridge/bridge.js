@@ -1,15 +1,23 @@
 #!/usr/bin/env node
 'use strict';
-// WoW AI bridge: the half of WoWAI that lives outside the game.
+// Claude WoW bridge: the half of ClaudeWoW that lives outside the game.
 //
-//   OUT  capture.ps1 screen-captures the addon's pixel strip -> one or more
-//        {session, chat, id, cwd, flags, text} records per frame
+//   OUT  the addon calls Screenshot() with its pixel strip up and we decode
+//        the file from the game's Screenshots folder -> one or more
+//        {session, chat, id, cwd, flags, text} records per shot (capture.mode
+//        "screenshot", the default); or, on the deprecated "pixel" mode,
+//        capture.ps1 / capture_*.py screen-capture the strip four times a
+//        second (kept until Screenshot() is confirmed on Windows and Wine, and
+//        what the bridge falls back to when the addon says it cannot shoot)
 //        (fallback: the game's SavedVariables file, written on /reload)
-//   RUN  the chat's agent (Claude Code, Codex or Grok; see agents.js) headless
-//        in the chat's folder, streaming progress. Each chat is its own agent
-//        session; up to maxParallel run at once.
+//   ROUTE the plugin the message belongs to (plugins.js: the chat's binding,
+//        else the default) decides what happens: the coding plugin
+//        (plugins/claude-code.js) runs the chat's agent in the chat's folder.
+//   RUN  the chat's agent (Claude Code, Codex or Grok; see agents.js) headless,
+//        streaming progress. Each chat is its own agent session; up to
+//        maxParallel run at once.
 //   IN   we write the latest reply/status of every chat into every
-//        WoWAI_S### slot addon (the game loads a fresh one from a timer),
+//        ClaudeWoW_S### slot addon (the game loads a fresh one from a timer),
 //        flip a signal .wav per message, and also write Inbox.lua for the
 //        reload path.
 //
@@ -17,38 +25,63 @@
 //   --once            handle one pending SavedVariables prompt and exit
 //   --inject "text"   pretend the strip said this and exit when done
 //   --agent <id>      agent for --inject (default: "agent" in config.json)
+//   --plugin <id>     plugin for --inject (default: plugins.default in config.json)
+//   --image <file>    with --inject: attach this PNG/TGA as the player's screen (vision)
 //   --project <dir>   default folder for chats that haven't picked one
 //
 // Like the agent CLIs themselves, the bridge works in the folder it was started
-// from: `cd my-project && wow-ai` makes my-project the default for every chat
-// that hasn't chosen its own with /wow-ai cd. Started from inside this repo (npm
+// from: `cd my-project && claude-wow` makes my-project the default for every chat
+// that hasn't chosen its own with /claude-wow cd. Started from inside this repo (npm
 // start), it falls back to defaultCwd in config.json.
 
 const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
-const { spawn } = require('child_process');
+const os = require('os');
+const { spawnSync } = require('child_process');
+const PR = require('./procs');  // the children (agent runs, the capture script): their process groups, and ending them for good (tests/procs_test.js)
 const P = require('./protocol'); // the pure protocol code, unit-tested in tests/bridge_test.js
 const A = require('./agents');   // how each agent is launched and read, unit-tested in tests/agents_test.js
+const D = require('./decode');   // PNG/TGA reader + strip decoder for the screenshot transport (tests/decode_test.js)
+const S = require('./screenshots'); // the Screenshots folder watcher (tests/screenshots_test.js)
+const V = require('./vision');   // vision: the screenshot's game view, cropped and downscaled for the agent (tests/vision_test.js)
+const PL = require('./plugins'); // the plugin registry and routing (tests/plugins_test.js)
+const H = require('./home');     // where config, state and logs live (tests/home_test.js)
+const R = require('./runtime');  // node, bun, or the compiled binary (tests/runtime_test.js)
+const AS = require('./assets');  // the capture scripts and the primer, by path, from a checkout or the binary (tests/assets_test.js)
+
+// The plugins this bridge has (docs/PLATFORM.md). Registration order is the
+// order match() is asked in, and the first one is the default unless
+// plugins.default in config.json says otherwise: "ask", general in-game chat,
+// so the product works for someone who does not code; "claude-code", an agent
+// session in a folder, what the bridge was before plugins.
+const registry = PL.createRegistry();
+registry.register(require('./plugins/ask'));
+registry.register(require('./plugins/claude-code'));
 
 const HERE = __dirname;
-const CONFIG_FILE = path.join(HERE, 'config.json');
-const STATE_FILE = path.join(HERE, 'state.json');
-const LOG_FILE = path.join(HERE, 'bridge.log');
-const TMP_DIR = path.join(HERE, 'tmp'); // prompt files for agents that read the prompt from disk
+// Config, state, transcripts, log and scratch live in the home folder (home.js:
+// CLAUDE_WOW_HOME, ~/.claude-wow, or bridge/ for an install from before it).
+const HOME = H.resolve();
+const CONFIG_FILE = HOME.config;
+const STATE_FILE = HOME.state;
+const LOG_FILE = HOME.log;
+const TMP_DIR = HOME.tmp; // prompt files for agents that read the prompt from disk
 
 const argv = process.argv.slice(2);
 if (argv.includes('--help') || argv.includes('-h')) {
-  console.log('wow-ai [--project <dir>] [--once] [--inject "text" [--agent <id>]]\n\n' +
-    'Runs the WoW AI bridge. Chats without a folder of their own work in <dir>,\n' +
+  console.log('claude-wow [--project <dir>] [--once] [--inject "text" [--agent <id>] [--plugin <id>] [--image <png|tga>]]\n\n' +
+    'Runs the Claude WoW bridge. Chats without a folder of their own work in <dir>,\n' +
     'or in the folder you started it from, or in defaultCwd from bridge/config.json.\n' +
-    `Agents: ${A.agentIds().join(', ')} (the default is "agent" in config.json; chats pick with /wow-ai agent).`);
+    '--image attaches a screenshot to an --inject run the way vision does in game.\n' +
+    `Agents: ${A.agentIds().join(', ')} (the default is "agent" in config.json; chats pick with /claude-wow agent).\n` +
+    `Plugins: ${registry.ids().join(', ')} (the default is plugins.default in config.json).`);
   process.exit(0);
 }
 let cfg;
 try { cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); }
 catch (e) {
-  console.error(`Cannot read ${CONFIG_FILE} (${e.message}).\nRun "node setup.js" in the wow-ai folder first.`);
+  console.error(`Cannot read ${CONFIG_FILE} (${e.message}).\nRun "claude-wow setup" (node setup.js in the claude-wow folder) first.`);
   process.exit(2); // the supervisor doesn't restart on 2
 }
 const once = argv.includes('--once');
@@ -56,51 +89,137 @@ const injectIdx = argv.indexOf('--inject');
 const inject = injectIdx >= 0 ? argv[injectIdx + 1] : null;
 const agentIdx = argv.indexOf('--agent');
 const injectAgent = agentIdx >= 0 ? argv[agentIdx + 1] : '';
+const imageIdx = argv.indexOf('--image');
+const injectImage = imageIdx >= 0 ? argv[imageIdx + 1] : '';
+const pluginIdx = argv.indexOf('--plugin');
+const injectPlugin = pluginIdx >= 0 ? argv[pluginIdx + 1] : '';
 const exitWhenIdle = once || inject !== null;
 
-// The agent chats use unless they pick their own (/wow-ai agent, "agent=" flag).
+// The agent chats use unless they pick their own (/claude-wow agent, "agent=" flag).
 const DEFAULT_AGENT = A.normalizeAgent(cfg.agent || A.DEFAULT_AGENT);
 if (!DEFAULT_AGENT) {
   console.error(`"agent": "${cfg.agent}" in ${CONFIG_FILE} is not one of ${A.agentIds().join(', ')}.`);
   process.exit(2);
 }
+// The plugin a chat is routed to unless it is bound to another ("plugin=" flag).
+const pluginsCfg = cfg.plugins && typeof cfg.plugins === 'object' ? cfg.plugins : {};
+const DEFAULT_PLUGIN = pluginsCfg.default ? registry.normalize(pluginsCfg.default) : registry.ids()[0];
+if (!DEFAULT_PLUGIN) {
+  console.error(`"plugins.default": "${pluginsCfg.default}" in ${CONFIG_FILE} is not one of ${registry.ids().join(', ')}.`);
+  process.exit(2);
+}
 
 // Default folder: --project, else the folder we were started from (unless that is
-// this repo, i.e. npm start), else the configured one.
-const REPO = path.dirname(HERE);
+// one of the bridge's own folders), else the configured one. Own folders: this
+// repo (npm start) and the home folder itself, which is where the service runs
+// the compiled binary (there is no repo then; service.js). Both mean "no
+// project of my own here": fall back to defaultCwd.
+const REPO = R.compiled ? '' : path.dirname(HERE);
 function insideRepo(dir) {
+  if (path.resolve(dir) === path.resolve(HOME.dir)) return true;
+  if (!REPO) return false;
   const rel = path.relative(REPO, dir);
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 const projectIdx = argv.indexOf('--project');
+// CLAUDE_WOW_PROJECT names the default folder; the old WOW_AI_PROJECT still counts.
+const PROJECT_ENV = process.env.CLAUDE_WOW_PROJECT || process.env.WOW_AI_PROJECT || '';
 const DEFAULT_CWD = path.resolve(
   projectIdx >= 0 && argv[projectIdx + 1] ? argv[projectIdx + 1]
-    : process.env.WOW_AI_PROJECT ? process.env.WOW_AI_PROJECT
+    : PROJECT_ENV ? PROJECT_ENV
     : !insideRepo(process.cwd()) ? process.cwd()
     : cfg.defaultCwd || process.cwd());
-const DEFAULT_CWD_SOURCE = projectIdx >= 0 ? '--project' : process.env.WOW_AI_PROJECT ? 'WOW_AI_PROJECT'
+const DEFAULT_CWD_SOURCE = projectIdx >= 0 ? '--project' : PROJECT_ENV ? (process.env.CLAUDE_WOW_PROJECT ? 'CLAUDE_WOW_PROJECT' : 'WOW_AI_PROJECT')
   : !insideRepo(process.cwd()) ? 'started here' : 'config.json';
-
-const resolveCwd = raw => P.resolveCwd(raw, DEFAULT_CWD);
-const { sameFolder } = P;
-// Subfolders of the default folder, for the "folder not found" hint.
-function siblingFolders() {
-  try {
-    return fs.readdirSync(DEFAULT_CWD, { withFileTypes: true })
-      .filter(d => d.isDirectory() && !d.name.startsWith('.') && d.name !== 'node_modules')
-      .map(d => d.name).sort().slice(0, 30);
-  } catch { return []; }
-}
 
 const SLOTS = cfg.slots || 200;
 const MAX_PARALLEL = cfg.maxParallel || 3;
 const cap = Object.assign({ enabled: true, processName: 'WowB', cellPx: 4, cellsPerRow: 200, maxRows: 48, intervalMs: 250 }, cfg.capture || {});
-// The game-side files. A config.json written for the addon's old name
-// (WoWClaude) still works: the paths are derived from addonDir instead.
-const INBOX_FILE = cfg.inboxFile && !/WoWClaude/.test(cfg.inboxFile) ? cfg.inboxFile : path.join(cfg.addonDir || '', 'WoWAI', 'Inbox.lua');
-const SAVED_VARS = String(cfg.savedVariablesFile || '').replace(/WoWClaude\.lua$/, 'WoWAI.lua');
+// Outbound transport (protocol.chooseTransport): "screenshot" = the addon takes
+// a screenshot per send and we read the file (the default); "pixel" = a capture
+// script watches the screen (deprecated; an explicit capture.mode, or the
+// fallback a previous run had to make, remembered in state.json). It can
+// change while running: fallbackToPixel, when the addon reports it cannot shoot.
+const LOCK_FILE = path.join(HOME.dir, 'bridge.lock');
+const BOOTED_AT = Date.now() - os.uptime() * 1000;
+const SELF_MARKER = path.basename(process.argv[1] || process.execPath);
 
-let state = readJson(STATE_FILE, { lastId: 0, sessions: {}, handled: {} });
+function pidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+function commandOf(pid) {
+  if (process.platform === 'win32') return null;
+  const r = spawnSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8' });
+  return r.status === 0 ? r.stdout.trim() : null;
+}
+
+function isSameProcess(pid, startedAt, marker) {
+  if (!pidAlive(pid)) return false;
+  if (!Number.isFinite(startedAt) || startedAt < BOOTED_AT) return false;
+  const cmd = commandOf(pid);
+  if (cmd === null) return process.platform === 'win32';
+  return !!marker && cmd.includes(marker);
+}
+
+function readJsonQuiet(file) {
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
+}
+
+function holdLock() {
+  fs.mkdirSync(HOME.dir, { recursive: true });
+  const mine = JSON.stringify({ pid: process.pid, started: new Date().toISOString(), startedAt: Date.now(), marker: SELF_MARKER });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      fs.writeFileSync(LOCK_FILE, mine, { flag: 'wx' });
+      process.on('exit', () => {
+        const now = readJsonQuiet(LOCK_FILE);
+        if (now && now.pid === process.pid) { try { fs.rmSync(LOCK_FILE, { force: true }); } catch {} }
+      });
+      return;
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+    }
+    const held = readJsonQuiet(LOCK_FILE);
+    if (held && held.pid !== process.pid && isSameProcess(held.pid, held.startedAt, held.marker)) {
+      const msg = `another bridge is already running on ${HOME.dir} (pid ${held.pid}, started ${held.started || 'at an unknown time'}). Two bridges would overwrite each other's state and race for the same screenshots. Stop it first ("claude-wow service stop", or end pid ${held.pid}).`;
+      console.error(msg);
+      log(msg);
+      process.exit(3);
+    }
+    try { fs.rmSync(LOCK_FILE, { force: true }); } catch {}
+  }
+  log(`could not take ${LOCK_FILE}; starting without the single-bridge guard`);
+}
+if (!exitWhenIdle) holdLock();
+
+const stateEarly = readJson(STATE_FILE, {});
+const chosen = P.chooseTransport(cap, stateEarly);
+if (!chosen.transport) {
+  console.error(`"capture.mode": "${cap.mode}" in ${CONFIG_FILE} is not one of ${P.TRANSPORTS.join(', ')}.`);
+  process.exit(2);
+}
+let TRANSPORT = chosen.transport;
+let TRANSPORT_SOURCE = chosen.source; // 'config' | 'default' | 'fallback'
+const SCREENSHOT_DIR = S.screenshotDir(cfg);
+// Vision: a chat that turned it on (/claude-wow vision on, flag "v") gets the rest
+// of the screenshot, strip cropped off and scaled to vision.maxWidth, attached
+// to its run as an image. Screenshot transport only: the pixel capture never
+// sees more than the strip. vision.keep caps the PNGs kept in bridge/tmp.
+const vis = Object.assign({}, V.DEFAULTS, cfg.vision || {});
+// Screenshot mode draws the strip dark (capture.screenshotLevels) and reads it
+// with the threshold between the two levels; pixel mode stays bright and >= 128.
+const LEVELS = P.screenshotLevels(cap.screenshotLevels);
+// ... and which strip the addon draws there: codec 2 (2 px cells, four levels,
+// the default) or 1 (the capture scripts' 4 px cells). The decoder reads both.
+const STRIP_CODEC = P.stripCodec(cap.screenshotCodec);
+// The game-side files. A config.json written for one of the addon's old names
+// (WoWClaude, WoWAI) still works: the paths are derived from addonDir instead.
+const INBOX_FILE = cfg.inboxFile && !P.OLD_ADDON_PATH.test(cfg.inboxFile) ? cfg.inboxFile : path.join(cfg.addonDir || '', P.ADDON, 'Inbox.lua');
+const SAVED_VARS = String(cfg.savedVariablesFile || '').replace(P.OLD_SAVED_FILE, P.ADDON + '.lua');
+
+let state = Object.keys(stateEarly).length ? stateEarly : { lastId: 0, sessions: {}, handled: {} };
 if (!state.handled) state.handled = {};
 if (!state.sessions) state.sessions = {};
 // Older versions stored handled[session] as "highest id so far"; expand to a map.
@@ -114,7 +233,7 @@ for (const [k, v] of Object.entries(state.handled)) {
 
 // Bridge-side transcripts. The beta client sometimes wipes addon saved data; since
 // every prompt and reply passes through here, this copy lets the addon recover.
-const TRANSCRIPT_FILE = path.join(HERE, 'transcripts.json');
+const TRANSCRIPT_FILE = HOME.transcripts;
 let transcripts = readJson(TRANSCRIPT_FILE, { chats: {}, tokens: {} });
 if (!transcripts.chats) transcripts.chats = {};
 if (!transcripts.tokens) transcripts.tokens = {};
@@ -122,7 +241,7 @@ if (P.pruneStale(state, transcripts)) { saveState(); saveTranscripts(); }
 let pendingRestore = null;
 
 function saveTranscripts() {
-  try { atomicWrite(TRANSCRIPT_FILE, JSON.stringify(transcripts)); } catch (e) { log('could not save transcripts:', e.message); }
+  try { durableWrite(TRANSCRIPT_FILE, JSON.stringify(transcripts)); } catch (e) { log('could not save transcripts:', e.message); }
 }
 
 // Chats the player deleted in game while a run for them was still going: the
@@ -136,6 +255,7 @@ function noteMessage(job, role, text) {
   const c = transcripts.chats[job.chat] = transcripts.chats[job.chat] || { id: job.chat, name: '', cwd: job.cwd, messages: [] };
   if (job.name) c.name = job.name;
   if (job.cwd) c.cwd = job.cwd;
+  if (job.plugin) c.plugin = job.plugin;
   const m = { role, text: String(text ?? '').slice(0, 4000), id: job.id, t: Math.floor(Date.now() / 1000) };
   if (role === 'assistant' && job.agent) m.agent = job.agent;
   c.messages.push(m);
@@ -153,7 +273,8 @@ function maybeOfferRestore(job) {
     .filter(c => c.id !== job.chat && c.messages.length)
     .sort((a, b) => (b.updated || 0) - (a.updated || 0))
     .slice(0, 16)
-    .map(c => ({ id: c.id, name: c.name, cwd: c.cwd, messages: c.messages.slice(-40).map(m => ({ ...m, text: m.text.slice(0, 2000) })) }));
+    // A transcript from before plugins existed was a coding chat: it comes back bound to that.
+    .map(c => ({ id: c.id, name: c.name, cwd: c.cwd, plugin: c.plugin || 'claude-code', ...P.usageFields(state.sessionUsage && state.sessionUsage['chat:' + c.id]), messages: c.messages.slice(-40).map(m => ({ ...m, text: m.text.slice(0, 2000) })) }));
   saveTranscripts();
   if (chats.length) {
     pendingRestore = { token: job.session, chats };
@@ -172,6 +293,8 @@ function forgetChat(job) {
   delete state.sessions[chatKey(job)];
   if (state.sessionCwd) delete state.sessionCwd[sessKey(job)];
   if (state.sessionAgent) delete state.sessionAgent[sessKey(job)];
+  if (state.sessionPlugin) delete state.sessionPlugin[sessKey(job)];
+  if (state.sessionUsage) delete state.sessionUsage[sessKey(job)];
   if (pendingRestore) pendingRestore.chats = pendingRestore.chats.filter(c => c.id !== job.chat);
   saveTranscripts();
   log(`#${job.id}${job.session ? '@' + job.session : ''} forgot chat ${job.chat}${had ? '' : ' (nothing stored)'}`);
@@ -189,11 +312,29 @@ let publishTimer = null;
 // ---------------------------------------------------------------------------
 
 function readJson(file, fallback) {
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; }
+  let text;
+  try { text = fs.readFileSync(file, 'utf8'); } catch (e) {
+    if (e.code !== 'ENOENT') log(`${path.basename(file)}: cannot read it (${e.code || e.message}); starting from empty`);
+    return fallback;
+  }
+  try { return JSON.parse(text); } catch (e) {
+    const aside = `${file}.corrupt-${Date.now()}`;
+    let kept = true;
+    try { fs.renameSync(file, aside); } catch { kept = false; }
+    log(`${path.basename(file)} is corrupt (${e.message}); ${kept ? `kept it as ${path.basename(aside)}` : 'could not move it aside'} and started from empty. To recover, stop the bridge, repair that copy, and put it back as ${path.basename(file)}.`);
+    return fallback;
+  }
+}
+
+function durableWrite(file, content) {
+  const tmp = `${file}.${process.pid}.tmp`;
+  const fd = fs.openSync(tmp, 'w');
+  try { fs.writeSync(fd, content); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+  fs.renameSync(tmp, file);
 }
 
 function saveState() {
-  atomicWrite(STATE_FILE, JSON.stringify(state, null, 2));
+  durableWrite(STATE_FILE, JSON.stringify(state, null, 2));
 }
 
 function log(...parts) {
@@ -213,18 +354,41 @@ function atomicWrite(file, content) {
   fs.renameSync(tmp, file);
 }
 
-// Stop a run and whatever it spawned (an npm launcher runs the real binary as a
-// child of its own; on Windows a plain kill would leave that one going).
-function killTree(child) {
-  if (process.platform === 'win32') {
-    try {
-      const k = spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
-      k.on('error', () => { try { child.kill(); } catch {} });
-      return;
-    } catch {}
-  }
-  try { child.kill(); } catch {}
+// Stop a run and whatever it spawned: an npm launcher runs the real binary as a
+// child of its own, an agent shells out to builds and test runs. procs.js: on
+// POSIX every child leads its own process group and the group gets SIGTERM,
+// then SIGKILL after killGraceMs (a child that ignores SIGTERM would otherwise
+// hold its pipes open, 'close' would never fire, and the chat would sit in
+// `running` until a restart); on Windows taskkill /T /F.
+const KILL_GRACE_MS = Number.isFinite(cfg.killGraceMs) && cfg.killGraceMs >= 0 ? cfg.killGraceMs : PR.DEFAULT_GRACE_MS;
+function killTree(child) { PR.killTree(child, { graceMs: KILL_GRACE_MS, log }); }
+
+// Ctrl+C, `claude-wow service stop`, a kill of this pid: end the agent runs
+// and the capture script first (they are in process groups of their own now,
+// so the terminal's Ctrl+C does not reach them by itself), then exit with the
+// signal's usual code; the supervisor restarts a bridge that went this way
+// unless it is stopping too. A second signal while that is going changes nothing.
+let shuttingDown = false;
+let captureChild = null; // the capture script on the pixel transport (startCapture)
+function shutdown(sig) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  const kids = [...running.values()].map(r => r.child);
+  if (captureChild) kids.push(captureChild);
+  const n = kids.filter(PR.alive).length;
+  log(`${sig}: stopping${n ? `; ending ${n} child process${n === 1 ? '' : 'es'} (SIGTERM, SIGKILL after ${KILL_GRACE_MS} ms)` : ''}`);
+  PR.killAll(kids, { graceMs: KILL_GRACE_MS, log }, () => process.exit(sig === 'SIGINT' ? 130 : 143));
 }
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+function crash(kind, err) {
+  try { log(`CRASH (${kind}): ${err && err.stack ? err.stack : err}`); } catch {}
+  const kids = [...running.values()].map(r => r.child).concat(captureChild ? [captureChild] : []).filter(Boolean);
+  for (const child of kids) { try { if (process.platform !== 'win32') process.kill(-child.pid, 'SIGKILL'); else child.kill('SIGKILL'); } catch {} }
+  process.exit(70);
+}
+process.on('uncaughtException', e => crash('uncaughtException', e));
+process.on('unhandledRejection', e => crash('unhandledRejection', e));
 
 // ---------------------------------------------------------------------------
 // What the game reads
@@ -234,7 +398,7 @@ function killTree(child) {
 // truth; slot files carry the whole set while the game may not have it yet: for a
 // while after it changes, and after every hello (a fresh or wiped client).
 if (!state.map) state.map = P.newMap();
-const MAP_DIR = path.join(HERE, 'mapjobs');
+const MAP_DIR = HOME.mapjobs;
 // Every publish rewrites all slot files, so the map rides along only for a short
 // while, and on progress publishes only while it is small.
 const MAP_SHARE_MS = 3 * 60 * 1000;
@@ -277,15 +441,43 @@ function takeMapCommands(job, text) {
 // Slot file / Inbox.lua body: see protocol.luaTable.
 function slotFile(globalName, records, urgent = true) {
   const map = Date.now() < mapShareUntil && (urgent || mapLuaSize() <= MAP_PROGRESS_MAX) ? state.map : null;
-  return P.luaTable(globalName, records, { cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), map });
+  const transportNote = TRANSPORT_SOURCE === 'fallback' ? P.transportNote(state.transportFallback) : '';
+  return P.luaTable(globalName, records, { cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), plugin: DEFAULT_PLUGIN, plugins: registry.ids(), map, transport: TRANSPORT, levels: LEVELS, codec: STRIP_CODEC, transportNote });
+}
+
+// The addon cannot take the screenshot the transport needs (no Screenshot() in
+// this client, or SCREENSHOT_FAILED on every try): its record says so with a
+// "shot=" flag, on the strip or in the reload outbox. Switch to the pixel
+// capture now, remember why (state.json; the next start goes straight to it),
+// say so plainly here and in the slot files (the addon's /claude-wow diag
+// shows the note), and start the capture. A player is never left without a
+// transport just because the default one cannot work on their client.
+function fallbackToPixel(reason, job) {
+  const fresh = P.transportFallback(state, reason, job); // null when this reason is already on record
+  if (fresh) saveState();
+  if (TRANSPORT === 'pixel') {
+    // An explicit "pixel" in config.json, an earlier fallback, or the addon
+    // repeating itself until its next slot read: nothing to switch.
+    if (fresh) log(`${tagOf(job)} the addon reports shot=${reason} (${P.FALLBACK_REASONS[reason]}); already on the pixel transport`);
+    return;
+  }
+  TRANSPORT = 'pixel';
+  TRANSPORT_SOURCE = 'fallback';
+  log(`${tagOf(job)} TRANSPORT FALLBACK: the addon reports shot=${reason}: ${P.FALLBACK_REASONS[reason]}.`);
+  log(`  switching from the screenshot transport to the pixel capture (deprecated; it needs ${process.platform === 'win32' ? 'capture.ps1' : 'python3 and ' + (process.platform === 'darwin' ? 'the Screen Recording and Automation permissions' : 'an X11 session')}).`);
+  if (chosen.source === 'config') log(`  capture.mode is "screenshot" in ${CONFIG_FILE}, so every start tries the screenshot transport first and falls back again when the addon reports this; set it to "pixel" to skip the wait.`);
+  else log(`  remembered in ${STATE_FILE}: the next start goes straight to the pixel transport. To choose for good, set capture.mode in ${CONFIG_FILE} to "pixel" (no more note) or "screenshot" (try again).`);
+  if (shotWatch) { shotWatch.close(); shotWatch = null; }
+  publishNow(); // the slot files now say "pixel", with the note; the addon follows on its next slot read
+  if (cap.enabled && !exitWhenIdle) startCapture();
 }
 
 function addonInstalled() {
-  return fs.existsSync(path.join(cfg.addonDir, 'WoWAI', 'WoWAI.toc'));
+  return fs.existsSync(path.join(cfg.addonDir, 'ClaudeWoW', 'ClaudeWoW.toc'));
 }
 
 function slotsInstalled() {
-  return fs.existsSync(path.join(cfg.addonDir, 'WoWAI_S001', 'Inbox.lua'));
+  return fs.existsSync(path.join(cfg.addonDir, 'ClaudeWoW_S001', 'Inbox.lua'));
 }
 
 // The game will load *some* unused slot next, so every slot gets the full picture.
@@ -297,7 +489,7 @@ function publishNow(urgent = true) {
   lastPublish = Date.now();
   const records = [...live.values()].slice(-30);
   try {
-    atomicWrite(INBOX_FILE, slotFile('WoWAI_Inbox', records, urgent));
+    atomicWrite(INBOX_FILE, slotFile('ClaudeWoW_Inbox', records, urgent));
   } catch (e) {
     if (!warnedNoAddon) {
       warnedNoAddon = true;
@@ -306,9 +498,9 @@ function publishNow(urgent = true) {
     return;
   }
   if (!slotsInstalled()) return;
-  const body = slotFile('WoWAI_SlotData', records, urgent);
+  const body = slotFile('ClaudeWoW_SlotData', records, urgent);
   for (let i = 1; i <= SLOTS; i++) {
-    try { atomicWrite(path.join(cfg.addonDir, 'WoWAI_S' + pad3(i), 'Inbox.lua'), body); } catch {}
+    try { atomicWrite(path.join(cfg.addonDir, 'ClaudeWoW_S' + pad3(i), 'Inbox.lua'), body); } catch {}
   }
   // The restore bundle is large; it rides along once and is then dropped.
   // (The game keeps loading fresh slots until it has read one carrying it.)
@@ -325,9 +517,32 @@ function publish(key, record, urgent) {
   else if (!publishTimer) publishTimer = setTimeout(() => { publishTimer = null; publishNow(false); }, wait);
 }
 
+// "On" is a valid .wav, "off" is NO FILE. An empty file used to mean off, but
+// this client reports a 0-byte file as playable (verified in game: missing ->
+// willPlay=nil, empty/garbage/truncated/valid -> true), so presence/absence is
+// the only discriminator that actually works. It holds on every platform.
+function setSignalFile(file, on) {
+  try {
+    if (on) atomicWrite(file, SILENT_WAV);
+    else fs.rmSync(file, { force: true });
+  } catch {}
+}
+
 function signal(kind, id, on) {
-  const file = path.join(cfg.addonDir, 'WoWAI', kind, pad3(slotNumber(id)) + '.wav');
-  try { atomicWrite(file, on ? SILENT_WAV : Buffer.alloc(0)); } catch {}
+  setSignalFile(path.join(cfg.addonDir, 'ClaudeWoW', kind, pad3(slotNumber(id)) + '.wav'), on);
+}
+
+function pendingIds() {
+  const ids = [...running.values()].map(r => r.job.id).concat([...queued.values()].map(j => j.id));
+  for (const r of live.values()) if (r && r.status === 'working') ids.push(r.id);
+  return ids;
+}
+
+function clearSignalsAhead(id) {
+  if (!Number.isFinite(id)) return;
+  for (const slot of P.slotsToClearAhead(id, SLOTS, pendingIds())) {
+    for (const kind of ['ack', 'sig']) setSignalFile(path.join(cfg.addonDir, 'ClaudeWoW', kind, pad3(slot) + '.wav'), false);
+  }
 }
 
 // Heartbeat: act/NNN/kk.wav flips valid for the k-th action of message NNN. The
@@ -335,10 +550,10 @@ function signal(kind, id, on) {
 // without spending a reply slot.
 const ACT_MAX = cfg.actMax || 60;
 function actFile(id, k) {
-  return path.join(cfg.addonDir, 'WoWAI', 'act', pad3(slotNumber(id)), String(k).padStart(2, '0') + '.wav');
+  return path.join(cfg.addonDir, 'ClaudeWoW', 'act', pad3(slotNumber(id)), String(k).padStart(2, '0') + '.wav');
 }
 function resetBeats(id) {
-  for (let k = 1; k <= ACT_MAX; k++) { try { atomicWrite(actFile(id, k), Buffer.alloc(0)); } catch {} }
+  for (let k = 1; k <= ACT_MAX; k++) setSignalFile(actFile(id, k), false);
 }
 function beat(job) {
   job.beats = (job.beats || 0) + 1;
@@ -352,16 +567,16 @@ function beat(job) {
 // files just ahead of the counter are kept empty so the game can't run ahead.
 const PRESENCE_MAX = cfg.presenceMax || 2000;
 function presenceFile(k) {
-  return path.join(cfg.addonDir, 'WoWAI', 'presence', String(k).padStart(4, '0') + '.wav');
+  return path.join(cfg.addonDir, 'ClaudeWoW', 'presence', String(k).padStart(4, '0') + '.wav');
 }
 function presenceBeat() {
-  if (!fs.existsSync(path.join(cfg.addonDir, 'WoWAI', 'presence'))) return;
+  if (!fs.existsSync(path.join(cfg.addonDir, 'ClaudeWoW', 'presence'))) return;
   state.presence = ((state.presence || 0) % PRESENCE_MAX) + 1;
   const k = state.presence;
-  try { atomicWrite(presenceFile(k), SILENT_WAV); } catch {}
+  setSignalFile(presenceFile(k), true);
   for (let j = 1; j <= 50; j++) {
     const n = ((k - 1 + j) % PRESENCE_MAX) + 1;
-    try { atomicWrite(presenceFile(n), Buffer.alloc(0)); } catch {}
+    setSignalFile(presenceFile(n), false);
   }
   saveState();
 }
@@ -379,8 +594,9 @@ function readOutbox() {
 
 // The addon sends the player's in-game context (character, location, ...) with
 // its hello and again whenever it changes; an empty one means "context off".
-// It is kept in state.json so a restarted bridge still has it, and goes into
-// the agent's system prompt on every run (see protocol.systemPrompt).
+// It is kept in state.json so a restarted bridge still has it, and goes at the
+// top of every message (protocol.messagePrompt); its presence puts the game
+// rules and the primer into the system prompt (protocol.systemPrompt).
 function setContext(job) {
   const text = String(job.ctx || '').replace(/\r/g, '').trim().slice(0, 2000);
   const prev = (state.context && state.context.text) || '';
@@ -396,14 +612,19 @@ function gameContext() {
   return (state.context && state.context.text) || '';
 }
 
-// The addon/macro primer that goes into the system prompt with the context.
-// Read on every run so edits count without a restart; "" in the config turns
-// it off. Relative paths are taken from the repo (docs/WOW-ADDON-PRIMER.md).
+// The addon/macro primer that goes into the system prompt while the addon sends
+// a context. Read on every run so edits count without a restart (Claude Code
+// records a chat's system prompt at its first message, so there an edit reaches
+// new chats); "" in the config turns
+// it off. Relative paths are taken from the repo (docs/WOW-ADDON-PRIMER.md),
+// or from the binary's extracted copy of it (assets.js), where an edit lasts
+// until the next start.
 const PRIMER_FILE = cfg.primerFile === undefined ? 'docs/WOW-ADDON-PRIMER.md' : cfg.primerFile;
+const primerPath = () => (path.isAbsolute(PRIMER_FILE) ? PRIMER_FILE : AS.file(PRIMER_FILE));
 let warnedNoPrimer = false;
 function primer() {
   if (!PRIMER_FILE) return '';
-  const file = path.resolve(REPO, PRIMER_FILE);
+  const file = primerPath();
   try { return fs.readFileSync(file, 'utf8'); } catch (e) {
     if (!warnedNoPrimer) { warnedNoPrimer = true; log(`primer: cannot read ${file} (${e.code || e.message}); running without it`); }
     return '';
@@ -435,7 +656,9 @@ function allowRules(agentId, rules) {
 // ---------------------------------------------------------------------------
 
 function submit(job) {
+  if (job.shot) fallbackToPixel(job.shot, job); // even for a message already handled: the report stands
   if (alreadyHandled(job)) return;
+  clearSignalsAhead(job.id);
   if (job.ctx !== undefined) setContext(job);
   if (job.forget) {
     // A deleted chat: forget it and ack. No agent run.
@@ -443,6 +666,13 @@ function submit(job) {
     forgetChat(job);
     saveState();
     signal('ack', job.id, true);
+    return;
+  }
+  if (job.cancel) {
+    markHandled(job);
+    saveState();
+    signal('ack', job.id, true);
+    cancelRun(job);
     return;
   }
   if (job.hello) {
@@ -471,7 +701,35 @@ function submit(job) {
   runJob(job);
 }
 
+function cancelRun(job) {
+  const key = chatKey(job);
+  const q = queued.get(key);
+  if (q && q.id === job.cancel) {
+    queued.delete(key);
+    markHandled(q);
+    saveState();
+    log(`${tagOf(q)} cancelled from the game before it started`);
+    return;
+  }
+  const cur = running.get(key);
+  if (cur && cur.job.id === job.cancel) {
+    cur.job.cancelled = true;
+    log(`${tagOf(cur.job)} cancelled from the game; ending it and everything it started`);
+    if (cur.child) killTree(cur.child);
+    return;
+  }
+  log(`${tagOf(job)} cancel for #${job.cancel}: nothing is running for that message`);
+}
+
+// Is this message already running or waiting its turn? (A retried strip.)
+function inFlight(job) {
+  const key = chatKey(job);
+  const cur = running.get(key), q = queued.get(key);
+  return !!((cur && cur.job.id === job.id) || (q && q.id === job.id));
+}
+
 function drainQueue() {
+  if (shuttingDown) return; // a run ending under the shutdown must not start the next one
   for (const [key, job] of queued) {
     if (running.size >= MAX_PARALLEL) break;
     if (running.has(key)) continue;
@@ -480,29 +738,58 @@ function drainQueue() {
   }
 }
 
+const tagOf = job => `#${job.id}${job.session ? '@' + job.session : ''}`;
+
+// A message the addon sent: acknowledge it, decide which plugin it belongs to
+// (plugins.js: an address in the text, the chat's binding, a plugin's match(),
+// else the default), and hand it over.
 function runJob(job) {
-  const key = chatKey(job);
-  const cwd = resolveCwd(job.cwd);
-  job.cwd = cwd;
-  const tag = `#${job.id}${job.session ? '@' + job.session : ''}`;
+  const tag = tagOf(job);
   signal('sig', job.id, false);
   resetBeats(job.id);
   signal('ack', job.id, true);
-  if (!fs.existsSync(cwd)) {
-    log(`${tag} cwd does not exist: ${cwd}`);
-    const sibs = siblingFolders();
-    finish(job, 'error', `Folder does not exist: ${cwd}\n` +
-      `Paths are relative to ${DEFAULT_CWD}.` +
-      (sibs.length ? `\nFolders there: ${sibs.join(', ')}` : '') +
-      `\nUse /wow-ai cd <folder> to pick one, or /wow-ai cd alone for the default.`);
+  const r = registry.route(job, { fallback: DEFAULT_PLUGIN });
+  if (r.error) {
+    log(`${tag} ${r.error}`);
+    finish(job, 'error', `${r.error}\nUse /claude-wow plugin <name> to pick one, or /claude-wow plugin alone for the default (${DEFAULT_PLUGIN}).`);
     return;
   }
+  job.plugin = r.plugin.id;
+  if (r.text !== undefined) job.text = r.text; // "@ask ..." addressed it; the address is not part of the prompt
+  r.plugin.handle(job, core);
+}
+
+// What a plugin's handle(job, core) may use: the model runner, the bridge's
+// folder, and the sessions the core keeps per chat.
+const core = {
+  log,
+  tag: tagOf,
+  get defaultCwd() { return DEFAULT_CWD; },
+  // That plugin's block in config.json (plugins.<id>), or nothing.
+  options: id => (pluginsCfg[id] && typeof pluginsCfg[id] === 'object' ? pluginsCfg[id] : {}),
+  // The folder the chat's current agent session was made in, if any.
+  sessionFolder: job => (state.sessionCwd && state.sessionCwd[sessKey(job)]) || '',
+  fail: (job, text) => finish(job, 'error', text),
+  runAgent,
+};
+
+// Run the chat's agent on the message, in opts.cwd, and publish what it says.
+// opts.freshSession() may name a reason to start a new session instead of
+// resuming (the coding plugin: the folder changed). The plugin's own
+// instructions (tools) go into the system prompt; its surfaces say whether the
+// run may mark the map and whether macro blocks in the reply become buttons.
+function runAgent(job, opts = {}) {
+  const key = chatKey(job);
+  const cwd = opts.cwd || DEFAULT_CWD;
+  const tag = tagOf(job);
+  const plugin = registry.get(job.plugin) || { id: '', tools: '', surfaces: [] };
+  const surfaces = new Set(plugin.surfaces);
   // Which agent: the chat's own (an "agent=" flag), else the bridge's default.
   const agentId = job.agent ? A.normalizeAgent(job.agent) : DEFAULT_AGENT;
   if (!agentId) {
     log(`${tag} unknown agent "${job.agent}"`);
     finish(job, 'error', `Unknown agent "${job.agent}". This bridge knows: ${A.agentIds().join(', ')}.\n` +
-      `Use /wow-ai agent <name> to pick one, or /wow-ai agent alone for the default (${DEFAULT_AGENT}).`);
+      `Use /claude-wow agent <name> to pick one, or /claude-wow agent alone for the default (${DEFAULT_AGENT}).`);
     return;
   }
   job.agent = agentId;
@@ -516,16 +803,22 @@ function runJob(job) {
   }
   const skey = sessKey(job);
   if (job.newSession) { delete state.sessions[skey]; delete state.sessions[key]; }
-  // Agents keep sessions per project folder, and a session belongs to the agent
-  // that made it, so a chat that changes either starts fresh.
-  const prevCwd = state.sessionCwd && state.sessionCwd[skey];
-  if (prevCwd && !sameFolder(prevCwd, cwd) && state.sessions[skey]) {
-    log(`${tag} folder changed (${prevCwd} -> ${cwd}): new session`);
+  // A session belongs to the plugin and the agent that made it (and, for the
+  // coding plugin, its folder), so a chat that changes any of them starts fresh.
+  const why = typeof opts.freshSession === 'function' && state.sessions[skey] ? opts.freshSession() : '';
+  if (why) {
+    log(`${tag} ${why}: new session`);
     delete state.sessions[skey]; delete state.sessions[key];
   }
   const prevAgent = (state.sessionAgent && state.sessionAgent[skey]) || 'claude';
   if (prevAgent !== agentId && state.sessions[skey]) {
     log(`${tag} agent changed (${prevAgent} -> ${agentId}): new session`);
+    delete state.sessions[skey]; delete state.sessions[key];
+  }
+  // Sessions from before plugins existed were all the coding plugin's.
+  const prevPlugin = (state.sessionPlugin && state.sessionPlugin[skey]) || 'claude-code';
+  if (prevPlugin !== plugin.id && state.sessions[skey]) {
+    log(`${tag} plugin changed (${prevPlugin} -> ${plugin.id}): new session`);
     delete state.sessions[skey]; delete state.sessions[key];
   }
   if (Array.isArray(job.allow) && job.allow.length) {
@@ -536,37 +829,62 @@ function runJob(job) {
   noteMessage(job, 'user', job.text);
   const resume = state.sessions[skey] || state.sessions[key];
 
+  // Vision: the game view handleScreenshot cut out for this job, read now (it
+  // may have waited in the queue) and handed to the agent as an image.
+  const images = [];
+  let visionNote = '';
+  if (job.image) {
+    try {
+      images.push({ ...job.image, data: fs.readFileSync(job.image.file).toString('base64') });
+    } catch (e) {
+      log(`${tag} vision: ${path.basename(job.image.file)} is gone (${e.message}); running without the screen`);
+      visionNote = 'The screenshot for this message was gone before the run started, so the agent did not see your screen.';
+    }
+  } else if (job.vision && TRANSPORT !== 'screenshot') {
+    log(`${tag} vision asked for, but the ${TRANSPORT} transport has no screenshot to attach`);
+  }
+  const image = images[0] || null;
+
+  // The stable system prompt (the same bytes on every run of this chat) and the
+  // message, which carries what changes: the situation and the vision note.
   const ctx = gameContext();
-  const system = P.systemPrompt(ctx, primer());
+  const system = P.systemPrompt(ctx, primer(), { tools: plugin.tools });
   const systemShort = P.systemPrompt(ctx, '');
+  const prompt = P.messagePrompt(job.text, ctx, { image });
   const promptFile = path.join(TMP_DIR, `prompt-${job.id}-${Date.now().toString(36)}.txt`);
-  const input = agent.input({ prompt: job.text, system, systemShort, resume, cfg: acfg });
+  const input = agent.input({ prompt, system, systemShort, resume, cfg: acfg, images });
   if (input.promptFile !== undefined) {
     try { fs.mkdirSync(TMP_DIR, { recursive: true }); fs.writeFileSync(promptFile, input.promptFile); }
     catch (e) { finish(job, 'error', `Could not write the prompt file ${promptFile}: ${e.message}`); return; }
   }
   const args = [...cmd.args, ...agent.args({
-    cfg: acfg, resume, cwd, system, systemShort, promptFile,
-    prompt: job.text, timeoutMs: cfg.timeoutMs,
+    cfg: acfg, resume, cwd, system, systemShort, promptFile, images,
+    prompt, timeoutMs: cfg.timeoutMs,
   })];
   const env = agent.env({ ...process.env });
-  // Where this run's tools append map commands (docs/MAP.md); any agent can use it.
-  try {
-    fs.mkdirSync(MAP_DIR, { recursive: true });
-    fs.rmSync(mapFileFor(job), { force: true });
-    env.WOW_AI_MAP_FILE = mapFileFor(job);
-  } catch (e) { log(`${tag} map file unavailable: ${e.message}`); }
+  // Where this run's tools append map commands (docs/MAP.md); any agent can use
+  // it, on a plugin whose replies may reach the map.
+  if (surfaces.has('map')) {
+    try {
+      fs.mkdirSync(MAP_DIR, { recursive: true });
+      fs.rmSync(mapFileFor(job), { force: true });
+      env.CLAUDE_WOW_MAP_FILE = mapFileFor(job);
+    } catch (e) { log(`${tag} map file unavailable: ${e.message}`); }
+  }
 
-  log(`${tag} (${job.via}) ${agent.name} starting in ${cwd}${resume ? ' (resume ' + resume.slice(0, 8) + ')' : ' (new session)'}${ctx ? ' [game context]' : ''}${running.size ? ' [' + (running.size + 1) + ' running]' : ''}`);
-  const child = spawn(cmd.file, args, { cwd, env, windowsHide: true, stdio: [input.stdin !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
+  log(`${tag} (${job.via}) [${plugin.id}] ${agent.name} starting in ${cwd}${resume ? ' (resume ' + resume.slice(0, 8) + ')' : ' (new session)'}${ctx ? ' [game context]' : ''}${image ? ` [screen ${image.width}x${image.height}, ${Math.round(image.bytes / 1024)} KB]` : ''}${running.size ? ' [' + (running.size + 1) + ' running]' : ''}`);
+  const startedAt = Date.now(); // a fresh session's clock starts here (the footer's elapsed time)
+  const child = PR.spawnChild(cmd.file, args, { cwd, env, windowsHide: true, stdio: [input.stdin !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
   running.set(key, { job, child });
-  publish(key, { chat: job.chat, id: job.id, status: 'working', text: resume ? 'thinking...' : 'starting a new session...', cwd, session: resume, agent: agentId }, true);
+  noteInflight(key, job, child, agent.name, path.basename(args.find(a => /\.[cm]?js$/.test(String(a))) || cmd.file));
+  publish(key, { chat: job.chat, id: job.id, status: 'working', text: resume ? 'thinking...' : 'starting a new session...', cwd: job.cwd, session: resume, agent: agentId, plugin: plugin.id }, true);
   if (input.stdin !== undefined) { child.stdin.on('error', () => {}); child.stdin.end(input.stdin); }
 
   const parser = agent.parser();
   const progress = [];
   let sessionId = resume || '';
   let result = null;       // { text, error } once the agent has produced its reply
+  let usage = null;        // the last { context, output, window? } the parser saw (agents.js)
   const denied = new Set(); // allowlist rules the run was refused (Claude syntax)
   const notes = [];        // bridge remarks appended to the reply
   let stderr = '';
@@ -578,10 +896,11 @@ function runJob(job) {
     progress.push(line);
     while (progress.length > 10) progress.shift();
     beat(job);
-    publish(key, { chat: job.chat, id: job.id, status: 'working', text: progress.join('\n'), cwd, session: sessionId, agent: agentId }, false);
+    publish(key, { chat: job.chat, id: job.id, status: 'working', text: progress.join('\n'), cwd: job.cwd, session: sessionId, agent: agentId, plugin: plugin.id }, false);
   };
   if (agent.stream === 'text') pushProgress(`${agent.name} is working (no live progress)`);
   if (input.note) notes.push(input.note);
+  if (visionNote) notes.push(visionNote);
   // Long thinking stretches produce no tool events; keep the heartbeat alive anyway.
   const keepalive = setInterval(() => beat(job), 45000);
 
@@ -605,6 +924,7 @@ function runJob(job) {
       return;
     }
     if (r.session) sessionId = r.session;
+    if (r.usage) usage = r.usage;
     for (const p of r.progress) pushProgress(p);
     for (const d of r.denied) denied.add(d);
     notes.push(...r.notes);
@@ -627,7 +947,8 @@ function runJob(job) {
   child.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8'); });
 
   const timer = setTimeout(() => {
-    log(`${tag} timed out after ${cfg.timeoutMs} ms, killing`);
+    job.timedOut = true;
+    log(`${tag} timed out after ${cfg.timeoutMs || 1800000} ms; ending it and everything it started (SIGTERM, SIGKILL after ${KILL_GRACE_MS} ms)`);
     killTree(child);
   }, cfg.timeoutMs || 1800000);
 
@@ -635,6 +956,8 @@ function runJob(job) {
     clearTimeout(timer);
     clearInterval(keepalive);
     if (input.promptFile !== undefined) { try { fs.unlinkSync(promptFile); } catch {} }
+    // The game view was for this run only; the agent has it in its session now.
+    if (job.image) { try { fs.unlinkSync(job.image.file); } catch {} }
   };
 
   child.on('error', (err) => {
@@ -659,48 +982,93 @@ function runJob(job) {
       state.sessions[skey] = sessionId;
       (state.sessionCwd = state.sessionCwd || {})[skey] = cwd;
       (state.sessionAgent = state.sessionAgent || {})[skey] = agentId;
+      (state.sessionPlugin = state.sessionPlugin || {})[skey] = plugin.id;
+      // Context growth: one more turn on this session, and what the next one will carry.
+      job.usage = P.noteUsage(state, skey, { usage, fresh: !resume, agent: agentId, startedAt });
     }
     // Map marks count whatever the outcome: the tools already reported them.
-    const mapped = takeMapCommands(job, result ? result.text : '');
-    if (result) result.text = mapped.text;
-    if (mapped.note) notes.push(mapped.note);
+    if (surfaces.has('map')) {
+      const mapped = takeMapCommands(job, result ? result.text : '');
+      if (result) result.text = mapped.text;
+      if (mapped.note) notes.push(mapped.note);
+    }
     const extra = notes.length ? `\n\n[bridge] ${notes.join('\n\n[bridge] ')}` : '';
     if (result && !result.error) {
       const body = String(result.text || '').trim() || (notes.length ? '' : `(${agent.name} finished without a reply)`);
       finish(job, 'done', (body + extra).trim(), sessionId, [...denied]);
     } else if (result) {
-      finish(job, 'error', (String(result.text || '') + extra).trim(), sessionId, [...denied]);
+      const said = String(result.text || '').trim() || `${agent.name} reported an error with no message (exit code ${code}).${stderr.trim() ? '\n' + stderr.trim().slice(-1500) : ''}`;
+      finish(job, 'error', (said + extra).trim(), sessionId, [...denied]);
+    } else if (shuttingDown) {
+      finish(job, 'error', `The bridge was stopped while ${agent.name} was still working. Send the message again once it is back.`, sessionId);
+    } else if (job.cancelled) {
+      finish(job, 'error', 'Cancelled from the game.', sessionId);
+    } else if (job.timedOut) {
+      const limitMs = cfg.timeoutMs || 1800000;
+      const limit = limitMs < 60000 ? `${Math.round(limitMs / 1000)} s` : `${Math.round(limitMs / 60000)} min`;
+      finish(job, 'error', `${agent.name} was stopped after ${limit}, the limit set by timeoutMs in config.json. Send the message again, or raise timeoutMs.`, sessionId);
     } else {
       finish(job, 'error', `${agent.name} exited with code ${code} and no result.\n${stderr.trim().slice(-1500)}`, sessionId);
     }
   });
 }
 
+function noteInflight(key, job, child, agentName, marker) {
+  (state.inflight = state.inflight || {})[key] = { id: job.id, chat: job.chat, session: job.session, cwd: job.cwd, pid: child && child.pid, agent: agentName, marker, startedAt: Date.now() };
+  saveState();
+}
+
+function recoverInflight() {
+  const lost = Object.entries(state.inflight || {});
+  if (!lost.length) return;
+  for (const [key, run] of lost) {
+    if (process.platform !== 'win32' && isSameProcess(run.pid, run.startedAt, run.marker)) {
+      try { process.kill(-run.pid, 'SIGKILL'); log(`#${run.id}: ended the orphaned ${run.agent || 'agent'} process group ${run.pid} left by the previous bridge`); } catch {}
+    }
+    const since = new Date(run.startedAt || Date.now()).toISOString().slice(11, 19);
+    const text = `The bridge stopped unexpectedly while ${run.agent || 'the agent'} was working on this message (started ${since} UTC), so its reply is lost. Send it again. The reason is in ${LOG_FILE}.`;
+    P.markHandled(state, { session: run.session, chat: run.chat, id: run.id });
+    live.set(key, { chat: run.chat, id: run.id, status: 'error', text, cwd: run.cwd });
+    signal('ack', run.id, true);
+    signal('sig', run.id, true);
+    log(`#${run.id}@${run.session || ''} was running when the previous bridge stopped; told the game it is lost`);
+  }
+  state.inflight = {};
+  saveState();
+}
+
 function finish(job, status, text, session, denied) {
   if (job.finished) return; // spawn failures fire both 'error' and 'close'
   job.finished = true;
   running.delete(chatKey(job));
+  if (state.inflight) delete state.inflight[chatKey(job)];
   markHandled(job);
   saveState();
   // A finished reply ends with the "TL;DR:" block the system prompt asks for:
   // that part is what the game chat prints; the window gets the whole reply.
   let summary = '';
   let macros = [];
+  const plugin = registry.get(job.plugin);
   if (status === 'done') {
     ({ text, summary } = P.splitSummary(text));
     // After the split: a macro block the agent put after "TL;DR:" must not end up
-    // in the game-chat summary.
-    const m = P.extractMacros(text);
-    text = m.text + (m.notes.length ? `\n\n[bridge] ${m.notes.join('; ')}` : '');
-    macros = m.macros;
-    summary = P.stripMacroBlocks(summary);
+    // in the game-chat summary. Only a plugin whose replies may carry macros
+    // gets the buttons.
+    if (plugin && plugin.surfaces.includes('macro')) {
+      const m = P.extractMacros(text);
+      text = m.text + (m.notes.length ? `\n\n[bridge] ${m.notes.join('; ')}` : '');
+      macros = m.macros;
+      summary = P.stripMacroBlocks(summary);
+    }
   }
   noteMessage(job, status === 'done' ? 'assistant' : 'system', status === 'done' ? text : 'Bridge error: ' + text);
-  publish(chatKey(job), { chat: job.chat, id: job.id, status, text, summary, cwd: job.cwd, session, denied, macros, agent: job.agent || '' }, true);
+  const usage = P.usageFields(job.usage);
+  publish(chatKey(job), { chat: job.chat, id: job.id, status, text, summary, cwd: job.cwd, session, denied, macros, agent: job.agent || '', plugin: job.plugin || '', ...usage }, true);
   signal('sig', job.id, true);
-  log(`#${job.id}${job.session ? '@' + job.session : ''} ${status} (${text.length} chars${summary ? ', summary ' + summary.length : ', no summary'})`);
+  const growth = usage.turns ? `, turn ${usage.turns}${usage.ctx ? ', ctx ' + P.tokensLabel(usage.ctx) + (usage.window ? ' of ' + P.tokensLabel(usage.window) : '') : ''}${usage.cost !== undefined ? ', ~$' + usage.cost.toFixed(2) + ' API so far' : ''}` : '';
+  log(`#${job.id}${job.session ? '@' + job.session : ''} ${status} (${text.length} chars${summary ? ', summary ' + summary.length : ', no summary'}${growth})`);
   drainQueue();
-  if (exitWhenIdle && running.size === 0) process.exit(status === 'done' ? 0 : 1);
+  if (exitWhenIdle && running.size === 0 && !shuttingDown) process.exit(status === 'done' ? 0 : 1); // under a shutdown, shutdown() exits
 }
 
 // ---------------------------------------------------------------------------
@@ -716,21 +1084,22 @@ function pollSavedVariables() {
   if (job) submit(job);
 }
 
-// Windows: capture.ps1 (GDI). macOS: capture_mac.py (native screencapture). Elsewhere: capture_x11.py (Wine/X11).
+// Windows: capture.ps1 (GDI). macOS: capture_mac.py (CoreGraphics, screencapture fallback). Elsewhere: capture_x11.py (Wine/X11).
+// The scripts are next to this file in a checkout and written out of the binary otherwise (assets.js).
 function captureCommand() {
   if (process.platform === 'win32') {
-    return ['powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(HERE, 'capture.ps1'),
+    return ['powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', AS.file('bridge/capture.ps1'),
       '-Cell', String(cap.cellPx), '-Cells', String(cap.cellsPerRow), '-MaxRows', String(cap.maxRows),
       '-IntervalMs', String(cap.intervalMs), '-ProcessName', cap.processName]];
   }
   if (process.platform === 'darwin') {
-    const args = [path.join(HERE, 'capture_mac.py'),
+    const args = [AS.file('bridge/capture_mac.py'),
       '--cell', String(cap.cellPx), '--cells', String(cap.cellsPerRow), '--max-rows', String(cap.maxRows),
       '--interval-ms', String(cap.intervalMs), '--process-name', cap.processName];
     if (cap.windowName) args.push('--window-name', cap.windowName);
     return [cap.python || 'python3', args];
   }
-  const args = [path.join(HERE, 'capture_x11.py'),
+  const args = [AS.file('bridge/capture_x11.py'),
     '--cell', String(cap.cellPx), '--cells', String(cap.cellsPerRow), '--max-rows', String(cap.maxRows),
     '--interval-ms', String(cap.intervalMs), '--process-name', cap.processName];
   if (cap.windowName) args.push('--window-name', cap.windowName);
@@ -739,15 +1108,19 @@ function captureCommand() {
 }
 
 function startCapture() {
+  if (shuttingDown) return;
   const [cmd, args] = captureCommand();
-  const ps = spawn(cmd, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  const ps = captureChild = PR.spawnChild(cmd, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   const rl = readline.createInterface({ input: ps.stdout });
   rl.on('line', (line) => {
     let ev;
     try { ev = JSON.parse(line); } catch { return; }
-    if (ev.info) { log('capture:', ev.info); return; }
-    if (ev.warn) { log('capture:', ev.warn); return; }
-    if (ev.error) { log('capture error:', ev.error); return; }
+    // `hint` is the capture script naming a cause the user can fix (a denied macOS
+    // permission, a display scale the decoder cannot read); never swallow it.
+    const hint = ev.hint ? `\n         -> ${ev.hint}` : '';
+    if (ev.info) { log('capture:', ev.info + hint); return; }
+    if (ev.warn) { log('capture:', ev.warn + hint); return; }
+    if (ev.error) { log('capture error:', ev.error + hint); return; }
     if (typeof ev.id === 'number') {
       const jobs = jobsFromStrip(ev.id, ev.text);
       log(`strip #${ev.id}: ${jobs.length} message(s)`);
@@ -757,9 +1130,118 @@ function startCapture() {
   ps.stderr.on('data', (d) => log('capture stderr:', String(d).trim().slice(0, 300)));
   ps.on('error', (err) => log(`capture could not start (${cmd}): ${err.message}`));
   ps.on('close', (code) => {
+    if (captureChild === ps) captureChild = null;
+    if (shuttingDown) return;
     log(`capture exited (${code}); restarting in 5 s`);
     setTimeout(startCapture, 5000);
   });
+}
+
+// The screenshot transport: every new WoWScrnShot_*.png/.tga in the game's
+// Screenshots folder is decoded once its size settles. A file holding a strip is
+// deleted after it was read (whatever the strip's verdict once the magic is
+// there, so a retried shot doesn't pile up); one without a strip is the
+// player's own screenshot and stays. Files from before the bridge started are
+// the sweep's business (sweepScreenshots below): strip-bearing ones go, the rest stay.
+const stripOptions = () => ({ cell: cap.cellPx, cells: cap.cellsPerRow, maxRows: cap.maxRows, threshold: LEVELS.threshold });
+// The strip the addon is asked to draw, for the banner and the log.
+const stripGeometry = () => (STRIP_CODEC === 2
+  ? `${D.DENSE.cells}x${D.DENSE.maxRows} cells of ${D.DENSE.cell}px, levels ${P.denseLevels(cap.screenshotLevels).join('/')}`
+  : `${cap.cellsPerRow}x${cap.maxRows} cells of ${cap.cellPx}px, levels ${LEVELS.off}/${LEVELS.on}, threshold ${LEVELS.threshold}`);
+let shotHint = null;
+function handleScreenshot(file) {
+  let buf;
+  try { buf = fs.readFileSync(file); } catch (e) { log(`screenshot: cannot read ${path.basename(file)} (${e.message})`); return; }
+  let img;
+  try { img = D.readImage(buf); } catch (e) { log(`screenshot: ${path.basename(file)} unreadable (${e.message}); left alone`); return; }
+  const { msg, offset } = D.findStrip(img, stripOptions(), shotHint);
+  if (!msg) {
+    log(`screenshot: ${path.basename(file)} (${img.width}x${img.height} ${img.format}) holds no strip; left alone`);
+    return;
+  }
+  shotHint = offset;
+  if (msg.error) {
+    log(`screenshot: strip in ${path.basename(file)} rejected: ${msg.error}` + (msg.error === 'checksum' ? ' (is the strip drawn at 1 UI unit per pixel?)' : ''));
+  } else {
+    const jobs = jobsFromStrip(msg.id, msg.text).map(job => ({ ...job, via: 'screenshot' }));
+    log(`strip #${msg.id} (screenshot ${path.basename(file)}, ${img.width}x${img.height} ${img.format}, codec ${msg.codec}, ${msg.rows} row(s)): ${jobs.length} message(s)`);
+    // Vision: the frame below the strip is the game as the player saw it. Cut
+    // it out once for the messages that asked, before the file goes (not for a
+    // retried shot of a message already handled or under way: no orphan file).
+    const seeing = jobs.filter(job => job.vision && !job.hello && !job.forget && !alreadyHandled(job) && !inFlight(job));
+    if (seeing.length) attachGameView(img, offset[1] + msg.height, seeing, path.basename(file));
+    for (const job of jobs) submit(job);
+  }
+  try { fs.unlinkSync(file); } catch (e) { log(`screenshot: could not delete ${path.basename(file)} (${e.message})`); }
+}
+
+// Vision: crop the strip's rows off `img`, scale it down and write one PNG per
+// job into bridge/tmp (job.image says where; runJob reads and then deletes it).
+// The folder never holds more than vision.keep of them: a run that never
+// started (bridge killed, chat deleted) must not leave a pile of screenshots.
+function attachGameView(img, cropTop, jobs, source) {
+  let view, png;
+  try {
+    view = V.gameView(img, { cropTop, maxWidth: vis.maxWidth });
+    png = V.encodePNG(view);
+    fs.mkdirSync(TMP_DIR, { recursive: true });
+  } catch (e) { log(`vision: could not prepare the game view from ${source} (${e.message}); running without it`); return; }
+  for (const job of jobs) {
+    const file = path.join(TMP_DIR, V.fileName(job.id));
+    try { fs.writeFileSync(file, png); } catch (e) { log(`vision: could not write ${file} (${e.message})`); continue; }
+    job.image = { file, width: view.width, height: view.height, mediaType: 'image/png', bytes: png.length };
+  }
+  pruneVisionFiles(Math.max(1, vis.keep | 0));
+  log(`vision: ${source} -> ${view.width}x${view.height} png, ${Math.round(png.length / 1024)} KB, for ${jobs.map(j => '#' + j.id).join(', ')}`);
+}
+
+// Keep the newest `keep` vision files in bridge/tmp; 0 sweeps them all (startup).
+function pruneVisionFiles(keep) {
+  let names = [];
+  try { names = fs.readdirSync(TMP_DIR).filter(V.isVisionFile); } catch { return; }
+  const files = names.map(name => { const f = path.join(TMP_DIR, name); let m = 0; try { m = fs.statSync(f).mtimeMs; } catch {} return { f, m }; })
+    .sort((a, b) => b.m - a.m);
+  for (const { f } of files.slice(keep)) { try { fs.unlinkSync(f); } catch {} }
+}
+pruneVisionFiles(0); // leftovers from a bridge that died mid-run
+
+// Leftover shots. The watcher only sees files that appear while it runs, and
+// the addon shoots on every send, so a bridge that was down (or died) while the
+// player kept typing leaves a full-screen file per message in the Screenshots
+// folder. At startup, and then every SWEEP_MS, S.sweepOrphans deletes the files
+// that hold a decodable strip (the same reader and finder handleScreenshot
+// uses: magic header plus checksum, which nothing but the addon draws) and
+// leaves every other file, i.e. the player's own screenshots, alone. A file
+// younger than a minute is the watcher's business, not the sweep's.
+const SWEEP_MS = 5 * 60 * 1000;
+const sweepMemo = new Map();
+function holdsStrip(buf) {
+  const img = D.readImage(buf);
+  return !!D.findStrip(img, stripOptions(), shotHint).msg;
+}
+function sweepScreenshots(why) {
+  const r = S.sweepOrphans(SCREENSHOT_DIR, holdsStrip, { memo: sweepMemo, log, minAgeMs: why === 'startup' ? 2000 : 60000 });
+  if (r.removed.length || r.more) {
+    log(`screenshot sweep (${why}): removed ${r.removed.length} leftover strip screenshot(s), ${(r.bytes / 1048576).toFixed(1)} MB` +
+      (r.kept ? `; ${r.kept} without a strip left alone` : '') + (r.more ? '; more next time' : ''));
+  }
+}
+
+let shotWatch = null; // the folder watcher, closed by fallbackToPixel
+function startScreenshotWatch() {
+  if (TRANSPORT !== 'screenshot') return; // fell back while waiting for the folder
+  if (!SCREENSHOT_DIR) { log('screenshot transport: no addonDir in config.json, so no Screenshots folder to watch'); return; }
+  if (!fs.existsSync(SCREENSHOT_DIR)) {
+    // The client creates it on the first screenshot; look again in a while.
+    log(`screenshot transport: ${SCREENSHOT_DIR} does not exist yet; retrying in 10 s`);
+    setTimeout(startScreenshotWatch, 10000);
+    return;
+  }
+  shotWatch = S.watchScreenshots(SCREENSHOT_DIR, handleScreenshot, { log });
+  log(`screenshot transport: watching ${SCREENSHOT_DIR} (strip codec ${STRIP_CODEC}: ${stripGeometry()})`);
+  sweepScreenshots('startup');
+  const sweeper = setInterval(() => sweepScreenshots('periodic'), SWEEP_MS);
+  if (sweeper.unref) sweeper.unref();
 }
 
 function agentLine(id) {
@@ -772,34 +1254,60 @@ function agentLine(id) {
 }
 
 function banner() {
-  console.log('WoW AI bridge');
-  console.log(`  folder   : ${DEFAULT_CWD}  (${DEFAULT_CWD_SOURCE}; chats can override with /wow-ai cd)`);
+  console.log('Claude WoW bridge');
+  console.log(`  runtime  : ${R.describe()}`);
+  console.log(`  home     : ${HOME.dir}  (${HOME.source === 'legacy' ? 'the layout from before CLAUDE_WOW_HOME; run setup to move it to ' + H.defaultDir() : HOME.source}; config, state, transcripts, log)`);
+  console.log(`  folder   : ${DEFAULT_CWD}  (${DEFAULT_CWD_SOURCE}; chats can override with /claude-wow cd)`);
   console.log(`  addons   : ${cfg.addonDir}`);
   console.log(`  addon    : ${addonInstalled() ? 'installed' : 'NOT INSTALLED - run: node setup.js, then restart WoW'}`);
   console.log(`  slots    : ${slotsInstalled() ? SLOTS + ' installed' : 'NOT INSTALLED - run: node setup.js (or node bridge/install-slots.js), then restart WoW'}`);
-  console.log(`  capture  : ${cap.enabled ? 'on (' + cap.processName + ', ' + cap.cellsPerRow + 'x' + cap.maxRows + ' cells of ' + cap.cellPx + 'px)' : 'off'}`);
+  console.log(`  capture  : ${!cap.enabled ? 'off' : TRANSPORT === 'screenshot' ? 'screenshot transport' + (TRANSPORT_SOURCE === 'default' ? ' (the default; no screen capture, no permissions, no python)' : ' (capture.mode in config.json)') + ': ' + SCREENSHOT_DIR + ', strip codec ' + STRIP_CODEC + ': ' + stripGeometry() : 'pixel transport, DEPRECATED (' + (TRANSPORT_SOURCE === 'fallback' ? 'FALLBACK: ' + P.transportNote(state.transportFallback) : 'capture.mode in config.json; kept only until Screenshot() is confirmed on Windows and Linux/Wine') + '): screen capture of ' + cap.processName + ', ' + cap.cellsPerRow + 'x' + cap.maxRows + ' cells of ' + cap.cellPx + 'px'}`);
+  console.log(`  vision   : ${TRANSPORT === 'screenshot' ? 'per chat (/claude-wow vision on, or /claude-wow look <question>); the game view goes out up to ' + vis.maxWidth + 'px wide' : 'needs capture.mode "screenshot" (the pixel capture never sees more than the strip)'}`);
   console.log(`  parallel : up to ${MAX_PARALLEL} chats at once`);
   console.log(`  fallback : ${SAVED_VARS}`);
-  console.log(`  agent    : ${DEFAULT_AGENT} (default; chats pick their own with /wow-ai agent)`);
+  console.log(`  plugins  : ${registry.all().map(p => p.id + (p.id === DEFAULT_PLUGIN ? ' (default)' : '')).join(', ')}  (chats pick their own with /claude-wow plugin)`);
+  for (const p of registry.all()) if (typeof p.banner === 'function') console.log(`  ${p.id.padEnd(9)}: ${p.banner(core.options(p.id))}`);
+  console.log(`  agent    : ${DEFAULT_AGENT} (default; chats pick their own with /claude-wow agent)`);
   for (const id of A.agentIds()) console.log(`  ${id.padEnd(9)}: ${agentLine(id)}`);
   console.log(`  sessions : ${Object.keys(state.sessions).length} saved`);
   const ctx = gameContext();
-  console.log(`  context  : ${cfg.gameContext === false ? 'off (gameContext in config.json)' : ctx ? (ctx.split('\n').find(l => /^Character:/i.test(l)) || ctx.split('\n')[0]).slice(0, 100) : 'none yet (the addon sends it with its hello; /wow-ai context in game)'}`);
-  console.log(`  primer   : ${!PRIMER_FILE ? 'off (primerFile in config.json)' : primer() ? path.resolve(REPO, PRIMER_FILE) + ' (' + primer().length + ' chars, with the context)' : 'NOT FOUND: ' + path.resolve(REPO, PRIMER_FILE)}`);
+  console.log(`  context  : ${cfg.gameContext === false ? 'off (gameContext in config.json)' : ctx ? (ctx.split('\n').find(l => /^Character:/i.test(l)) || ctx.split('\n')[0]).slice(0, 100) : 'none yet (the addon sends it with its hello; /claude-wow context in game)'}`);
+  console.log(`  primer   : ${!PRIMER_FILE ? 'off (primerFile in config.json)' : primer() ? primerPath() + ' (' + primer().length + ' chars, in the system prompt while the addon sends a context)' : 'NOT FOUND: ' + primerPath()}`);
   console.log('Leave this window open while you play. Ctrl+C to stop.\n');
 }
 
 banner();
 if (inject !== null) {
-  submit({ id: state.lastId + 1, session: '', chat: '', text: inject, cwd: '', newSession: false, via: 'inject', agent: injectAgent || '' });
+  const job = { id: state.lastId + 1, session: '', chat: '', text: inject, cwd: '', newSession: false, via: 'inject', agent: injectAgent || '' };
+  if (injectPlugin) job.plugin = injectPlugin;
+  if (injectImage) {
+    // The whole file is the screen (no strip to crop): what vision does in game, without the game.
+    let img;
+    try { img = D.readImage(fs.readFileSync(injectImage)); }
+    catch (e) { console.error(`--image: cannot read ${injectImage} (${e.message}); PNG or TGA only.`); process.exit(2); }
+    job.vision = true;
+    attachGameView(img, 0, [job], path.basename(injectImage));
+    if (!job.image) process.exit(2);
+  }
+  submit(job);
 } else {
+  if (!once) recoverInflight();
   pollSavedVariables();
   if (once) {
     if (running.size === 0) { console.log('nothing pending'); process.exit(0); }
   } else {
     setInterval(pollSavedVariables, cfg.pollMs || 750);
+    if (Number.isFinite(state.lastId)) clearSignalsAhead(state.lastId);
     presenceBeat();
     setInterval(presenceBeat, cfg.presenceIntervalMs || 30000);
-    if (cap.enabled) startCapture();
+    // Fresh slot files right away, so the addon's first slot read tells it which
+    // transport this bridge listens on (its hello can't reach a screenshot-mode
+    // bridge until it knows to take a screenshot).
+    publishNow();
+    if (cap.enabled && TRANSPORT === 'screenshot') startScreenshotWatch();
+    else if (cap.enabled) {
+      if (TRANSPORT_SOURCE === 'fallback') log(`transport: ${P.transportNote(state.transportFallback)}`);
+      startCapture();
+    }
   }
 }

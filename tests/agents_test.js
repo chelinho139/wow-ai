@@ -41,6 +41,36 @@ test('Claude Code: headless stream-json with the allowlist, resume and system pr
   assert.equal(env.PATH, 'x');
 });
 
+test('Claude Code with an image (vision): a stream-json user message with the picture as a content block', () => {
+  const image = { file: '/b/tmp/vision-7-x.png', data: 'aGVsbG8=', mediaType: 'image/png', width: 1280, height: 712 };
+  // Without images nothing changes: no --input-format, plain text on stdin.
+  assert.deepEqual(A.AGENTS.claude.args({ cfg: {}, resume: '', system: '', cwd: 'x', images: [] }),
+    ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits']);
+  assert.deepEqual(A.AGENTS.claude.input({ prompt: 'hi', images: [] }), { stdin: 'hi' });
+  assert.deepEqual(A.AGENTS.claude.input({ prompt: 'hi' }), { stdin: 'hi' });
+  // With one: the prompt goes in as one JSON line the CLI reads with --input-format stream-json.
+  const args = A.AGENTS.claude.args({ cfg: {}, resume: 's', system: 'SYS', cwd: 'x', images: [image] });
+  assert.deepEqual(args, ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits',
+    '--input-format', 'stream-json', '--resume', 's', '--append-system-prompt', 'SYS']);
+  const { stdin } = A.AGENTS.claude.input({ prompt: 'what is this?', images: [image] });
+  assert.ok(stdin.endsWith('\n'), 'one line, newline-terminated');
+  const msg = JSON.parse(stdin);
+  assert.equal(msg.type, 'user');
+  assert.equal(msg.message.role, 'user');
+  assert.deepEqual(msg.message.content[0], { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aGVsbG8=' } });
+  assert.deepEqual(msg.message.content[1], { type: 'text', text: A.IMAGE_CAPTION + '\n\nwhat is this?' });
+  assert.equal(msg.message.content.length, 2);
+  // A path-only image (no pixels loaded) is not inlined: it is named in the prompt like the other CLIs do.
+  assert.deepEqual(A.AGENTS.claude.input({ prompt: 'hi', images: ['/a.png'] }), { stdin: 'hi\n\nAttached screenshots: /a.png — read them with your Read tool.' });
+  assert.ok(!A.AGENTS.claude.args({ cfg: {}, resume: '', system: '', cwd: 'x', images: ['/a.png'] }).includes('--input-format'));
+  // The other agents take the file path out of the same image objects.
+  assert.deepEqual(A.imagePaths([image, '/b.png', null]), ['/b/tmp/vision-7-x.png', '/b.png']);
+  assert.deepEqual(A.AGENTS.codex.args({ cfg: {}, resume: '', cwd: 'x', images: [image] }).slice(-3), ['-i', '/b/tmp/vision-7-x.png', '-']);
+  assert.ok(A.AGENTS.codex.input({ prompt: 'p', system: '', systemShort: '', resume: '', images: [image] }).stdin.includes('Attached screenshots: /b/tmp/vision-7-x.png'));
+  assert.ok(A.AGENTS.hermes.args({ cfg: {}, cwd: '.', resume: '', images: [image] }).includes('/b/tmp/vision-7-x.png'));
+  assert.ok(A.AGENTS.grok.input({ prompt: 'p', images: [image] }).promptFile.includes('/b/tmp/vision-7-x.png'));
+});
+
 test('Codex: exec --json in the chat folder, sandbox from permissionMode, resume as a subcommand, prompt on stdin with the context on top', () => {
   const args = A.AGENTS.codex.args({ cfg: { permissionMode: 'acceptEdits', model: 'gpt-5-codex' }, resume: '', cwd: 'C:\\p' });
   assert.deepEqual(args, ['exec', '--json', '--skip-git-repo-check', '-C', 'C:\\p', '--sandbox', 'workspace-write', '-m', 'gpt-5-codex', '-']);
@@ -59,7 +89,7 @@ test('Codex: exec --json in the chat folder, sandbox from permissionMode, resume
   // for a new session and as the short version on a resumed one.
   const fresh = A.AGENTS.codex.input({ prompt: 'fix it', system: 'FULL', systemShort: 'SHORT', resume: '' });
   assert.equal(fresh.stdin, A.contextBlock('FULL') + 'fix it');
-  assert.ok(fresh.stdin.startsWith('[Context from the WoW AI bridge'));
+  assert.ok(fresh.stdin.startsWith('[Context from the Claude WoW bridge'));
   assert.equal(A.AGENTS.codex.input({ prompt: 'fix it', system: 'FULL', systemShort: 'SHORT', resume: 't' }).stdin, A.contextBlock('SHORT') + 'fix it');
   assert.equal(A.AGENTS.codex.input({ prompt: 'fix it', system: '', systemShort: '', resume: '' }).stdin, 'fix it');
   assert.deepEqual(A.AGENTS.codex.args({ cfg: {}, resume: '', cwd: 'x', images: ['a.png', 'b.png'] }).slice(-5), ['-i', 'a.png', '-i', 'b.png', '-']);
@@ -360,4 +390,97 @@ test('resolveCommand: a configured script runs with this node, an npm .cmd shim 
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+test('Claude stream: usage on the assistant messages is the context the next turn will carry; the result only adds the window', () => {
+  // Shapes as Claude Code 2.1 prints them (`-p --output-format stream-json --verbose`, haiku):
+  // turn 1 of a session, one call; turn 2 resumed, a tool step and the answer.
+  const usage1 = { input_tokens: 10, cache_creation_input_tokens: 17366, cache_read_input_tokens: 13689, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 17366 }, output_tokens: 1, service_tier: 'standard' };
+  const p = A.claudeParser();
+  const r1 = p.feed({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'pong' }], usage: usage1 }, session_id: 's1' });
+  assert.deepEqual(r1.usage, { context: 31065, output: 1 });
+  assert.deepEqual(r1.progress, ['pong']);
+  const end1 = p.feed({ type: 'result', subtype: 'success', is_error: false, num_turns: 1, result: 'pong', session_id: 's1',
+    usage: { input_tokens: 10, cache_creation_input_tokens: 17366, cache_read_input_tokens: 13689, output_tokens: 44, cache_creation: { ephemeral_1h_input_tokens: 17366, ephemeral_5m_input_tokens: 0 } },
+    modelUsage: { 'claude-haiku-4-5-20251001': { inputTokens: 10, outputTokens: 44, cacheReadInputTokens: 13689, cacheCreationInputTokens: 17366, contextWindow: 200000, maxOutputTokens: 32000 } } });
+  // The run's price at list rates is exactly what Claude Code itself reported (total_cost_usd 0.0363309):
+  // haiku 4.5 at $1/M input, $5/M output, cache reads at 0.1x, this run's cache writes all 1-hour at 2x.
+  assert.deepEqual(end1.usage, { context: 31065, output: 1, window: 200000, cost: 0.0363309, costIsSessionTotal: true });
+  assert.deepEqual(end1.done, { text: 'pong', error: false });
+
+  // Turn 2: the first call reads exactly turn 1's total plus the new message; the
+  // last call is what turn 3 will carry. The result's usage is the SUM of the two
+  // calls (cache_read 62491), which must not be mistaken for the context.
+  const q = A.claudeParser();
+  const step = q.feed({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'ls' } }], usage: { input_tokens: 10, cache_read_input_tokens: 31055, cache_creation_input_tokens: 381, output_tokens: 4 } } });
+  assert.equal(step.usage.context, 31446);
+  q.feed({ type: 'user', message: { content: [{ type: 'tool_result', content: 'a.js' }] } });
+  const last = q.feed({ type: 'assistant', message: { content: [{ type: 'text', text: 'pong' }], usage: { input_tokens: 8, cache_read_input_tokens: 31436, cache_creation_input_tokens: 1170, output_tokens: 2 } } });
+  assert.equal(last.usage.context, 32614);
+  const end2 = q.feed({ type: 'result', subtype: 'success', result: 'pong', num_turns: 2,
+    usage: { input_tokens: 18, cache_read_input_tokens: 62491, cache_creation_input_tokens: 1551, output_tokens: 161 },
+    modelUsage: { 'claude-haiku-4-5-20251001': { contextWindow: 200000 } } });
+  assert.equal(end2.usage.context, 32614, 'the last assistant message, not the summed result');
+  assert.equal(end2.usage.window, 200000);
+  // A modelUsage entry with no token counts: the top-level usage (the turn's sum) is priced at that model.
+  assert.ok(Math.abs(end2.usage.cost - (18 * 1 + 161 * 5 + 62491 * 0.1 + 1551 * 1.25) / 1e6) < 1e-12, String(end2.usage.cost));
+  assert.equal(end2.usage.costUnknown, undefined);
+  // A turn with no assistant message (an error) falls back to the result's usage; no usage at all reports none.
+  const e = A.claudeParser().feed({ type: 'result', subtype: 'error_during_execution', is_error: true, result: 'boom', usage: { input_tokens: 5, cache_read_input_tokens: 100, output_tokens: 0 } });
+  assert.deepEqual(e.usage, { context: 105, output: 0, costUnknown: ['no model named'] }, 'tokens, and a price it cannot name');
+  assert.equal(A.claudeParser().feed({ type: 'result', result: 'x' }).usage, undefined);
+  assert.equal(A.claudeParser().feed({ type: 'assistant', message: { content: [] } }).usage, undefined);
+  assert.equal(A.claudeUsage({ input_tokens: 'x' }), null);
+  assert.equal(A.claudeUsage(null), null);
+  assert.equal(A.claudeWindow({ modelUsage: { a: { contextWindow: 200000 }, b: { contextWindow: 1000000 } } }), 1000000);
+  assert.equal(A.claudeWindow({}), 0);
+});
+
+test('API-equivalent cost: per-model list rates, cache reads and writes priced apart, unknown models omitted rather than guessed', () => {
+  // The real haiku run, priced from modelUsage with the 1h/5m split from usage.cache_creation.
+  const real = { usage: { input_tokens: 10, cache_creation_input_tokens: 17366, cache_read_input_tokens: 13689, output_tokens: 44, cache_creation: { ephemeral_1h_input_tokens: 17366, ephemeral_5m_input_tokens: 0 } },
+    modelUsage: { 'claude-haiku-4-5-20251001': { inputTokens: 10, outputTokens: 44, cacheReadInputTokens: 13689, cacheCreationInputTokens: 17366, contextWindow: 200000 } } };
+  const c = A.claudeCost(real, '');
+  assert.deepEqual(c.models, ['claude-haiku-4-5-20251001']);
+  assert.deepEqual(c.unknown, []);
+  assert.ok(Math.abs(c.usd - 0.0363309) < 1e-9, `${c.usd} = Claude Code's own total_cost_usd`);
+  // Cache reads are a tenth of fresh input: the measured session (45.2M of 45.4M input tokens
+  // read from cache) would be ~10x overstated at the full input rate.
+  const opus = A.claudeCost({ usage: {}, modelUsage: { 'claude-opus-4-6': { inputTokens: 200000, outputTokens: 0, cacheReadInputTokens: 45200000, cacheCreationInputTokens: 0 } } }, '');
+  assert.ok(Math.abs(opus.usd - (200000 * 5 + 45200000 * 0.5) / 1e6) < 1e-9, opus.usd);
+  // Five-minute cache writes at 1.25x, one-hour at 2x, split by the top-level ratio.
+  const writes = A.claudeCost({ usage: { cache_creation: { ephemeral_5m_input_tokens: 750, ephemeral_1h_input_tokens: 250 } }, modelUsage: { 'claude-sonnet-5': { cacheCreationInputTokens: 1000 } } }, '');
+  assert.ok(Math.abs(writes.usd - (750 * 2 * 1.25 + 250 * 2 * 2) / 1e6) < 1e-12, writes.usd);
+  // Claude Fable 5.1 lists its own cache-read rate.
+  const fable = A.claudeCost({ usage: {}, modelUsage: { 'claude-fable-5-1': { cacheReadInputTokens: 1e6 } } }, '');
+  assert.ok(Math.abs(fable.usd - 0.25) < 1e-12, fable.usd);
+  assert.equal(A.claudeRate('claude-fable-5').cacheRead, undefined, 'Fable 5 reads at the usual tenth');
+  // A model without a rate is named, not priced; nothing to price at all is null.
+  const mixed = A.claudeCost({ usage: {}, modelUsage: { 'claude-haiku-4-5': { outputTokens: 1e6 }, 'claude-new-9': { outputTokens: 1e6 } } }, '');
+  assert.deepEqual(mixed.unknown, ['claude-new-9']);
+  assert.ok(Math.abs(mixed.usd - 5) < 1e-12);
+  assert.equal(A.claudeCost({ usage: { input_tokens: 5 } }, ''), null);
+  assert.equal(A.claudeCost({}, 'claude-opus-5'), null);
+  // No modelUsage: the top-level usage at the model the assistant messages named.
+  const top = A.claudeCost({ usage: { input_tokens: 1000, output_tokens: 100, cache_read_input_tokens: 10000, cache_creation_input_tokens: 2000 } }, 'claude-opus-5');
+  assert.ok(Math.abs(top.usd - (1000 * 5 + 100 * 25 + 10000 * 0.5 + 2000 * 5 * 1.25) / 1e6) < 1e-12, top.usd);
+  assert.deepEqual(A.claudeCost({ usage: { input_tokens: 1 } }, 'claude-new-9').unknown, ['claude-new-9']);
+  for (const r of A.CLAUDE_RATES) assert.ok(r.input > 0 && r.output > 0 && r.match instanceof RegExp);
+  // Through the parser: the result carries the run's cost, or names the model it could not price.
+  const p = A.claudeParser();
+  p.feed({ type: 'assistant', message: { model: 'claude-new-9', content: [{ type: 'text', text: 'hi' }], usage: { input_tokens: 5, cache_read_input_tokens: 100, cache_creation_input_tokens: 0, output_tokens: 1 } } });
+  const r = p.feed({ type: 'result', result: 'hi', usage: { input_tokens: 5, cache_read_input_tokens: 100, output_tokens: 1 } });
+  assert.deepEqual(r.usage, { context: 105, output: 1, costUnknown: ['claude-new-9'] });
+});
+
+test('the other agents report no context size: their streams carry none the bridge can trust', () => {
+  // Codex names a usage on turn.completed, but whether it is the last call or the turn's sum is unverified.
+  const codex = A.codexParser();
+  codex.feed({ type: 'thread.started', thread_id: 't' });
+  assert.equal(codex.feed({ type: 'turn.completed', usage: { input_tokens: 5000, cached_input_tokens: 4000, output_tokens: 20 } }).usage, undefined);
+  const grok = A.grokParser();
+  assert.equal(grok.feed({ type: 'usage', data: { input_tokens: 1 } }).usage, undefined);
+  assert.equal(grok.feed({ type: 'end', sessionId: 'g', stopReason: 'end_turn' }).usage, undefined);
+  assert.equal(A.agyParser().feed({ event: 'result', result: { status: 'SUCCESS', response: 'ok' } }).usage, undefined);
+  assert.equal(A.hermesParser().finish({ stdout: 'ok', stderr: '', code: 0 }).usage, undefined);
 });

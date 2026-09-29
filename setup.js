@@ -6,34 +6,81 @@
 //
 // Finds the WoW: Forever client, copies the addon into Interface\AddOns, writes
 // bridge/config.json from the example (if missing), and builds the slot pool.
-// Re-running is safe: existing config and generated files are kept.
+// Re-running is safe: existing config and generated files are kept, except that
+// an explicit --project updates defaultCwd (that is the only way to correct it
+// without editing config.json by hand).
 //
-// An install of this project under its old name (wow-claude: the WoWClaude
-// addon, WoWClaude_S### slots, WoWClaude.lua saved data) is migrated: the saved
-// data is carried over so chats survive, the old folders are removed so two
-// addons don't fight over /ai and /r, and config.json is brought up to date.
+// An install of this project under one of its old names (wow-ai: the WoWAI
+// addon, WoWAI_S### slots, WoWAI.lua saved data; before that wow-claude and
+// WoWClaude) is migrated: the saved data is carried over so chats survive, the
+// old folders are removed so two addons don't fight over the slash commands and
+// /r, and config.json is brought up to date.
 
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const ROOT = __dirname;
-const ADDON_SRC = path.join(ROOT, 'addon', 'WoWAI');
-const BRIDGE = path.join(ROOT, 'bridge');
-const CONFIG = path.join(BRIDGE, 'config.json');
-const EXAMPLE = path.join(BRIDGE, 'config.example.json');
+// Literal requires: the compiled binary bundles what it can see (runtime.js).
+const P = require('./bridge/protocol'); // the addon's name, and its old names
+const H = require('./bridge/home');     // CLAUDE_WOW_HOME: where config.json and the state live
+const R = require('./bridge/runtime');  // node, bun, or the compiled binary
+const A = require('./bridge/agents');   // which agent CLIs this PC has
+const AS = require('./bridge/assets');  // the addon, the config template and the capture scripts, by path
+const ADDON_SRC = AS.dir('addon/' + P.ADDON);
+const EXAMPLE = AS.file('bridge/config.example.json');
+let CONFIG = H.resolve().config; // settled in main(), after the legacy layout has been migrated
 
 const args = {};
-for (let i = 2; i < process.argv.length; i++) {
-  const a = process.argv[i];
-  if (a.startsWith('--')) args[a.slice(2)] = process.argv[i + 1] && !process.argv[i + 1].startsWith('--') ? process.argv[++i] : true;
+function parseArgs(argv) {
+  for (let i = 2; i < argv.length; i++) {
+    const a = argv[i];
+    if (a.startsWith('--')) args[a.slice(2)] = argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[++i] : true;
+  }
+  return args;
 }
+
+// package.json says node >=22.2, but npm does not enforce engines by default, so a
+// too-old node otherwise fails later with something unrelated-looking. Bun (and
+// the binary, which is Bun) reports a node version of its own choosing: not checked.
+const MIN_NODE = [22, 2];
+function checkNode() {
+  if (R.bun) return;
+  const [maj, min] = process.versions.node.split('.').map(Number);
+  if (maj > MIN_NODE[0] || (maj === MIN_NODE[0] && min >= MIN_NODE[1])) return;
+  throw new Error(`Node ${MIN_NODE.join('.')} or newer is required; this is ${process.versions.node}. ` +
+    'Install a newer Node (https://nodejs.org) and run setup again.');
+}
+
+// The default work folder. Validated, because the README's example is a Windows
+// placeholder and path.resolve() would otherwise silently glue it onto the folder
+// setup was run from, producing a path that exists nowhere and only fails in game.
+function resolveProject(raw) {
+  const p = String(raw === true ? '' : raw).trim();
+  if (!p) throw new Error('--project needs a folder (e.g. --project ~/code/my-game)');
+  const windowsShaped = /^[A-Za-z]:[\\/]/.test(p) || p.startsWith('\\\\');
+  if (windowsShaped && process.platform !== 'win32') {
+    throw new Error(`--project "${p}" is a Windows path, but this is ${process.platform}. ` +
+      'Pass a path for this machine, e.g. --project ~/code/my-game');
+  }
+  const abs = path.resolve(p.replace(/^~(?=[\\/]|$)/, os.homedir()));
+  if (!fs.existsSync(abs)) {
+    throw new Error(`--project "${p}" does not exist (looked in ${abs}). ` +
+      'Pass the folder you want the agents to work in, or leave --project off to use the current folder.');
+  }
+  if (!fs.statSync(abs).isDirectory()) throw new Error(`--project "${p}" is not a folder (${abs})`);
+  return abs;
+}
+
+// A folder listing, sorted: Node's comes back alphabetical (libuv sorts it),
+// Bun's in the order the OS gives, and "the first account" or "the first
+// game executable" must be the same choice from a checkout and from the binary.
+const listDir = dir => fs.readdirSync(dir).sort();
 
 function isClient(dir) {
   try {
     if (!fs.existsSync(path.join(dir, 'Interface'))) return false;
-    const items = fs.readdirSync(dir);
+    const items = listDir(dir);
     // Windows: the game exe. macOS: the .app bundle. Linux (Wine): the Wine exe.
     return items.some(f => /^Wow.*\.exe$/i.test(f) || /\.app$/i.test(f));
   } catch { return false; }
@@ -68,7 +115,7 @@ function findClient() {
 function findAccount(client) {
   const base = path.join(client, 'WTF', 'Account');
   let names = [];
-  try { names = fs.readdirSync(base).filter(n => n !== 'SavedVariables' && fs.statSync(path.join(base, n)).isDirectory()); } catch {}
+  try { names = listDir(base).filter(n => n !== 'SavedVariables' && fs.statSync(path.join(base, n)).isDirectory()); } catch {}
   if (args.account) {
     if (!names.includes(args.account)) throw new Error(`Account "${args.account}" not found under ${base}`);
     return args.account;
@@ -78,32 +125,42 @@ function findAccount(client) {
   return names[0];
 }
 
-// The previous name of this project. Chats live in the addon's saved data, so
-// carry that over (renaming the global inside), then remove the old addon and
-// its slot pool: the game only needs one of each, and the old one would still
-// answer /ai, /r and the shift-click hook.
+// The previous names of this project. Chats live in the addon's saved data, so
+// carry that over (renaming the globals inside: the game loads a SavedVariables
+// file by the addon's name and keeps only the globals the .toc declares), then
+// remove the old addon and its slot pool: the game only needs one of each, and
+// the old one would still answer /r and the shift-click hook. The old saved
+// file is left where it is; nothing here deletes saved data. Agent sessions
+// are keyed by chat id in the bridge's state.json, so they follow the chats.
+function migrateSavedData(oldName, oldSaved, newSaved) {
+  let src = fs.readFileSync(oldSaved, 'utf8');
+  for (const g of ['DB', 'MapDB']) src = src.replace(new RegExp('^' + oldName + g + '(\\s*=)', 'm'), P.ADDON + g + '$1');
+  fs.writeFileSync(newSaved, src);
+}
+
 function migrateOldInstall(client, account) {
   const addons = path.join(client, 'Interface', 'AddOns');
   const savedDir = path.join(client, 'WTF', 'Account', account, 'SavedVariables');
-  const oldSaved = path.join(savedDir, 'WoWClaude.lua');
-  const newSaved = path.join(savedDir, 'WoWAI.lua');
-  if (fs.existsSync(oldSaved) && !fs.existsSync(newSaved)) {
-    const src = fs.readFileSync(oldSaved, 'utf8').replace(/^WoWClaudeDB\s*=/m, 'WoWAIDB =');
-    fs.writeFileSync(newSaved, src);
-    console.log(`migrate  : chats and settings copied from ${path.basename(oldSaved)} to ${path.basename(newSaved)}`);
-  }
-  let removed = 0;
-  for (const name of fs.existsSync(addons) ? fs.readdirSync(addons) : []) {
-    if (name === 'WoWClaude' || /^WoWClaude_S\d{3}$/.test(name)) {
-      fs.rmSync(path.join(addons, name), { recursive: true, force: true });
-      removed++;
+  const newSaved = path.join(savedDir, P.ADDON + '.lua');
+  for (const old of P.OLD_ADDONS) { // newest first: WoWAI.lua wins over WoWClaude.lua when both exist
+    const oldSaved = path.join(savedDir, old + '.lua');
+    if (fs.existsSync(oldSaved) && !fs.existsSync(newSaved)) {
+      migrateSavedData(old, oldSaved, newSaved);
+      console.log(`migrate  : chats and settings copied from ${path.basename(oldSaved)} to ${path.basename(newSaved)} (${path.basename(oldSaved)} is kept)`);
     }
+    let removed = 0;
+    for (const name of fs.existsSync(addons) ? fs.readdirSync(addons) : []) {
+      if (name === old || new RegExp('^' + old + '_S\\d{3}$').test(name)) {
+        fs.rmSync(path.join(addons, name), { recursive: true, force: true });
+        removed++;
+      }
+    }
+    if (removed) console.log(`migrate  : removed the old ${old} addon and slot folders (${removed} folder(s))`);
   }
-  if (removed) console.log(`migrate  : removed the old WoWClaude addon and slot folders (${removed} folder(s))`);
 }
 
 function copyAddon(client) {
-  const dest = path.join(client, 'Interface', 'AddOns', 'WoWAI');
+  const dest = path.join(client, 'Interface', 'AddOns', P.ADDON);
   fs.mkdirSync(dest, { recursive: true });
   let copied = 0;
   for (const f of fs.readdirSync(ADDON_SRC)) {
@@ -115,17 +172,17 @@ function copyAddon(client) {
   return { dest, copied };
 }
 
-// A config.json from before the rename, or from before agents: fix the paths
-// that named the old addon, and move Claude's settings under agents.claude next
+// A config.json from before a rename, or from before agents: fix the paths
+// that named an old addon, and move Claude's settings under agents.claude next
 // to the codex and grok blocks from the example. Everything else is kept.
 function upgradeConfig(cfg, example) {
   const notes = [];
-  if (/WoWClaude/.test(cfg.inboxFile || '')) {
-    cfg.inboxFile = path.join(cfg.addonDir, 'WoWAI', 'Inbox.lua');
+  if (P.OLD_ADDON_PATH.test(cfg.inboxFile || '')) {
+    cfg.inboxFile = path.join(cfg.addonDir, P.ADDON, 'Inbox.lua');
     notes.push('inboxFile');
   }
-  if (/WoWClaude\.lua$/.test(cfg.savedVariablesFile || '')) {
-    cfg.savedVariablesFile = cfg.savedVariablesFile.replace(/WoWClaude\.lua$/, 'WoWAI.lua');
+  if (P.OLD_SAVED_FILE.test(cfg.savedVariablesFile || '')) {
+    cfg.savedVariablesFile = cfg.savedVariablesFile.replace(P.OLD_SAVED_FILE, P.ADDON + '.lua');
     notes.push('savedVariablesFile');
   }
   if (!cfg.agents) {
@@ -147,6 +204,12 @@ function writeConfig(client, account) {
   if (fs.existsSync(CONFIG)) {
     const cfg = JSON.parse(fs.readFileSync(CONFIG, 'utf8'));
     const notes = upgradeConfig(cfg, example);
+    // An explicit --project on a re-run is a correction: honour it. Without this
+    // there was no way to fix a bad defaultCwd short of editing config.json.
+    if (args.project) {
+      const want = resolveProject(args.project);
+      if (cfg.defaultCwd !== want) { cfg.defaultCwd = want; notes.push('defaultCwd'); }
+    }
     if (notes.length) {
       fs.writeFileSync(CONFIG, JSON.stringify(cfg, null, 2) + '\n');
       console.log(`config   : ${CONFIG} updated (${notes.join(', ')}); everything else kept`);
@@ -157,30 +220,103 @@ function writeConfig(client, account) {
   }
   const cfg = example;
   cfg.addonDir = path.join(client, 'Interface', 'AddOns');
-  cfg.inboxFile = path.join(cfg.addonDir, 'WoWAI', 'Inbox.lua');
-  cfg.savedVariablesFile = path.join(client, 'WTF', 'Account', account, 'SavedVariables', 'WoWAI.lua');
-  cfg.defaultCwd = args.project ? path.resolve(args.project) : process.cwd();
-  const exe = fs.readdirSync(client).find(f => /^Wow.*\.exe$/i.test(f) || /\.app$/i.test(f));
+  cfg.inboxFile = path.join(cfg.addonDir, P.ADDON, 'Inbox.lua');
+  cfg.savedVariablesFile = path.join(client, 'WTF', 'Account', account, 'SavedVariables', P.ADDON + '.lua');
+  cfg.defaultCwd = args.project ? resolveProject(args.project) : process.cwd();
+  const exe = listDir(client).find(f => /^Wow.*\.exe$/i.test(f) || /\.app$/i.test(f));
   if (exe) {
     let processName = exe.replace(/\.exe$/i, '');
     // macOS: the process name is the executable inside the .app bundle, not the bundle name.
     if (process.platform === 'darwin' && exe.toLowerCase().endsWith('.app')) {
       const macosDir = path.join(client, exe, 'Contents', 'MacOS');
       try {
-        const bins = fs.readdirSync(macosDir).filter(f => fs.statSync(path.join(macosDir, f)).isFile());
+        const bins = listDir(macosDir).filter(f => fs.statSync(path.join(macosDir, f)).isFile());
         if (bins.length) processName = bins[0];
       } catch {}
     }
     cfg.capture.processName = processName;
   }
+  fs.mkdirSync(path.dirname(CONFIG), { recursive: true }); // the home folder, on a fresh install
   fs.writeFileSync(CONFIG, JSON.stringify(cfg, null, 2) + '\n');
   console.log(`config   : wrote ${CONFIG}`);
   return cfg;
 }
 
+// Warnings collected as we go, repeated at the end so they are not scrolled past.
+const warnings = [];
+function warn(line, hint) {
+  warnings.push(hint ? `${line}\n           -> ${hint}` : line);
+  console.log(`warning  : ${line}${hint ? `\n           -> ${hint}` : ''}`);
+}
+
+// Which outbound transport this config starts the bridge on (protocol.chooseTransport):
+// the screenshot transport unless capture.mode says "pixel". The deprecated
+// pixel capture is the only part of the install that needs python3 (off
+// Windows) and, on macOS, the Screen Recording and Automation permissions.
+function transportReport(cfg) {
+  const t = P.chooseTransport(cfg.capture);
+  if (t.transport === 'screenshot') {
+    console.log('transport: screenshot (the default): the addon calls Screenshot(), the bridge reads the file; no screen capture, no permissions, no python');
+  } else if (t.transport === 'pixel') {
+    console.log('transport: pixel (capture.mode in config.json): DEPRECATED screen capture, kept only until Screenshot() is confirmed on Windows and on Linux under Wine; remove capture.mode (or set it to "screenshot") to use the screenshot transport');
+  }
+  return t.transport;
+}
+
+// Off Windows the pixel capture is a python3 script. On the screenshot transport
+// that is only the fallback the bridge makes when the addon reports it cannot
+// shoot, so a missing interpreter is worth a line, not a warning; on the pixel
+// transport it means no messages ever reach the bridge. Reported next to the agent CLIs.
+function pythonReport(cfg, transport) {
+  if (process.platform === 'win32') return; // capture.ps1 needs no python
+  const py = (cfg.capture && cfg.capture.python) || 'python3';
+  const r = spawnSync(py, ['--version'], { encoding: 'utf8' });
+  const os = process.platform === 'darwin' ? 'macOS' : 'Linux';
+  if (r.error || r.status !== 0) {
+    const how = process.platform === 'darwin'
+      ? 'Install it with: xcode-select --install (or brew install python3), then run setup again.'
+      : 'Install python3 from your package manager, then run setup again.';
+    if (transport === 'screenshot') {
+      console.log(`python   : not found ("${py}"); only the deprecated pixel-capture fallback needs it (the ${os} screen capture is a python script), the screenshot transport does not. ${how.replace('Install it', 'If you want that fallback, install it')}`);
+    } else {
+      warn(`python3 not found ("${py}"), and the ${os} screen capture is a python script`, how);
+    }
+    return;
+  }
+  console.log(`python   : ${(r.stdout || r.stderr).trim()} (${py})${transport === 'screenshot' ? '; only the deprecated pixel-capture fallback needs it' : ''}`);
+}
+
+// macOS: the two permissions the pixel capture cannot work without, checked for
+// real rather than discovered later as a screencapture error repeating once a
+// second. On the screenshot transport neither is needed, so the check is skipped
+// and named, for anyone who wants the deprecated fallback ready.
+function macCaptureReport(cfg, transport) {
+  if (process.platform !== 'darwin') return;
+  if (transport === 'screenshot') {
+    console.log('capture  : screenshot transport, so no Screen Recording or Automation permission is needed (npm run check:mac checks them for the deprecated pixel fallback)');
+    return;
+  }
+  const py = (cfg.capture && cfg.capture.python) || 'python3';
+  const r = spawnSync(py, [AS.file('bridge/capture_mac.py'), '--check',
+    '--process-name', (cfg.capture && cfg.capture.processName) || 'World of Warcraft'], { encoding: 'utf8' });
+  if (r.error) return; // python already reported missing
+  const rows = String(r.stdout || '').trim().split('\n').filter(Boolean).map(l => {
+    try { return JSON.parse(l); } catch { return null; }
+  }).filter(Boolean);
+  if (!rows.length) {
+    warn('could not check the macOS screen-capture permissions', `Run it yourself: ${py} bridge/capture_mac.py --check`);
+    return;
+  }
+  const label = { 'screen-recording': 'Screen Recording', window: 'window access', scale: 'display scale' };
+  for (const row of rows) {
+    const name = label[row.check] || row.check;
+    if (row.ok) console.log(`capture  : ${name} OK${row.detail ? ' - ' + row.detail : ''}`);
+    else warn(`${name}: ${row.detail || 'not available'}`, row.hint);
+  }
+}
+
 // Which agent CLIs this PC has, so the last lines of setup can say what is missing.
 function agentReport(cfg) {
-  const A = require(path.join(BRIDGE, 'agents.js'));
   const lines = [];
   for (const id of A.agentIds()) {
     const r = A.resolveCommand(id, A.agentConfig(cfg, id));
@@ -189,7 +325,19 @@ function agentReport(cfg) {
   return lines.join('\n');
 }
 
+function main() {
 try {
+  parseArgs(process.argv);
+  checkNode();
+  // Validate arguments before copying anything, so a bad --project costs nothing.
+  if (args.project) args.project = resolveProject(args.project);
+  // Config, state and transcripts from a checkout that kept them in bridge/ move
+  // to the home folder first, so the config written below lands in one place.
+  const carried = H.migrateLegacy();
+  const home = H.resolve();
+  CONFIG = home.config;
+  console.log(`home     : ${home.dir}${home.source === 'CLAUDE_WOW_HOME' ? '  (CLAUDE_WOW_HOME)' : ''}`);
+  if (carried.length) console.log(`migrate  : ${carried.join(', ')} copied from ${H.LEGACY_DIR} to ${home.dir}; the bridge reads them there from now on (the copies in bridge/ are no longer used)`);
   const client = findClient();
   console.log(`client   : ${client}`);
   const account = findAccount(client);
@@ -198,20 +346,44 @@ try {
   const { dest, copied } = copyAddon(client);
   console.log(`addon    : ${copied} file(s) -> ${dest}`);
   const cfg = writeConfig(client, account);
-  console.log(`project  : ${cfg.defaultCwd}  (change with /wow-ai cd in game, or defaultCwd in config.json)`);
-  console.log(`agent    : ${cfg.agent} by default (change with /wow-ai agent in game, or "agent" in config.json)`);
+  console.log(`project  : ${cfg.defaultCwd}  (change with /claude-wow cd in game, or defaultCwd in config.json)`);
+  // A defaultCwd that no longer exists (moved folder, or a bad --project from an
+  // earlier run) makes every chat fail with "Folder does not exist" in game.
+  if (!fs.existsSync(cfg.defaultCwd)) {
+    warn(`the default project folder does not exist: ${cfg.defaultCwd}`,
+      'Every chat that has not picked its own folder will fail. Fix it with: ' +
+      'node setup.js --project "<folder>"');
+  }
+  console.log(`agent    : ${cfg.agent} by default (change with /claude-wow agent in game, or "agent" in config.json)`);
   console.log(agentReport(cfg));
+  const transport = transportReport(cfg);
+  pythonReport(cfg, transport);
+  macCaptureReport(cfg, transport);
   console.log('slots    : building the reply-slot pool and signal files...');
-  const r = spawnSync(process.execPath, [path.join(BRIDGE, 'install-slots.js')], { stdio: 'inherit' });
+  const r = spawnSync(...R.scriptCommand('install-slots'), { stdio: 'inherit' });
   if (r.status !== 0) throw new Error('install-slots.js failed');
+  if (warnings.length) {
+    console.log(`\n${warnings.length} warning(s) to deal with first:`);
+    for (const w of warnings) console.log(`  - ${w}`);
+  }
   console.log(`
 Done. Next:
   1. Fully quit and relaunch World of Warcraft (it only discovers new addon files at launch).
-  2. Enable "WoW AI" at the character select AddOns screen (the WoW AI slot ### entries stay enabled).
-  3. Start the bridge:  npm start   (in this terminal${process.platform === 'win32' ? '; bridge\\start-window.cmd opens its own window' : '; on Linux keep the game borderless/windowed and check the capture with: npm run probe'})
-  4. In game:  /wow-ai
+  2. Enable "Claude WoW" at the character select AddOns screen (the Claude WoW slot ### entries stay enabled).
+  3. Start the bridge:  ${R.compiled ? 'claude-wow' : 'npm start'}   (in this terminal${
+    process.platform === 'win32' ? '; bridge\\start-window.cmd opens its own window'
+    : transport === 'screenshot' ? ''
+    : process.platform === 'darwin' ? '; keep the game windowed or borderless, and check the capture with: npm run probe:mac'
+    : '; keep the game borderless/windowed and check the capture with: npm run probe'})
+  4. In game:  /claude
 `);
 } catch (e) {
   console.error('setup failed:', e.message);
   process.exit(1);
 }
+}
+
+// Run as a script this is the installer; required (tests/setup_test.js) it only
+// lends out the pieces, the migration above all.
+if (require.main === module) main();
+module.exports = { migrateOldInstall, migrateSavedData, copyAddon, upgradeConfig, isClient, parseArgs, transportReport, main };
