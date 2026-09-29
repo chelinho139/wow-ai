@@ -1432,3 +1432,126 @@ test('plugins: /claude-wow plugin binds the chat like /claude-wow agent, the Plu
   vm.run('SlashCmdList.CLAUDEWOW("help")');
   assert.ok(last().includes('/claude-wow plugin [name]'));
 });
+
+// Context growth: the bridge reports, on every final reply, what the chat's next
+// message will carry (ctx), the turns in the session and the model's window.
+function footerText(vm) {
+  vm.run('RESULT = ""; for _, ch in ipairs(ClaudeWoWFrame.children) do if ch.kind == "FontString" and type(ch.text) == "string" and ch.text:sub(1, 4) == "cwd:" then RESULT = ch.text end end');
+  return vm.evaluate('RESULT');
+}
+function replyWith(vm, fields) {
+  vm.run('ClaudeWoW.Send("msg")');
+  const chatId = vm.evaluate('ClaudeWoWDB.activeChat');
+  const id = vm.num('ClaudeWoWDB.chats[1].pendingId') || vm.num('(function() for _, ch in ipairs(ClaudeWoWDB.chats) do if ch.pendingId then return ch.pendingId end end end)()');
+  assert.ok(id >= 1, 'a message is pending');
+  nextSlot(vm, `{ now = time(), cwd = "", replies = { { chat = "${chatId}", id = ${id}, status = "done", text = "ok", ${fields} } } }`);
+  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+  assert.equal(vm.evaluate('(function() for _, ch in ipairs(ClaudeWoWDB.chats) do if ch.pendingId then return "pending" end end end)()'), null, 'the reply landed');
+}
+
+test('context growth: the footer, /claude-wow context and diag show ctx and turns from the reply record', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  assert.ok(footerText(vm).includes('plugin:'), footerText(vm));
+  assert.ok(!footerText(vm).includes('·'), 'nothing known before the first reply');
+  const last = () => vm.evaluate('ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].text');
+  // The numbers measured on a live machine: 106,863 tokens after 8 turns.
+  // The footer reads like Claude Code's own status line: elapsed since the session
+  // started, the tokens the next message carries, the session at API list prices.
+  replyWith(vm, 'ctx = 106863, turns = 8, window = 200000, since = time() - 718, cost = 2.41');
+  assert.equal(vm.num('ClaudeWoWDB.chats[1].ctx'), 106863);
+  assert.equal(vm.num('ClaudeWoWDB.chats[1].turns'), 8);
+  assert.ok(footerText(vm).endsWith('   11m 58s · ↓ 106.9k tokens · ≈$2.41 API'), footerText(vm));
+  // It ticks while the window is open and nothing is pending.
+  vm.run('STUB.now = STUB.now + 62; STUB.Tick()');
+  assert.ok(footerText(vm).includes('13m 00s · ↓'), footerText(vm));
+  vm.run('SlashCmdList.CLAUDEWOW("diag")');
+  assert.ok(last().includes('context: warning at 100.0k tokens'), last());
+  assert.ok(last().includes('Msg: 13m 00s · ↓ 106.9k tokens of 200.0k · ≈$2.41 API, 8 turns (warned)'), last());
+  // Bare /claude-wow context: this chat's size and turns, the session, the threshold, then the game context as before.
+  vm.run('SlashCmdList.CLAUDEWOW("context")');
+  assert.ok(last().startsWith('Context: 106.9k tokens of 200.0k after 8 turns'), last());
+  assert.ok(last().includes('Session: 13m 00s since it started; ≈$2.41 at API list prices so far (a comparison, not a bill'), last());
+  assert.ok(last().includes('Warning at 100.0k tokens'), last());
+  assert.ok(last().includes('Game context is ON'), last());
+  // A working record carries nothing and changes nothing.
+  vm.run('ClaudeWoW.Send("more")');
+  let id = vm.num('ClaudeWoWDB.chats[1].pendingId');
+  nextSlot(vm, `{ now = time(), cwd = "", replies = { { chat = "${vm.evaluate('ClaudeWoWDB.activeChat')}", id = ${id}, status = "working", text = "thinking" } } }`);
+  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+  assert.equal(vm.num('ClaudeWoWDB.chats[1].ctx'), 106863);
+  vm.run('SlashCmdList.CLAUDEWOW("cancel")');
+  // A fresh session with an agent that reports nothing (turns = 1, no ctx): the clock only, and no stale cost.
+  replyWith(vm, 'turns = 1, since = time() - 5');
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].ctx'), null);
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].cost'), null);
+  assert.ok(footerText(vm).endsWith('   5s'), footerText(vm));
+  assert.ok(!footerText(vm).includes('tokens'), footerText(vm));
+  vm.run('SlashCmdList.CLAUDEWOW("context")');
+  assert.ok(last().includes('Context: 1 turn in this session; AI does not report its context size.'), last());
+  // A restore bundle (read with the next reply) brings the numbers back with the chat.
+  vm.run('ClaudeWoWDB.restored = nil');
+  const token = vm.evaluate('ClaudeWoWDB.session');
+  vm.run('ClaudeWoW.Send("one more")');
+  id = vm.num('ClaudeWoWDB.chats[1].pendingId');
+  nextSlot(vm, `{ now = time(), cwd = "", replies = { { chat = "${vm.evaluate('ClaudeWoWDB.activeChat')}", id = ${id}, status = "done", text = "ok", turns = 2 } }, restore = { token = "${token}", chats = { { id = "r1", name = "Old", cwd = "", plugin = "ask", ctx = 312458, turns = 213, since = time() - 3725, cost = 7.5, messages = { { role = "user", id = 1, t = 1, agent = "", text = "hey" } } } } } }`);
+  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+  assert.equal(vm.evaluate('ClaudeWoWDB.restored'), 'true', 'the bundle was read');
+  vm.run('SlashCmdList.CLAUDEWOW("chat Old")');
+  assert.equal(vm.num('(function() for _, ch in ipairs(ClaudeWoWDB.chats) do if ch.id == "r1" then return ch.ctx end end end)()'), 312458);
+  assert.ok(footerText(vm).endsWith('   1h 02m · ↓ 312.5k tokens · ≈$7.50 API'), footerText(vm));
+});
+
+test('context growth: past the threshold the chat is warned once per crossing, with a New chat button that does what bare /claude does', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  const last = () => vm.evaluate('ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].text');
+  const warnings = () => vm.num('(function() local n = 0; for _, m in ipairs(ClaudeWoWDB.chats[1].history) do if m.newChat then n = n + 1 end end; return n end)()');
+  assert.equal(vm.num('ClaudeWoWDB.settings.contextWarn'), 100000, 'the default threshold');
+  vm.run('SlashCmdList.CLAUDEWOW("context 50k")');
+  assert.equal(vm.num('ClaudeWoWDB.settings.contextWarn'), 50000, 'persisted in the saved settings');
+  assert.ok(last().startsWith('Context warning at 50.0k tokens'), last());
+  replyWith(vm, 'ctx = 40000, turns = 3, window = 200000');
+  assert.equal(warnings(), 0, 'under the mark');
+  replyWith(vm, 'ctx = 60000, turns = 4, window = 200000, cost = 1.2');
+  assert.equal(warnings(), 1, 'the crossing warns');
+  const warning = last();
+  for (const must of ['60.0k tokens of 200.0k after 4 turns, past the 50.0k mark', 're-reads all 60.0k tokens', 'costs more than the last', '≈$1.20 so far (a comparison, not a bill)', 'New chat', "AI's memory of this conversation", 'this transcript stays here', '/claude-wow context 0']) {
+    assert.ok(warning.includes(must), `warning says "${must}": ${warning}`);
+  }
+  assert.ok(vm.evaluate('table.concat(STUB.prints, "\\n")').includes('past the 50.0k mark'), 'the warning reached the game chat, where the reply went');
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].ctxWarned'), 'true');
+  replyWith(vm, 'ctx = 75000, turns = 5, window = 200000');
+  replyWith(vm, 'ctx = 88000, turns = 6, window = 200000');
+  assert.equal(warnings(), 1, 'no nagging while it stays over the mark');
+  // A fresh session (a /claude-wow reset, a folder change) brings it back under: re-armed.
+  replyWith(vm, 'ctx = 20000, turns = 1, window = 200000');
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].ctxWarned'), null);
+  assert.equal(warnings(), 1);
+  replyWith(vm, 'ctx = 90000, turns = 2, window = 200000');
+  assert.equal(warnings(), 2, 'the second crossing warns again');
+  // The button on the warning: a shown "New chat" button whose click is bare /claude.
+  vm.run('ClaudeWoW.Render()');
+  vm.run('FOUND = nil; for _, f in ipairs(STUB.frames) do if f.kind == "Button" and f.text == "New chat" and f.shown and f.parent and f.parent.shown then FOUND = f end end');
+  assert.equal(vm.evaluate('FOUND ~= nil'), 'true', 'a New chat button is shown on the warning');
+  const before = vm.num('#ClaudeWoWDB.chats');
+  vm.run('FOUND.scripts.OnClick(FOUND)');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), before + 1, 'one click, one new chat');
+  assert.notEqual(vm.evaluate('ClaudeWoWDB.activeChat'), vm.evaluate('ClaudeWoWDB.chats[1].id'), 'and it is the active one');
+  assert.ok(!footerText(vm).includes('tokens') && !footerText(vm).includes('·'), 'the new chat starts from nothing: ' + footerText(vm));
+  assert.equal(vm.num('#ClaudeWoWDB.chats[1].history'), vm.num('#ClaudeWoWDB.chats[1].history'), 'the old transcript is untouched');
+  // 0 turns the warning off; a plain number works too.
+  vm.run('SlashCmdList.CLAUDEWOW("chat 1")');
+  vm.run('SlashCmdList.CLAUDEWOW("context 0")');
+  assert.equal(vm.num('ClaudeWoWDB.settings.contextWarn'), 0);
+  assert.ok(last().startsWith('Context warning off'), last());
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].ctxWarned'), null, 'turning it off re-arms');
+  replyWith(vm, 'ctx = 312458, turns = 213, window = 200000');
+  assert.equal(warnings(), 2, 'off means off');
+  vm.run('SlashCmdList.CLAUDEWOW("context 100000")');
+  assert.equal(vm.num('ClaudeWoWDB.settings.contextWarn'), 100000);
+  vm.run('SlashCmdList.CLAUDEWOW("diag")');
+  assert.ok(last().includes('context: warning at 100.0k tokens'), last());
+});

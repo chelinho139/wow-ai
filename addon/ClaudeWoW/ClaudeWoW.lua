@@ -101,6 +101,36 @@ local function FmtDur(sec)
 	return math.floor(sec / 3600) .. "h" .. string.format("%02d", math.floor(sec / 60) % 60) .. "m"
 end
 
+-- Tokens as Claude Code's status line shows them: 850, 9.5k, 186.7k, 1.2M.
+local function FmtTokens(n)
+	n = tonumber(n) or 0
+	if n < 1000 then return tostring(math.floor(n + 0.5)) end
+	if n < 1000000 then return string.format("%.1fk", n / 1000) end
+	return string.format("%.1fM", n / 1000000)
+end
+
+-- Elapsed time the way the same status line shows it: 45s, 11m 58s, 1h 02m.
+local function FmtElapsed(sec)
+	sec = math.max(0, math.floor(sec or 0))
+	if sec < 60 then return sec .. "s" end
+	if sec < 3600 then return math.floor(sec / 60) .. "m " .. string.format("%02d", sec % 60) .. "s" end
+	return math.floor(sec / 3600) .. "h " .. string.format("%02d", math.floor(sec / 60) % 60) .. "m"
+end
+
+-- The footer segment's glyphs (Claude Code's own: "11m 58s · ↓ 186.7k tokens").
+-- One place to change if the client's font lacks one of them.
+local SEG_DOT, SEG_DOWN, SEG_APPROX = "·", "↓", "≈"
+
+-- "100000", "100k", "0.5m" -> a token count; anything else nil.
+local function ParseTokens(text)
+	local num, unit = tostring(text or ""):lower():match("^(%d+%.?%d*)([km]?)$")
+	if not num then return nil end
+	local n = tonumber(num)
+	if not n then return nil end
+	if unit == "k" then n = n * 1000 elseif unit == "m" then n = n * 1000000 end
+	return math.floor(n + 0.5)
+end
+
 -- Last path component of a folder, for labels.
 local function FolderName(cwd)
 	local name = tostring(cwd or ""):gsub("[\\/]+$", ""):match("([^\\/]+)$")
@@ -211,6 +241,10 @@ local function InitDB()
 	if s.autoRefresh == nil then s.autoRefresh = true end
 	if s.signal == nil then s.signal = true end
 	if s.context == nil then s.context = true end -- tell the agent about the character, zone, etc.
+	-- Context growth: say so once when a chat's context passes this many tokens
+	-- (/claude-wow context <n>; 0 = never). 100k is half of Claude's 200k window
+	-- and where a fresh chat lands after about eight messages.
+	if s.contextWarn == nil then s.contextWarn = 100000 end
 	-- How much of each reply to print in the game chat. "summary" (the agent's
 	-- closing TL;DR lines) replaced "full" as the default; an install that still
 	-- has the old default saved moves over once, any other choice is kept.
@@ -1006,6 +1040,102 @@ end
 
 local Finish -- defined below
 
+---------------------------------------------------------------------------
+-- Context growth
+---------------------------------------------------------------------------
+--
+-- Every message resumes the chat's agent session, so the context the model
+-- reads grows with every turn and each message costs more than the last
+-- (measured: 107k tokens after 8 turns, 312k after 213). The bridge reports,
+-- on every final reply, what the next message will carry (ctx), how many turns
+-- the session has had, and the model's window when its CLI names it. The
+-- footer shows it, /claude-wow context reports it, and past the threshold the
+-- chat says so once and offers a new chat.
+
+local function NoteUsage(c, r)
+	if type(r.turns) == "number" then c.turns = r.turns end
+	if type(r.ctx) == "number" and r.ctx > 0 then
+		c.ctx = r.ctx
+	elseif type(r.turns) == "number" and r.turns <= 1 then
+		c.ctx = nil -- a fresh session with an agent that reports nothing
+	end
+	if type(r.window) == "number" and r.window > 0 then c.window = r.window end
+	-- When the session started (its clock), and what it would have cost at API
+	-- prices so far; a fresh session starts both over.
+	if type(r.since) == "number" and r.since > 0 then c.since = r.since end
+	if type(r.cost) == "number" then c.cost = r.cost
+	elseif type(r.turns) == "number" and r.turns <= 1 then c.cost = nil end
+end
+
+-- The footer segment, shaped like Claude Code's status line:
+-- "11m 58s · ↓ 186.7k tokens · ≈$2.41 API". Elapsed since the chat's current
+-- agent session started; the tokens its next message carries; the session's
+-- runs at API list prices ("API": a comparison, a subscription is not billed
+-- by the token). Each part only when known; "" when none is.
+local function ContextSegment(c, long)
+	if not c then return "" end
+	local parts = {}
+	if c.since then table.insert(parts, FmtElapsed(time() - c.since)) end
+	if c.ctx then
+		table.insert(parts, SEG_DOWN .. " " .. FmtTokens(c.ctx) .. " tokens" .. ((long and c.window) and (" of " .. FmtTokens(c.window)) or ""))
+	end
+	if c.cost then table.insert(parts, SEG_APPROX .. string.format("$%.2f API", c.cost)) end
+	return table.concat(parts, " " .. SEG_DOT .. " ")
+end
+
+-- "8 turns" for diag and the context report.
+local function TurnsLabel(c)
+	if not c or not c.turns then return "" end
+	return c.turns .. (c.turns == 1 and " turn" or " turns")
+end
+
+local function ContextThresholdLabel()
+	local limit = tonumber(db.settings.contextWarn) or 0
+	if limit > 0 then return "warning at " .. FmtTokens(limit) .. " tokens (/claude-wow context <n> to change, 0 = off)" end
+	return "warning off (/claude-wow context <n> turns it on)"
+end
+
+-- What /claude-wow context prints for the current chat.
+local function ContextReport(c)
+	local size
+	if c and c.ctx then
+		size = "Context: " .. FmtTokens(c.ctx) .. " tokens" .. (c.window and (" of " .. FmtTokens(c.window)) or "") .. " after " .. (c.turns or "?") .. " turn" .. ((c.turns or 0) == 1 and "" or "s") .. ": that is what your next message here re-reads before it starts on your question."
+	elseif c and c.turns then
+		size = "Context: " .. c.turns .. " turn" .. (c.turns == 1 and "" or "s") .. " in this session; " .. ChatAgentName(c) .. " does not report its context size."
+	else
+		size = "Context: nothing yet - no reply in this session."
+	end
+	if c and c.since then
+		size = size .. "\nSession: " .. FmtElapsed(time() - c.since) .. " since it started"
+			.. (c.cost and string.format("; %s$%.2f at API list prices so far (a comparison, not a bill: a subscription is not charged per token)", SEG_APPROX, c.cost) or "") .. "."
+	end
+	return size .. "\n" .. ContextThresholdLabel():gsub("^%l", string.upper) .. "."
+end
+
+-- Past the threshold: say so once per crossing (a fresh session brings the
+-- number back down, which re-arms it), with a New chat button on the message.
+local function ContextWarning(c)
+	local limit = tonumber(db.settings.contextWarn) or 0
+	if limit <= 0 or not c.ctx or c.ctx < limit then
+		c.ctxWarned = nil
+		return
+	end
+	if c.ctxWarned then return end
+	c.ctxWarned = true
+	local size = FmtTokens(c.ctx) .. " tokens"
+	local text = "This chat's context is " .. size .. (c.window and (" of " .. FmtTokens(c.window)) or "") .. " after " .. (c.turns or "?") .. " turns, past the " .. FmtTokens(limit) .. " mark. "
+		.. "Every message you send here re-reads all " .. size .. " before it starts on your question, so each reply costs more than the last and is slower to start, and it only grows.\n"
+		.. (c.cost and string.format("At API list prices this session comes to %s$%.2f so far (a comparison, not a bill). ", SEG_APPROX, c.cost) or "")
+		.. "Start a new chat to reset it: the New chat button below, or /claude. You lose " .. ChatAgentName(c) .. "'s memory of this conversation; this transcript stays here.\n"
+		.. "Said once per crossing. /claude-wow context <n> moves the mark, /claude-wow context 0 turns it off."
+	AddHistory(c, "system", text)
+	c.history[#c.history].newChat = true
+	-- Where the reply itself went: the whisper tab if the chat has one, else the game chat.
+	if not Whisper.Reply(c, text, nil, "system") then
+		print("|cff66ccff[Claude WoW]|r " .. Display(c.name) .. ": " .. (text:gsub("\n", " ")) .. " Type /claude for a new chat.")
+	end
+end
+
 -- The bridge has read this record: whatever game context rode on it is now
 -- what the bridge knows, so later messages only carry it again if it changes.
 local function NoteAcked(rec)
@@ -1031,6 +1161,7 @@ local function ApplyReplies(replies)
 			matched = true
 			MarkAcked(r.id)
 			local denied = type(r.denied) == "table" and #r.denied > 0 and r.denied or nil
+			if r.status == "done" or r.status == "error" then NoteUsage(c, r) end
 			if r.status == "done" then
 				Finish(c, "assistant", r.text or "", denied, r.agent, r.summary, ClaudeWoW.CleanMacros(r.macros))
 			elseif r.status == "error" then
@@ -1060,6 +1191,10 @@ local function ImportRestore(r)
 				cwd = rc.cwd or DEFAULT_CWD,
 				agent = "",
 				plugin = type(rc.plugin) == "string" and rc.plugin or "",
+				ctx = type(rc.ctx) == "number" and rc.ctx > 0 and rc.ctx or nil,
+				turns = type(rc.turns) == "number" and rc.turns > 0 and rc.turns or nil,
+				since = type(rc.since) == "number" and rc.since > 0 and rc.since or nil,
+				cost = type(rc.cost) == "number" and rc.cost or nil,
 				history = {},
 				unread = 0,
 				created = time(),
@@ -1144,6 +1279,12 @@ local function Tick()
 	end
 	ClaudeWoW.UpdateDot()
 	ClaudeWoW.CheckConnection()
+	-- The footer's elapsed time ticks while the window is open (a pending chat
+	-- refreshes it below anyway).
+	if ui.frame and ui.frame:IsShown() and not AnyPending() then
+		local c = ActiveChat()
+		if c and c.since then ClaudeWoW.UpdateStatus() end
+	end
 	if run.shotsPaused and not ShotsPaused(true) then
 		-- Heard from the bridge again (a beat, an ack, a slot): shoot what waited.
 		run.shotsPaused = nil
@@ -1246,6 +1387,7 @@ Finish = function(chat, role, text, denied, agent, summary, macros)
 	AddHistory(chat, role, text, chat.pendingId, denied, agent, macros)
 	chat.pendingId = nil
 	chat.progress = nil
+	ContextWarning(chat)
 	if run.act then run.act[chat.id] = nil end
 	NotedBridge()
 	local visible = ui.frame and ui.frame:IsShown() and db.activeChat == chat.id
@@ -2718,7 +2860,8 @@ function ClaudeWoW.UpdateStatus()
 	else
 		pluginText = "(bridge default)"
 	end
-	ui.cwd:SetText("cwd: " .. cwdText .. "   agent: " .. agentText .. "   mode: " .. mode .. (ScreenshotMode() and " (screenshot)" or "") .. "   vision: " .. (db.settings.vision and "on" or "off") .. "   plugin: " .. pluginText)
+	local growth = ContextSegment(c)
+	ui.cwd:SetText("cwd: " .. cwdText .. "   agent: " .. agentText .. "   mode: " .. mode .. (ScreenshotMode() and " (screenshot)" or "") .. "   vision: " .. (db.settings.vision and "on" or "off") .. "   plugin: " .. pluginText .. (growth ~= "" and ("   " .. growth) or ""))
 	if ui.resend then ui.resend:SetShown(c and c.pendingId ~= nil and mode == "pixel") end
 	if ui.refresh then ui.refresh:SetShown(mode ~= "pixel" or run.slotsExhausted or run.slotsMissing or run.pixelFailed or false) end
 	ClaudeWoW.UpdateMini()
@@ -2753,6 +2896,12 @@ local function GetBubble(i)
 		ClaudeWoW.Allow(self.chatId, self.rules)
 	end)
 	b.allow:Hide()
+	-- The New chat button on a context warning: exactly what bare /claude does.
+	b.fresh = CreateFrame("Button", nil, b, "UIPanelButtonTemplate")
+	b.fresh:SetHeight(22)
+	b.fresh:SetText("New chat")
+	b.fresh:SetScript("OnClick", function() ClaudeWoW.NewChat() end)
+	b.fresh:Hide()
 	b.macroBtns = {}
 	-- FontStrings can't be selected, so a click opens the message in the copy box.
 	b:EnableMouse(true)
@@ -2770,7 +2919,7 @@ function ClaudeWoW.Render()
 		if not width or width < 80 then width = 400 end
 		ui.content:SetWidth(width)
 		local y, n = 0, 0
-		local function Place(role, text, when, dim, denied, agent, macros)
+		local function Place(role, text, when, dim, denied, agent, macros, newChat)
 			n = n + 1
 			local b = GetBubble(n)
 			local st = ROLE_STYLE[role] or ROLE_STYLE.system
@@ -2800,6 +2949,15 @@ function ClaudeWoW.Render()
 				extra = 28
 			else
 				b.allow:Hide()
+			end
+			if newChat then
+				b.fresh:SetWidth(math.min(width - 24, math.max(120, b.fresh:GetFontString():GetStringWidth() + 30)))
+				b.fresh:ClearAllPoints()
+				b.fresh:SetPoint("TOPLEFT", b.body, "BOTTOMLEFT", 0, -6 - extra)
+				b.fresh:Show()
+				extra = extra + 28
+			else
+				b.fresh:Hide()
 			end
 			-- One button per macro the agent handed over.
 			local shownMacros = 0
@@ -2839,7 +2997,7 @@ function ClaudeWoW.Render()
 		for i, m in ipairs(c.history) do
 			-- The Allow button only makes sense on the newest reply, and only while idle.
 			local denied = (i == last and not c.pendingId and type(m.denied) == "table" and #m.denied > 0) and m.denied or nil
-			Place(m.role, m.text, m.t and date("%H:%M", m.t) or "", false, denied, m.agent, m.macros)
+			Place(m.role, m.text, m.t and date("%H:%M", m.t) or "", false, denied, m.agent, m.macros, m.newChat)
 		end
 		if c.pendingId then
 			local p = c.progress
@@ -3695,7 +3853,8 @@ local HELP = table.concat({
 	"/claude-wow agent [name]           which agent this chat talks to (no name = show; default = the bridge's). Right-clicking the chat and picking Agent does the same",
 	"/claude-wow plugin [name]          what this chat is for: ask (general in-game chat, the default) or claude-code (an agent session in a folder). No name = show; default = the bridge's. Right-clicking the chat and picking Plugin does the same",
 	"/claude-wow reset                  next message in this chat starts a fresh agent session",
-	"/claude-wow context [on|off]       what the agent is told about your character and where you are (no argument = show it)",
+	"/claude-wow context [on|off]       what the agent is told about your character and where you are (no argument = show it, with this chat's context size and turns)",
+	"/claude-wow context <n>            warn once, with a New chat button, when a chat's context passes n tokens (100k by default; 0 = never). The footer shows ctx and turns per chat",
 	"/claude-wow vision [on|off]        send a picture of your screen with each message, so the agent can see what you see (screenshot transport; off by default)",
 	"/claude-wow look <question>        send this one message with a picture of your screen, whatever the vision setting",
 	"/claude-wow map [...]              map layers the agent drew, the route navigator and herb/ore nodes (no argument = status and subcommands; /aimap is the same)",
@@ -3733,7 +3892,8 @@ end
 local COMMAND_ARGS = {
 	mini = 0, min = 0, hide = 0, quit = 0, help = 0, clear = 0, delete = 0, reset = 0, copy = 0,
 	cancel = 0, resend = 0, reload = 0, refresh = 0, slots = 0, diag = 0,
-	context = { [""] = true, on = true, off = true }, ctx = { [""] = true, on = true, off = true },
+	context = function(rest) return rest == "" or rest == "on" or rest == "off" or ParseTokens(rest) ~= nil end,
+	ctx = function(rest) return rest == "" or rest == "on" or rest == "off" or ParseTokens(rest) ~= nil end,
 	mode = { [""] = true, pixel = true, reload = true },
 	signal = { [""] = true, on = true, off = true }, longchat = { [""] = true, on = true, off = true },
 	whisper = { [""] = true, on = true, off = true },
@@ -3847,6 +4007,21 @@ SlashCmdList["CLAUDEWOW"] = function(msg)
 		ClaudeWoW.Toggle(true)
 	elseif cmd == "context" or cmd == "ctx" then
 		rest = rest:lower()
+		local limit = ParseTokens(rest)
+		if limit then
+			-- The context-growth threshold. Chats now under it are re-armed.
+			s.contextWarn = limit
+			for _, ch in ipairs(db.chats) do
+				if limit <= 0 or (ch.ctx or 0) < limit then ch.ctxWarned = nil end
+			end
+			AddHistory(c, "system", (limit > 0
+				and ("Context warning at " .. FmtTokens(limit) .. " tokens: a chat that passes it says so once and offers a new chat.")
+				or "Context warning off: chats grow quietly. The footer still shows ctx and turns.")
+				.. "\n" .. ContextReport(c))
+			ClaudeWoW.Render()
+			ClaudeWoW.Toggle(true)
+			return
+		end
 		if rest == "on" or rest == "off" then
 			s.context = rest == "on"
 			-- Make sure the next record carries the change, hello throttle or not.
@@ -3855,7 +4030,7 @@ SlashCmdList["CLAUDEWOW"] = function(msg)
 			if ClaudeWoW.IsConnected() then ClaudeWoW.SayHello() end
 		end
 		local ctx = ClaudeWoW.GameContext()
-		AddHistory(c, "system", (s.context
+		AddHistory(c, "system", (rest == "" and (ContextReport(c) .. "\n\n") or "") .. (s.context
 			and "Game context is ON: the agent is told this with each message (it goes into its system prompt, so unrelated projects are unaffected by anything but a few lines). /claude-wow context off to stop.\n\n"
 			or "Game context is OFF: the agent is told nothing about the game. /claude-wow context on to send this:\n\n") .. ctx
 			.. "\n\nTip: click the input box, then shift-click an item, spell or quest to link it into your message; the agent gets its tooltip.")
@@ -3978,11 +4153,17 @@ SlashCmdList["CLAUDEWOW"] = function(msg)
 				.. (s.shotFormatSaved and (", screenshotFormat saved: " .. s.shotFormatSaved) or ""),
 			"vision: " .. (s.vision and "on" or "off") .. (s.vision and s.transport ~= "screenshot" and " (needs the screenshot transport; the pixel capture never sees more than the strip)" or ""),
 			"plugin: " .. ((c.plugin and c.plugin ~= "") and c.plugin or ("bridge default, " .. (run.bridgePlugin or "unknown until connected"))) .. " (bridge has: " .. PluginList() .. ")",
+			"context: " .. ContextThresholdLabel(),
 		}
 		for _, ch in ipairs(db.chats) do
 			local a = run.act and run.act[ch.id]
 			if ch.pendingId then
 				table.insert(lines, ch.name .. ": pending #" .. ch.pendingId .. (a and (", heartbeat " .. (a.unreliable and "unreliable" or (a.count .. " beats"))) or ", no heartbeat state"))
+			end
+			local growth = ContextSegment(ch, true)
+			local turns = TurnsLabel(ch)
+			if growth ~= "" or turns ~= "" then
+				table.insert(lines, ch.name .. ": " .. growth .. ((growth ~= "" and turns ~= "") and ", " or "") .. turns .. (ch.ctxWarned and " (warned)" or ""))
 			end
 		end
 		AddHistory(c, "system", "Diagnostics:\n" .. table.concat(lines, "\n"))

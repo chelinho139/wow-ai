@@ -89,6 +89,64 @@ function pruneStale(state, transcripts, now = Date.now(), maxAgeMs = MONTH_MS) {
 }
 
 // ---------------------------------------------------------------------------
+// Context growth
+// ---------------------------------------------------------------------------
+//
+// Every message resumes the chat's agent session, so what the model reads grows
+// with every turn and each message costs more than the last (measured: 107k
+// tokens after 8 turns, 312k after 213). state.sessionUsage[sessKey] keeps, per
+// chat, the tokens its next message will carry (as the agent reported after the
+// last run; agents that report nothing keep the last known value), the number
+// of runs in the current agent session, and the model's window when known. The
+// reply record carries it to the addon as ctx / turns / window.
+
+// Also kept: `since`, when the session started (a new chat or a reset brings
+// it back to now, so the footer's elapsed time visibly restarts), and `cost`,
+// the API-equivalent price of the session's runs so far (agents.js CLAUDE_RATES;
+// a subscription is not billed by the token, so it is shown as a comparison).
+// A run whose model has no rate marks the session costUnknown: tokens are still
+// shown, the cost is not, rather than guessed.
+function noteUsage(state, key, { usage, fresh, agent, startedAt, now = Date.now() } = {}) {
+  const all = (state.sessionUsage = state.sessionUsage || {});
+  const prev = !fresh && all[key] ? all[key] : null;
+  const rec = { turns: (prev ? prev.turns || 0 : 0) + 1, agent: agent || '', at: now, since: prev && prev.since ? prev.since : (startedAt || now) };
+  const u = usage && Number.isFinite(usage.context) && usage.context > 0 ? usage : null;
+  if (u) {
+    rec.context = Math.round(u.context);
+    if (Number.isFinite(u.window) && u.window > 0) rec.window = u.window;
+    else if (prev && prev.window) rec.window = prev.window;
+  } else if (prev && prev.context) {
+    rec.context = prev.context;
+    if (prev.window) rec.window = prev.window;
+  }
+  if (prev && prev.cost !== undefined) rec.cost = prev.cost;
+  if (usage && Number.isFinite(usage.cost)) rec.cost = (rec.cost || 0) + usage.cost;
+  if ((usage && usage.costUnknown) || (prev && prev.costUnknown)) rec.costUnknown = true;
+  all[key] = rec;
+  return rec;
+}
+
+// The reply-record fields for a chat's usage, or nothing when there is none.
+function usageFields(rec) {
+  if (!rec) return {};
+  const f = {};
+  if (rec.context > 0) f.ctx = rec.context;
+  if (rec.turns > 0) f.turns = rec.turns;
+  if (rec.window > 0) f.window = rec.window;
+  if (rec.since > 0) f.since = Math.floor(rec.since / 1000);
+  if (rec.cost !== undefined && !rec.costUnknown) f.cost = Math.round(rec.cost * 10000) / 10000;
+  return f;
+}
+
+// 186.7k, 9.5k, 850, 1.2M: tokens as Claude Code's status line shows them.
+function tokensLabel(n) {
+  n = Number(n) || 0;
+  if (n < 1000) return String(Math.round(n));
+  if (n < 1e6) return (n / 1000).toFixed(1) + 'k';
+  return (n / 1e6).toFixed(1) + 'M';
+}
+
+// ---------------------------------------------------------------------------
 // Folders
 // ---------------------------------------------------------------------------
 
@@ -449,6 +507,12 @@ function luaTable(globalName, records, opts = {}) {
     lines.push(`\t\t\tagent = ${luaStr(r.agent || '')},`);
     if (r.plugin) lines.push(`\t\t\tplugin = ${luaStr(r.plugin)},`);
     if (r.summary) lines.push(`\t\t\tsummary = ${luaStr(r.summary)},`);
+    // Context growth (noteUsage): only on a final record, and only what is known.
+    if (Number(r.ctx) > 0) lines.push(`\t\t\tctx = ${Math.round(Number(r.ctx))},`);
+    if (Number(r.turns) > 0) lines.push(`\t\t\tturns = ${Math.round(Number(r.turns))},`);
+    if (Number(r.window) > 0) lines.push(`\t\t\twindow = ${Math.round(Number(r.window))},`);
+    if (Number(r.since) > 0) lines.push(`\t\t\tsince = ${Math.floor(Number(r.since))},`);
+    if (Number.isFinite(Number(r.cost)) && r.cost !== undefined && r.cost !== null && r.cost !== '') lines.push(`\t\t\tcost = ${Number(r.cost)},`);
     if (Array.isArray(r.denied) && r.denied.length) {
       lines.push(`\t\t\tdenied = { ${r.denied.map(luaStr).join(', ')} },`);
     }
@@ -461,7 +525,12 @@ function luaTable(globalName, records, opts = {}) {
   if (restore) {
     lines.push('\trestore = {', `\t\ttoken = ${luaStr(restore.token)},`, '\t\tchats = {');
     for (const c of restore.chats) {
-      lines.push('\t\t\t{', `\t\t\t\tid = ${luaStr(c.id)},`, `\t\t\t\tname = ${luaStr(c.name)},`, `\t\t\t\tcwd = ${luaStr(c.cwd)},`, `\t\t\t\tplugin = ${luaStr(c.plugin || '')},`, '\t\t\t\tmessages = {');
+      lines.push('\t\t\t{', `\t\t\t\tid = ${luaStr(c.id)},`, `\t\t\t\tname = ${luaStr(c.name)},`, `\t\t\t\tcwd = ${luaStr(c.cwd)},`, `\t\t\t\tplugin = ${luaStr(c.plugin || '')},`);
+      if (Number(c.ctx) > 0) lines.push(`\t\t\t\tctx = ${Math.round(Number(c.ctx))},`);
+      if (Number(c.turns) > 0) lines.push(`\t\t\t\tturns = ${Math.round(Number(c.turns))},`);
+      if (Number(c.since) > 0) lines.push(`\t\t\t\tsince = ${Math.floor(Number(c.since))},`);
+      if (Number.isFinite(Number(c.cost)) && c.cost !== undefined && c.cost !== null && c.cost !== '') lines.push(`\t\t\t\tcost = ${Number(c.cost)},`);
+      lines.push('\t\t\t\tmessages = {');
       for (const m of c.messages) {
         lines.push(`\t\t\t\t\t{ role = ${luaStr(m.role)}, id = ${Number(m.id) || 0}, t = ${Number(m.t) || 0}, agent = ${luaStr(m.agent || '')}, text = ${luaStr(m.text)} },`);
       }
@@ -672,6 +741,7 @@ module.exports = {
   ADDON, OLD_ADDONS, OLD_ADDON_PATH, OLD_SAVED_FILE,
   fromHex, pad3, slotNumber, chatKey, sessKey,
   alreadyHandled, markHandled, pruneStale, MONTH_MS,
+  noteUsage, usageFields, tokensLabel,
   resolveCwd, sameFolder, baseName,
   parseFlags, jobsFromStrip, parseOutbox, systemPrompt, visionHint, splitSummary,
   ruleFor, describeToolUse,

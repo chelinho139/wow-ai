@@ -215,7 +215,7 @@ function maybeOfferRestore(job) {
     .sort((a, b) => (b.updated || 0) - (a.updated || 0))
     .slice(0, 16)
     // A transcript from before plugins existed was a coding chat: it comes back bound to that.
-    .map(c => ({ id: c.id, name: c.name, cwd: c.cwd, plugin: c.plugin || 'claude-code', messages: c.messages.slice(-40).map(m => ({ ...m, text: m.text.slice(0, 2000) })) }));
+    .map(c => ({ id: c.id, name: c.name, cwd: c.cwd, plugin: c.plugin || 'claude-code', ...P.usageFields(state.sessionUsage && state.sessionUsage['chat:' + c.id]), messages: c.messages.slice(-40).map(m => ({ ...m, text: m.text.slice(0, 2000) })) }));
   saveTranscripts();
   if (chats.length) {
     pendingRestore = { token: job.session, chats };
@@ -235,6 +235,7 @@ function forgetChat(job) {
   if (state.sessionCwd) delete state.sessionCwd[sessKey(job)];
   if (state.sessionAgent) delete state.sessionAgent[sessKey(job)];
   if (state.sessionPlugin) delete state.sessionPlugin[sessKey(job)];
+  if (state.sessionUsage) delete state.sessionUsage[sessKey(job)];
   if (pendingRestore) pendingRestore.chats = pendingRestore.chats.filter(c => c.id !== job.chat);
   saveTranscripts();
   log(`#${job.id}${job.session ? '@' + job.session : ''} forgot chat ${job.chat}${had ? '' : ' (nothing stored)'}`);
@@ -740,6 +741,7 @@ function runAgent(job, opts = {}) {
   }
 
   log(`${tag} (${job.via}) [${plugin.id}] ${agent.name} starting in ${cwd}${resume ? ' (resume ' + resume.slice(0, 8) + ')' : ' (new session)'}${ctx ? ' [game context]' : ''}${image ? ` [screen ${image.width}x${image.height}, ${Math.round(image.bytes / 1024)} KB]` : ''}${running.size ? ' [' + (running.size + 1) + ' running]' : ''}`);
+  const startedAt = Date.now(); // a fresh session's clock starts here (the footer's elapsed time)
   const child = PR.spawnChild(cmd.file, args, { cwd, env, windowsHide: true, stdio: [input.stdin !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
   running.set(key, { job, child });
   publish(key, { chat: job.chat, id: job.id, status: 'working', text: resume ? 'thinking...' : 'starting a new session...', cwd: job.cwd, session: resume, agent: agentId, plugin: plugin.id }, true);
@@ -749,6 +751,7 @@ function runAgent(job, opts = {}) {
   const progress = [];
   let sessionId = resume || '';
   let result = null;       // { text, error } once the agent has produced its reply
+  let usage = null;        // the last { context, output, window? } the parser saw (agents.js)
   const denied = new Set(); // allowlist rules the run was refused (Claude syntax)
   const notes = [];        // bridge remarks appended to the reply
   let stderr = '';
@@ -788,6 +791,7 @@ function runAgent(job, opts = {}) {
       return;
     }
     if (r.session) sessionId = r.session;
+    if (r.usage) usage = r.usage;
     for (const p of r.progress) pushProgress(p);
     for (const d of r.denied) denied.add(d);
     notes.push(...r.notes);
@@ -845,6 +849,8 @@ function runAgent(job, opts = {}) {
       (state.sessionCwd = state.sessionCwd || {})[skey] = cwd;
       (state.sessionAgent = state.sessionAgent || {})[skey] = agentId;
       (state.sessionPlugin = state.sessionPlugin || {})[skey] = plugin.id;
+      // Context growth: one more turn on this session, and what the next one will carry.
+      job.usage = P.noteUsage(state, skey, { usage, fresh: !resume, agent: agentId, startedAt });
     }
     // Map marks count whatever the outcome: the tools already reported them.
     if (surfaces.has('map')) {
@@ -890,9 +896,11 @@ function finish(job, status, text, session, denied) {
     }
   }
   noteMessage(job, status === 'done' ? 'assistant' : 'system', status === 'done' ? text : 'Bridge error: ' + text);
-  publish(chatKey(job), { chat: job.chat, id: job.id, status, text, summary, cwd: job.cwd, session, denied, macros, agent: job.agent || '', plugin: job.plugin || '' }, true);
+  const usage = P.usageFields(job.usage);
+  publish(chatKey(job), { chat: job.chat, id: job.id, status, text, summary, cwd: job.cwd, session, denied, macros, agent: job.agent || '', plugin: job.plugin || '', ...usage }, true);
   signal('sig', job.id, true);
-  log(`#${job.id}${job.session ? '@' + job.session : ''} ${status} (${text.length} chars${summary ? ', summary ' + summary.length : ', no summary'})`);
+  const growth = usage.turns ? `, turn ${usage.turns}${usage.ctx ? ', ctx ' + P.tokensLabel(usage.ctx) + (usage.window ? ' of ' + P.tokensLabel(usage.window) : '') : ''}${usage.cost !== undefined ? ', ~$' + usage.cost.toFixed(2) + ' API so far' : ''}` : '';
+  log(`#${job.id}${job.session ? '@' + job.session : ''} ${status} (${text.length} chars${summary ? ', summary ' + summary.length : ', no summary'}${growth})`);
   drainQueue();
   if (exitWhenIdle && running.size === 0 && !shuttingDown) process.exit(status === 'done' ? 0 : 1); // under a shutdown, shutdown() exits
 }

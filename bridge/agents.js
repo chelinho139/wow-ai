@@ -41,8 +41,104 @@ function shellInner(cmd) {
 // A fresh accumulator for one parsed line. progress: lines for the working
 // bubble; session: the agent's session id, for the next run's resume; denied:
 // allowlist rules (Claude syntax) the run was refused; notes: text the bridge
-// appends to the reply; done: the reply itself, once the run has produced it.
+// appends to the reply; done: the reply itself, once the run has produced it;
+// usage: { context, output, window? } when the event says how big the session
+// has grown (see claudeUsage). The bridge keeps the last usage it sees.
 function empty() { return { progress: [], denied: [], notes: [] }; }
+
+// Context growth. Every message resumes the chat's session, so what the model
+// reads grows with every turn, and each message costs more than the last. The
+// number the addon shows is what the NEXT message will carry: everything the
+// model read on its last call, which for Claude Code is input_tokens +
+// cache_read_input_tokens + cache_creation_input_tokens of the last assistant
+// message (verified on Claude Code 2.1 with `-p --output-format stream-json
+// --verbose`: a resumed turn's first call reads exactly the previous turn's
+// total plus the new message). The result event's usage is the SUM over the
+// turn's calls (two tool steps: cache_read 62k where each call read 31k), so it
+// is only a fallback for a turn that produced no assistant message.
+function claudeUsage(u) {
+  if (!u || typeof u !== 'object') return null;
+  const n = k => (Number.isFinite(u[k]) && u[k] > 0 ? u[k] : 0);
+  const context = n('input_tokens') + n('cache_read_input_tokens') + n('cache_creation_input_tokens');
+  return context > 0 ? { context, output: n('output_tokens') } : null;
+}
+
+// The model's context window, when a result names it (modelUsage.<model>.contextWindow).
+function claudeWindow(ev) {
+  const mu = ev && ev.modelUsage && typeof ev.modelUsage === 'object' ? Object.values(ev.modelUsage) : [];
+  const w = mu.map(m => m && Number(m.contextWindow)).filter(x => Number.isFinite(x) && x > 0);
+  return w.length ? Math.max(...w) : 0;
+}
+
+// What a run would have cost at API list prices. A Max or Pro subscription is
+// not billed by the token, so the addon shows this as "≈$2.41 API": a
+// comparison, never a bill. Rates are USD per million tokens, Anthropic's
+// first-party list prices as the claude-api skill's model table has them
+// (cached 2026-06-24; https://docs.claude.com/en/docs/about-claude/pricing).
+// Cache writes cost 1.25x the input rate (5-minute) or 2x (1-hour), cache
+// reads 0.1x, unless a model lists its own read rate (cacheRead). Checked
+// against Claude Code's own total_cost_usd for a real haiku run (tests).
+// A model not in this table gets no cost, only its tokens. Update here.
+const CLAUDE_RATES = [
+  { match: /claude-fable-5-1\b/, input: 10, output: 50, cacheRead: 0.25 },
+  { match: /claude-fable-5\b(?!-1)/, input: 10, output: 50 },
+  { match: /claude-opus-5\b/, input: 5, output: 25 },
+  { match: /claude-opus-4-[678]\b/, input: 5, output: 25 },
+  { match: /claude-sonnet-5\b/, input: 2, output: 10 },
+  { match: /claude-sonnet-4-6\b/, input: 3, output: 15 },
+  { match: /claude-haiku-4-5\b/, input: 1, output: 5 },
+];
+const CACHE_WRITE_5M = 1.25, CACHE_WRITE_1H = 2, CACHE_READ = 0.1;
+
+function claudeRate(model) {
+  const m = String(model || '');
+  return CLAUDE_RATES.find(r => r.match.test(m)) || null;
+}
+
+// USD for one model's tokens: { input, output, cacheRead, cache5m, cache1h }.
+function priceTokens(rate, t) {
+  return (t.input * rate.input + t.output * rate.output
+    + t.cacheRead * (rate.cacheRead !== undefined ? rate.cacheRead : rate.input * CACHE_READ)
+    + t.cache5m * rate.input * CACHE_WRITE_5M + t.cache1h * rate.input * CACHE_WRITE_1H) / 1e6;
+}
+
+// { usd, models, unknown } for a result event: per model from modelUsage
+// (inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens),
+// with the 5-minute / 1-hour split of the cache writes taken from the top-level
+// usage.cache_creation (it is not broken down per model). Without modelUsage,
+// the top-level usage priced at `model` (the last assistant message's). Null
+// when there is nothing to price; `unknown` lists the models with no rate.
+function claudeCost(ev, model) {
+  const u = ev && ev.usage && typeof ev.usage === 'object' ? ev.usage : null;
+  const n = (o, k) => (o && Number.isFinite(o[k]) && o[k] > 0 ? o[k] : 0);
+  const cc = u && u.cache_creation && typeof u.cache_creation === 'object' ? u.cache_creation : null;
+  const t1h = n(cc, 'ephemeral_1h_input_tokens'), t5m = n(cc, 'ephemeral_5m_input_tokens');
+  const share1h = t1h + t5m > 0 ? t1h / (t1h + t5m) : 0;
+  const mu = ev && ev.modelUsage && typeof ev.modelUsage === 'object' ? ev.modelUsage : null;
+  const models = mu ? Object.keys(mu) : [];
+  let usd = 0;
+  const unknown = [];
+  const counted = m => ['inputTokens', 'outputTokens', 'cacheReadInputTokens', 'cacheCreationInputTokens'].some(k => mu[m] && Number.isFinite(mu[m][k]));
+  // One model whose entry names no token counts: the top-level usage is its usage.
+  if (models.length === 1 && !counted(models[0])) model = models[0];
+  else if (models.length) {
+    for (const m of models) {
+      const rate = claudeRate(m);
+      if (!rate) { unknown.push(m); continue; }
+      if (!counted(m)) { unknown.push(m); continue; } // several models, this one without counts: cannot be priced
+      const x = mu[m];
+      const write = n(x, 'cacheCreationInputTokens');
+      usd += priceTokens(rate, { input: n(x, 'inputTokens'), output: n(x, 'outputTokens'), cacheRead: n(x, 'cacheReadInputTokens'), cache1h: write * share1h, cache5m: write * (1 - share1h) });
+    }
+    return { usd, models, unknown };
+  }
+  if (!u || !model) return null;
+  const rate = claudeRate(model);
+  if (!rate) return { usd: 0, models: [model], unknown: [model] };
+  const write = n(u, 'cache_creation_input_tokens');
+  usd = priceTokens(rate, { input: n(u, 'input_tokens'), output: n(u, 'output_tokens'), cacheRead: n(u, 'cache_read_input_tokens'), cache1h: cc ? t1h : 0, cache5m: cc ? t5m : write });
+  return { usd, models: [model], unknown: [] };
+}
 
 // ---------------------------------------------------------------------------
 // Permission rules
@@ -62,6 +158,8 @@ function grokRules(rule) {
 // ---------------------------------------------------------------------------
 
 function claudeParser() {
+  let usage = null; // the last assistant message's usage: what the next turn will carry
+  let model = '';   // the model that wrote it, for pricing a result without modelUsage
   return {
     feed(ev) {
       const out = empty();
@@ -71,7 +169,19 @@ function claudeParser() {
           if (block.type === 'tool_use') out.progress.push(describeToolUse(block));
           else if (block.type === 'text' && block.text && block.text.trim()) out.progress.push(snippet(block.text));
         }
+        const u = claudeUsage(ev.message.usage);
+        if (u) { usage = u; out.usage = { ...u }; }
+        if (typeof ev.message.model === 'string' && ev.message.model) model = ev.message.model;
       } else if (ev.type === 'result') {
+        const u = usage || claudeUsage(ev.usage);
+        const window = claudeWindow(ev);
+        if (u) {
+          out.usage = window ? { ...u, window } : { ...u };
+          // The run's API-equivalent price: the result's usage is the sum over its calls.
+          const cost = claudeCost(ev, model);
+          if (cost && !cost.unknown.length) out.usage.cost = cost.usd;
+          else out.usage.costUnknown = cost ? cost.unknown : ['no model named'];
+        }
         const text = typeof ev.result === 'string' ? ev.result : JSON.stringify(ev.result ?? '', null, 2);
         const denials = Array.isArray(ev.permission_denials) ? ev.permission_denials : [];
         if (denials.length) {
@@ -135,6 +245,9 @@ function codexParser() {
           }
         }
       } else if (ev.type === 'turn.completed') {
+        // ev.usage ({ input_tokens, cached_input_tokens, output_tokens }) is
+        // here too, but whether it is the last call or the turn's sum is not
+        // verified against a real Codex, so no context size is reported for it.
         out.done = { text: last ?? '', error: false };
       } else if (ev.type === 'turn.failed') {
         out.done = { text: (ev.error && ev.error.message) || 'Codex: the turn failed', error: true };
@@ -634,6 +747,6 @@ function resolveCommand(id, cfg = {}) {
 module.exports = {
   AGENTS, DEFAULT_AGENT, agentIds, normalizeAgent, displayName, agentConfig,
   grokRules, snippet, contextBlock, imagePaths, IMAGE_CAPTION,
-  claudeParser, codexParser, grokParser, agyParser, hermesParser, codexItemLine, grokCall, grokRefusal, shellInner,
+  claudeParser, codexParser, grokParser, agyParser, hermesParser, codexItemLine, grokCall, grokRefusal, shellInner, claudeUsage, claudeWindow, claudeCost, claudeRate, CLAUDE_RATES,
   resolveCommand, unwrapShim, nativeNextTo,
 };

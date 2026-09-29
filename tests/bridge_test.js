@@ -292,3 +292,46 @@ test('screenshot mode ships its strip levels; pixel mode never does', () => {
   assert.ok(P.luaTable('ClaudeWoW_SlotData', [], { transport: 'screenshot' }).includes('\tstrip = { on = 60, off = 0 },'), 'default levels when none are given');
   assert.ok(!P.luaTable('ClaudeWoW_SlotData', [], { transport: 'pixel', levels: { off: 0, on: 60 } }).includes('strip ='), 'pixel mode draws full primaries whatever the config says');
 });
+
+test('context growth: noteUsage counts turns per session, keeps the last known size, and the slot file carries it', () => {
+  const state = {};
+  // A fresh session: turn 1, with what the agent reported.
+  let rec = P.noteUsage(state, 'chat:a', { usage: { context: 31065, output: 1, window: 200000, cost: 0.03 }, fresh: true, agent: 'claude', startedAt: 4000, now: 5000 });
+  assert.deepEqual(rec, { turns: 1, agent: 'claude', at: 5000, since: 4000, context: 31065, window: 200000, cost: 0.03 });
+  // Resumed: turn 2. The window and the session's start are kept; the cost adds up.
+  rec = P.noteUsage(state, 'chat:a', { usage: { context: 44000, cost: 0.05 }, agent: 'claude', startedAt: 5500, now: 6000 });
+  assert.deepEqual(rec, { turns: 2, agent: 'claude', at: 6000, since: 4000, context: 44000, window: 200000, cost: 0.08 });
+  // A run that reported nothing (an error) keeps the last known size and still counts.
+  rec = P.noteUsage(state, 'chat:a', { usage: null, agent: 'claude', now: 7000 });
+  assert.deepEqual(rec, { turns: 3, agent: 'claude', at: 7000, since: 4000, context: 44000, window: 200000, cost: 0.08 });
+  // A model without a rate: the tokens stay, the cost is not guessed, for the rest of the session.
+  rec = P.noteUsage(state, 'chat:a', { usage: { context: 50000, costUnknown: ['claude-new-9'] }, agent: 'claude', now: 7500 });
+  assert.equal(rec.costUnknown, true);
+  assert.deepEqual(P.usageFields(rec), { ctx: 50000, turns: 4, window: 200000, since: 4 });
+  rec = P.noteUsage(state, 'chat:a', { usage: { context: 51000, cost: 0.01 }, agent: 'claude', now: 7600 });
+  assert.equal(rec.costUnknown, true, 'stays unknown: the total would be wrong');
+  // A new session starts over, clock included; an agent that never reports has turns and a clock only.
+  rec = P.noteUsage(state, 'chat:a', { fresh: true, agent: 'codex', startedAt: 8000, now: 8500 });
+  assert.deepEqual(rec, { turns: 1, agent: 'codex', at: 8500, since: 8000 });
+  rec = P.noteUsage(state, 'chat:a', { agent: 'codex', now: 9000 });
+  assert.deepEqual(rec, { turns: 2, agent: 'codex', at: 9000, since: 8000 });
+  assert.deepEqual(Object.keys(state.sessionUsage), ['chat:a']);
+  // The record fields: only what is known; since in seconds, cost to 4 places.
+  assert.deepEqual(P.usageFields({ turns: 2, agent: 'codex' }), { turns: 2 });
+  assert.deepEqual(P.usageFields({ turns: 8, context: 106863, window: 200000, since: 1700000000123, cost: 2.4123456 }), { ctx: 106863, turns: 8, window: 200000, since: 1700000000, cost: 2.4123 });
+  assert.deepEqual(P.usageFields(undefined), {});
+  // Human-readable sizes, as Claude Code's status line writes them.
+  assert.deepEqual([0, 850, 1000, 9540, 9960, 10400, 106863, 312458, 1000000].map(P.tokensLabel), ['0', '850', '1.0k', '9.5k', '10.0k', '10.4k', '106.9k', '312.5k', '1.0M']);
+  // The slot file: ctx / turns / window on a record that has them, nothing on one that does not.
+  const lua = P.luaTable('ClaudeWoW_SlotData', [
+    { chat: 'a', id: 1, status: 'done', text: 'hi', ctx: 106863, turns: 8, window: 200000, since: 1700000000, cost: 2.41 },
+    { chat: 'b', id: 2, status: 'done', text: 'hi', turns: 2 },
+    { chat: 'c', id: 3, status: 'working', text: 'thinking' },
+  ], { restore: { token: 't', chats: [{ id: 'a', name: 'A', cwd: '', plugin: 'ask', ctx: 106863, turns: 8, since: 1700000000, cost: 0, messages: [] }, { id: 'b', name: 'B', cwd: '', messages: [] }] } });
+  assert.ok(lua.includes('\t\t\tctx = 106863,\n\t\t\tturns = 8,\n\t\t\twindow = 200000,\n\t\t\tsince = 1700000000,\n\t\t\tcost = 2.41,'), lua);
+  assert.equal((lua.match(/^\t\t\tcost = /gm) || []).length, 1);
+  assert.equal((lua.match(/^\t\t\tctx = /gm) || []).length, 1);
+  assert.equal((lua.match(/^\t\t\tturns = /gm) || []).length, 2);
+  assert.ok(lua.includes('\t\t\t\tctx = 106863,\n\t\t\t\tturns = 8,\n\t\t\t\tsince = 1700000000,\n\t\t\t\tcost = 0,\n\t\t\t\tmessages = {'), 'the restore bundle carries it per chat, a zero cost included');
+  assert.equal((lua.match(/^\t\t\t\tctx = /gm) || []).length, 1);
+});

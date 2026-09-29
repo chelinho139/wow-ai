@@ -98,8 +98,19 @@ once, with progress publishes, will wrap sooner than a single chat; the addon re
 
 **Cost and rate limits.** Every message resumes the chat's agent session, so context
 grows monotonically until the chat is new. A long-lived chat silently gets more
-expensive per message — 312k tokens of context per "hey" is real. The addon should
-show context size, and offer to start fresh past a threshold.
+expensive per message — 312k tokens of context per "hey" is real (measured: 106,863
+tokens after 8 turns, 312,458 after 213). So the bridge reads each run's usage
+(Claude Code's `stream-json`: input + cache_read + cache_creation of the last
+assistant message is what the next turn carries; the result's usage is the turn's
+sum and prices the run at `CLAUDE_RATES` in `bridge/agents.js`), keeps it per chat
+in `state.json` (`sessionUsage`) and ships it on the reply record; the addon's
+footer shows it like Claude Code's status line (`11m 58s · ↓ 106.9k tokens ·
+≈$2.41 API` — the dollar figure is the API-list-price equivalent, a comparison,
+since a subscription is not billed per token), `/claude-wow context` and `diag`
+report it, and past `/claude-wow context <n>` (100k by default: half of a 200k
+window, about eight messages in) the chat says so once, with a **New chat**
+button. Codex, Grok, agy and Hermes report nothing the bridge can trust, so those
+chats show turns and elapsed time only.
 
 **Unreviewed work.** The coding plugin runs with `acceptEdits`. An agent editing a
 repo while the player is questing is the whole point, but it means diffs land
