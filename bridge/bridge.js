@@ -358,12 +358,44 @@ function takeMapCommands(job, text) {
   return { text: blocks.text, note: all.length ? `map: ${all.join('; ')}` : '' };
 }
 
+if (!state.widgets) state.widgets = P.newWidgetSet();
+const WIDGET_DIR = HOME.uijobs;
+const WIDGET_SHARE_MS = 3 * 60 * 1000;
+const WIDGET_PROGRESS_MAX = 20000;
+let widgetShareUntil = Object.keys(state.widgets.items).length ? Date.now() + WIDGET_SHARE_MS : 0;
+function widgetSourceBytes() {
+  return Object.values(state.widgets.items).reduce((sum, w) => sum + w.source.length, 0);
+}
+
+function widgetFileFor(job) {
+  return path.join(WIDGET_DIR, `${String(job.chat || 'default').replace(/[^\w-]/g, '_')}-${job.id}.jsonl`);
+}
+
+function takeWidgetCommands(job, text) {
+  const file = widgetFileFor(job);
+  let cmds = [], errors = [];
+  try {
+    const fromFile = P.parseWidgetFile(fs.readFileSync(file, 'utf8'));
+    cmds = fromFile.cmds; errors = fromFile.errors;
+  } catch {}
+  try { fs.unlinkSync(file); } catch {}
+  const blocks = P.extractWidgetBlocks(text);
+  cmds.push(...blocks.cmds);
+  if (!cmds.length && !errors.length) return { text: blocks.text, note: '' };
+  const { changed, notes } = P.applyWidgetCommands(state.widgets, cmds);
+  if (changed) { saveState(); widgetShareUntil = Date.now() + WIDGET_SHARE_MS; }
+  const all = [...notes, ...errors];
+  log(`#${job.id} ui: ${all.join('; ') || 'no change'} (version ${state.widgets.version})`);
+  return { text: blocks.text, note: all.length ? `ui: ${all.join('; ')}` : '' };
+}
+
 // Slot file / Inbox.lua body: see protocol.luaTable.
 function slotFile(globalName, records, urgent = true) {
   const map = Date.now() < mapShareUntil && (urgent || mapLuaSize() <= MAP_PROGRESS_MAX) ? state.map : null;
+  const widgets = Date.now() < widgetShareUntil && (urgent || widgetSourceBytes() <= WIDGET_PROGRESS_MAX) ? state.widgets : null;
   const transportNote = TRANSPORT_SOURCE === 'fallback' ? P.transportNote(state.transportFallback) : '';
   const achievementsLua = ACHIEVEMENTS_ON ? ACH.luaAchievements(state) : '';
-  return P.luaTable(globalName, records, { cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), plugin: DEFAULT_PLUGIN, plugins: registry.ids(), map, transport: TRANSPORT, levels: LEVELS, codec: STRIP_CODEC, transportNote, achievementsLua });
+  return P.luaTable(globalName, records, { cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), plugin: DEFAULT_PLUGIN, plugins: registry.ids(), map, widgets, transport: TRANSPORT, levels: LEVELS, codec: STRIP_CODEC, transportNote, achievementsLua });
 }
 
 const ACHIEVEMENTS_ON = cfg.achievements !== false;
@@ -599,6 +631,7 @@ function submit(job) {
     maybeOfferRestore(job);
     // Even an empty set: a client holding layers from a reset bridge must drop them.
     mapShareUntil = Date.now() + MAP_SHARE_MS;
+    widgetShareUntil = Date.now() + WIDGET_SHARE_MS;
     publishNow();
     log(`hello from session ${job.session}${pendingRestore ? ' (restore offered)' : ''}`);
     return;
@@ -746,8 +779,8 @@ function runAgent(job, opts = {}) {
   // The stable system prompt (the same bytes on every run of this chat) and the
   // message, which carries what changes: the situation and the vision note.
   const ctx = gameContext();
-  const system = P.systemPrompt(ctx, primer(), { tools: plugin.tools });
-  const systemShort = P.systemPrompt(ctx, '');
+  const system = P.systemPrompt(ctx, primer(), { tools: plugin.tools, surfaces: plugin.surfaces });
+  const systemShort = P.systemPrompt(ctx, '', { surfaces: plugin.surfaces });
   const prompt = P.messagePrompt(job.text, ctx, { image });
   const promptFile = path.join(TMP_DIR, `prompt-${job.id}-${Date.now().toString(36)}.txt`);
   const input = agent.input({ prompt, system, systemShort, resume, cfg: acfg, images });
@@ -768,6 +801,13 @@ function runAgent(job, opts = {}) {
       fs.rmSync(mapFileFor(job), { force: true });
       env.CLAUDE_WOW_MAP_FILE = mapFileFor(job);
     } catch (e) { log(`${tag} map file unavailable: ${e.message}`); }
+  }
+  if (surfaces.has('ui')) {
+    try {
+      fs.mkdirSync(WIDGET_DIR, { recursive: true });
+      fs.rmSync(widgetFileFor(job), { force: true });
+      env.CLAUDE_WOW_UI_FILE = widgetFileFor(job);
+    } catch (e) { log(`${tag} ui file unavailable: ${e.message}`); }
   }
 
   log(`${tag} (${job.via}) [${plugin.id}] ${agent.name} starting in ${cwd}${resume ? ' (resume ' + resume.slice(0, 8) + ')' : ' (new session)'}${ctx ? ' [game context]' : ''}${image ? ` [screen ${image.width}x${image.height}, ${Math.round(image.bytes / 1024)} KB]` : ''}${running.size ? ' [' + (running.size + 1) + ' running]' : ''}`);
@@ -889,6 +929,11 @@ function runAgent(job, opts = {}) {
       const mapped = takeMapCommands(job, result ? result.text : '');
       if (result) result.text = mapped.text;
       if (mapped.note) notes.push(mapped.note);
+    }
+    if (surfaces.has('ui')) {
+      const widgeted = takeWidgetCommands(job, result ? result.text : '');
+      if (result) result.text = widgeted.text;
+      if (widgeted.note) notes.push(widgeted.note);
     }
     const extra = notes.length ? `\n\n[bridge] ${notes.join('\n\n[bridge] ')}` : '';
     if (result && !result.error) {

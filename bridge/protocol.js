@@ -3,6 +3,7 @@
 // small rules around folders, permissions and dedup. No I/O, no config, no
 // process state, so tests/bridge_test.js can exercise it directly.
 
+const crypto = require('crypto');
 const os = require('os');
 const path = require('path');
 
@@ -351,6 +352,7 @@ function systemPrompt(ctx, primer, opts) {
   const tools = opts && String(opts.tools || '').trim();
   if (tools) lines.push('', tools);
   if (game) lines.push('', SITUATION_RULE, '', ...MAP_HINT, '', ...MACRO_HINT);
+  if (game && opts && Array.isArray(opts.surfaces) && opts.surfaces.includes('ui')) lines.push('', ...WIDGET_HINT);
   const ref = game ? String(primer || '').trim() : '';
   if (ref) {
     lines.push('', 'Reference for writing addons and macros for this client. Follow it when the task is about WoW, and check anything it marks as uncertain against the Blizzard UI source it names:', '', ref);
@@ -581,6 +583,7 @@ function luaTable(globalName, records, opts = {}) {
   lines.push('\t},');
   if (opts.map) lines.push(luaMap(opts.map));
   if (opts.achievementsLua) lines.push(opts.achievementsLua);
+  if (opts.widgets) lines.push(luaWidgets(opts.widgets));
   const restore = opts.restore;
   if (restore) {
     lines.push('\trestore = {', `\t\ttoken = ${luaStr(restore.token)},`, '\t\tchats = {');
@@ -797,6 +800,146 @@ function luaMacros(macros) {
   return `\t\t\tmacros = { ${macros.map(m => `{ name = ${luaStr(m.name)}, body = ${luaStr(m.body)}, icon = ${m.icon == null ? 'nil' : typeof m.icon === 'number' ? m.icon : luaStr(m.icon)}, char = ${m.char ? 'true' : 'false'}, risky = ${m.risky ? 'true' : 'false'} }`).join(', ')} },`;
 }
 
+const WIDGET_LIMITS = { widgets: 8, sourceBytes: 16000, totalBytes: 64000, title: 60 };
+const WIDGET_NAME_RE = /^[A-Za-z0-9_.-]{1,32}$/;
+const WIDGET_BLOCK_RE = /```wowui([^\n]*)\n([\s\S]*?)```/g;
+
+const WIDGET_DENIED_NAMES = [
+  'CastSpell', 'CastSpellByName', 'CastSpellByID', 'CastShapeshiftForm', 'CastPetAction',
+  'UseAction', 'UseItemByName', 'UseInventoryItem', 'UseContainerItem', 'UseToy', 'UseToyByName',
+  'RunMacro', 'RunMacroText', 'RunBinding', 'RunScript',
+  'TargetUnit', 'TargetNearestEnemy', 'TargetNearestFriend', 'TargetLastTarget', 'TargetLastEnemy', 'ClearTarget',
+  'AssistUnit', 'FocusUnit', 'InteractUnit', 'FollowUnit',
+  'AttackTarget', 'StartAttack', 'StopAttack', 'PetAttack', 'PetFollow',
+  'SpellStopCasting', 'SpellStopTargeting', 'SpellTargetUnit', 'CancelShapeshiftForm', 'CancelUnitBuff',
+  'JumpOrAscendStart', 'MoveForwardStart', 'MoveBackwardStart', 'StrafeLeftStart', 'StrafeRightStart',
+  'TurnLeftStart', 'TurnRightStart', 'ToggleAutoRun', 'ToggleRun', 'SitStandOrDescendStart',
+  'PickupAction', 'PlaceAction', 'PickupSpell', 'PickupItem', 'PickupMacro', 'PickupContainerItem',
+  'PickupInventoryItem', 'DeleteCursorItem', 'EquipItemByName',
+  'SendChatMessage', 'SendAddonMessage', 'BNSendWhisper', 'DoEmote', 'SendMail', 'ChatEdit_SendText', 'ChatEdit_ParseText',
+  'InviteUnit', 'UninviteUnit', 'LeaveParty', 'AcceptGroup', 'AcceptTrade', 'InitiateTrade',
+  'BuyMerchantItem', 'RepairAllItems', 'PlaceAuctionBid', 'SetRaidTarget',
+  'CreateMacro', 'EditMacro', 'DeleteMacro',
+  'SetBinding', 'SetBindingClick', 'SetBindingSpell', 'SetBindingItem', 'SetBindingMacro', 'SaveBindings',
+  'SetCVar', 'ConsoleExec', 'ReloadUI', 'Logout', 'Quit', 'ForceQuit',
+  'LoadAddOn', 'EnableAddOn', 'DisableAddOn', 'SlashCmdList', 'hooksecurefunc',
+  'loadstring', 'load', 'getfenv', 'setfenv', 'getglobal', 'setglobal', 'rawget', 'rawset', 'debug',
+];
+const WIDGET_DENIED_RE = new RegExp(`(?<![A-Za-z0-9_])(${WIDGET_DENIED_NAMES.join('|')})(?![A-Za-z0-9_])`, 'g');
+const WIDGET_DENIED_PATTERNS = [
+  { re: /Secure[A-Za-z]*(?:Template|Handler)|SecureAction/g, why: 'secure templates' },
+  { re: new RegExp(`(?<![A-Za-z0-9_])${ADDON}[A-Za-z0-9_]*`, 'g'), why: 'the addon\'s own data' },
+];
+
+const WIDGET_HINT = [
+  'When the player asks for a small UI element (a DPS meter, a timer bar for their buffs, a tracker), hand it over as a live widget: the addon loads it at once, without /reload, and keeps it across logins. End the reply with a fenced block whose language tag is wowui followed by the widget name (letters, digits, _ . -, at most 32) and optionally title="<shown title>"; the block holds the widget\'s Lua 5.1 source. Or append {"op":"set","name":"<name>","title":"<title>","source":"<lua>"} as one JSON line to the file named by the CLAUDE_WOW_UI_FILE environment variable.',
+  `The source runs once as a function body: "local ui = ..." gives ui.name, ui.frame (a container frame: parent your frames to it, or pass no parent), ui.db (a table saved between sessions, e.g. for a position), and ui.print(text). Use documented addon APIs only: CreateFrame (no Secure templates), events, OnUpdate, C_Timer, Unit* functions, C_UnitAuras, CombatLogGetCurrentEventInfo. Widgets are display-only: no casting, targeting, movement, items, chat or addon messages, macros, bindings, CVars, loadstring/setfenv/debug, and no ClaudeWoW* globals; a widget that names any of these is refused. At most ${WIDGET_LIMITS.sourceBytes} bytes.`,
+  'The same name replaces the widget. To remove one, write a wowui block with the name followed by the word remove and an empty body, or append {"op":"remove","name":"<name>"}. Explain outside the block what it shows; the player lists and removes widgets with /claude-wow ui.',
+];
+
+function widgetRevision(source) {
+  return crypto.createHash('sha1').update(String(source)).digest('hex').slice(0, 12);
+}
+
+function deniedWidgetCalls(source) {
+  const found = new Set();
+  for (const m of String(source).matchAll(WIDGET_DENIED_RE)) found.add(m[1]);
+  for (const { re, why } of WIDGET_DENIED_PATTERNS) {
+    for (const m of String(source).matchAll(re)) found.add(`${m[0]} (${why})`);
+  }
+  return [...found];
+}
+
+function validateWidgetCommand(c, why = []) {
+  if (!c || typeof c !== 'object') { why.push('not an object'); return null; }
+  if (c.op === 'clearall') return { op: 'clearall' };
+  const name = String(c.name ?? '');
+  if (!WIDGET_NAME_RE.test(name)) { why.push(`bad widget name "${name.slice(0, 40)}"`); return null; }
+  if (c.op === 'remove') return { op: 'remove', name };
+  if (c.op !== 'set') { why.push(`unknown op "${String(c.op).slice(0, 20)}"`); return null; }
+  const source = String(c.source ?? '').replace(/\r/g, '').trim();
+  if (!source) { why.push(`widget ${name}: empty source`); return null; }
+  const bytes = Buffer.byteLength(source, 'utf8');
+  if (bytes > WIDGET_LIMITS.sourceBytes) { why.push(`widget ${name}: ${bytes} bytes, over ${WIDGET_LIMITS.sourceBytes}; refused`); return null; }
+  const denied = deniedWidgetCalls(source);
+  if (denied.length) { why.push(`widget ${name} refused, widgets are display-only: ${denied.slice(0, 8).join(', ')}`); return null; }
+  return { op: 'set', name, title: cleanText(c.title || name, WIDGET_LIMITS.title), source, rev: widgetRevision(source) };
+}
+
+function newWidgetSet(epoch) {
+  return { epoch: epoch || Math.random().toString(36).slice(2, 10), version: 0, items: {} };
+}
+
+function applyWidgetCommands(set, cmds, now = Date.now()) {
+  const notes = [];
+  let changed = false;
+  for (const raw of cmds || []) {
+    const why = [];
+    const c = validateWidgetCommand(raw, why);
+    notes.push(...why);
+    if (!c) continue;
+    if (c.op === 'clearall') {
+      if (Object.keys(set.items).length) { set.items = {}; changed = true; }
+      notes.push('removed all widgets');
+    } else if (c.op === 'remove') {
+      if (set.items[c.name]) { delete set.items[c.name]; changed = true; notes.push(`removed widget ${c.name}`); }
+    } else if (set.items[c.name] && set.items[c.name].rev === c.rev && set.items[c.name].title === c.title) {
+      notes.push(`widget ${c.name}: unchanged`);
+    } else {
+      set.items[c.name] = { title: c.title, source: c.source, rev: c.rev, t: now };
+      changed = true;
+      notes.push(`widget ${c.name}: sent to the game (${Buffer.byteLength(c.source, 'utf8')} bytes)`);
+    }
+  }
+  const totalBytes = () => Object.values(set.items).reduce((s, w) => s + Buffer.byteLength(w.source, 'utf8'), 0);
+  const oldestFirst = () => Object.keys(set.items).sort((a, b) => set.items[a].t - set.items[b].t);
+  while (Object.keys(set.items).length > WIDGET_LIMITS.widgets || totalBytes() > WIDGET_LIMITS.totalBytes) {
+    const oldest = oldestFirst()[0];
+    delete set.items[oldest];
+    notes.push(`dropped old widget ${oldest} (widget budget full)`);
+    changed = true;
+  }
+  if (changed) set.version = (set.version || 0) + 1;
+  return { changed, notes };
+}
+
+function parseWidgetHeader(rest) {
+  let header = String(rest || '');
+  let title = '';
+  header = header.replace(/\btitle\s*=\s*"([^"]*)"/i, (_, v) => { title = v; return ' '; });
+  const words = header.trim().split(/\s+/).filter(Boolean);
+  return { name: words[0] || '', remove: words.slice(1).some(w => w.toLowerCase() === 'remove'), title };
+}
+
+function extractWidgetBlocks(text) {
+  const cmds = [];
+  const stripped = String(text ?? '').replace(WIDGET_BLOCK_RE, (_, header, body) => {
+    const h = parseWidgetHeader(header);
+    if (h.remove) cmds.push({ op: 'remove', name: h.name });
+    else cmds.push({ op: 'set', name: h.name, title: h.title || h.name, source: body });
+    return h.remove ? '' : `[UI widget "${h.name || '?'}"]`;
+  }).replace(/\n{3,}/g, '\n\n').trim();
+  return { text: stripped, cmds };
+}
+
+function parseWidgetFile(src) {
+  const cmds = [], errors = [];
+  for (const line of String(src || '').split('\n')) {
+    if (!line.trim()) continue;
+    try { cmds.push(JSON.parse(line)); } catch { errors.push('unreadable widget file line'); }
+  }
+  return { cmds, errors };
+}
+
+function luaWidgets(set) {
+  const lines = ['\twidgets = {', `\t\tepoch = ${luaStr(set.epoch)},`, `\t\tversion = ${Number(set.version) || 0},`, '\t\titems = {'];
+  for (const [name, w] of Object.entries(set.items || {})) {
+    lines.push(`\t\t\t{ name = ${luaStr(name)}, title = ${luaStr(w.title)}, rev = ${luaStr(w.rev)}, source = ${luaStr(w.source)} },`);
+  }
+  lines.push('\t\t},', '\t},');
+  return lines.join('\n');
+}
+
 module.exports = {
   ADDON, OLD_ADDONS, OLD_ADDON_PATH, OLD_SAVED_FILE,
   fromHex, pad3, slotNumber, chatKey, sessKey,
@@ -808,4 +951,6 @@ module.exports = {
   luaStr, luaTable, SILENT_WAV, TRANSPORTS, DEFAULT_TRANSPORT, transportName, chooseTransport, FALLBACK_REASONS, transportFallback, transportNote, DEFAULT_LEVELS, screenshotLevels, STRIP_CODECS, DEFAULT_STRIP_CODEC, stripCodec, denseLevels,
   MAP_LIMITS, validateMapCommand, newMap, applyMapCommands, extractMapBlocks, parseMapFile, luaMap,
   MACRO_LIMITS, extractMacros, stripMacroBlocks, luaMacros,
+  WIDGET_LIMITS, WIDGET_DENIED_NAMES, deniedWidgetCalls, validateWidgetCommand, newWidgetSet, applyWidgetCommands,
+  extractWidgetBlocks, parseWidgetFile, luaWidgets, widgetRevision,
 };

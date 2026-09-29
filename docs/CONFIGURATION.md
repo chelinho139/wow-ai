@@ -125,12 +125,13 @@ Exit codes: `0` normal, `1` the injected or one-shot job failed, `2` config miss
 
 | Variable | Meaning |
 |---|---|
-| `CLAUDE_WOW_HOME` | Where `config.json`, `state.json`, `transcripts.json`, `bridge.log`, `tmp/` and `mapjobs/` live. Default `~/.claude-wow`; see [Where the bridge keeps its files](#where-the-bridge-keeps-its-files). |
+| `CLAUDE_WOW_HOME` | Where `config.json`, `state.json`, `transcripts.json`, `bridge.log`, `tmp/`, `mapjobs/` and `uijobs/` live. Default `~/.claude-wow`; see [Where the bridge keeps its files](#where-the-bridge-keeps-its-files). |
 | `CLAUDE_WOW_PROJECT` | Default working folder, below `--project` and above the start folder in precedence. The old name `WOW_AI_PROJECT` is still read. |
 | `CLAUDE_WOW_MAC_BACKEND` | macOS pixel capture: `native`, `screencapture` or `auto` (`capture_mac.py --backend`). The old name `WOWAI_MAC_BACKEND` is still read. |
 | `CLAUDECODE` | Removed from Claude's environment so a bridge started from inside a Claude Code session can still launch `claude -p`. |
 | `GROK_DISABLE_AUTOUPDATER` | Set to `1` for Grok runs, so a headless run never stops for an update. |
 | `GROK_HOME` | Honoured when looking for `grok.exe` (`<GROK_HOME>\bin`); Grok's own setting. |
+| `CLAUDE_WOW_UI_FILE` | Set by the bridge for each run of a plugin with the `ui` surface: a file where the agent's tools append UI widget commands, one JSON object per line (see [UI-WIDGETS.md](UI-WIDGETS.md)). |
 | `CLAUDE_WOW_MAP_FILE` | Set by the bridge for each run, whatever the agent: a file where the agent's tools append map commands, one JSON object per line (see [MAP.md](MAP.md)). |
 
 ## Which folder the agent works in
@@ -161,6 +162,7 @@ The bridge's banner prints the folder it chose (`home :`). The one-line installe
 | `~/.claude-wow/config.json` | Your configuration. |
 | `~/.claude-wow/state.json` | Agent session ids per chat, the folder and the agent each session ran with, each session's context growth (`sessionUsage`: the tokens the next message carries, turns, the model's window, when it started, its runs at API list prices), handled message ids per addon session token, the presence counter, and the latest game context the addon sent (`context`). Delete it to forget all sessions. |
 | `~/.claude-wow/transcripts.json` | The last 200 messages of every chat, with the agent that wrote each reply, so the addon can recover its chats after the client wipes saved data. |
+| `~/.claude-wow/uijobs/` | One widget command file per running job (`CLAUDE_WOW_UI_FILE`), read and deleted when the job ends. The widgets themselves live in `state.json` (`widgets`). |
 | `~/.claude-wow/mapjobs/` | One map command file per running job (`CLAUDE_WOW_MAP_FILE`), read and deleted when the job ends. Map layers themselves live in `state.json` (`map`). |
 | `~/.claude-wow/bridge.log` | Every line the bridge logs, with timestamps. Rotated by the supervisor at 5 MB (`bridge.log.1` … `.5` kept), so it never grows without bound. Under the background service the bridge's full output (banner, log lines, crashes) also goes to the service log: `~/Library/Logs/claude-wow/bridge.log` on macOS, `$XDG_STATE_HOME/claude-wow/bridge.log` (default `~/.local/state/claude-wow`) on Linux, `%LocalAppData%\claude-wow\logs\bridge.log` on Windows, rotated the same way; `claude-wow service logs` shows whichever applies. |
 | `~/.claude-wow/tmp/` | Prompt files for agents that read the prompt from disk (Grok). Each is deleted when its run ends. |

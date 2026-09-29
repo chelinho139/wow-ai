@@ -9,6 +9,7 @@ addon/ClaudeWoW/     the in-game addon (Lua 5.1, WoW API)
   ClaudeWoW.lua        everything: strip, slots, chats, UI, slash commands
   Codec.lua             pixel-strip encoder, pure Lua, no WoW calls
   Inbox.lua             placeholder the bridge overwrites at runtime
+  Widgets.lua           live UI widgets from the agent, sandboxed, /claude-wow ui
   ClaudeWoW.toc
 bridge/               the companion process (Node.js, no runtime dependencies)
   bridge.js             I/O, processes, publishing
@@ -62,6 +63,8 @@ To try changes in the game, run `node setup.js` (it re-copies the addon into `In
 | `node --test tests/install_test.js` | `install.sh` and `install.ps1`: they parse, the Node 22.2 gate accepts and rejects the right versions, unknown options and a missing Node fail with a hint, and `install.sh` runs nothing until fully read. |
 | `node --test tests/runtime_test.js` | `bridge/runtime.js`: the command that runs each of the bridge's own scripts from a checkout (this node and the script) and from the compiled binary (the binary and a subcommand), and where a JavaScript launcher finds a node in each case. |
 | `node --test tests/assets_test.js` | `bridge/assets.js`: every embedded file exists and the addon folder is covered in full, `build/entry.js` embeds exactly that list, an embedded set is written out once and rewritten only where it differs, and `build.js` names one binary per target. |
+| `node --test tests/widget_test.js` | The widget protocol in `protocol.js`: validation and the display-only deny-list, versioned application and budgets, ```` ```wowui ```` blocks and widget files, the hint only for a plugin with the `ui` surface, the `widgets` table in slot files read back in a Lua VM, and that the addon blocks the same names. |
+| `node --test tests/widget_addon_test.js` | The real `Widgets.lua` (with `ClaudeWoW.lua`) in a Lua VM: a widget running live from slot data, errors surfaced to the chat window, blocked calls in the sandbox, `/claude-wow ui` list, remove and run, restart at login, and the reload path. |
 | `node tests/codec_test.js` | `Codec.lua` in a Lua VM, rendered to PNG with noise and gamma, decoded by `capture.ps1` (Windows) or `capture_x11.py` (elsewhere). Writes scratch images to `tests/tmp/` (gitignored). |
 | `npm run test:live` | Not part of `npm test`. Builds a sandbox under `tests/tmp/inject/` with a 5-slot pool and runs the bridge with `--inject` against a real agent CLI: Claude by default, `-- --agent codex` or `-- --agent grok` for the others. Needs that CLI installed and logged in. |
 

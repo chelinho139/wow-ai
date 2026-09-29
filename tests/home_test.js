@@ -33,6 +33,7 @@ test('resolution order: CLAUDE_WOW_HOME, ~/.claude-wow with a config, the legacy
   assert.equal(r.log, path.join(dflt, 'bridge.log'));
   assert.equal(r.tmp, path.join(dflt, 'tmp'));
   assert.equal(r.mapjobs, path.join(dflt, 'mapjobs'));
+  assert.equal(r.uijobs, path.join(dflt, 'uijobs'));
 
   // The old layout: a config next to the code is used as long as the default has none.
   fs.writeFileSync(path.join(legacy, 'config.json'), '{}');

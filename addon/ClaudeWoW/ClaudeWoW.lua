@@ -1278,6 +1278,7 @@ local function TryLoadSlot(why)
 	if type(data) == "table" and data.restore then ImportRestore(data.restore) end
 	if type(data) == "table" and data.map and ClaudeWoWMap then ClaudeWoWMap.Sync(data.map) end
 	if type(data) == "table" and data.achievements and ClaudeWoWAchievements then ClaudeWoWAchievements.Sync(data.achievements, data.now) end
+	if type(data) == "table" and data.widgets and ClaudeWoWWidgets then ClaudeWoWWidgets.Sync(data.widgets) end
 	if why == "signal" and not matched then
 		run.signalUnreliable = true
 	end
@@ -1402,6 +1403,7 @@ local function ProcessInbox()
 	if inbox.restore then ImportRestore(inbox.restore) end
 	if inbox.map and ClaudeWoWMap then ClaudeWoWMap.Sync(inbox.map) end
 	if inbox.achievements and ClaudeWoWAchievements then ClaudeWoWAchievements.Sync(inbox.achievements, inbox.now) end
+	if inbox.widgets and ClaudeWoWWidgets then ClaudeWoWWidgets.Sync(inbox.widgets) end
 end
 
 Finish = function(chat, role, text, denied, agent, summary, macros)
@@ -3296,6 +3298,14 @@ function ClaudeWoW.Notify(chat, text, agent, summary, role, denied)
 	end
 end
 
+function ClaudeWoW.SystemNote(text)
+	if not db then return end
+	local c = ActiveChat()
+	if not c then return end
+	AddHistory(c, "system", text)
+	ClaudeWoW.Render()
+end
+
 -- /r goes to the agent when it was the last one to message you, exactly like
 -- whisper reply, and the box shows a "To Codex [chat]:" header while you type.
 --
@@ -3951,6 +3961,7 @@ local HELP = table.concat({
 	"/claude-wow map [...]              map layers the agent drew, the route navigator and herb/ore nodes (no argument = status and subcommands; /aimap is the same)",
 	"/claude-wow voice [race|peasant|peon|off]   voice lines at agent events: your character's race and gender (default), a peasant, a peon, or none. set <event> <line>, reset, test <event|line>, lines [pack]",
 	"/claude-wow achievements [on|off|test]   list the achievements your agents earned; on|off turns the toasts on or off, test shows a sample",
+	"/claude-wow ui [list|remove <name>|run <name>]   live UI widgets the agent wrote: list them, remove one for good, or start one again",
 	"/claude-wow mode pixel             no-reload transport (default)",
 	"/claude-wow mode reload            fallback transport: a /reload per step",
 	"/claude-wow resend                 show the strip again if the bridge missed it",
@@ -3982,6 +3993,11 @@ local function ChatArgument(rest)
 	return false
 end
 
+local function WidgetArgument(rest)
+	local lower = rest:lower()
+	return lower == "" or lower == "list" or lower:match("^remove%s+%S+$") ~= nil or lower:match("^run%s+%S+$") ~= nil
+end
+
 local COMMAND_ARGS = {
 	mini = 0, min = 0, hide = 0, quit = 0, help = 0, clear = 0, delete = 0, reset = 0, copy = 0,
 	cancel = 0, resend = 0, reload = 0, refresh = 0, slots = 0, diag = 0,
@@ -4004,6 +4020,7 @@ local COMMAND_ARGS = {
 	voice = function(rest) return ClaudeWoWVoice ~= nil and ClaudeWoWVoice.IsCommand(rest) end,
 	achievements = { [""] = true, on = true, off = true, test = true, list = true },
 	toasts = { [""] = true, on = true, off = true, test = true },
+	ui = WidgetArgument,
 }
 
 local function IsCommand(cmd, rest)
@@ -4097,6 +4114,8 @@ SlashCmdList["CLAUDEWOW"] = function(msg)
 		ClaudeWoWVoice.Command(rest)
 	elseif cmd == "achievements" or cmd == "toasts" then
 		if ClaudeWoWAchievements then ClaudeWoWAchievements.Command(rest) else print("|cff66ccff[Claude WoW]|r the achievements module did not load") end
+	elseif cmd == "ui" then
+		if ClaudeWoWWidgets then ClaudeWoWWidgets.Command(rest) else print("|cff66ccff[Claude WoW]|r the widget module did not load") end
 	elseif cmd == "agent" then
 		ClaudeWoW.SetAgent(rest, c)
 		ClaudeWoW.Toggle(true)
