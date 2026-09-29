@@ -10,3 +10,4 @@ Codec.lua
 Inbox.lua
 ClaudeWoW.lua
 Map.lua
+Voice.lua

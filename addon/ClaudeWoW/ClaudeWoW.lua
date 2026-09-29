@@ -1184,6 +1184,7 @@ local function ApplyReplies(replies)
 			elseif r.status == "error" then
 				Finish(c, "system", "Bridge error: " .. tostring(r.text), denied)
 			elseif r.status == "working" then
+				if ClaudeWoWVoice then ClaudeWoWVoice.Started(r.id) end
 				c.progress = r.text
 				Whisper.Progress(c, r.text)
 			end
@@ -1328,6 +1329,7 @@ local function Tick()
 			NoteAcked(rec)
 			changed = true
 			NotedBridge()
+			if (rec.text or "") ~= "" and ClaudeWoWVoice then ClaudeWoWVoice.Started(id) end
 		end
 		-- A hello only needs the bridge to have been seen; it never escalates.
 		-- A forget is the same, but the bridge must have been seen a moment after
@@ -2218,6 +2220,7 @@ function ClaudeWoW.Send(text, allow, opts)
 	end
 	db.settings.shown = true
 	Whisper.Sent(c, text)
+	if ClaudeWoWVoice then ClaudeWoWVoice.Event("sent") end
 
 	if db.settings.mode == "pixel" then
 		run.outbound[id] = { chat = c.id, cwd = c.cwd, flags = flags, name = c.name, text = text, ctx = ctx, sentAt = GetTime() }
@@ -3226,6 +3229,7 @@ end
 -- text and light up the mini bar.
 function ClaudeWoW.Notify(chat, text, agent, summary, role, denied)
 	pcall(PlaySound, 3081)
+	if ClaudeWoWVoice then ClaudeWoWVoice.Reply(role, denied) end
 	ClaudeWoW.UpdateMini()
 	-- Until a real whisper arrives, /r replies to this chat.
 	run.lastMessenger = "agent"
@@ -3890,6 +3894,7 @@ local HELP = table.concat({
 	"/claude-wow vision [on|off]        send a picture of your screen with each message, so the agent can see what you see (screenshot transport; off by default)",
 	"/claude-wow look <question>        send this one message with a picture of your screen, whatever the vision setting",
 	"/claude-wow map [...]              map layers the agent drew, the route navigator and herb/ore nodes (no argument = status and subcommands; /aimap is the same)",
+	"/claude-wow voice [race|peasant|peon|off]   voice lines at agent events: your character's race and gender (default), a peasant, a peon, or none. set <event> <line>, reset, test <event|line>, lines [pack]",
 	"/claude-wow mode pixel             no-reload transport (default)",
 	"/claude-wow mode reload            fallback transport: a /reload per step",
 	"/claude-wow resend                 show the strip again if the bridge missed it",
@@ -3938,6 +3943,7 @@ local COMMAND_ARGS = {
 	cd = true, new = true, rename = true,
 	map = true, -- /claude-wow map ...: Map.lua (layers, navigator, herb/ore nodes)
 	macro = { undo = true }, -- /claude-wow macro undo; "/claude macro for my warrior" still goes to the agent
+	voice = function(rest) return ClaudeWoWVoice ~= nil and ClaudeWoWVoice.IsCommand(rest) end,
 }
 
 local function IsCommand(cmd, rest)
@@ -4025,6 +4031,8 @@ SlashCmdList["CLAUDEWOW"] = function(msg)
 		ClaudeWoW.Toggle(true)
 	elseif cmd == "map" then
 		if ClaudeWoWMap then ClaudeWoWMap.Command(rest) else print("|cff66ccff[Claude WoW]|r the map module did not load") end
+	elseif cmd == "voice" then
+		ClaudeWoWVoice.Command(rest)
 	elseif cmd == "agent" then
 		ClaudeWoW.SetAgent(rest, c)
 		ClaudeWoW.Toggle(true)
