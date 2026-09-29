@@ -29,6 +29,42 @@ test('only the client\'s own screenshot names in PNG or TGA count', () => {
   assert.ok(!S.isScreenshotFile(''));
 });
 
+test('a second screenshot with the same name, in the same second, is reported again', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wowai-shots-'));
+  const name = 'WoWScrnShot_010126_000003.png';
+  const got = [];
+  const w = S.watchScreenshots(dir, f => { got.push(fs.readFileSync(f, 'utf8')); fs.unlinkSync(f); }, { settleMs: 20, scanMs: 40 });
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  try {
+    fs.writeFileSync(path.join(dir, name), 'first');
+    await sleep(200);
+    fs.writeFileSync(path.join(dir, name), 'second');
+    await sleep(200);
+    assert.deepEqual(got, ['first', 'second']);
+  } finally {
+    w.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a file the handler left alone is reported again when the client overwrites it', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wowai-shots-'));
+  const name = 'WoWScrnShot_010126_000004.png';
+  const got = [];
+  const w = S.watchScreenshots(dir, f => got.push(fs.readFileSync(f, 'utf8')), { settleMs: 20, scanMs: 40 });
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  try {
+    fs.writeFileSync(path.join(dir, name), 'player shot');
+    await sleep(200);
+    fs.writeFileSync(path.join(dir, name), 'a strip, longer');
+    await sleep(200);
+    assert.deepEqual(got, ['player shot', 'a strip, longer']);
+  } finally {
+    w.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('the watcher reports a new file once its size settles, and never the files that were already there', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wowai-shots-'));
   fs.writeFileSync(path.join(dir, 'WoWScrnShot_010126_000000.png'), 'old');
