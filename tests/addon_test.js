@@ -110,7 +110,17 @@ test('addon loads, builds its UI and creates a first chat', () => {
   assert.equal(vm.evaluate('ClaudeWoWMini ~= nil'), 'true');
   assert.equal(vm.num('#STUB.tickers'), 1);
   assert.equal(vm.evaluate('SlashCmdList.CLAUDEWOW ~= nil'), 'true');
-  assert.deepEqual([1, 2, 3].map(i => vm.evaluate('SLASH_CLAUDEWOW' + i)), ['/claude', '/claude-wow', null], 'two spellings of the one command and no other alias');
+  // Two commands, not two spellings of one: /claude-wow shows the window, /claude
+  // bare opens a new chat the way a terminal does. No other alias.
+  assert.deepEqual([1, 2].map(i => vm.evaluate('SLASH_CLAUDEWOW' + i)), ['/claude-wow', null], 'the client command and no alias');
+  assert.deepEqual([1, 2].map(i => vm.evaluate('SLASH_CLAUDE' + i)), ['/claude', null], 'the terminal command and no alias');
+  assert.equal(vm.evaluate('SlashCmdList.CLAUDE ~= nil'), 'true');
+  // Bare /claude starts a fresh chat rather than toggling the window.
+  vm.evaluate('SlashCmdList.CLAUDE("")');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 2, 'bare /claude added a chat');
+  // With text it still routes to the client handler.
+  vm.evaluate('SlashCmdList.CLAUDE("mini")');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 2, 'a command after /claude is not a new chat');
   assert.equal(vm.evaluate('SlashCmdList.CLAUDEWOWASK'), null, '/claude is a spelling of the one command, not a handler of its own');
   // The names from before the rename are gone, not aliased: nothing registers them.
   vm.run('RESULT = ""; for k, v in pairs(_G) do if type(k) == "string" and k:match("^SLASH_") and type(v) == "string" and (v == "/wow-ai" or v == "/wowai" or v == "/ai" or v == "/ask" or v == "/wow-claude") then RESULT = RESULT .. k .. "=" .. v .. " " end end');

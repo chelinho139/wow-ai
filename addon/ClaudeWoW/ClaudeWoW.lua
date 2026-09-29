@@ -3653,8 +3653,19 @@ end
 
 -- Two spellings of the one command and nothing else: the names from before the
 -- rename (/wow-ai, /wowai, /ai, /ask, /wow-claude) are gone, not aliased.
-SLASH_CLAUDEWOW1 = "/claude" -- the short form: /claude <text> sends, /claude agent codex and the rest work too
-SLASH_CLAUDEWOW2 = "/claude-wow"
+-- /claude-wow is the client: bare, it shows the window. /claude behaves like
+-- opening a terminal: bare, it starts a new chat, which is the only way to begin
+-- a fresh thread from inside a whisper tab.
+SLASH_CLAUDEWOW1 = "/claude-wow"
+SLASH_CLAUDE1 = "/claude"
+SlashCmdList["CLAUDE"] = function(msg, editBox)
+	if Trim(msg or "") == "" then
+		ClaudeWoW.NewChat()
+		return
+	end
+	return SlashCmdList["CLAUDEWOW"](msg, editBox)
+end
+
 SlashCmdList["CLAUDEWOW"] = function(msg)
 	msg = Trim(msg or "")
 	local cmd, rest = msg:match("^(%S+)%s*(.-)$")
