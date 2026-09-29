@@ -44,6 +44,7 @@ are the core's model runner, shared by every plugin: `ask` runs the same CLI as
 |---|---|---|
 | `ask` | General AI chat. Game questions, quest research, map routes, macros. The default. | Core behaviour today, minus the coding assumptions |
 | `claude-code` | Agent sessions in a folder. What the bridge does now. | Existing bridge |
+| `live` | A Claude Code session already open in a terminal, reached through a Claude Code channel ([LIVE-SESSION.md](LIVE-SESSION.md)). No agent run: the plugin forwards the message and waits for the session's `wow_reply`. | `bridge/plugins/live.js`, `bridge/channel.js` |
 | `factory` | The approval queue: drafts waiting on a stamp, judge holds, merge-ready PRs | `factory-inbox`, `factory-ledger` |
 | `studio` | The task board: what is in flight, what is blocked | `studio-board`, `studio-orchestrator` |
 | `vision` | Answers about what is on screen | New; see below |

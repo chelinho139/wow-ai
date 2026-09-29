@@ -17,6 +17,7 @@ bridge/               the companion process (Node.js, no runtime dependencies)
   agents.js             one entry per agent (Claude, Codex, Grok, Antigravity, Hermes): command line, prompt delivery, stream parser
   capture.ps1           screen capture and strip decoder (PowerShell)
   install-slots.js      creates the slot addons and signal files
+  channel.js            the live-session channel server Claude Code spawns (MCP over stdio, by hand); liveproto.js holds what it shares with plugins/live.js
   supervisor.js         restarts bridge.js on crash; the `claude-wow` command (and `claude-wow setup` / `claude-wow service` / `claude-wow bridge`)
   service.js            `claude-wow service`: LaunchAgent / systemd unit / Startup launcher, log rotation, pid file
   runtime.js            node, bun or the compiled binary: how the bridge runs its own scripts on each
@@ -65,6 +66,8 @@ To try changes in the game, run `node setup.js` (it re-copies the addon into `In
 | `node --test tests/assets_test.js` | `bridge/assets.js`: every embedded file exists and the addon folder is covered in full, `build/entry.js` embeds exactly that list, an embedded set is written out once and rewritten only where it differs, and `build.js` names one binary per target. |
 | `node --test tests/widget_test.js` | The widget protocol in `protocol.js`: validation and the display-only deny-list, versioned application and budgets, ```` ```wowui ```` blocks and widget files, the hint only for a plugin with the `ui` surface, the `widgets` table in slot files read back in a Lua VM, and that the addon blocks the same names. |
 | `node --test tests/widget_addon_test.js` | The real `Widgets.lua` (with `ClaudeWoW.lua`) in a Lua VM: a widget running live from slot data, errors surfaced to the chat window, blocked calls in the sandbox, `/claude-wow ui` list, remove and run, restart at login, and the reload path. |
+| `node --test tests/live_test.js` | The live-session link: the socket endpoint, the newline-delimited JSON framing, the token handshake both ways, owner-only socket permissions, the channel server's MCP surface (`initialize`, `tools/list`, `tools/call`), the channel notification's shape, reply routing through `wow_reply`, the no-session message, and the permission relay as a Need/Greed roll, against `bridge/plugins/live.js` with a fake core. |
+| `npm run test:live-session` | Not part of `npm test`. A sandbox bridge (its own `CLAUDE_WOW_HOME`) and a real interactive `claude --dangerously-load-development-channels server:claude-wow` in a detached tmux session (Haiku, `--permission-mode manual`): the no-session message, a reply, a Greed and a Pass, read back from the slot files. Needs tmux and a logged-in Claude Code. |
 | `node tests/codec_test.js` | `Codec.lua` in a Lua VM, rendered to PNG with noise and gamma, decoded by `capture.ps1` (Windows) or `capture_x11.py` (elsewhere). Writes scratch images to `tests/tmp/` (gitignored). |
 | `npm run test:live` | Not part of `npm test`. Builds a temporary sandbox (its own `CLAUDE_WOW_HOME`, removed on exit; it aborts if the home would be `~/.claude-wow`) with a 5-slot pool and runs the bridge with `--inject` against a real agent CLI: Claude by default, `-- --agent codex` or `-- --agent grok` for the others. Needs that CLI installed and logged in. |
 

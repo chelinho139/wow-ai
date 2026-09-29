@@ -32,6 +32,7 @@ What a chat *does* with your message is a plugin's business; the window, the whi
 |---|---|
 | `ask` (default) | General in-game AI chat: game questions, quest research, routes on the map, macros. No project, no folder: the agent runs in a scratch folder of its own and is told it is your in-game assistant, not a coding session. |
 | `claude-code` | An agent session in a folder, what the bridge was before plugins: `/claude-wow cd` picks the project, the agent edits and runs things there. |
+| `live` | A Claude Code session you already have open in a terminal: the whisper tab talks straight into it through a Claude Code channel, its answers come back to the tab, and its permission prompts come up as a Need/Greed roll. Start the session with `claude --dangerously-load-development-channels server:claude-wow` from this repo; see [docs/LIVE-SESSION.md](docs/LIVE-SESSION.md). |
 
 A chat is bound to a plugin the way it is bound to an agent: `/claude-wow plugin claude-code`, or right-click the chat and pick **Plugin...**; a chat bound to nothing follows the bridge's default (`plugins.default` in `~/.claude-wow/config.json`, `ask` unless you change it). Chats you made before plugins existed stay bound to `claude-code`, so nothing changes for them; a new chat inherits the binding of the chat you were in. A message that starts with `@ask ` or `@claude ` (in the window or a whisper tab) goes to that plugin whatever the chat is bound to. Either plugin runs whichever agent the chat picked.
 
@@ -130,6 +131,7 @@ Right-clicking a chat in the left panel opens a small menu with **Rename...**, *
 | `/claude-wow new [name]` | new chat = new agent session. Unnamed chats take their title from your first message |
 | `/claude-wow chat <n\|name>` | switch chats (or click the left panel; right-click a row for Rename, Folder, Agent and Plugin, its trash can deletes it) |
 | `/claude-wow plugin [ask\|claude-code]` | what this chat is for: `ask` (general in-game chat, the default) or `claude-code` (an agent session in a folder); no name shows the current one and the bridge's default, `default` goes back to the bridge's. A chat that changes plugin starts a fresh session with it |
+| `/claude-wow live` | the running Claude Code sessions a chat bound to `live` talks to, or the command that starts one ([docs/LIVE-SESSION.md](docs/LIVE-SESSION.md)) |
 | `/claude-wow agent [claude\|codex\|grok\|agy\|hermes]` | which agent this chat talks to; no name shows the current one and the bridge's default, `default` goes back to the bridge's. A chat that changes agent starts a fresh session with it |
 | `/claude-wow cd <folder>` | folder this chat's agent works in (**Folder...** after right-clicking the chat opens the same thing as a dialog). Relative to the bridge's folder (`/claude-wow cd realms`, `/claude-wow cd ../other`), `~` works, a full path too; `/claude-wow cd` alone goes back to the bridge's default. A chat that changes folder starts a fresh session there |
 | `/claude-wow reset` | wipe this chat's agent memory, keep the transcript |
