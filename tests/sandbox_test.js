@@ -23,6 +23,23 @@ test('assertSafe refuses every live install path and anything that contains one'
   assert.equal(SB.assertSafe('/Users/someone/code/wow-ai/.dev/sandboxes/a', home), '/Users/someone/code/wow-ai/.dev/sandboxes/a');
 });
 
+test('a sandbox name cannot leave its root', () => {
+  for (const bad of ['../../../wow-ai', '..', '.', 'a/b', '']) assert.throws(() => SB.sandboxDir(ROOT, bad), /refusing sandbox/, bad);
+  assert.equal(SB.sandboxDir(ROOT, 'ok-1.two'), path.join(ROOT, 'ok-1.two'));
+});
+
+test('the live checkout named by the LaunchAgent is a forbidden root', { skip: process.platform === 'win32' && 'POSIX paths' }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'sandbox-home-'));
+  try {
+    fs.mkdirSync(path.join(home, 'Library', 'LaunchAgents'), { recursive: true });
+    fs.writeFileSync(path.join(home, 'Library', 'LaunchAgents', 'io.claudewow.bridge.plist'), '<key>WorkingDirectory</key>\n<string>/srv/live-checkout</string>');
+    assert.deepEqual(SB.liveCheckouts(home), ['/srv/live-checkout']);
+    assert.throws(() => SB.assertSafe('/srv/live-checkout/bridge', home), /refusing/);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test('a sandbox keeps every path the bridge and the client use inside itself', () => {
   const sb = SB.create('inside', { root: ROOT });
   try {

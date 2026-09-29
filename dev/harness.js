@@ -65,7 +65,7 @@ class BridgeProcess {
   }
 
   async ready(timeoutMs = 20000) {
-    await this.waitForLine(/screenshot transport: watching|pixel capture|capture:/, { timeoutMs });
+    await this.waitForLine(/screenshot transport: watching|pixel capture/, { timeoutMs });
     return this;
   }
 
@@ -112,13 +112,23 @@ async function start(name, opts = {}) {
   const sb = opts.open ? SB.open(name, opts) : SB.create(name, opts);
   const bridge = new BridgeProcess(sb, opts);
   const client = new WowClient(sb, opts.client || {});
-  if (opts.beforeLaunch) await opts.beforeLaunch(sb);
-  if (opts.bridge !== false) {
-    bridge.start();
-    await bridge.ready(opts.readyTimeoutMs);
+  const discard = async () => {
+    client.stop();
+    await bridge.stop();
+    if (!opts.keep && !opts.open) fs.rmSync(SB.assertSafe(sb.dir), { recursive: true, force: true });
+  };
+  try {
+    if (opts.beforeLaunch) await opts.beforeLaunch(sb);
+    if (opts.bridge !== false) {
+      bridge.start();
+      await bridge.ready(opts.readyTimeoutMs);
+    }
+    client.launch();
+    if (opts.run !== false) client.start();
+  } catch (e) {
+    await discard().catch(() => {});
+    throw e;
   }
-  client.launch();
-  if (opts.run !== false) client.start();
   const h = {
     sb, bridge, client,
     state: () => readJson(sb.state, {}),

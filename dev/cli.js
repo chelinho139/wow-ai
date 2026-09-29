@@ -2,6 +2,7 @@
 'use strict';
 const os = require('os');
 const fs = require('fs');
+const path = require('path');
 const readline = require('readline');
 const H = require('./harness');
 const SB = require('./sandbox');
@@ -45,7 +46,7 @@ function roleColor(role) {
 async function main() {
   const o = parseArgs(process.argv.slice(2));
   if (o.help) { console.log('npm run dev -- [--fresh] [--name <sandbox>] [--speed <x>] [--echo] [--real-agent]' + HELP); return; }
-  const existing = fs.existsSync(require('path').join(SB.DEFAULT_ROOT, o.name, 'sandbox.json'));
+  const existing = fs.existsSync(path.join(SB.DEFAULT_ROOT, o.name, 'sandbox.json'));
   const sbOpts = { speed: o.speed };
   if (o.realAgent) {
     o.fresh = true;
@@ -110,7 +111,7 @@ async function main() {
         console.log(bridge.output.trim().split('\n').slice(-n).join('\n'));
       }
       else if (t === ':files') {
-        const dir = kind => { try { return fs.readdirSync(require('path').join(sb.addons, 'ClaudeWoW', kind)).filter(f => f.endsWith('.wav')); } catch { return []; } };
+        const dir = kind => { try { return fs.readdirSync(path.join(sb.addons, 'ClaudeWoW', kind)).filter(f => f.endsWith('.wav')); } catch { return []; } };
         console.log({ ack: dir('ack'), sig: dir('sig'), screenshots: h.screenshots() });
       }
       else if (t.startsWith('/')) client.slash(t);

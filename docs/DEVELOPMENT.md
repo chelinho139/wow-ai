@@ -11,7 +11,7 @@ a live install.
 | `npm run dev` | Starts a sandbox, a real bridge, and a headless game client. Type messages; watch replies. `:help` lists the console commands. |
 | `npm run dev -- --fresh` | The same, from a clean sandbox. |
 | `npm run dev -- --speed 8` | The game clock runs 8× faster, so the addon's 40 s retries and 120 s give-ups happen in seconds. |
-| `npm run dev -- --real-agent` | Uses your real `claude` CLI in the sandbox project. This uses your plan quota. |
+| `npm run dev -- --real-agent` | Uses your real `claude` CLI in the sandbox project, with your real `HOME` so it can log in. It uses your plan quota and writes its session files to `~/.claude`. |
 | `npm test` | Unit tests (Node). `npm run test:bun` runs them on Bun. |
 | `npm run test:e2e` | End-to-end scenarios: the real addon and the real bridge, in a sandbox. |
 | `npm run check` | Both suites. Run it before you push. |
@@ -31,12 +31,14 @@ AddOns/ClaudeWoW_S###/Inbox.lua ◄── bridge/bridge.js (a real process) ◄�
 
 - **Sandbox** (`dev/sandbox.js`): a game client folder, a bridge home, a project
   folder and a fake user home, all under `.dev/sandboxes/<name>` (tests use the
-  OS temp folder). The addon and the 200 slots go in through the real
-  installers (`setup.js` `copyAddon`, `bridge/install-slots.js`).
-- **Safety**: `assertSafe` refuses any path that overlaps `~/.claude-wow`,
-  `~/.claude`, `~/Library/LaunchAgents`, `~/Library/Logs/claude-wow` or a real
-  game folder. The bridge runs with `HOME` and `CLAUDE_WOW_HOME` set to the
-  sandbox and without `CLAUDE_WOW_SERVICE`.
+  OS temp folder). The addon files are copied the way `setup.js` does it, and
+  the 200 slots go in through the real `bridge/install-slots.js`.
+- **Safety**: a sandbox name is letters, digits, `.`, `-` and `_` only, and
+  its folder must be inside the sandbox root. `assertSafe` refuses any path
+  that overlaps `~/.claude-wow`, `~/.claude`, `~/Library/LaunchAgents`,
+  `~/Library/Logs/claude-wow`, the game folder, or the checkout the live
+  LaunchAgent runs. The bridge runs with `HOME` and `CLAUDE_WOW_HOME` set to
+  the sandbox and without `CLAUDE_WOW_SERVICE` (except `--real-agent`, above).
 - **Game client** (`dev/wow/client.js`, `dev/wow/prelude.lua`): runs the
   addon's files in the order of its `.toc`, loads SavedVariables before
   `ADDON_LOADED`, and runs frames, timers and tickers on a real (or scaled)
@@ -44,8 +46,10 @@ AddOns/ClaudeWoW_S###/Inbox.lua ◄── bridge/bridge.js (a real process) ◄�
   - `Screenshot()` renders the strip into a 1920×1080 PNG (or TGA) with the
     client's file name, then fires `SCREENSHOT_SUCCEEDED`.
   - `LoadAddOn` reads the slot's `.toc` and files from disk, once per UI
-    session. It reports `MISSING`, `DISABLED` and `INTERFACE_VERSION` like the
-    client. Addon folders are indexed at launch, not at `/reload`.
+    session. It reports `MISSING`, `DISABLED` (client option `disabled`) and
+    `INTERFACE_VERSION` like the client. Addon folders are indexed at launch,
+    not at `/reload`.
+  - Alt+Z (`:hide`) hides `UIParent`, so the strip and its `OnUpdate` stop.
   - `PlaySoundFile` is true only when the `.wav` file exists.
   - `/reload` and logout write SavedVariables in the client's format. A crash
     does not.
@@ -86,5 +90,10 @@ reports, and it does not fail the suite. When the gap is fixed, remove `todo`.
 - fengari is Lua 5.3; the client is Lua 5.1. `tests/order_check.js` parses the
   addon as 5.1, but a 5.3-only call can still pass here and fail in game.
 - Frame timing is 20 frames a second, not the client's frame rate.
+- Timers, tickers and `OnUpdate` run in a simplified order.
+- SavedVariables are written in the client's shape, but not byte for byte
+  (no `-- [n]` markers).
+- `--speed` scales only the game clock. The bridge and the fake agent run in
+  real time.
 - WoW's own file caching and its handling of two screenshots in one second are
   modelled on a best guess. Confirm transport changes in game.

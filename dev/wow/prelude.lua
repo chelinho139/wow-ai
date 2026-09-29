@@ -8,15 +8,11 @@ DEV = {
 	disabled = {},
 	shots = 0,
 	shotQueue = {},
-	events = {},
 	errors = {},
 	interface = 16001,
 	loadOutOfDate = false,
 	width = 1920,
 	height = 1080,
-	uiHidden = false,
-	hasScreenshot = true,
-	chatLog = {},
 }
 
 loadstring = loadstring or function(src, name) return load(src, name) end
@@ -97,7 +93,7 @@ function DEV.RunTimers()
 	end
 end
 
-local function visible(f)
+function DEV.Visible(f)
 	local seen = 0
 	while f and seen < 64 do
 		if f.shown == false then return false end
@@ -113,7 +109,7 @@ function DEV.RunFrame(dt)
 	for i, f in ipairs(STUB.frames) do frames[i] = f end
 	for _, f in ipairs(frames) do
 		local fn = f.scripts and f.scripts.OnUpdate
-		if fn and visible(f) then
+		if fn and DEV.Visible(f) then
 			local ok, err = pcall(fn, f, dt)
 			if not ok then report(err) end
 		end
@@ -138,7 +134,7 @@ end
 
 function DEV.StripCells()
 	local s = _G.ClaudeWoWStrip
-	if not s or s.shown == false or DEV.uiHidden then return "" end
+	if not s or not DEV.Visible(s) then return "" end
 	local out = {}
 	for _, t in ipairs(s.textures or {}) do
 		if t.shown ~= false and t.color then
@@ -190,7 +186,11 @@ function DEV.LoadAddOn(name)
 	if not src then return false, "MISSING" end
 	local meta = DEV.ParseToc(src)
 	local _, files = DEV.ParseToc(src)
-	if tonumber(meta.Interface) ~= DEV.interface and not DEV.loadOutOfDate then return false, "INTERFACE_VERSION" end
+	local fits = false
+	for v in tostring(meta.Interface or ""):gmatch("%d+") do
+		if tonumber(v) == DEV.interface then fits = true end
+	end
+	if not fits and not DEV.loadOutOfDate then return false, "INTERFACE_VERSION" end
 	for _, f in ipairs(files) do
 		local ok, reason = DEV.RunAddonFile(name, f)
 		if not ok then return false, reason end

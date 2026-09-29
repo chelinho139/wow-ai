@@ -9,16 +9,29 @@ const DEFAULT_ROOT = path.join(REPO, '.dev', 'sandboxes');
 const ACCOUNT = 'DEV#1';
 const CLIENT_INTERFACE = '16001';
 
-function forbiddenRoots(home = os.homedir()) {
-  return [
+const LIVE_PLIST = 'io.claudewow.bridge.plist';
+
+function liveCheckouts(home) {
+  try {
+    const plist = fs.readFileSync(path.join(home, 'Library', 'LaunchAgents', LIVE_PLIST), 'utf8');
+    const m = /<key>WorkingDirectory<\/key>\s*<string>([^<]+)<\/string>/.exec(plist);
+    return m ? [m[1]] : [];
+  } catch {
+    return [];
+  }
+}
+
+function forbiddenRoots(home = os.homedir(), platform = process.platform) {
+  const roots = [
     path.join(home, '.claude-wow'),
     path.join(home, 'Library', 'LaunchAgents'),
     path.join(home, 'Library', 'Logs', 'claude-wow'),
     path.join(home, '.claude'),
     '/Applications/World of Warcraft',
-    'C:\\Program Files (x86)\\World of Warcraft',
-    'C:\\Program Files\\World of Warcraft',
+    ...liveCheckouts(home),
   ].map(p => path.resolve(p));
+  if (platform === 'win32') roots.push('C:\\Program Files (x86)\\World of Warcraft', 'C:\\Program Files\\World of Warcraft');
+  return roots;
 }
 
 function isWithin(child, parent) {
@@ -26,15 +39,33 @@ function isWithin(child, parent) {
   return rel === '' || (!!rel && !rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
+function realish(p) {
+  let cur = path.resolve(p);
+  const rest = [];
+  for (;;) {
+    try { return path.join(fs.realpathSync(cur), ...rest.reverse()); } catch {}
+    const up = path.dirname(cur);
+    if (up === cur) return path.join(cur, ...rest.reverse());
+    rest.push(path.basename(cur));
+    cur = up;
+  }
+}
+
 function assertSafe(p, home = os.homedir()) {
   const abs = path.resolve(p);
-  for (const bad of forbiddenRoots(home)) {
-    if (isWithin(abs, bad) || isWithin(bad, abs)) throw new Error(`refusing to touch ${abs}: it overlaps a live install path (${bad})`);
-  }
-  if (/World of Warcraft/i.test(abs) && !abs.includes(`${path.sep}.dev${path.sep}`) && !abs.startsWith(path.resolve(os.tmpdir()))) {
-    throw new Error(`refusing to touch ${abs}: it looks like a real game folder`);
+  for (const candidate of new Set([abs, realish(abs)])) {
+    for (const bad of forbiddenRoots(home)) {
+      if (isWithin(candidate, bad) || isWithin(bad, candidate)) throw new Error(`refusing to touch ${abs}: it overlaps a live install path (${bad})`);
+    }
   }
   return abs;
+}
+
+function sandboxDir(root, name) {
+  if (!/^[\w.-]+$/.test(String(name)) || /^\.+$/.test(String(name))) throw new Error(`refusing sandbox name "${name}": use letters, digits, dot, dash and underscore`);
+  const dir = path.join(path.resolve(root), name);
+  if (!isWithin(dir, path.resolve(root)) || dir === path.resolve(root)) throw new Error(`refusing sandbox ${dir}: it is not inside ${root}`);
+  return assertSafe(dir);
 }
 
 function layout(dir) {
@@ -118,8 +149,7 @@ function envFor(L, extra = {}) {
 }
 
 function create(name = 'default', opts = {}) {
-  const root = path.resolve(opts.root || DEFAULT_ROOT);
-  const dir = assertSafe(path.join(root, name));
+  const dir = sandboxDir(opts.root || DEFAULT_ROOT, name);
   if (opts.fresh !== false && fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
   const L = layout(dir);
   for (const d of [L.addons, L.screenshots, L.savedDir, L.home, L.user, L.project, L.agentState, L.logs]) fs.mkdirSync(assertSafe(d), { recursive: true });
@@ -133,8 +163,7 @@ function create(name = 'default', opts = {}) {
 }
 
 function open(name = 'default', opts = {}) {
-  const root = path.resolve(opts.root || DEFAULT_ROOT);
-  const dir = assertSafe(path.join(root, name));
+  const dir = sandboxDir(opts.root || DEFAULT_ROOT, name);
   if (!fs.existsSync(path.join(dir, 'sandbox.json'))) throw new Error(`no sandbox at ${dir}; run: npm run dev -- --fresh`);
   const L = layout(dir);
   const cfg = JSON.parse(fs.readFileSync(L.config, 'utf8'));
@@ -157,4 +186,4 @@ function seedStaleSignals(sb, kinds, slots) {
   for (const kind of kinds) for (const s of slots) fs.writeFileSync(assertSafe(signalFile(sb, kind, s)), SILENT_WAV);
 }
 
-module.exports = { REPO, DEFAULT_ROOT, ACCOUNT, CLIENT_INTERFACE, assertSafe, isWithin, forbiddenRoots, layout, buildConfig, create, open, writeConfig, envFor, signalFile, seedStaleSignals };
+module.exports = { REPO, DEFAULT_ROOT, ACCOUNT, CLIENT_INTERFACE, assertSafe, sandboxDir, liveCheckouts, isWithin, forbiddenRoots, layout, buildConfig, create, open, writeConfig, envFor, signalFile, seedStaleSignals };

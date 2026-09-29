@@ -66,12 +66,12 @@ function supervise() {
     child.on('exit', (code) => {
       child = null;
       if (stopping) return;
-      if (code === 2 && SERVICE) { // config problem: keep the service alive, retry slowly
-        say(`\nbridge exited (${code}): run "claude-wow setup"; retrying in 60 s`);
+      if ((code === 2 || code === 3) && SERVICE) {
+        say(`\nbridge exited (${code}): ${code === 3 ? 'another bridge holds this home folder' : 'run "claude-wow setup"'}; retrying in 60 s`);
         setTimeout(start, 60000);
         return;
       }
-      if (code === 2 || code === 0) { svc.clearPid(dirs); process.exit(code); } // config problem or --help/--once: don't loop
+      if (code === 2 || code === 3 || code === 0) { svc.clearPid(dirs); process.exit(code); }
       say(`\nbridge exited (${code}); restarting in 3 s`);
       setTimeout(start, 3000);
     });

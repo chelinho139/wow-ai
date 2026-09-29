@@ -37,6 +37,8 @@
 const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
+const os = require('os');
+const { spawnSync } = require('child_process');
 const PR = require('./procs');  // the children (agent runs, the capture script): their process groups, and ending them for good (tests/procs_test.js)
 const P = require('./protocol'); // the pure protocol code, unit-tested in tests/bridge_test.js
 const A = require('./agents');   // how each agent is launched and read, unit-tested in tests/agents_test.js
@@ -139,27 +141,56 @@ const cap = Object.assign({ enabled: true, processName: 'WowB', cellPx: 4, cells
 // fallback a previous run had to make, remembered in state.json). It can
 // change while running: fallbackToPixel, when the addon reports it cannot shoot.
 const LOCK_FILE = path.join(HOME.dir, 'bridge.lock');
-function holdLock() {
-  const held = readJsonQuiet(LOCK_FILE);
-  if (held && held.pid !== process.pid && pidAlive(held.pid)) {
-    const msg = `another bridge is already running on ${HOME.dir} (pid ${held.pid}, started ${held.started || 'at an unknown time'}). Two bridges would overwrite each other's state and race for the same screenshots. Stop it first ("claude-wow service stop", or end pid ${held.pid}).`;
-    console.error(msg);
-    log(msg);
-    process.exit(3);
-  }
-  fs.mkdirSync(HOME.dir, { recursive: true });
-  fs.writeFileSync(LOCK_FILE, JSON.stringify({ pid: process.pid, started: new Date().toISOString() }));
-  process.on('exit', () => {
-    const now = readJsonQuiet(LOCK_FILE);
-    if (now && now.pid === process.pid) { try { fs.rmSync(LOCK_FILE, { force: true }); } catch {} }
-  });
-}
+const BOOTED_AT = Date.now() - os.uptime() * 1000;
+const SELF_MARKER = path.basename(process.argv[1] || process.execPath);
+
 function pidAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
-  try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
+  try { process.kill(pid, 0); return true; } catch { return false; }
 }
+
+function commandOf(pid) {
+  if (process.platform === 'win32') return null;
+  const r = spawnSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8' });
+  return r.status === 0 ? r.stdout.trim() : null;
+}
+
+function isSameProcess(pid, startedAt, marker) {
+  if (!pidAlive(pid)) return false;
+  if (!Number.isFinite(startedAt) || startedAt < BOOTED_AT) return false;
+  const cmd = commandOf(pid);
+  if (cmd === null) return process.platform === 'win32';
+  return !!marker && cmd.includes(marker);
+}
+
 function readJsonQuiet(file) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
+}
+
+function holdLock() {
+  fs.mkdirSync(HOME.dir, { recursive: true });
+  const mine = JSON.stringify({ pid: process.pid, started: new Date().toISOString(), startedAt: Date.now(), marker: SELF_MARKER });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      fs.writeFileSync(LOCK_FILE, mine, { flag: 'wx' });
+      process.on('exit', () => {
+        const now = readJsonQuiet(LOCK_FILE);
+        if (now && now.pid === process.pid) { try { fs.rmSync(LOCK_FILE, { force: true }); } catch {} }
+      });
+      return;
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+    }
+    const held = readJsonQuiet(LOCK_FILE);
+    if (held && held.pid !== process.pid && isSameProcess(held.pid, held.startedAt, held.marker)) {
+      const msg = `another bridge is already running on ${HOME.dir} (pid ${held.pid}, started ${held.started || 'at an unknown time'}). Two bridges would overwrite each other's state and race for the same screenshots. Stop it first ("claude-wow service stop", or end pid ${held.pid}).`;
+      console.error(msg);
+      log(msg);
+      process.exit(3);
+    }
+    try { fs.rmSync(LOCK_FILE, { force: true }); } catch {}
+  }
+  log(`could not take ${LOCK_FILE}; starting without the single-bridge guard`);
 }
 if (!exitWhenIdle) holdLock();
 
@@ -352,7 +383,7 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 function crash(kind, err) {
   try { log(`CRASH (${kind}): ${err && err.stack ? err.stack : err}`); } catch {}
-  const kids = [...running.values()].map(r => r.child).filter(Boolean);
+  const kids = [...running.values()].map(r => r.child).concat(captureChild ? [captureChild] : []).filter(Boolean);
   for (const child of kids) { try { if (process.platform !== 'win32') process.kill(-child.pid, 'SIGKILL'); else child.kill('SIGKILL'); } catch {} }
   process.exit(70);
 }
@@ -845,7 +876,7 @@ function runAgent(job, opts = {}) {
   const startedAt = Date.now(); // a fresh session's clock starts here (the footer's elapsed time)
   const child = PR.spawnChild(cmd.file, args, { cwd, env, windowsHide: true, stdio: [input.stdin !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
   running.set(key, { job, child });
-  noteInflight(key, job, child, agent.name);
+  noteInflight(key, job, child, agent.name, path.basename(args.find(a => /\.[cm]?js$/.test(String(a))) || cmd.file));
   publish(key, { chat: job.chat, id: job.id, status: 'working', text: resume ? 'thinking...' : 'starting a new session...', cwd: job.cwd, session: resume, agent: agentId, plugin: plugin.id }, true);
   if (input.stdin !== undefined) { child.stdin.on('error', () => {}); child.stdin.end(input.stdin); }
 
@@ -982,8 +1013,8 @@ function runAgent(job, opts = {}) {
   });
 }
 
-function noteInflight(key, job, child, agentName) {
-  (state.inflight = state.inflight || {})[key] = { id: job.id, chat: job.chat, session: job.session, cwd: job.cwd, pid: child && child.pid, agent: agentName, startedAt: Date.now() };
+function noteInflight(key, job, child, agentName, marker) {
+  (state.inflight = state.inflight || {})[key] = { id: job.id, chat: job.chat, session: job.session, cwd: job.cwd, pid: child && child.pid, agent: agentName, marker, startedAt: Date.now() };
   saveState();
 }
 
@@ -991,7 +1022,7 @@ function recoverInflight() {
   const lost = Object.entries(state.inflight || {});
   if (!lost.length) return;
   for (const [key, run] of lost) {
-    if (process.platform !== 'win32' && Number.isInteger(run.pid) && pidAlive(run.pid)) {
+    if (process.platform !== 'win32' && isSameProcess(run.pid, run.startedAt, run.marker)) {
       try { process.kill(-run.pid, 'SIGKILL'); log(`#${run.id}: ended the orphaned ${run.agent || 'agent'} process group ${run.pid} left by the previous bridge`); } catch {}
     }
     const since = new Date(run.startedAt || Date.now()).toISOString().slice(11, 19);
@@ -1260,13 +1291,13 @@ if (inject !== null) {
   }
   submit(job);
 } else {
+  if (!once) recoverInflight();
   pollSavedVariables();
   if (once) {
     if (running.size === 0) { console.log('nothing pending'); process.exit(0); }
   } else {
     setInterval(pollSavedVariables, cfg.pollMs || 750);
     if (Number.isFinite(state.lastId)) clearSignalsAhead(state.lastId);
-    recoverInflight();
     presenceBeat();
     setInterval(presenceBeat, cfg.presenceIntervalMs || 30000);
     // Fresh slot files right away, so the addon's first slot read tells it which

@@ -1288,6 +1288,7 @@ local function TryLoadSlot(why)
 	end
 	if type(data) == "table" and type(data.cwd) == "string" and data.cwd ~= "" then run.bridgeCwd = data.cwd end
 	if type(data) == "table" then
+		if data.cancel == true then run.bridgeCancel = true end
 		if type(data.agent) == "string" and data.agent ~= "" then run.bridgeAgent = data.agent end
 		if type(data.agents) == "table" and #data.agents > 0 then run.bridgeAgents = data.agents end
 		if type(data.plugin) == "string" and data.plugin ~= "" then run.bridgePlugin = data.plugin end
@@ -1345,6 +1346,7 @@ local function Tick()
 		ClaudeWoW.Render()
 	end
 	for id, rec in pairs(run.outbound) do
+		if rec.staleAck and not CheckSignal("ack", id) then rec.staleAck = nil end
 		if not rec.acked and not rec.staleAck and CheckSignal("ack", id) then
 			NoteAcked(rec)
 			changed = true
@@ -1396,6 +1398,7 @@ local function Tick()
 	end
 	if moved then ClaudeWoW.Render() end
 	for _, c in ipairs(db.chats) do
+		if c.pendingId and run.staleSig and run.staleSig[c.pendingId] and not CheckSignal("sig", c.pendingId) then run.staleSig[c.pendingId] = nil end
 		if c.pendingId and FreshSignal("sig", c.pendingId) then
 			TryLoadSlot("signal")
 			return
@@ -1411,6 +1414,7 @@ local function ProcessInbox()
 	local inbox = ClaudeWoW_Inbox
 	if type(inbox) ~= "table" then return end
 	if type(inbox.cwd) == "string" and inbox.cwd ~= "" then run.bridgeCwd = inbox.cwd end
+	if inbox.cancel == true then run.bridgeCancel = true end
 	if type(inbox.agent) == "string" and inbox.agent ~= "" then run.bridgeAgent = inbox.agent end
 	if type(inbox.agents) == "table" and #inbox.agents > 0 then run.bridgeAgents = inbox.agents end
 	if type(inbox.plugin) == "string" and inbox.plugin ~= "" then run.bridgePlugin = inbox.plugin end
@@ -2258,14 +2262,6 @@ end
 -- the transcript (which a later restore would otherwise bring back) and the
 -- agent session. db.forget keeps the id until the bridge acks, so a delete made
 -- while the bridge was away is sent again with the next hello.
-local function SendCancel(chat, id)
-	if db.settings.mode ~= "pixel" or not id then return end
-	db.lastSeq = db.lastSeq + 1
-	run.outbound[db.lastSeq] = { chat = chat.id, cwd = chat.cwd or "", flags = "cancel=" .. id, name = chat.name or "", text = "", sentAt = GetTime(), cancelOf = id }
-	NoteStaleSignals(db.lastSeq)
-	RefreshStrip()
-end
-
 local function SendForget(chatId)
 	if db.settings.mode ~= "pixel" then return end
 	for _, rec in pairs(run.outbound) do
@@ -2274,6 +2270,14 @@ local function SendForget(chatId)
 	local info = db.forget[chatId] or {}
 	db.lastSeq = db.lastSeq + 1
 	run.outbound[db.lastSeq] = { chat = chatId, cwd = info.cwd or "", flags = "d", name = info.name or "", text = "", sentAt = GetTime(), forget = chatId }
+	NoteStaleSignals(db.lastSeq)
+	RefreshStrip()
+end
+
+local function SendCancel(chat, id)
+	if db.settings.mode ~= "pixel" or not id or not run.bridgeCancel then return end
+	db.lastSeq = db.lastSeq + 1
+	run.outbound[db.lastSeq] = { chat = chat.id, cwd = chat.cwd or "", flags = "cancel=" .. id, name = chat.name or "", text = "", sentAt = GetTime(), cancelOf = id }
 	NoteStaleSignals(db.lastSeq)
 	RefreshStrip()
 end
@@ -2848,7 +2852,7 @@ function ClaudeWoW.UpdateStatus()
 		local rec = run.outbound[id]
 		if mode == "pixel" then
 			if run.slotsMissing then
-				s = "Reply slots not installed (run install-slots.js, restart WoW). Using reload instead: Enter or Refresh"
+				s = ((run.slotError and run.slotError ~= "MISSING" and run.slotError ~= "DISABLED") and ("Reply slots do not load (" .. tostring(run.slotError) .. "; run install-slots.js, restart WoW)") or "Reply slots not installed (run install-slots.js, restart WoW)") .. ". Using reload instead: Enter or Refresh"
 			elseif run.slotsExhausted then
 				s = "Slot pool used up this session - next keypress reloads to free it"
 			elseif run.pixelFailed then
@@ -4259,7 +4263,7 @@ SlashCmdList["CLAUDEWOW"] = function(msg)
 	elseif cmd == "cancel" then
 		if c.pendingId then
 			local cancelled = c.pendingId
-			AddHistory(c, "system", "Gave up waiting on #" .. c.pendingId .. "; the bridge is told to stop it")
+			AddHistory(c, "system", "Gave up waiting on #" .. c.pendingId .. (run.bridgeCancel and "; the bridge is told to stop it" or "; this bridge cannot stop it, so it may still finish in the background"))
 			run.outbound[c.pendingId] = nil
 			if run.act then run.act[c.id] = nil end
 			c.pendingId = nil

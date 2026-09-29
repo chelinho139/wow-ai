@@ -549,6 +549,7 @@ function luaTable(globalName, records, opts = {}) {
     `\tplugin = ${luaStr(opts.plugin || '')},`,
     `\tplugins = { ${plugins.map(luaStr).join(', ')} },`,
     `\ttransport = ${luaStr(transport)},`,
+    '\tcancel = true,',
     '\treplies = {',
   ];
   if (transport === 'screenshot') {

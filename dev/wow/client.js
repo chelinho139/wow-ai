@@ -82,14 +82,13 @@ class WowClient {
       shotDelayMs: 120,
       failShots: false,
       seed: 7,
-      collideShotNames: true,
+      disabled: [],
     }, opts);
     this.clientRoot = assertSafe(sb.client);
     this.L = null;
     this.timer = null;
     this.pendingEvents = [];
     this.log = [];
-    this.shotsWritten = [];
     this.sessions = 0;
     this.gameOffset = 0;
     this.background = null;
@@ -188,6 +187,7 @@ class WowClient {
     const o = this.opts;
     this.runLua(`DEV.interface = ${Number(o.interface)}; DEV.loadOutOfDate = ${!!o.loadOutOfDate}; DEV.width = ${o.width}; DEV.height = ${o.height}`);
     this.runLua(`for _, n in ipairs({${this.indexed.map(luaQuote).join(',')}}) do DEV.indexed[n] = true end`);
+    this.runLua(`for _, n in ipairs({${(o.disabled || []).map(luaQuote).join(',')}}) do DEV.disabled[n] = true end`);
     if (!o.hasScreenshot) this.runLua('Screenshot = nil');
     this.syncClock();
     this.runLua(`
@@ -268,11 +268,7 @@ class WowClient {
     for (let i = 0; i < n; i++) {
       const fmt = String(this.luaValue('GetCVar("screenshotFormat")') || 'jpeg').toLowerCase();
       const ext = fmt === 'png' ? 'png' : fmt === 'tga' ? 'tga' : 'jpg';
-      let file = path.join(this.sb.screenshots, shotName(new Date(), ext));
-      if (!this.opts.collideShotNames) {
-        let k = 1;
-        while (fs.existsSync(file)) file = path.join(this.sb.screenshots, shotName(new Date(), ext).replace('.' + ext, `_${k++}.${ext}`));
-      }
+      const file = path.join(this.sb.screenshots, shotName(new Date(), ext));
       if (this.opts.failShots) {
         this.pendingEvents.push({ at: Date.now() + this.opts.shotDelayMs, ev: 'SCREENSHOT_FAILED' });
         continue;
@@ -291,7 +287,6 @@ class WowClient {
       }
       const data = ext === 'png' ? encodePng(width, height, rgb) : ext === 'tga' ? encodeTga(width, height, rgb) : Buffer.from('not a real jpeg');
       fs.writeFileSync(assertSafe(file), data);
-      this.shotsWritten.push(path.basename(file));
       this.pendingEvents.push({ at: Date.now() + this.opts.shotDelayMs, ev: 'SCREENSHOT_SUCCEEDED' });
     }
   }
@@ -322,7 +317,7 @@ class WowClient {
   }
 
   setUiHidden(hidden) {
-    this.runLua(`DEV.uiHidden = ${!!hidden}`);
+    this.runLua(hidden ? 'UIParent:Hide()' : 'UIParent:Show()');
   }
 
   prints() {

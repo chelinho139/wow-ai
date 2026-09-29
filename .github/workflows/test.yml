@@ -37,6 +37,7 @@ jobs:
         if: matrix.runtime == 'bun'
 
   e2e:
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
