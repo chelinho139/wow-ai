@@ -137,6 +137,10 @@ function parseFlags(flags) {
     else if (tok.startsWith('allow=')) out.allow.push(...tok.slice(6).split(',').map(s => s.trim()).filter(Boolean));
     else if (tok.startsWith('agent=')) out.agent = tok.slice(6).trim().toLowerCase();
     else if (tok.startsWith('plugin=')) { const p = tok.slice(7).trim().toLowerCase(); if (p) out.plugin = p; }
+    // "shot=missing" / "shot=failed": the addon is on the screenshot transport but
+    // cannot take the shot (no Screenshot() in this client, or SCREENSHOT_FAILED on
+    // every try). The bridge falls back to the pixel transport on it (transportFallback).
+    else if (tok.startsWith('shot=')) { const s = tok.slice(5).trim().toLowerCase(); if (FALLBACK_REASONS[s]) out.shot = s; }
   }
   return out;
 }
@@ -187,6 +191,8 @@ function parseOutbox(src) {
   if (plugin && plugin[1]) job.plugin = plugin[1].toLowerCase();
   const allow = b.match(/\["allow"\]\s*=\s*"([0-9a-fA-F]*)"/);
   if (allow && allow[1]) job.allow = fromHex(allow[1]).split('\x1F').filter(Boolean);
+  const shot = b.match(/\["shot"\]\s*=\s*"([a-z]*)"/);
+  if (shot && FALLBACK_REASONS[shot[1]]) job.shot = shot[1];
   return job;
 }
 
@@ -339,13 +345,57 @@ function luaStr(s) {
 // The slot file / Inbox.lua body: the latest record of every chat, the bridge's
 // clock, default folder, default agent (plus the agents it knows), default
 // plugin (plus the plugins it has), the
-// outbound transport it listens on ("pixel": it screen-captures the strip;
-// "screenshot": the addon must call Screenshot() with the strip up), and
+// outbound transport it listens on ("screenshot": the addon must call
+// Screenshot() with the strip up; "pixel": it screen-captures the strip), and
 // (right after a saved-data reset) a restore bundle.
+//
+// "screenshot" is the default: no screen capture, no permissions, no window
+// discovery, no python. "pixel" is deprecated and kept only until Screenshot()
+// is confirmed on Windows and on Linux under Wine; it is what the bridge falls
+// back to when the addon reports that it cannot shoot.
 const TRANSPORTS = ['pixel', 'screenshot'];
+const DEFAULT_TRANSPORT = 'screenshot';
 function transportName(v) {
-  const t = String(v || 'pixel').toLowerCase();
+  const t = String(v || DEFAULT_TRANSPORT).toLowerCase();
   return TRANSPORTS.includes(t) ? t : '';
+}
+
+// Which transport a bridge starts on. An explicit capture.mode in config.json
+// always wins (a bad one comes back as '' so the caller can refuse it). Without
+// one: the pixel transport if a previous run had to fall back to it (state.json
+// transportFallback, see transportFallback below; the reason has not gone away
+// just because the bridge restarted), else the default.
+//   -> { transport, source: 'config' | 'fallback' | 'default', fallback }
+function chooseTransport(capture, state) {
+  const explicit = capture && capture.mode !== undefined && capture.mode !== null && capture.mode !== '';
+  if (explicit) return { transport: transportName(capture.mode), source: 'config', fallback: null };
+  const fb = state && state.transportFallback && typeof state.transportFallback === 'object' ? state.transportFallback : null;
+  if (fb && FALLBACK_REASONS[fb.reason]) return { transport: 'pixel', source: 'fallback', fallback: fb };
+  return { transport: DEFAULT_TRANSPORT, source: 'default', fallback: null };
+}
+
+// The addon said the screenshot transport cannot work for it (a "shot=" flag on
+// a strip record, or "shot" in the reload outbox). Remember why in state.json,
+// so the next start goes straight to the pixel transport, and hand back the
+// note that goes into the log and, through the slot files, into the addon's
+// /claude-wow diag. Returns null when the bridge is already on pixels for that
+// reason (nothing to do); the caller switches transports on a non-null result.
+const FALLBACK_REASONS = {
+  missing: 'the game client has no Screenshot() function',
+  failed: 'the game client reported SCREENSHOT_FAILED on every try',
+};
+function transportFallback(state, reason, job, now = Date.now()) {
+  if (!FALLBACK_REASONS[reason]) return null;
+  const cur = state.transportFallback;
+  if (cur && cur.reason === reason) return null;
+  state.transportFallback = { reason, at: now, session: (job && job.session) || '' };
+  return transportNote(state.transportFallback);
+}
+function transportNote(fb) {
+  if (!fb || !FALLBACK_REASONS[fb.reason]) return '';
+  const when = fb.at ? new Date(fb.at).toISOString().slice(0, 16).replace('T', ' ') + ' UTC' : 'an earlier run';
+  return `pixel transport, fallen back to since ${when} because ${FALLBACK_REASONS[fb.reason]}; ` +
+    'the pixel capture is deprecated: set capture.mode in config.json to "pixel" to keep it without this note, or to "screenshot" to try the screenshot transport again';
 }
 
 // The strip's two levels per channel on the screenshot transport. A screenshot
@@ -367,7 +417,7 @@ function luaTable(globalName, records, opts = {}) {
   const now = opts.now || Date.now();
   const agents = Array.isArray(opts.agents) ? opts.agents : [];
   const plugins = Array.isArray(opts.plugins) ? opts.plugins : [];
-  const transport = transportName(opts.transport) || 'pixel';
+  const transport = transportName(opts.transport) || DEFAULT_TRANSPORT;
   const lines = [
     '-- Written by the claude-wow bridge (bridge/bridge.js). Do not edit by hand.',
     `${globalName} = {`,
@@ -385,6 +435,9 @@ function luaTable(globalName, records, opts = {}) {
     const lv = screenshotLevels(opts.levels);
     lines.splice(lines.length - 1, 0, `\tstrip = { on = ${lv.on}, off = ${lv.off} },`);
   }
+  // Why a bridge is on the pixel transport when nobody asked for it (transportFallback);
+  // the addon shows it in /claude-wow diag.
+  if (opts.transportNote) lines.splice(lines.length - 1, 0, `\ttransportNote = ${luaStr(opts.transportNote)},`);
   for (const r of records) {
     lines.push('\t\t{');
     lines.push(`\t\t\tchat = ${luaStr(r.chat || '')},`);
@@ -622,7 +675,7 @@ module.exports = {
   resolveCwd, sameFolder, baseName,
   parseFlags, jobsFromStrip, parseOutbox, systemPrompt, visionHint, splitSummary,
   ruleFor, describeToolUse,
-  luaStr, luaTable, SILENT_WAV, TRANSPORTS, transportName, DEFAULT_LEVELS, screenshotLevels,
+  luaStr, luaTable, SILENT_WAV, TRANSPORTS, DEFAULT_TRANSPORT, transportName, chooseTransport, FALLBACK_REASONS, transportFallback, transportNote, DEFAULT_LEVELS, screenshotLevels,
   MAP_LIMITS, validateMapCommand, newMap, applyMapCommands, extractMapBlocks, parseMapFile, luaMap,
   MACRO_LIMITS, extractMacros, stripMacroBlocks, luaMacros,
 };

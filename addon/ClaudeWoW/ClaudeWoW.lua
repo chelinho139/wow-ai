@@ -409,8 +409,15 @@ end
 -- Record: session, chat, id, cwd, flags, name, [context,] text. Several records
 -- per frame. The context field is only present when the flags carry "c", so the
 -- bridge can tell it from a separator inside the text.
+local NoScreenshot -- below (Screenshot transport): the bridge wants shots this client cannot take
 local function RecordFor(id, rec)
 	local flags = Wire(rec.flags)
+	-- The bridge wants screenshots and this record cannot be shot (no
+	-- Screenshot() in this client, or SCREENSHOT_FAILED on every try): tell the
+	-- bridge, and it falls back to the pixel capture (bridge.js fallbackToPixel;
+	-- the reload outbox says it too).
+	local shot = NoScreenshot() and "missing" or (rec.shotFailed and "failed") or nil
+	if shot then flags = flags == "" and ("shot=" .. shot) or (flags .. ";shot=" .. shot) end
 	local fields = { Wire(db.session), Wire(rec.chat), tostring(id), Wire(rec.cwd), flags, Wire(rec.name) }
 	if rec.ctx ~= nil then
 		fields[5] = flags == "" and "c" or (flags .. ";c")
@@ -436,6 +443,11 @@ end
 
 local function ScreenshotMode()
 	return db ~= nil and db.settings.mode == "pixel" and db.settings.transport == "screenshot" and type(Screenshot) == "function"
+end
+
+-- The bridge listens for screenshots, and this client cannot take one.
+NoScreenshot = function()
+	return db ~= nil and db.settings.transport == "screenshot" and type(Screenshot) ~= "function"
 end
 
 local function ShotStats()
@@ -524,10 +536,23 @@ local function ScreenshotDone(ok)
 	elseif ok == false then stats.failed = stats.failed + 1
 	else stats.timeouts = stats.timeouts + 1 end
 	if ok == false then
-		for _, rec in pairs(run.outbound) do
+		for id, rec in pairs(run.outbound) do
 			if rec.shot == shot.gen then
 				rec.shotFails = (rec.shotFails or 0) + 1
-				if rec.shotFails < SHOT_RETRIES then rec.shot = nil end
+				if rec.shotFails < SHOT_RETRIES then
+					rec.shot = nil
+				else
+					-- Every try failed: the bridge should fall back to the pixel
+					-- capture. Said on the record (the reload fallback carries it
+					-- in the outbox; the strip retries carry it as a flag) and to
+					-- the player, once.
+					rec.shotFailed = true
+					if db.outbox and db.outbox.id == id then db.outbox.shot = "failed" end
+					if not run.shotFailTold then
+						run.shotFailTold = true
+						TellPlayer("the client reported SCREENSHOT_FAILED " .. SHOT_RETRIES .. " times for one message" .. (shot.err and (" (" .. shot.err .. ")") or "") .. ". The message waits for the usual retries and the reload fallback, which tell the bridge to switch to the pixel capture; set capture.mode to \"pixel\" in the bridge's config.json to skip the wait.")
+					end
+				end
 			end
 		end
 	end
@@ -595,6 +620,14 @@ RefreshStrip = function()
 	if not ScreenshotMode() then
 		-- A shot still counting frames (the transport just changed) is called off.
 		if run.shot and not run.shot.fired then run.shot = nil end
+		if NoScreenshot() and not run.noShotTold then
+			-- The bridge wants screenshots and this client has no Screenshot():
+			-- the strip stays up pixel-style, the retries and then the reload
+			-- fallback carry the message, and the record tells the bridge to
+			-- fall back to the pixel capture (shot=missing). Said once.
+			run.noShotTold = true
+			TellPlayer("this client has no Screenshot() function, so the bridge's screenshot transport cannot work here. Messages wait for the reload fallback (a couple of minutes the first time), which tells the bridge to switch to the pixel capture; set capture.mode to \"pixel\" in the bridge's config.json to skip the wait.")
+		end
 		ShowStrip(latest, table.concat(parts, RS))
 		return
 	end
@@ -648,6 +681,9 @@ local function ApplyTransport(data)
 	if type(data) ~= "table" or type(data.transport) ~= "string" then return end
 	local t = data.transport
 	if t ~= "pixel" and t ~= "screenshot" then return end
+	-- Why the bridge is on the pixel capture when nobody asked for it (it fell
+	-- back after we reported shot=missing or shot=failed); /claude-wow diag shows it.
+	db.settings.transportNote = type(data.transportNote) == "string" and data.transportNote ~= "" and data.transportNote or nil
 	local lv = StripLevels(data)
 	local cur = db.settings.stripLevels
 	local sameLevels = (lv == nil and cur == nil) or (lv ~= nil and cur ~= nil and lv.on == cur.on and lv.off == cur.off)
@@ -1988,6 +2024,9 @@ function ClaudeWoW.Send(text, allow, opts)
 		plugin = (c.plugin and c.plugin ~= "") and c.plugin or nil,
 		allow = allowHex,
 		newSession = newSession,
+		-- The bridge wants screenshots and this client cannot take one: the
+		-- reload fallback tells it so, and it switches to the pixel capture.
+		shot = NoScreenshot() and "missing" or nil,
 		t = time(),
 	}
 	c.pendingId = id
@@ -3931,7 +3970,8 @@ SlashCmdList["CLAUDEWOW"] = function(msg)
 			select(5, ClaudeWoW.BridgeState()),
 			"mode: " .. s.mode .. ", session token: " .. tostring(db.session),
 			Whisper.Status(),
-			"transport: " .. tostring(s.transport or "pixel") .. (s.transport == "screenshot" and type(Screenshot) ~= "function" and " (Screenshot() missing: strip stays up)" or "")
+			"transport: " .. tostring(s.transport or "pixel") .. (s.transport == "screenshot" and type(Screenshot) ~= "function" and " (Screenshot() missing: strip stays up, and the bridge is told to fall back to the pixel capture)" or "")
+				.. (s.transport == "pixel" and s.transportNote and (" (bridge: " .. s.transportNote .. ")") or "")
 				.. (s.transport == "screenshot" and s.stripLevels and string.format(", strip levels %d/%d", s.stripLevels.off, s.stripLevels.on) or "")
 				.. (run.shotStats and string.format(", screenshots: %d taken, %d confirmed, %d failed, %d without event", run.shotStats.taken, run.shotStats.ok, run.shotStats.failed, run.shotStats.timeouts) or "")
 				.. (run.shotsPaused and ", screenshots PAUSED (bridge not seen for " .. FmtDur(GetTime() - (run.bridgeSeen or run.startedAt or GetTime())) .. ")" or "")

@@ -833,25 +833,83 @@ test('screenshot transport: a failed shot is retried a few times, a missing even
   vm.run('STUB.FireEvent("SCREENSHOT_FAILED")');
   frames(vm, 2);
   assert.equal(vm.num('STUB.screenshots'), 4);
+  vm.run('STUB.prints = {}');
   vm.run('STUB.FireEvent("SCREENSHOT_FAILED")');
   assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'false', 'after SHOT_RETRIES failures it waits for the normal retry');
   frames(vm, 2);
   assert.equal(vm.num('STUB.screenshots'), 4);
+  // Every try failed: the reload outbox tells the bridge to fall back to the pixel capture, and the player hears once.
+  assert.equal(vm.evaluate('ClaudeWoWDB.outbox.shot'), 'failed');
+  assert.equal(vm.evaluate('#STUB.prints'), '1');
+  assert.ok(vm.evaluate('STUB.prints[1]').includes('SCREENSHOT_FAILED 3 times'), vm.evaluate('STUB.prints[1]'));
+  // The 40 s retry shoots it again, with the flag on the record.
+  vm.run('STUB.now = STUB.now + 41; STUB.Tick()');
+  frames(vm, 2);
+  assert.equal(vm.num('STUB.screenshots'), 5);
+  const failed = stripRecords(vm).find(r => r.text === 'try me');
+  assert.ok(failed && failed.flags.split(';').includes('shot=failed'), JSON.stringify(stripRecords(vm).map(r => r.flags)));
+  vm.run('STUB.FireEvent("SCREENSHOT_FAILED")');
+  assert.equal(vm.evaluate('#STUB.prints'), '1', 'not said again');
   // No event at all: the timeout hides the strip and counts it.
   vm.run('STUB.timers = {}; ClaudeWoW.NewChat("Two"); ClaudeWoW.Send("quiet")');
   frames(vm, 2);
-  assert.equal(vm.num('STUB.screenshots'), 5);
+  assert.equal(vm.num('STUB.screenshots'), 6);
   assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'true');
   vm.run('STUB.RunTimers()'); // the SHOT_TIMEOUT timer
   assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'false');
   vm.run('SlashCmdList.CLAUDEWOW("diag")');
   const diag = vm.evaluate('ClaudeWoWDB.chats[2].history[#ClaudeWoWDB.chats[2].history].text');
-  assert.ok(diag.includes('5 taken, 1 confirmed, 3 failed, 1 without event'), diag);
+  assert.ok(diag.includes('6 taken, 1 confirmed, 4 failed, 1 without event'), diag);
   // Logging out restores the format; the mode itself is remembered.
   assert.equal(vm.evaluate('STUB.cvars.screenshotFormat'), 'png');
   vm.run('STUB.FireEvent("PLAYER_LOGOUT")');
   assert.equal(vm.evaluate('STUB.cvars.screenshotFormat'), 'jpeg');
   assert.equal(vm.evaluate('ClaudeWoWDB.settings.transport'), 'screenshot');
+});
+
+test('screenshot transport without Screenshot(): the strip stays up carrying shot=missing, the reload outbox says so, the player is told once, and diag shows the bridge\'s fallback note', () => {
+  const vm = newVM();
+  vm.run('Screenshot = nil'); // a client without the function
+  login(vm);
+  vm.run('STUB.RunTimers()'); // SayHello
+  nextSlot(vm, '{ now = time(), cwd = "", transport = "screenshot", replies = {} }');
+  vm.run('STUB.prints = {}; STUB.now = STUB.now + 6; STUB.Tick()'); // the hello poll learns the transport
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.transport'), 'screenshot');
+  assert.equal(vm.evaluate('STUB.cvars.screenshotFormat'), 'jpeg', 'the format CVar is left alone: no shot can be taken');
+  // The hello counted as delivered pixel-style (the bridge was seen while it was up): nothing is on the strip now.
+  assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'false');
+  // A message: no shot can be taken, so the strip stays up pixel-style, every
+  // record on it tells the bridge why, and the player hears about it once.
+  vm.run('ClaudeWoW.Send("hello there")');
+  assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'true');
+  frames(vm, 3);
+  assert.equal(vm.num('STUB.screenshots'), 0);
+  const told = () => vm.evaluate('(function() local n = 0; for _, l in ipairs(STUB.prints or {}) do if l:find("no Screenshot%(%) function") then n = n + 1 end end; return n end)()');
+  assert.equal(told(), '1', 'the player is told once');
+  const recs = stripRecords(vm);
+  assert.ok(recs.every(r => r.flags.split(';').includes('shot=missing')), JSON.stringify(recs.map(r => r.flags)));
+  const msg = recs.find(r => r.text === 'hello there');
+  assert.ok(msg && msg.flags.split(';').includes('shot=missing'), JSON.stringify(recs.map(r => r.flags)));
+  // The reload fallback's outbox carries the same report, so a /reload reaches the bridge with it.
+  assert.equal(vm.evaluate('ClaudeWoWDB.outbox.shot'), 'missing');
+  assert.equal(vm.evaluate('ClaudeWoWDB.outbox.text'), Buffer.from('hello there').toString('hex'));
+  vm.run('STUB.now = STUB.now + 41; STUB.Tick()');
+  assert.equal(told(), '1', 'a retry does not say it again');
+  // The bridge fell back: its slot says pixel, with the note; diag shows it and the flag goes away.
+  nextSlot(vm, '{ now = time(), cwd = "", transport = "pixel", transportNote = "pixel transport, fallen back to since 2026-09-28 12:00 UTC because the game client has no Screenshot() function; the pixel capture is deprecated", replies = {} }');
+  vm.run('ClaudeWoW.Connect(); STUB.now = STUB.now + 6; STUB.Tick()');
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.transport'), 'pixel');
+  assert.ok(stripRecords(vm).every(r => !r.flags.includes('shot=')), 'on the pixel transport nothing is reported');
+  vm.run('ClaudeWoW.NewChat("Two"); ClaudeWoW.Send("second")'); // the first chat still has its message pending
+  assert.equal(vm.evaluate('ClaudeWoWDB.outbox.text'), Buffer.from('second').toString('hex'));
+  assert.equal(vm.evaluate('ClaudeWoWDB.outbox.shot'), null);
+  vm.run('SlashCmdList.CLAUDEWOW("diag")');
+  const diag = vm.evaluate('ClaudeWoWDB.chats[2].history[#ClaudeWoWDB.chats[2].history].text');
+  assert.ok(diag.includes('transport: pixel (bridge: pixel transport, fallen back to since 2026-09-28 12:00 UTC because the game client has no Screenshot() function'), diag);
+  // A bridge back on the screenshot transport drops the note.
+  nextSlot(vm, '{ now = time(), cwd = "", transport = "screenshot", replies = {} }');
+  vm.run('ClaudeWoW.Connect(); STUB.now = STUB.now + 6; STUB.Tick()');
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.transportNote'), null);
 });
 
 test('screenshot transport: a remembered mode shoots the login hello, and a /reload never loses the saved format', () => {

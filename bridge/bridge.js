@@ -2,10 +2,13 @@
 'use strict';
 // Claude WoW bridge: the half of ClaudeWoW that lives outside the game.
 //
-//   OUT  capture.ps1 screen-captures the addon's pixel strip -> one or more
-//        {session, chat, id, cwd, flags, text} records per frame; or, in
-//        capture.mode "screenshot", the addon calls Screenshot() with the strip
-//        up and we decode the file from the game's Screenshots folder
+//   OUT  the addon calls Screenshot() with its pixel strip up and we decode
+//        the file from the game's Screenshots folder -> one or more
+//        {session, chat, id, cwd, flags, text} records per shot (capture.mode
+//        "screenshot", the default); or, on the deprecated "pixel" mode,
+//        capture.ps1 / capture_*.py screen-capture the strip four times a
+//        second (kept until Screenshot() is confirmed on Windows and Wine, and
+//        what the bridge falls back to when the addon says it cannot shoot)
 //        (fallback: the game's SavedVariables file, written on /reload)
 //   ROUTE the plugin the message belongs to (plugins.js: the chat's binding,
 //        else the default) decides what happens: the coding plugin
@@ -129,14 +132,20 @@ const DEFAULT_CWD_SOURCE = projectIdx >= 0 ? '--project' : PROJECT_ENV ? (proces
 
 const SLOTS = cfg.slots || 200;
 const MAX_PARALLEL = cfg.maxParallel || 3;
-const cap = Object.assign({ enabled: true, mode: 'pixel', processName: 'WowB', cellPx: 4, cellsPerRow: 200, maxRows: 48, intervalMs: 250 }, cfg.capture || {});
-// Outbound transport: "pixel" = a capture script watches the screen (default);
-// "screenshot" = the addon takes a screenshot per send and we read the file.
-const TRANSPORT = P.transportName(cap.mode);
-if (!TRANSPORT) {
+const cap = Object.assign({ enabled: true, processName: 'WowB', cellPx: 4, cellsPerRow: 200, maxRows: 48, intervalMs: 250 }, cfg.capture || {});
+// Outbound transport (protocol.chooseTransport): "screenshot" = the addon takes
+// a screenshot per send and we read the file (the default); "pixel" = a capture
+// script watches the screen (deprecated; an explicit capture.mode, or the
+// fallback a previous run had to make, remembered in state.json). It can
+// change while running: fallbackToPixel, when the addon reports it cannot shoot.
+const stateEarly = readJson(STATE_FILE, {});
+const chosen = P.chooseTransport(cap, stateEarly);
+if (!chosen.transport) {
   console.error(`"capture.mode": "${cap.mode}" in ${CONFIG_FILE} is not one of ${P.TRANSPORTS.join(', ')}.`);
   process.exit(2);
 }
+let TRANSPORT = chosen.transport;
+let TRANSPORT_SOURCE = chosen.source; // 'config' | 'default' | 'fallback'
 const SCREENSHOT_DIR = S.screenshotDir(cfg);
 // Vision: a chat that turned it on (/claude-wow vision on, flag "v") gets the rest
 // of the screenshot, strip cropped off and scaled to vision.maxWidth, attached
@@ -151,7 +160,7 @@ const LEVELS = P.screenshotLevels(cap.screenshotLevels);
 const INBOX_FILE = cfg.inboxFile && !P.OLD_ADDON_PATH.test(cfg.inboxFile) ? cfg.inboxFile : path.join(cfg.addonDir || '', P.ADDON, 'Inbox.lua');
 const SAVED_VARS = String(cfg.savedVariablesFile || '').replace(P.OLD_SAVED_FILE, P.ADDON + '.lua');
 
-let state = readJson(STATE_FILE, { lastId: 0, sessions: {}, handled: {} });
+let state = Object.keys(stateEarly).length ? stateEarly : { lastId: 0, sessions: {}, handled: {} };
 if (!state.handled) state.handled = {};
 if (!state.sessions) state.sessions = {};
 // Older versions stored handled[session] as "highest id so far"; expand to a map.
@@ -331,7 +340,35 @@ function takeMapCommands(job, text) {
 // Slot file / Inbox.lua body: see protocol.luaTable.
 function slotFile(globalName, records, urgent = true) {
   const map = Date.now() < mapShareUntil && (urgent || mapLuaSize() <= MAP_PROGRESS_MAX) ? state.map : null;
-  return P.luaTable(globalName, records, { cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), plugin: DEFAULT_PLUGIN, plugins: registry.ids(), map, transport: TRANSPORT, levels: LEVELS });
+  const transportNote = TRANSPORT_SOURCE === 'fallback' ? P.transportNote(state.transportFallback) : '';
+  return P.luaTable(globalName, records, { cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), plugin: DEFAULT_PLUGIN, plugins: registry.ids(), map, transport: TRANSPORT, levels: LEVELS, transportNote });
+}
+
+// The addon cannot take the screenshot the transport needs (no Screenshot() in
+// this client, or SCREENSHOT_FAILED on every try): its record says so with a
+// "shot=" flag, on the strip or in the reload outbox. Switch to the pixel
+// capture now, remember why (state.json; the next start goes straight to it),
+// say so plainly here and in the slot files (the addon's /claude-wow diag
+// shows the note), and start the capture. A player is never left without a
+// transport just because the default one cannot work on their client.
+function fallbackToPixel(reason, job) {
+  const fresh = P.transportFallback(state, reason, job); // null when this reason is already on record
+  if (fresh) saveState();
+  if (TRANSPORT === 'pixel') {
+    // An explicit "pixel" in config.json, an earlier fallback, or the addon
+    // repeating itself until its next slot read: nothing to switch.
+    if (fresh) log(`${tagOf(job)} the addon reports shot=${reason} (${P.FALLBACK_REASONS[reason]}); already on the pixel transport`);
+    return;
+  }
+  TRANSPORT = 'pixel';
+  TRANSPORT_SOURCE = 'fallback';
+  log(`${tagOf(job)} TRANSPORT FALLBACK: the addon reports shot=${reason}: ${P.FALLBACK_REASONS[reason]}.`);
+  log(`  switching from the screenshot transport to the pixel capture (deprecated; it needs ${process.platform === 'win32' ? 'capture.ps1' : 'python3 and ' + (process.platform === 'darwin' ? 'the Screen Recording and Automation permissions' : 'an X11 session')}).`);
+  if (chosen.source === 'config') log(`  capture.mode is "screenshot" in ${CONFIG_FILE}, so every start tries the screenshot transport first and falls back again when the addon reports this; set it to "pixel" to skip the wait.`);
+  else log(`  remembered in ${STATE_FILE}: the next start goes straight to the pixel transport. To choose for good, set capture.mode in ${CONFIG_FILE} to "pixel" (no more note) or "screenshot" (try again).`);
+  if (shotWatch) { shotWatch.close(); shotWatch = null; }
+  publishNow(); // the slot files now say "pixel", with the note; the addon follows on its next slot read
+  if (cap.enabled && !exitWhenIdle) startCapture();
 }
 
 function addonInstalled() {
@@ -502,6 +539,7 @@ function allowRules(agentId, rules) {
 // ---------------------------------------------------------------------------
 
 function submit(job) {
+  if (job.shot) fallbackToPixel(job.shot, job); // even for a message already handled: the report stands
   if (alreadyHandled(job)) return;
   if (job.ctx !== undefined) setContext(job);
   if (job.forget) {
@@ -990,7 +1028,9 @@ function sweepScreenshots(why) {
   }
 }
 
+let shotWatch = null; // the folder watcher, closed by fallbackToPixel
 function startScreenshotWatch() {
+  if (TRANSPORT !== 'screenshot') return; // fell back while waiting for the folder
   if (!SCREENSHOT_DIR) { log('screenshot transport: no addonDir in config.json, so no Screenshots folder to watch'); return; }
   if (!fs.existsSync(SCREENSHOT_DIR)) {
     // The client creates it on the first screenshot; look again in a while.
@@ -998,7 +1038,7 @@ function startScreenshotWatch() {
     setTimeout(startScreenshotWatch, 10000);
     return;
   }
-  S.watchScreenshots(SCREENSHOT_DIR, handleScreenshot, { log });
+  shotWatch = S.watchScreenshots(SCREENSHOT_DIR, handleScreenshot, { log });
   log(`screenshot transport: watching ${SCREENSHOT_DIR} (strip levels ${LEVELS.off}/${LEVELS.on}, threshold ${LEVELS.threshold})`);
   sweepScreenshots('startup');
   const sweeper = setInterval(() => sweepScreenshots('periodic'), SWEEP_MS);
@@ -1022,7 +1062,7 @@ function banner() {
   console.log(`  addons   : ${cfg.addonDir}`);
   console.log(`  addon    : ${addonInstalled() ? 'installed' : 'NOT INSTALLED - run: node setup.js, then restart WoW'}`);
   console.log(`  slots    : ${slotsInstalled() ? SLOTS + ' installed' : 'NOT INSTALLED - run: node setup.js (or node bridge/install-slots.js), then restart WoW'}`);
-  console.log(`  capture  : ${!cap.enabled ? 'off' : TRANSPORT === 'screenshot' ? 'screenshot mode (' + SCREENSHOT_DIR + ', ' + cap.cellsPerRow + 'x' + cap.maxRows + ' cells of ' + cap.cellPx + 'px, levels ' + LEVELS.off + '/' + LEVELS.on + ')' : 'on (' + cap.processName + ', ' + cap.cellsPerRow + 'x' + cap.maxRows + ' cells of ' + cap.cellPx + 'px)'}`);
+  console.log(`  capture  : ${!cap.enabled ? 'off' : TRANSPORT === 'screenshot' ? 'screenshot transport' + (TRANSPORT_SOURCE === 'default' ? ' (the default; no screen capture, no permissions, no python)' : ' (capture.mode in config.json)') + ': ' + SCREENSHOT_DIR + ', ' + cap.cellsPerRow + 'x' + cap.maxRows + ' cells of ' + cap.cellPx + 'px, levels ' + LEVELS.off + '/' + LEVELS.on : 'pixel transport, DEPRECATED (' + (TRANSPORT_SOURCE === 'fallback' ? 'FALLBACK: ' + P.transportNote(state.transportFallback) : 'capture.mode in config.json; kept only until Screenshot() is confirmed on Windows and Linux/Wine') + '): screen capture of ' + cap.processName + ', ' + cap.cellsPerRow + 'x' + cap.maxRows + ' cells of ' + cap.cellPx + 'px'}`);
   console.log(`  vision   : ${TRANSPORT === 'screenshot' ? 'per chat (/claude-wow vision on, or /claude-wow look <question>); the game view goes out up to ' + vis.maxWidth + 'px wide' : 'needs capture.mode "screenshot" (the pixel capture never sees more than the strip)'}`);
   console.log(`  parallel : up to ${MAX_PARALLEL} chats at once`);
   console.log(`  fallback : ${SAVED_VARS}`);
@@ -1064,6 +1104,9 @@ if (inject !== null) {
     // bridge until it knows to take a screenshot).
     publishNow();
     if (cap.enabled && TRANSPORT === 'screenshot') startScreenshotWatch();
-    else if (cap.enabled) startCapture();
+    else if (cap.enabled) {
+      if (TRANSPORT_SOURCE === 'fallback') log(`transport: ${P.transportNote(state.transportFallback)}`);
+      startCapture();
+    }
   }
 }

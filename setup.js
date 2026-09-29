@@ -249,26 +249,53 @@ function warn(line, hint) {
   console.log(`warning  : ${line}${hint ? `\n           -> ${hint}` : ''}`);
 }
 
-// The capture backends off Windows are python3 scripts, so a missing interpreter
-// means no messages ever reach the bridge. Reported next to the agent CLIs.
-function pythonReport(cfg) {
+// Which outbound transport this config starts the bridge on (protocol.chooseTransport):
+// the screenshot transport unless capture.mode says "pixel". The deprecated
+// pixel capture is the only part of the install that needs python3 (off
+// Windows) and, on macOS, the Screen Recording and Automation permissions.
+function transportReport(cfg) {
+  const t = P.chooseTransport(cfg.capture);
+  if (t.transport === 'screenshot') {
+    console.log('transport: screenshot (the default): the addon calls Screenshot(), the bridge reads the file; no screen capture, no permissions, no python');
+  } else if (t.transport === 'pixel') {
+    console.log('transport: pixel (capture.mode in config.json): DEPRECATED screen capture, kept only until Screenshot() is confirmed on Windows and on Linux under Wine; remove capture.mode (or set it to "screenshot") to use the screenshot transport');
+  }
+  return t.transport;
+}
+
+// Off Windows the pixel capture is a python3 script. On the screenshot transport
+// that is only the fallback the bridge makes when the addon reports it cannot
+// shoot, so a missing interpreter is worth a line, not a warning; on the pixel
+// transport it means no messages ever reach the bridge. Reported next to the agent CLIs.
+function pythonReport(cfg, transport) {
   if (process.platform === 'win32') return; // capture.ps1 needs no python
   const py = (cfg.capture && cfg.capture.python) || 'python3';
   const r = spawnSync(py, ['--version'], { encoding: 'utf8' });
+  const os = process.platform === 'darwin' ? 'macOS' : 'Linux';
   if (r.error || r.status !== 0) {
-    warn(`python3 not found ("${py}"), and the ${process.platform === 'darwin' ? 'macOS' : 'Linux'} screen capture is a python script`,
-      process.platform === 'darwin'
-        ? 'Install it with: xcode-select --install (or brew install python3), then run setup again.'
-        : 'Install python3 from your package manager, then run setup again.');
+    const how = process.platform === 'darwin'
+      ? 'Install it with: xcode-select --install (or brew install python3), then run setup again.'
+      : 'Install python3 from your package manager, then run setup again.';
+    if (transport === 'screenshot') {
+      console.log(`python   : not found ("${py}"); only the deprecated pixel-capture fallback needs it (the ${os} screen capture is a python script), the screenshot transport does not. ${how.replace('Install it', 'If you want that fallback, install it')}`);
+    } else {
+      warn(`python3 not found ("${py}"), and the ${os} screen capture is a python script`, how);
+    }
     return;
   }
-  console.log(`python   : ${(r.stdout || r.stderr).trim()} (${py})`);
+  console.log(`python   : ${(r.stdout || r.stderr).trim()} (${py})${transport === 'screenshot' ? '; only the deprecated pixel-capture fallback needs it' : ''}`);
 }
 
-// macOS: the two permissions the bridge cannot work without, checked for real
-// rather than discovered later as a screencapture error repeating once a second.
-function macCaptureReport(cfg) {
+// macOS: the two permissions the pixel capture cannot work without, checked for
+// real rather than discovered later as a screencapture error repeating once a
+// second. On the screenshot transport neither is needed, so the check is skipped
+// and named, for anyone who wants the deprecated fallback ready.
+function macCaptureReport(cfg, transport) {
   if (process.platform !== 'darwin') return;
+  if (transport === 'screenshot') {
+    console.log('capture  : screenshot transport, so no Screen Recording or Automation permission is needed (npm run check:mac checks them for the deprecated pixel fallback)');
+    return;
+  }
   const py = (cfg.capture && cfg.capture.python) || 'python3';
   const r = spawnSync(py, [AS.file('bridge/capture_mac.py'), '--check',
     '--process-name', (cfg.capture && cfg.capture.processName) || 'World of Warcraft'], { encoding: 'utf8' });
@@ -329,8 +356,9 @@ try {
   }
   console.log(`agent    : ${cfg.agent} by default (change with /claude-wow agent in game, or "agent" in config.json)`);
   console.log(agentReport(cfg));
-  pythonReport(cfg);
-  macCaptureReport(cfg);
+  const transport = transportReport(cfg);
+  pythonReport(cfg, transport);
+  macCaptureReport(cfg, transport);
   console.log('slots    : building the reply-slot pool and signal files...');
   const r = spawnSync(...R.scriptCommand('install-slots'), { stdio: 'inherit' });
   if (r.status !== 0) throw new Error('install-slots.js failed');
@@ -344,6 +372,7 @@ Done. Next:
   2. Enable "Claude WoW" at the character select AddOns screen (the Claude WoW slot ### entries stay enabled).
   3. Start the bridge:  ${R.compiled ? 'claude-wow' : 'npm start'}   (in this terminal${
     process.platform === 'win32' ? '; bridge\\start-window.cmd opens its own window'
+    : transport === 'screenshot' ? ''
     : process.platform === 'darwin' ? '; keep the game windowed or borderless, and check the capture with: npm run probe:mac'
     : '; keep the game borderless/windowed and check the capture with: npm run probe'})
   4. In game:  /claude
@@ -357,4 +386,4 @@ Done. Next:
 // Run as a script this is the installer; required (tests/setup_test.js) it only
 // lends out the pieces, the migration above all.
 if (require.main === module) main();
-module.exports = { migrateOldInstall, migrateSavedData, copyAddon, upgradeConfig, isClient, parseArgs, main };
+module.exports = { migrateOldInstall, migrateSavedData, copyAddon, upgradeConfig, isClient, parseArgs, transportReport, main };

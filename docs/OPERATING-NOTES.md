@@ -25,6 +25,31 @@ Two softer points, worth knowing:
   overwritten with the addon's own `png`/`tga`, and a value the player set by hand in
   between is theirs and stays.
 
+## Transports
+
+**Screenshot is the default; pixel is deprecated.** A new install, and any `config.json`
+without a `capture.mode`, starts on the screenshot transport: no screen capture, no
+Screen Recording or Automation permission, no window discovery, no python. It is
+verified end to end on macOS. The pixel capture (`capture.ps1`, `capture_mac.py`,
+`capture_x11.py` and the CoreGraphics layer) stays in the tree for one reason: `Screenshot()`
+has not yet been confirmed on Windows or on Linux under Wine. Once it is, the pixel
+path goes. Until then an explicit `"mode": "pixel"` keeps working and is reported as
+deprecated by `setup.js` and the bridge's banner.
+
+**Nobody is left without a transport.** A client without `Screenshot()`, or one whose
+shots all come back `SCREENSHOT_FAILED`, cannot use the default. The addon then puts
+`shot=missing` or `shot=failed` on its records (the strip's flags and the reload
+outbox), tells the player once in the game chat, and the bridge, on the first record
+that carries it, switches to the pixel capture, logs `TRANSPORT FALLBACK: ...` with
+the reason and what the fallback needs, writes `transportFallback` to `state.json`
+(the next start goes straight to pixels; the banner says why), and names the reason
+in its slot files, where `/claude-wow diag` shows it (`transport: pixel (bridge: pixel
+transport, fallen back to since ... because ...)`). The first report takes the slow road:
+a bridge waiting for screenshots is not watching the screen, so it arrives through the
+reload fallback, about two minutes after the first message. An explicit `capture.mode`
+always wins over the memory: `"pixel"` ends the note, `"screenshot"` tries again at
+every start (and falls back again, that run, if the addon still cannot shoot).
+
 ## Edge cases
 
 **Screenshots pile up when the bridge is down.** The addon shoots on every send; the

@@ -26,6 +26,66 @@ test('parseFlags reads new-session, hello, forget, context, agent and allow list
   assert.deepEqual(P.parseFlags('n;agent=grok;allow=WebSearch'), { ...none, newSession: true, agent: 'grok', allow: ['WebSearch'] });
 });
 
+test('parseFlags reads shot=missing / shot=failed (the addon cannot take the screenshot the transport needs) and nothing else under shot=', () => {
+  assert.equal(P.parseFlags('h;c;shot=missing').shot, 'missing');
+  assert.equal(P.parseFlags('shot=failed;v').shot, 'failed');
+  assert.equal(P.parseFlags('shot=bogus').shot, undefined, 'an unknown reason is ignored');
+  assert.equal(P.parseFlags('v').shot, undefined, 'absent unless the flag is there, so older records parse exactly as before');
+  const job = P.jobsFromStrip(5, ['sess', 'c1', '5', '', 'shot=missing', 'Chat', 'hi'].join('\x1F'))[0];
+  assert.equal(job.shot, 'missing');
+  assert.equal(job.text, 'hi');
+});
+
+test('the screenshot transport is the default; an explicit capture.mode wins; a remembered fallback puts an unset mode on pixels', () => {
+  assert.equal(P.DEFAULT_TRANSPORT, 'screenshot');
+  assert.equal(P.transportName(undefined), 'screenshot');
+  assert.equal(P.transportName(''), 'screenshot');
+  assert.equal(P.transportName('PIXEL'), 'pixel');
+  assert.equal(P.transportName('gif'), '');
+  // A new install, or a config.json from before the mode existed: the default.
+  assert.deepEqual(P.chooseTransport(undefined, {}), { transport: 'screenshot', source: 'default', fallback: null });
+  assert.deepEqual(P.chooseTransport({ enabled: true }, { sessions: {} }), { transport: 'screenshot', source: 'default', fallback: null });
+  // An existing config.json with an explicit mode keeps what it has.
+  assert.deepEqual(P.chooseTransport({ mode: 'pixel' }, {}), { transport: 'pixel', source: 'config', fallback: null });
+  assert.deepEqual(P.chooseTransport({ mode: 'screenshot' }, {}), { transport: 'screenshot', source: 'config', fallback: null });
+  assert.equal(P.chooseTransport({ mode: 'gif' }, {}).transport, '', 'a bad explicit mode is refused, not defaulted');
+  // A previous run fell back to pixels: without an explicit mode the next start goes straight there...
+  const fb = { reason: 'missing', at: 1700000000000, session: 's1' };
+  assert.deepEqual(P.chooseTransport({}, { transportFallback: fb }), { transport: 'pixel', source: 'fallback', fallback: fb });
+  // ...and an explicit mode still wins over the memory.
+  assert.equal(P.chooseTransport({ mode: 'screenshot' }, { transportFallback: fb }).source, 'config');
+  assert.equal(P.chooseTransport({}, { transportFallback: { reason: 'weird' } }).source, 'default', 'a memory with an unknown reason does not count');
+});
+
+test('transportFallback remembers the addon\'s report once per reason and words the note for the log and the slot files', () => {
+  const state = {};
+  const note = P.transportFallback(state, 'missing', { session: 'abc', id: 3 }, Date.UTC(2026, 8, 28, 12, 30));
+  assert.deepEqual(state.transportFallback, { reason: 'missing', at: Date.UTC(2026, 8, 28, 12, 30), session: 'abc' });
+  assert.match(note, /^pixel transport, fallen back to since 2026-09-28 12:30 UTC because the game client has no Screenshot\(\) function; the pixel capture is deprecated: set capture\.mode in config\.json to "pixel" .* or to "screenshot" to try the screenshot transport again$/);
+  assert.equal(P.transportFallback(state, 'missing', { session: 'abc' }), null, 'the same reason again: nothing new');
+  assert.ok(P.transportFallback(state, 'failed', {}), 'a different reason is recorded');
+  assert.equal(state.transportFallback.reason, 'failed');
+  assert.equal(P.transportFallback(state, 'bogus', {}), null);
+  assert.equal(P.transportNote(null), '');
+  assert.equal(P.transportNote(state.transportFallback), note.replace('2026-09-28 12:30 UTC', new Date(state.transportFallback.at).toISOString().slice(0, 16).replace('T', ' ') + ' UTC').replace('has no Screenshot() function', 'reported SCREENSHOT_FAILED on every try'));
+});
+
+test('parseOutbox reads the shot field the addon writes when it cannot take the screenshot', () => {
+  const hex = s => Buffer.from(s, 'utf8').toString('hex');
+  const src = `ClaudeWoWDB = {\n["outbox"] = {\n["id"] = 9,\n["session"] = "s1",\n["chat"] = "c1",\n["text"] = "${hex('hi')}",\n["cwd"] = "",\n["shot"] = "missing",\n},\n}`;
+  const job = P.parseOutbox(src);
+  assert.equal(job.shot, 'missing');
+  assert.equal(job.text, 'hi');
+  assert.equal(P.parseOutbox(src.replace('"missing"', '"nope"')).shot, undefined);
+  assert.equal(P.parseOutbox(src.replace('["shot"] = "missing",\n', '')).shot, undefined);
+});
+
+test('luaTable carries the fallback note when there is one', () => {
+  assert.ok(!/transportNote/.test(P.luaTable('X', [], { transport: 'pixel' })), 'no note unless given');
+  const lua = P.luaTable('X', [], { transport: 'pixel', transportNote: 'pixel transport, fallen back to "why"' });
+  assert.match(lua, /^\ttransportNote = "pixel transport, fallen back to \\"why\\"",$/m);
+});
+
 test('jobsFromStrip parses the current record format and keeps separators inside text', () => {
   const rec = ['sess', 'chat1', '12', 'realms', 'allow=WebSearch', 'My chat', 'hello\x1Fworld'].join('\x1F');
   const jobs = P.jobsFromStrip(12, rec);
@@ -208,16 +268,16 @@ test('slotNumber wraps and SILENT_WAV is a valid RIFF header', () => {
   assert.equal(P.sessKey({ session: 's', chat: '' }), 's:default');
 });
 
-test('slot files name the outbound transport the bridge listens on, pixel unless told otherwise', () => {
-  assert.equal(P.transportName(undefined), 'pixel');
+test('slot files name the outbound transport the bridge listens on, screenshot unless told otherwise', () => {
+  assert.equal(P.transportName(undefined), 'screenshot');
   assert.equal(P.transportName('Screenshot'), 'screenshot');
-  assert.equal(P.transportName('bogus'), '', 'an unknown mode is refused, not silently pixel');
+  assert.equal(P.transportName('bogus'), '', 'an unknown mode is refused, not silently defaulted');
   assert.deepEqual(P.TRANSPORTS, ['pixel', 'screenshot']);
   const plain = P.luaTable('ClaudeWoW_SlotData', []);
-  assert.ok(plain.includes('\ttransport = "pixel",'), plain);
-  const shot = P.luaTable('ClaudeWoW_SlotData', [], { transport: 'screenshot' });
-  assert.ok(shot.includes('\ttransport = "screenshot",'), shot);
-  assert.ok(P.luaTable('ClaudeWoW_Inbox', [], { transport: 'nope' }).includes('\ttransport = "pixel",'), 'garbage falls back to pixel in the file');
+  assert.ok(plain.includes('\ttransport = "screenshot",'), plain);
+  const pixel = P.luaTable('ClaudeWoW_SlotData', [], { transport: 'pixel' });
+  assert.ok(pixel.includes('\ttransport = "pixel",'), pixel);
+  assert.ok(P.luaTable('ClaudeWoW_Inbox', [], { transport: 'nope' }).includes('\ttransport = "screenshot",'), 'garbage falls back to the default in the file');
 });
 
 test('screenshot mode ships its strip levels; pixel mode never does', () => {

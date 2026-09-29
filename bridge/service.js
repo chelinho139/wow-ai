@@ -26,6 +26,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 const H = require('./home');
 const R = require('./runtime');
+const P = require('./protocol'); // which transport a config starts the bridge on
 
 const LABEL = 'io.claudewow.bridge';      // launchd label
 const UNIT = 'claude-wow-bridge';         // systemd unit name
@@ -578,10 +579,10 @@ function main(argv, { platform = process.platform, out = console.log, err = cons
         out(`installed ${d.definition}`);
         out(`the bridge now runs in the background and starts at every login; log: ${serviceLogFile(d)}`);
         if (platform === 'darwin') {
-          let mode = 'pixel';
+          let mode = P.DEFAULT_TRANSPORT;
           const config = H.resolve().config;
-          try { mode = (JSON.parse(fs.readFileSync(config, 'utf8')).capture || {}).mode || 'pixel'; } catch {}
-          if (mode !== 'screenshot') out(`note: capture.mode is "pixel". A background process cannot ask for Screen Recording; set "mode": "screenshot" in ${config} (no permissions needed) or run the bridge from a terminal instead.`);
+          try { mode = P.chooseTransport(JSON.parse(fs.readFileSync(config, 'utf8')).capture).transport; } catch {}
+          if (mode !== 'screenshot') out(`note: capture.mode is "pixel" (deprecated). A background process cannot ask for Screen Recording; remove capture.mode from ${config} or set it to "screenshot" (no permissions needed), or run the bridge from a terminal instead.`);
         }
         out('re-run "claude-wow service install" after installing a new agent CLI or a new Node, so the service sees the new PATH.');
         out('');

@@ -219,13 +219,54 @@ test('node setup.js --wow <fake client>: migrates the chats, installs ClaudeWoW 
   assert.equal(cfg.savedVariablesFile, path.join(saved, 'ClaudeWoW.lua'));
   assert.equal(cfg.defaultCwd, project);
   assert.ok(!fs.existsSync(path.join(home, 'state.json')), 'an explicit CLAUDE_WOW_HOME is not filled from this checkout');
+  // A new install is on the screenshot transport: python3 and the macOS
+  // permissions are reported as the deprecated pixel fallback's business only.
+  assert.equal(cfg.capture.mode, 'screenshot');
+  assert.match(r.stdout, /^transport: screenshot \(the default\): the addon calls Screenshot\(\), the bridge reads the file; no screen capture, no permissions, no python$/m);
+  if (process.platform !== 'win32') assert.match(r.stdout, /^python {3}: .*only the deprecated pixel-capture fallback needs it/m);
+  if (process.platform === 'darwin') assert.match(r.stdout, /^capture {2}: screenshot transport, so no Screen Recording or Automation permission is needed/m);
+  assert.ok(!/Screen Recording:|window access:|display scale:/.test(r.stdout), 'the pixel capture\'s permission checks are not run');
+  assert.ok(!/check the capture with/.test(r.stdout), 'no probe to run either');
 
-  // Run again: nothing to migrate, config kept, slots already present.
+  // Run again with the config switched to the pixel transport by hand: nothing
+  // to migrate, the config (and its explicit mode) kept, slots already present,
+  // and the transport named as deprecated.
+  cfg.capture.mode = 'pixel';
+  fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify(cfg, null, 2) + '\n');
   const again = spawnSync(process.execPath, [path.join(__dirname, '..', 'setup.js'), '--wow', client], {
     encoding: 'utf8', env: { ...process.env, CLAUDE_WOW_HOME: home }, timeout: 120000,
   });
   assert.equal(again.status, 0, again.stdout + again.stderr);
   assert.ok(!/migrate/.test(again.stdout), 'second run migrates nothing');
   assert.match(again.stdout, /already exists, keeping it/);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(home, 'config.json'), 'utf8')).capture.mode, 'pixel', 'an existing config keeps its explicit mode');
+  assert.match(again.stdout, /^transport: pixel \(capture\.mode in config\.json\): DEPRECATED screen capture, kept only until Screenshot\(\) is confirmed on Windows and on Linux under Wine/m);
+  if (process.platform !== 'win32') assert.match(again.stdout, /^python {3}: (?!.*only the deprecated)/m, 'on the pixel transport python is simply required');
+
+  // And a config from before the mode existed (no capture.mode at all) is left
+  // without one: the bridge's default, the screenshot transport, applies.
+  delete cfg.capture.mode;
+  fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify(cfg, null, 2) + '\n');
+  const third = spawnSync(process.execPath, [path.join(__dirname, '..', 'setup.js'), '--wow', client], {
+    encoding: 'utf8', env: { ...process.env, CLAUDE_WOW_HOME: home }, timeout: 120000,
+  });
+  assert.equal(third.status, 0, third.stdout + third.stderr);
+  assert.match(third.stdout, /^transport: screenshot \(the default\)/m);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(home, 'config.json'), 'utf8')).capture.mode, undefined, 'setup does not write a mode into an existing config');
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('transportReport: the screenshot transport unless capture.mode says pixel, which is reported as deprecated', () => {
+  const lines = [];
+  const orig = console.log;
+  console.log = (l) => lines.push(String(l));
+  try {
+    assert.equal(S.transportReport({}), 'screenshot');
+    assert.equal(S.transportReport({ capture: { enabled: true } }), 'screenshot');
+    assert.equal(S.transportReport({ capture: { mode: 'screenshot' } }), 'screenshot');
+    assert.equal(S.transportReport({ capture: { mode: 'pixel' } }), 'pixel');
+    assert.equal(S.transportReport({ capture: { mode: 'gif' } }), '', 'a bad mode: nothing said here, the bridge refuses it with the file name');
+  } finally { console.log = orig; }
+  assert.equal(lines.filter(l => /^transport: screenshot \(the default\)/.test(l)).length, 3);
+  assert.equal(lines.filter(l => /^transport: pixel .*DEPRECATED/.test(l)).length, 1);
 });
