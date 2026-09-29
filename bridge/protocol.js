@@ -255,21 +255,36 @@ function parseOutbox(src) {
 }
 
 // ---------------------------------------------------------------------------
-// System prompt: reply format, game context, primer
+// System prompt (stable) and message prompt (per message)
 // ---------------------------------------------------------------------------
 
-// What the agent is told on every run. First how the reply is shown: the full
-// reply goes to the addon's window and only its closing "TL;DR:" block is
-// printed in the game chat, so every reply must end with one. Then, while the
-// addon has sent a context (the player's character, location and so on; see
-// GameContext in ClaudeWoW.lua), that context plus the addon/macro primer
-// (docs/WOW-ADDON-PRIMER.md) so it can write for this client whatever folder
-// the chat works in. Empty context = neither is appended, so a bridge used for
-// unrelated projects, or an addon with `/claude-wow context off`, only gets the
-// reply-format rule. Claude and Grok take this as a system prompt; for Codex,
-// agents.js puts it at the top of the prompt. opts.tools is the plugin's own
-// instructions (plugins.js), placed right after the reply rules; empty = the
-// prompt is exactly what it was before plugins existed.
+// What the agent is told is split in two, by how often it changes:
+//
+//   systemPrompt(ctx, primer, opts)  the same bytes on every run of a chat:
+//     how the reply is shown (the full reply goes to the addon's window and only
+//     its closing "TL;DR:" block is printed in the game chat, so every reply
+//     must end with one), the plugin's own lines (opts.tools), and, while the
+//     addon sends a game context at all, the game rules (what the situation
+//     block and the [Name] links are, how to mark the map, how to hand over a
+//     macro) and the addon/macro primer (docs/WOW-ADDON-PRIMER.md). The
+//     context's presence turns those on; its text is not in here.
+//   messagePrompt(text, ctx, opts)   what changes per message: the player's
+//     in-game situation as the addon reported it when the message was written
+//     (character, zone, coordinates, quest log: coordinates change with every
+//     step), the vision paragraph when a screenshot really is attached, and
+//     the message itself.
+//
+// Why: Claude Code records the system prompt on a conversation's first request
+// and sends that record as-is on every resume (--system-prompt-snapshot, on by
+// default), so a context appended there was frozen at the chat's first message
+// and every position or quest change after it never reached the model; and
+// prompt caching is prefix-based, so anything that changes between messages
+// must sit after everything that does not. Both point the same way: volatile
+// text goes in the message, at the end. Claude and Grok take the stable part as
+// a system prompt; for Codex and the others agents.js puts it at the top of the
+// prompt on a new session. An empty context (a bridge used for unrelated
+// projects, or `/claude-wow context off`) leaves only the reply-format rule and
+// the plugin's lines, and a message with nothing attached is exactly the text.
 const SUMMARY_MARKER = 'TL;DR:';
 const REPLY_FORMAT = [
   'The user is talking to you from inside World of Warcraft through the claude-wow addon, usually while playing. They read your reply in a small window, or as one line in the game chat, often mid-fight. Markdown is not rendered.',
@@ -311,28 +326,39 @@ function visionHint(image) {
   return `A screenshot of the player's screen, taken by the game the moment they sent this message, is attached to the message as an image${size}. It is what the player was looking at: the game world, their UI, any open windows, tooltips, quest text, and the Claude WoW chat window itself; the addon's data strip along the top edge has been cropped off. Use it when the question is about something on screen ("what is this item", "why is this boss killing me", "read this quest") and say what you see when it matters; ignore it when the task is unrelated.`;
 }
 
+// What the situation block in a message is (the block itself is built by
+// messagePrompt). Sent while the addon sends a context at all.
+const SITUATION_RULE = 'A message may open with a block marked as the player\'s in-game situation, reported by the addon the moment they wrote it (not written by them): character, zone, map coordinates, money, professions, quest log. Use it when the request is about the game or the character (questions, macros, addon code, gear advice); ignore it when the task is unrelated. Every message carries a fresh one, so the latest block is where they are now. Items, spells or quests the player shift-clicked into a message appear as [Name] in the text, with their tooltip in a "Linked from the game" block at the end of the message.';
+
+// The stable part. `ctx` only decides whether the game rules and the primer are
+// in (an addon that sends no context is not a game chat); its text goes in the
+// message. Byte-identical from one run of a chat to the next, which is what
+// lets it be recorded once (Claude Code) and cached (every agent).
 function systemPrompt(ctx, primer, opts) {
   const lines = [...REPLY_FORMAT];
-  const text = String(ctx || '').trim();
+  const game = !!String(ctx || '').trim();
   const tools = opts && String(opts.tools || '').trim();
   if (tools) lines.push('', tools);
-  if (opts && opts.image) lines.push('', visionHint(opts.image));
-  if (text) {
-    lines.push('',
-      'Their in-game situation when the message was written, as reported by the addon:',
-      text,
-      '',
-      'Use this when the request is about the game or the character (questions, macros, addon code, gear advice); ignore it when the task is unrelated. Items, spells or quests the player shift-clicked into a message appear as [Name] in the text, with their tooltip in a "Linked from the game" block at the end of the message.',
-      '',
-      ...MAP_HINT,
-      '',
-      ...MACRO_HINT);
-  }
-  const ref = text ? String(primer || '').trim() : '';
+  if (game) lines.push('', SITUATION_RULE, '', ...MAP_HINT, '', ...MACRO_HINT);
+  const ref = game ? String(primer || '').trim() : '';
   if (ref) {
     lines.push('', 'Reference for writing addons and macros for this client. Follow it when the task is about WoW, and check anything it marks as uncertain against the Blizzard UI source it names:', '', ref);
   }
   return lines.join('\n');
+}
+
+// The per-message part: the situation block (when the addon sends a context),
+// the vision paragraph (when an image really is attached, opts.image), then the
+// player's text. Nothing attached = exactly the text.
+const SITUATION_OPEN = '[In-game situation when this message was written, reported by the claude-wow addon, not written by the player]';
+const SITUATION_CLOSE = '[End of in-game situation]';
+function messagePrompt(text, ctx, opts) {
+  const parts = [];
+  const situation = String(ctx || '').trim();
+  if (situation) parts.push(`${SITUATION_OPEN}\n${situation}\n${SITUATION_CLOSE}`);
+  if (opts && opts.image) parts.push(visionHint(opts.image));
+  parts.push(String(text || ''));
+  return parts.join('\n\n');
 }
 
 // Pull the game-chat summary out of a reply: whatever follows the last "TL;DR:"
@@ -743,7 +769,7 @@ module.exports = {
   alreadyHandled, markHandled, pruneStale, MONTH_MS,
   noteUsage, usageFields, tokensLabel,
   resolveCwd, sameFolder, baseName,
-  parseFlags, jobsFromStrip, parseOutbox, systemPrompt, visionHint, splitSummary,
+  parseFlags, jobsFromStrip, parseOutbox, systemPrompt, messagePrompt, visionHint, splitSummary,
   ruleFor, describeToolUse,
   luaStr, luaTable, SILENT_WAV, TRANSPORTS, DEFAULT_TRANSPORT, transportName, chooseTransport, FALLBACK_REASONS, transportFallback, transportNote, DEFAULT_LEVELS, screenshotLevels,
   MAP_LIMITS, validateMapCommand, newMap, applyMapCommands, extractMapBlocks, parseMapFile, luaMap,

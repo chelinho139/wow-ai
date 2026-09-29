@@ -99,11 +99,11 @@ test('slot files name the default plugin and the list, and a reply names the plu
 test('the system prompt carries a plugin\'s instructions right after the reply rules, and nothing extra without them', () => {
   assert.equal(P.systemPrompt('', '', { tools: '' }), P.systemPrompt(''), 'empty tools = the prompt as it was');
   assert.equal(P.systemPrompt('Character: X', '# P', { tools: '  ' }), P.systemPrompt('Character: X', '# P'));
-  const s = P.systemPrompt('Character: X', '# P', { tools: 'Be the guide.', image: { width: 10, height: 5 } });
+  const s = P.systemPrompt('Character: X', '# P', { tools: 'Be the guide.' });
   assert.ok(s.includes('\n\nBe the guide.\n\n'));
   assert.ok(s.indexOf('"TL;DR:"') < s.indexOf('Be the guide.'), 'after the reply rules');
-  assert.ok(s.indexOf('Be the guide.') < s.indexOf('screenshot of the player'), 'before the vision hint');
-  assert.ok(s.indexOf('Be the guide.') < s.indexOf('in-game situation'), 'before the context');
+  assert.ok(s.indexOf('Be the guide.') < s.indexOf('in-game situation'), 'before the game rules');
+  assert.ok(s.indexOf('Be the guide.') < s.indexOf('# P'), 'before the primer');
 });
 
 test('the shipped coding plugin: a folder resolved against the bridge\'s, refused when missing, and a fresh session when it changes', () => {

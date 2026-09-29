@@ -444,11 +444,12 @@ function hermesParser() {
 // The table
 // ---------------------------------------------------------------------------
 
-// The "system prompt" is the game context and the addon primer. Claude and Grok
-// take it as a real system prompt; Codex has no such flag, so it rides at the
-// top of the prompt, marked as context, in full for a new session and as the
-// short context-only version on a resumed one (the primer is already in the
-// thread).
+// The "system prompt" is the stable part: the reply rules, the game rules and
+// the addon primer (protocol.systemPrompt; the player's situation rides in the
+// prompt itself, protocol.messagePrompt). Claude and Grok take it as a real
+// system prompt; Codex has no such flag, so it rides at the top of the prompt,
+// marked as context, in full for a new session and as the short version
+// without the primer on a resumed one (the primer is already in the thread).
 function contextBlock(text) {
   return `[Context from the Claude WoW bridge, not written by the user]\n${text}\n[End of context]\n\n`;
 }
@@ -468,9 +469,11 @@ function attachedNote(images) {
   const paths = imagePaths(images);
   return paths.length ? `\n\nAttached screenshots: ${paths.join(', ')} — read them with your Read tool.` : '';
 }
-// The line next to the image in the message itself. Claude keeps the system
-// prompt of a conversation's first request for later resumes, so the caption
-// rides with the picture, where it cannot be missed.
+// The line next to the image in the message itself. Claude Code records the
+// system prompt of a conversation's first request and resumes with that record
+// (--system-prompt-snapshot), so nothing about this message's picture goes
+// there: the caption rides with the picture, where it cannot be missed, and
+// the fuller vision paragraph is in the prompt (protocol.messagePrompt).
 const IMAGE_CAPTION = '[The image above is a screenshot of the player\'s screen, taken the moment they sent this message.]';
 
 const AGENTS = {

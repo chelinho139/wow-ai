@@ -119,33 +119,53 @@ test('jobsFromStrip reads the game context field only when the flags say so', ()
   assert.equal(short.text, 'only text');
 });
 
-test('systemPrompt always asks for the TL;DR block, and wraps the game context and primer when given', () => {
+test('systemPrompt always asks for the TL;DR block, and adds the game rules and primer while a context is sent', () => {
   // Without a context the prompt is only the reply-format rule.
   for (const empty of ['', '  \n ', undefined]) {
     const s = P.systemPrompt(empty);
     assert.ok(s.includes('claude-wow addon'));
     assert.ok(s.includes('"TL;DR:"'), 'asks for the summary marker');
-    assert.ok(!s.includes('in-game situation'), 'no context section without a context');
+    assert.ok(!s.includes('in-game situation'), 'no game rules without a context');
     assert.ok(!s.includes('Reference for writing addons'), 'no primer section without a context');
   }
-  const s = P.systemPrompt('Game: World of Warcraft: Forever\nCharacter: Testchar, level 23 Hunter');
+  const ctx = 'Game: World of Warcraft: Forever\nCharacter: Testchar, level 23 Hunter\nPosition: 51.5, 30.4 (map 1413)';
+  const s = P.systemPrompt(ctx);
   assert.ok(s.includes('"TL;DR:"'));
   assert.ok(s.includes('CLAUDE_WOW_MAP_FILE') && s.includes('wowmap') && s.includes('"op":"set"'), 'explains how to mark the map');
   assert.ok(!P.systemPrompt('').includes('CLAUDE_WOW_MAP_FILE'), 'map hint only with the game context');
-  assert.ok(s.includes('\nGame: World of Warcraft: Forever\nCharacter: Testchar, level 23 Hunter\n'));
-  assert.ok(s.includes('Linked from the game'));
+  assert.ok(s.includes('in-game situation') && s.includes('Linked from the game'), 'says what the situation block and the links are');
+  assert.ok(!s.includes('Testchar') && !s.includes('51.5'), 'the context\'s text is not in the system prompt: it changes with every step (messagePrompt carries it)');
   assert.ok(!s.includes('Reference for writing addons'), 'no primer section without a primer');
-  // The primer rides with the context, and only with it.
+  // The primer rides with the game rules, and only with them.
   const withPrimer = P.systemPrompt('Character: Testchar', '# Primer\n\nUse local.');
   assert.ok(withPrimer.endsWith('Reference for writing addons and macros for this client. Follow it when the task is about WoW, and check anything it marks as uncertain against the Blizzard UI source it names:\n\n# Primer\n\nUse local.'));
   assert.ok(!P.systemPrompt('', '# Primer').includes('# Primer'));
-  // Vision: the attached-screen paragraph only when an image really is attached.
-  for (const s of [P.systemPrompt(''), P.systemPrompt('Character: X', '# P'), P.systemPrompt('Character: X', '# P', {}), P.systemPrompt('', '', { image: null })]) {
-    assert.ok(!s.includes('screenshot of the player'), 'no vision hint without an image');
+  // Stable: the same bytes whatever the context says and whether a screenshot
+  // is attached, so a resumed chat's prefix is byte-identical (prompt caching,
+  // and Claude Code's recorded system prompt).
+  assert.equal(P.systemPrompt('Character: A\nPosition: 1, 2', '# P'), P.systemPrompt('Character: B\nPosition: 3, 4', '# P'));
+  assert.equal(P.systemPrompt('Character: X', '# P', { image: { width: 1280, height: 712 } }), P.systemPrompt('Character: X', '# P'));
+  for (const s of [P.systemPrompt(''), P.systemPrompt('Character: X', '# P'), P.systemPrompt('Character: X', '# P', { image: { width: 1, height: 1 } })]) {
+    assert.ok(!s.includes('screenshot of the player'), 'the vision paragraph is not in the system prompt');
   }
-  const seeing = P.systemPrompt('Character: X', '# P', { image: { width: 1280, height: 712 } });
+});
+
+test('messagePrompt puts the situation and the vision paragraph before the text, and nothing else', () => {
+  assert.equal(P.messagePrompt('fix it', ''), 'fix it');
+  assert.equal(P.messagePrompt('fix it', '  \n', {}), 'fix it');
+  assert.equal(P.messagePrompt('fix it', '', { image: null }), 'fix it');
+  assert.equal(P.messagePrompt(undefined, ''), '');
+  const ctx = 'Game: World of Warcraft: Forever\nCharacter: Testchar, level 23 Hunter\nPosition: 51.5, 30.4 (map 1413)';
+  const m = P.messagePrompt('where am I?', ctx);
+  assert.ok(m.startsWith('[In-game situation when this message was written, reported by the claude-wow addon, not written by the player]\n' + ctx + '\n[End of in-game situation]\n\nwhere am I?'), m);
+  assert.ok(m.endsWith('\n\nwhere am I?'), 'the text is last, after everything that changes per message');
+  assert.equal(P.messagePrompt('where am I?', ctx + '\n\n'), m, 'a trailing newline in the context changes nothing');
+  // Vision: the attached-screen paragraph only when an image really is attached.
+  const seeing = P.messagePrompt('what is this?', ctx, { image: { width: 1280, height: 712 } });
   assert.ok(seeing.includes('A screenshot of the player\'s screen') && seeing.includes('(1280x712, downscaled)') && seeing.includes('cropped off'));
-  assert.ok(seeing.indexOf('screenshot of the player') < seeing.indexOf('in-game situation'), 'before the context, after the reply rules');
+  assert.ok(seeing.indexOf('[End of in-game situation]') < seeing.indexOf('screenshot of the player') && seeing.endsWith('\n\nwhat is this?'), 'situation, then the vision paragraph, then the text');
+  const seeingNoCtx = P.messagePrompt('what is this?', '', { image: { width: 1280, height: 712 } });
+  assert.ok(seeingNoCtx.startsWith('A screenshot of the player') && seeingNoCtx.endsWith('\n\nwhat is this?') && !seeingNoCtx.includes('in-game situation'));
   assert.equal(P.visionHint({}), P.visionHint(null));
   assert.ok(!P.visionHint({}).includes('downscaled)'), 'no size when unknown');
 });

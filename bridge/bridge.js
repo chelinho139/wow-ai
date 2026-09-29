@@ -496,8 +496,9 @@ function readOutbox() {
 
 // The addon sends the player's in-game context (character, location, ...) with
 // its hello and again whenever it changes; an empty one means "context off".
-// It is kept in state.json so a restarted bridge still has it, and goes into
-// the agent's system prompt on every run (see protocol.systemPrompt).
+// It is kept in state.json so a restarted bridge still has it, and goes at the
+// top of every message (protocol.messagePrompt); its presence puts the game
+// rules and the primer into the system prompt (protocol.systemPrompt).
 function setContext(job) {
   const text = String(job.ctx || '').replace(/\r/g, '').trim().slice(0, 2000);
   const prev = (state.context && state.context.text) || '';
@@ -513,8 +514,10 @@ function gameContext() {
   return (state.context && state.context.text) || '';
 }
 
-// The addon/macro primer that goes into the system prompt with the context.
-// Read on every run so edits count without a restart; "" in the config turns
+// The addon/macro primer that goes into the system prompt while the addon sends
+// a context. Read on every run so edits count without a restart (Claude Code
+// records a chat's system prompt at its first message, so there an edit reaches
+// new chats); "" in the config turns
 // it off. Relative paths are taken from the repo (docs/WOW-ADDON-PRIMER.md),
 // or from the binary's extracted copy of it (assets.js), where an edit lasts
 // until the next start.
@@ -716,18 +719,21 @@ function runAgent(job, opts = {}) {
   }
   const image = images[0] || null;
 
+  // The stable system prompt (the same bytes on every run of this chat) and the
+  // message, which carries what changes: the situation and the vision note.
   const ctx = gameContext();
-  const system = P.systemPrompt(ctx, primer(), { image, tools: plugin.tools });
-  const systemShort = P.systemPrompt(ctx, '', { image });
+  const system = P.systemPrompt(ctx, primer(), { tools: plugin.tools });
+  const systemShort = P.systemPrompt(ctx, '');
+  const prompt = P.messagePrompt(job.text, ctx, { image });
   const promptFile = path.join(TMP_DIR, `prompt-${job.id}-${Date.now().toString(36)}.txt`);
-  const input = agent.input({ prompt: job.text, system, systemShort, resume, cfg: acfg, images });
+  const input = agent.input({ prompt, system, systemShort, resume, cfg: acfg, images });
   if (input.promptFile !== undefined) {
     try { fs.mkdirSync(TMP_DIR, { recursive: true }); fs.writeFileSync(promptFile, input.promptFile); }
     catch (e) { finish(job, 'error', `Could not write the prompt file ${promptFile}: ${e.message}`); return; }
   }
   const args = [...cmd.args, ...agent.args({
     cfg: acfg, resume, cwd, system, systemShort, promptFile, images,
-    prompt: job.text, timeoutMs: cfg.timeoutMs,
+    prompt, timeoutMs: cfg.timeoutMs,
   })];
   const env = agent.env({ ...process.env });
   // Where this run's tools append map commands (docs/MAP.md); any agent can use
@@ -1102,7 +1108,7 @@ function banner() {
   console.log(`  sessions : ${Object.keys(state.sessions).length} saved`);
   const ctx = gameContext();
   console.log(`  context  : ${cfg.gameContext === false ? 'off (gameContext in config.json)' : ctx ? (ctx.split('\n').find(l => /^Character:/i.test(l)) || ctx.split('\n')[0]).slice(0, 100) : 'none yet (the addon sends it with its hello; /claude-wow context in game)'}`);
-  console.log(`  primer   : ${!PRIMER_FILE ? 'off (primerFile in config.json)' : primer() ? primerPath() + ' (' + primer().length + ' chars, with the context)' : 'NOT FOUND: ' + primerPath()}`);
+  console.log(`  primer   : ${!PRIMER_FILE ? 'off (primerFile in config.json)' : primer() ? primerPath() + ' (' + primer().length + ' chars, in the system prompt while the addon sends a context)' : 'NOT FOUND: ' + primerPath()}`);
   console.log('Leave this window open while you play. Ctrl+C to stop.\n');
 }
 
