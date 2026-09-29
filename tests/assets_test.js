@@ -67,8 +67,14 @@ test('with an embedded table, files are written out once, rewritten when they di
     assert.ok(fs.existsSync(path.join(AS.dir('addon/ClaudeWoW', home2), 'ClaudeWoW.toc')));
     assert.equal(fs.readdirSync(AS.dir('addon/ClaudeWoW', home2)).length, 5);
   } finally {
+    AS.unembed();
     fs.rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+test('unembed puts the checkout back, so a later test in the same process is not left reading a deleted table', () => {
+  assert.equal(AS.isEmbedded(), false);
+  assert.equal(AS.root(), path.resolve(__dirname, '..'));
 });
 
 test('build.js names one binary per target, and the host target is this machine', () => {
