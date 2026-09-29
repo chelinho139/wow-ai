@@ -33,6 +33,7 @@ const FILES = [
   'addon/ClaudeWoW/Roast.lua',
   'addon/ClaudeWoW/Voice.lua',
   'addon/ClaudeWoW/LootRoll.lua',
+  'addon/ClaudeWoW/Achievements.lua',
   'bridge/capture.ps1',
   'bridge/capture_mac.py',
   'bridge/capture_x11.py',

@@ -1277,6 +1277,7 @@ local function TryLoadSlot(why)
 	local matched = ApplyReplies(type(data) == "table" and data.replies or nil)
 	if type(data) == "table" and data.restore then ImportRestore(data.restore) end
 	if type(data) == "table" and data.map and ClaudeWoWMap then ClaudeWoWMap.Sync(data.map) end
+	if type(data) == "table" and data.achievements and ClaudeWoWAchievements then ClaudeWoWAchievements.Sync(data.achievements, data.now) end
 	if why == "signal" and not matched then
 		run.signalUnreliable = true
 	end
@@ -1400,6 +1401,7 @@ local function ProcessInbox()
 	ApplyReplies(inbox.replies)
 	if inbox.restore then ImportRestore(inbox.restore) end
 	if inbox.map and ClaudeWoWMap then ClaudeWoWMap.Sync(inbox.map) end
+	if inbox.achievements and ClaudeWoWAchievements then ClaudeWoWAchievements.Sync(inbox.achievements, inbox.now) end
 end
 
 Finish = function(chat, role, text, denied, agent, summary, macros)
@@ -3948,6 +3950,7 @@ local HELP = table.concat({
 	"/claude-wow roast [on|off]         when you die, the agent gets a recap of the hits that killed you and writes a short roast in the \"Death roasts\" chat (off by default; at most one every 2 minutes)",
 	"/claude-wow map [...]              map layers the agent drew, the route navigator and herb/ore nodes (no argument = status and subcommands; /aimap is the same)",
 	"/claude-wow voice [race|peasant|peon|off]   voice lines at agent events: your character's race and gender (default), a peasant, a peon, or none. set <event> <line>, reset, test <event|line>, lines [pack]",
+	"/claude-wow achievements [on|off|test]   list the achievements your agents earned; on|off turns the toasts on or off, test shows a sample",
 	"/claude-wow mode pixel             no-reload transport (default)",
 	"/claude-wow mode reload            fallback transport: a /reload per step",
 	"/claude-wow resend                 show the strip again if the bridge missed it",
@@ -3999,6 +4002,8 @@ local COMMAND_ARGS = {
 	map = true, -- /claude-wow map ...: Map.lua (layers, navigator, herb/ore nodes)
 	macro = { undo = true }, -- /claude-wow macro undo; "/claude macro for my warrior" still goes to the agent
 	voice = function(rest) return ClaudeWoWVoice ~= nil and ClaudeWoWVoice.IsCommand(rest) end,
+	achievements = { [""] = true, on = true, off = true, test = true, list = true },
+	toasts = { [""] = true, on = true, off = true, test = true },
 }
 
 local function IsCommand(cmd, rest)
@@ -4090,6 +4095,8 @@ SlashCmdList["CLAUDEWOW"] = function(msg)
 		if ClaudeWoWRoast then ClaudeWoWRoast.Command(rest) else print("|cff66ccff[Claude WoW]|r the roast module did not load") end
 	elseif cmd == "voice" then
 		ClaudeWoWVoice.Command(rest)
+	elseif cmd == "achievements" or cmd == "toasts" then
+		if ClaudeWoWAchievements then ClaudeWoWAchievements.Command(rest) else print("|cff66ccff[Claude WoW]|r the achievements module did not load") end
 	elseif cmd == "agent" then
 		ClaudeWoW.SetAgent(rest, c)
 		ClaudeWoW.Toggle(true)

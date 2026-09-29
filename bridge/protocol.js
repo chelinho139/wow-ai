@@ -580,6 +580,7 @@ function luaTable(globalName, records, opts = {}) {
   }
   lines.push('\t},');
   if (opts.map) lines.push(luaMap(opts.map));
+  if (opts.achievementsLua) lines.push(opts.achievementsLua);
   const restore = opts.restore;
   if (restore) {
     lines.push('\trestore = {', `\t\ttoken = ${luaStr(restore.token)},`, '\t\tchats = {');

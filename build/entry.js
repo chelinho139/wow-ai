@@ -13,6 +13,7 @@ import addonMap from '../addon/ClaudeWoW/Map.lua' with { type: 'file' };
 import addonRoast from '../addon/ClaudeWoW/Roast.lua' with { type: 'file' };
 import addonVoice from '../addon/ClaudeWoW/Voice.lua' with { type: 'file' };
 import addonLootRoll from '../addon/ClaudeWoW/LootRoll.lua' with { type: 'file' };
+import addonAchievements from '../addon/ClaudeWoW/Achievements.lua' with { type: 'file' };
 import capturePs1 from '../bridge/capture.ps1' with { type: 'file' };
 import captureMac from '../bridge/capture_mac.py' with { type: 'file' };
 import captureX11 from '../bridge/capture_x11.py' with { type: 'file' };
@@ -28,6 +29,7 @@ require('../bridge/assets').embed({
   'addon/ClaudeWoW/Roast.lua': addonRoast,
   'addon/ClaudeWoW/Voice.lua': addonVoice,
   'addon/ClaudeWoW/LootRoll.lua': addonLootRoll,
+  'addon/ClaudeWoW/Achievements.lua': addonAchievements,
   'bridge/capture.ps1': capturePs1,
   'bridge/capture_mac.py': captureMac,
   'bridge/capture_x11.py': captureX11,
