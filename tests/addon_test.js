@@ -644,6 +644,61 @@ test('chat management commands: new, chat, rename, delete, clear, copy', () => {
   assert.equal(vm.evaluate('WoWAICopyBox.text'), 'some reply');
 });
 
+test('chat names in non-Latin scripts: no broken first letter, cut on a whole character', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  // The client's string.upper garbles a lone byte of a multibyte letter (a ruRU
+  // client titled a chat "□де у меня"); the stub's ASCII-only upper doesn't, so model it.
+  vm.run(`
+    local upper = string.upper
+    string.upper = function(s)
+      if #s == 1 and s:byte() >= 128 then return "\\239\\191\\189" end
+      return upper(s)
+    end`);
+  vm.run('WoWAI.Send("где у меня медь")');
+  assert.equal(vm.evaluate('WoWAIDB.chats[1].name'), 'где у меня медь');
+
+  // Titles and names hold 24 characters, not 24 bytes, and never end inside one.
+  const other = newVM();
+  login(other);
+  connect(other);
+  other.run(`WoWAI.Send("${'Ж'.repeat(30)}")`);
+  assert.equal(other.evaluate('WoWAIDB.chats[1].name'), 'Ж'.repeat(24));
+  const rename = (name) => { other.run(`SlashCmdList.WOWAI("rename ${name}")`); return other.evaluate('WoWAIDB.chats[1].name'); };
+  assert.equal(rename('中'.repeat(30)), '中'.repeat(24));
+  assert.equal(rename('Ж'.repeat(24)), 'Ж'.repeat(24));
+  assert.equal(rename('Ж'.repeat(23) + ' хвост'), 'Ж'.repeat(23), 'no trailing space left by the cut');
+  // The Rename dialog takes 24 letters (maxLetters), so a Russian name that fits is kept whole.
+  rename('x');
+  other.run('WoWAI.RenamePrompt(WoWAIDB.chats[1].id)');
+  other.run(`
+    local dialog = { editBox = { GetText = function() return "Очень длинное имя чата" end } }
+    StaticPopupDialogs.WOWAI_RENAME.OnAccept(dialog, STUB.popup.data)`);
+  assert.equal(other.evaluate('WoWAIDB.chats[1].name'), 'Очень длинное имя чата');
+});
+
+test('byte budgets on shown text cut on a whole character: link tooltips and the short game-chat echo', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  // Three name lengths put the 900-byte cut at every offset inside a 3-byte character.
+  vm.run(`STUB.tooltips["item:1"] = { "${'中'.repeat(400)}" }`);
+  for (const name of ['A', 'AB', 'ABC']) {
+    vm.run(`RESULT = (WoWAI.ExpandLinks("x |Hitem:1|h[${name}]|h"))`);
+    assert.ok(vm.evaluate('RESULT').endsWith('中...'), name); // evaluate throws on a broken character
+  }
+  vm.run('SlashCmdList.WOWAI("echo short")');
+  vm.run('STUB.prints = {}');
+  vm.run('WoWAI.Send("do it")');
+  const chatId = vm.evaluate('WoWAIDB.chats[1].id');
+  const id = vm.num('WoWAIDB.chats[1].pendingId');
+  nextSlot(vm, `{ now = time(), cwd = "", replies = { { chat = "${chatId}", id = ${id}, status = "done", text = "${'中'.repeat(100)}", agent = "codex" } } }`);
+  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+  const out = vm.evaluate('table.concat(STUB.prints, "\\n")');
+  assert.ok(out.includes(' ' + '中'.repeat(66) + ' ...'), out); // 200 bytes backs off to 198: 66 characters
+});
+
 test('chat rows: right-click opens a menu that renames or sets the folder of that chat, the trash can asks before deleting', () => {
   const vm = newVM();
   login(vm);

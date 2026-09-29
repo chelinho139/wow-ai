@@ -85,6 +85,33 @@ local function Trim(s)
 	return (s:gsub("^%s+", ""):gsub("%s+$", ""))
 end
 
+-- Text the player sees is cut on whole UTF-8 characters: a cut through a
+-- multibyte letter shows as a broken glyph in the window and the game chat.
+
+-- The first n characters of s.
+local function Utf8Head(s, n)
+	local count = 0
+	for i = 1, #s do
+		local b = s:byte(i)
+		if b < 128 or b >= 192 then
+			count = count + 1
+			if count > n then return s:sub(1, i - 1) end
+		end
+	end
+	return s
+end
+
+-- At most n bytes of s, backed off to the start of a character.
+local function Utf8CutBytes(s, n)
+	if #s <= n then return s end
+	while n > 0 do
+		local b = s:byte(n + 1)
+		if b < 128 or b >= 192 then break end
+		n = n - 1
+	end
+	return s:sub(1, n)
+end
+
 local function FmtDur(sec)
 	sec = math.floor(sec or 0)
 	if sec < 60 then return sec .. "s" end
@@ -149,9 +176,13 @@ local function AutoTitle(text)
 		end
 	end
 	local title = table.concat(words, " ")
-	if #title > 24 then title = title:sub(1, 24):gsub("%s+%S*$", "") end
+	local cut = Utf8Head(title, 24)
+	if cut ~= title then title = cut:gsub("%s+%S*$", "") end
 	if title == "" then return nil end
-	return title:sub(1, 1):upper() .. title:sub(2)
+	-- Capitalize an ASCII first letter only: the client's string.upper garbles the
+	-- lone first byte of a multibyte one ("где" came out as "□де").
+	if title:byte(1) < 128 then title = title:sub(1, 1):upper() .. title:sub(2) end
+	return title
 end
 
 local function NewId()
@@ -1178,7 +1209,7 @@ function WoWAI.ExpandLinks(text)
 		local head = "[" .. l.name .. "] " .. DescribeLink(l.payload)
 		local body = table.concat(TooltipLines(l.payload), "\n  ")
 		local block = body ~= "" and (head .. "\n  " .. body) or head
-		if #block > LINK_BYTES_MAX then block = block:sub(1, LINK_BYTES_MAX) .. "..." end
+		if #block > LINK_BYTES_MAX then block = Utf8CutBytes(block, LINK_BYTES_MAX) .. "..." end
 		table.insert(blocks, block)
 	end
 	return out .. "\n\n--- Linked from the game ---\n" .. table.concat(blocks, "\n"), #links
@@ -1555,7 +1586,7 @@ StaticPopupDialogs["WOWAI_RENAME"] = {
 		local chat = data and FindChat(data.id)
 		local name = box and Trim(box:GetText() or "") or ""
 		if chat and name ~= "" then
-			chat.name = name:sub(1, 24)
+			chat.name = Trim(Utf8Head(name, 24))
 			WoWAI.Render()
 		end
 	end,
@@ -2124,7 +2155,7 @@ local function EchoToChat(chat, text, agent, summary)
 	local body = Display(text)
 	if mode == "short" then
 		local flat = (body:gsub("%s+", " "))
-		if #flat > 200 then flat = flat:sub(1, 200) .. " ..." end
+		if #flat > 200 then flat = Utf8CutBytes(flat, 200) .. " ..." end
 		print(prefix .. flat .. ChatLinks(chat))
 		return
 	end
@@ -2930,7 +2961,7 @@ SlashCmdList["WOWAI"] = function(msg)
 		WoWAI.Toggle(true)
 	elseif cmd == "rename" then
 		if rest ~= "" then
-			c.name = rest:sub(1, 24)
+			c.name = Trim(Utf8Head(rest, 24))
 			WoWAI.Render()
 		else
 			WoWAI.RenameActive()

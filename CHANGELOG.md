@@ -18,6 +18,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 - Codex, Claude or Grok installed with `npm install -g` on Windows were not found behind npm's `.cmd` launchers: current npm shims mention `node.exe` before the program, and the bridge took the first path it saw. It now takes the launcher whatever its name (`.js`, `.exe` or a bare script), and honours `agents.<id>.path` pointing at a `.cmd` or `.bat`.
 - Professions in the game context were always empty on Forever: the client only has `C_SkillInfo` (one table per skill line), not the classic `GetNumSkillLines`/`GetSkillLineInfo` globals, which stay as fallback. Child lines that repeat their parent are skipped.
+- Text in non-Latin scripts was cut through the middle of a letter. The automatic chat title capitalized its first byte, which the client's `string.upper` garbles when it belongs to a multibyte letter (a Russian first message gave "□де у меня"); now only an ASCII first letter is capitalized. Chat titles and names keep 24 characters instead of 24 bytes, and link tooltips and the `/wow-ai echo short` preview are cut on a whole character.
 
 ## [0.4.0] - 2026-09-24
 
