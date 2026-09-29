@@ -208,7 +208,7 @@ test('drift: HEAD committed after the bridge started, branch switch, dirty tree,
   } }));
   assert.equal(r.status, 'warn');
   assert.equal(r.problems.length, 3);
-  assert.match(r.problems[0].what, /runs old code.*bridge\/bridge\.js/);
+  assert.match(r.problems[0].what, /runs old code.*bridge[\\/]bridge\.js/);
   assert.match(r.problems[1].what, /main -> feature/);
   assert.match(r.problems[2].what, /2 uncommitted change\(s\).*bridge\/bridge\.js/);
   fs.rmSync(edited);

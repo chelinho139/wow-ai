@@ -249,7 +249,7 @@ test('the definition runs node + supervisor.js from a checkout, and the binary a
   const R = require('../bridge/runtime');
   const checkout = { compiled: false, execPath: '/opt/homebrew/bin/node', root: '/Users/p/claude-wow' };
   const binary = { compiled: true, execPath: '/Users/p/.local/bin/claude-wow', root: '/build/machine/claude-wow' };
-  assert.deepEqual(S.program(checkout), { node: '/opt/homebrew/bin/node', script: '/Users/p/claude-wow/bridge/supervisor.js', cwd: '/Users/p/claude-wow' });
+  assert.deepEqual(S.program(checkout), { node: '/opt/homebrew/bin/node', script: path.join('/Users/p/claude-wow', 'bridge', 'supervisor.js'), cwd: '/Users/p/claude-wow' });
   const b = S.program(binary);
   assert.equal(b.node, '/Users/p/.local/bin/claude-wow');
   assert.equal(b.script, '', 'no script: the binary is the supervisor');

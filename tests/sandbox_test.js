@@ -8,7 +8,7 @@ const SB = require('../dev/sandbox');
 
 const ROOT = path.join(os.tmpdir(), `claude-wow-sandbox-test-${process.pid}`);
 
-test('assertSafe refuses every live install path and anything that contains one', () => {
+test('assertSafe refuses every live install path and anything that contains one', { skip: process.platform === 'win32' && 'POSIX paths' }, () => {
   const home = '/Users/someone';
   for (const p of [
     '/Users/someone/.claude-wow',

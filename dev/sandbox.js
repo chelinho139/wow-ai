@@ -86,9 +86,19 @@ function buildConfig(L, opts = {}) {
   return Object.assign(cfg, opts.config || {});
 }
 
+function copyAddon(L) {
+  const src = path.join(REPO, 'addon', 'ClaudeWoW');
+  const dest = path.join(L.addons, 'ClaudeWoW');
+  fs.mkdirSync(dest, { recursive: true });
+  for (const f of fs.readdirSync(src)) {
+    const target = path.join(dest, f);
+    if (f === 'Inbox.lua' && fs.existsSync(target)) continue;
+    fs.copyFileSync(path.join(src, f), target);
+  }
+}
+
 function installAddon(L, env) {
-  const setup = require(path.join(REPO, 'setup.js'));
-  setup.copyAddon(L.client);
+  copyAddon(L);
   const r = spawnSync(process.execPath, [path.join(REPO, 'bridge', 'install-slots.js')], { env, encoding: 'utf8' });
   if (r.status !== 0) throw new Error(`install-slots failed: ${r.stderr || r.stdout}`);
   return r.stdout.trim();
