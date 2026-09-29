@@ -1666,6 +1666,40 @@ test('plugins: /claude-wow plugin binds the chat like /claude-wow agent, the Plu
   assert.ok(last().includes('/claude-wow plugin [name]'));
 });
 
+test('live plugin: /claude-wow live lists the sessions or the start command, and Pass on a live chat sends the denial', () => {
+  const vm = newVM();
+  login(vm);
+  vm.run('STUB.RunTimers()');
+  const last = () => vm.evaluate('ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].text');
+  vm.run('SlashCmdList.CLAUDEWOW("live")');
+  assert.ok(last().startsWith('Live sessions: unknown'), last());
+  nextSlot(vm, '{ now = time(), cwd = "", plugin = "ask", plugins = { "ask", "claude-code", "live" }, live = { sessions = {}, start = "cd /repo && claude --dangerously-load-development-channels server:claude-wow" }, replies = {} }');
+  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+  vm.run('SlashCmdList.CLAUDEWOW("live")');
+  assert.equal(last(), 'No live Claude Code session connected. Start one with:\ncd /repo && claude --dangerously-load-development-channels server:claude-wow\nThen bind a chat to it: /claude-wow plugin live');
+  vm.run('ClaudeWoW.ApplyLive({ sessions = { "wow-ai (/Users/me/wow-ai)" }, start = "x" })');
+  vm.run('SlashCmdList.CLAUDEWOW("live")');
+  assert.equal(last(), 'Live Claude Code sessions (1):\n1. wow-ai (/Users/me/wow-ai)\nBind a chat to them: /claude-wow plugin live');
+  vm.run('SlashCmdList.CLAUDEWOW("live now please")');
+  assert.notEqual(last(), 'Live Claude Code sessions (1):\n1. wow-ai (/Users/me/wow-ai)\nBind a chat to them: /claude-wow plugin live', 'text after the word is a message');
+  vm.run('SlashCmdList.CLAUDEWOW("cancel")');
+  vm.run('SlashCmdList.CLAUDEWOW("plugin live")');
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].plugin'), 'live');
+  vm.run('ClaudeWoW.Send("touch a file")');
+  const chatId = vm.evaluate('ClaudeWoWDB.chats[1].id');
+  const id = vm.num('ClaudeWoWDB.chats[1].pendingId');
+  assert.ok(id >= 1);
+  nextSlot(vm, `{ now = time(), cwd = "", plugins = { "ask", "claude-code", "live" }, replies = { { chat = "${chatId}", id = ${id}, status = "done", text = "Claude Code (wow-ai) wants to use Bash.\\nRoll Need or Greed to allow it once, Pass to deny it.", agent = "claude", plugin = "live", denied = { "Bash(touch:*)" } } } }`);
+  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].pendingId'), null, 'the roll prompt finished the message');
+  vm.run(`ClaudeWoW.PassOnDenial("${chatId}", { "Bash(touch:*)" })`);
+  const denial = stripRecords(vm).find(r => r.text === 'Denied.');
+  assert.ok(denial, 'Pass sends the denial on a live chat');
+  assert.equal(denial.flags, 'plugin=live');
+  vm.run('SlashCmdList.CLAUDEWOW("help")');
+  assert.ok(last().includes('/claude-wow live '));
+});
+
 // Context growth: the bridge reports, on every final reply, what the chat's next
 // message will carry (ctx), the turns in the session and the model's window.
 function footerText(vm) {

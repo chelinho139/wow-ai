@@ -43,6 +43,8 @@ local POLL_TAIL = 60
 local TICK_SECONDS = 2
 local CONNECT_WAIT = 15 -- seconds the Connect button waits for the bridge before giving up
 local IDLE_POLL_SECONDS = 600 -- without the sound channel, spend one slot this often while idle to check the bridge
+local LIVE_PLUGIN = "live"
+local LIVE_PASS_TEXT = "Denied."
 local RS, US = "\30", "\31" -- record / unit separators in the strip payload
 
 local db
@@ -1272,6 +1274,7 @@ local function TryLoadSlot(why)
 		if type(data.agents) == "table" and #data.agents > 0 then run.bridgeAgents = data.agents end
 		if type(data.plugin) == "string" and data.plugin ~= "" then run.bridgePlugin = data.plugin end
 		if type(data.plugins) == "table" and #data.plugins > 0 then run.bridgePlugins = data.plugins end
+		ClaudeWoW.ApplyLive(data.live)
 		ApplyTransport(data)
 	end
 	local matched = ApplyReplies(type(data) == "table" and data.replies or nil)
@@ -1398,6 +1401,7 @@ local function ProcessInbox()
 	if type(inbox.agents) == "table" and #inbox.agents > 0 then run.bridgeAgents = inbox.agents end
 	if type(inbox.plugin) == "string" and inbox.plugin ~= "" then run.bridgePlugin = inbox.plugin end
 	if type(inbox.plugins) == "table" and #inbox.plugins > 0 then run.bridgePlugins = inbox.plugins end
+	ClaudeWoW.ApplyLive(inbox.live)
 	ApplyTransport(inbox)
 	ApplyReplies(inbox.replies)
 	if inbox.restore then ImportRestore(inbox.restore) end
@@ -2264,7 +2268,36 @@ function ClaudeWoW.PassOnDenial(chatId, rules, reason)
 	if not c or not rules or #rules == 0 then return end
 	for _, m in ipairs(c.history) do m.denied = nil end
 	AddHistory(c, "system", "Passed on: " .. table.concat(rules, ", ") .. (reason and (" (" .. reason .. ")") or ""))
+	if c.plugin == LIVE_PLUGIN and not c.pendingId then
+		ClaudeWoW.Send(LIVE_PASS_TEXT, nil, { chat = c.id })
+		return
+	end
 	ClaudeWoW.Render()
+end
+
+function ClaudeWoW.ApplyLive(live)
+	if type(live) ~= "table" then return end
+	run.bridgeLive = {
+		sessions = type(live.sessions) == "table" and live.sessions or {},
+		start = type(live.start) == "string" and live.start or "",
+	}
+end
+
+function ClaudeWoW.LiveStatus()
+	local live = run.bridgeLive
+	if not live then
+		return { "Live sessions: unknown until the bridge is heard from (it needs the live plugin)." }
+	end
+	if #live.sessions == 0 then
+		local lines = { "No live Claude Code session connected. Start one with:" }
+		if live.start ~= "" then table.insert(lines, live.start) end
+		table.insert(lines, "Then bind a chat to it: /claude-wow plugin live")
+		return lines
+	end
+	local lines = { "Live Claude Code sessions (" .. #live.sessions .. "):" }
+	for i, name in ipairs(live.sessions) do table.insert(lines, i .. ". " .. tostring(name)) end
+	table.insert(lines, "Bind a chat to them: /claude-wow plugin live")
+	return lines
 end
 
 function ClaudeWoW.OpenDenial(chatId)
@@ -3860,6 +3893,7 @@ local HELP = table.concat({
 	"/claude-wow cd <folder>            folder this chat's agent works in (relative to the bridge's folder; no folder = back to default). Right-clicking the chat in the left panel and picking Folder does the same",
 	"/claude-wow agent [name]           which agent this chat talks to (no name = show; default = the bridge's). Right-clicking the chat and picking Agent does the same",
 	"/claude-wow plugin [name]          what this chat is for: ask (general in-game chat, the default) or claude-code (an agent session in a folder). No name = show; default = the bridge's. Right-clicking the chat and picking Plugin does the same",
+	"/claude-wow live                   the running Claude Code sessions a chat bound to the live plugin talks to (/claude-wow plugin live), or the command that starts one",
 	"/claude-wow reset                  next message in this chat starts a fresh agent session",
 	"/claude-wow context [on|off]       what the agent is told about your character and where you are (no argument = show it, with this chat's context size and turns)",
 	"/claude-wow context <n>            warn once, with a New chat button, when a chat's context passes n tokens (100k by default; 0 = never). The footer shows ctx and turns per chat",
@@ -3920,7 +3954,7 @@ local COMMAND_ARGS = {
 	roast = { [""] = true, on = true, off = true },
 	auto = OnOffOrNumber,
 	echo = function(rest) return rest == "" or rest == "summary" or rest == "full" or rest == "short" or rest == "off" or tonumber(rest) ~= nil end,
-	bind = 1, agent = 1, plugin = 1,
+	bind = 1, agent = 1, plugin = 1, live = 0,
 	chat = ChatArgument, chats = ChatArgument,
 	cd = true, new = true, rename = true,
 	map = true, -- /claude-wow map ...: Map.lua (layers, navigator, herb/ore nodes)
@@ -4048,6 +4082,10 @@ SlashCmdList["CLAUDEWOW"] = function(msg, editBox)
 		ClaudeWoW.Toggle(true)
 	elseif cmd == "plugin" then
 		ClaudeWoW.SetPlugin(rest, c)
+		ClaudeWoW.Toggle(true)
+	elseif cmd == "live" then
+		AddHistory(c, "system", table.concat(ClaudeWoW.LiveStatus(), "\n"))
+		ClaudeWoW.Render()
 		ClaudeWoW.Toggle(true)
 	elseif cmd == "reset" then
 		c.resetNext = true
