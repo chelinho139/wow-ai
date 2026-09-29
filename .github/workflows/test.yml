@@ -10,9 +10,14 @@ jobs:
     # Linux and macOS: it runs both python decoders, capture_x11.py and
     # capture_mac.py (python3 is on every runner, and --test-image needs only the
     # stdlib). macOS is in the matrix because that is where capture_mac.py ships.
+    # Every OS runs the suite on Node (npm test) and on Bun (npm run test:bun):
+    # Node stays the fallback runtime, Bun is what the shipped binary is built
+    # with (build.js). Node is on the Bun rows too, for npm ci (the Lua VM the
+    # addon tests use is an npm package).
     strategy:
       matrix:
         os: [windows-latest, ubuntu-latest, macos-latest]
+        runtime: [node, bun]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -20,5 +25,12 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - uses: oven-sh/setup-bun@v2
+        if: matrix.runtime == 'bun'
+        with:
+          bun-version: 1.4.2
       - run: npm ci
       - run: npm test
+        if: matrix.runtime == 'node'
+      - run: npm run test:bun
+        if: matrix.runtime == 'bun'

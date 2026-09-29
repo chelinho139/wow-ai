@@ -37,7 +37,7 @@ npm install          # test tooling only: fengari (Lua VM) and luaparse
 npm test
 ```
 
-`npm test` runs the portable suite on every platform. The codec round-trip decodes through `capture.ps1` on Windows and through `capture_x11.py` (python3) elsewhere. CI runs the full command on `windows-latest` and `ubuntu-latest` (`.github/workflows/test.yml`).
+`npm test` runs the portable suite on every platform. The codec round-trip decodes through `capture.ps1` on Windows and through `capture_x11.py` (python3) elsewhere. `npm run test:bun` runs the same suite under [Bun](https://bun.sh) (`bun test` runs the `node:test` files as they are; the two scripts list the same files, so a new test file goes into both): Node is the runtime the checkout is written for and the fallback install, Bun is what the shipped binary is built with, and the bridge must keep working on both. CI runs both on `windows-latest`, `ubuntu-latest` and `macos-latest` (`.github/workflows/test.yml`).
 
 To try changes in the game, run `node setup.js` (it re-copies the addon into `Interface\AddOns\ClaudeWoW`) and `/reload`. Bridge changes take effect on the next `npm start`.
 
@@ -56,6 +56,7 @@ To try changes in the game, run `node setup.js` (it re-copies the addon into `In
 | `node --test tests/screenshots_test.js` | `bridge/screenshots.js`: the client's `Screenshots` folder derived from `addonDir`, the file-name filter, and the watcher reporting a new file once its size settles while ignoring files from before it started. |
 | `node --test tests/service_test.js` | `bridge/service.js`: the LaunchAgent plist (and `plutil -lint` on macOS), the systemd unit and the Windows launcher it writes, `claude-wow service` argument parsing, log rotation and the self-rotating writer, the pid file, the launchctl output parser, and `status` on a clean machine. |
 | `node --test tests/install_test.js` | `install.sh` and `install.ps1`: they parse, the Node 22.2 gate accepts and rejects the right versions, unknown options and a missing Node fail with a hint, and `install.sh` runs nothing until fully read. |
+| `node --test tests/runtime_test.js` | `bridge/runtime.js`: the command that runs each of the bridge's own scripts from a checkout (this node and the script) and from the compiled binary (the binary and a subcommand), and where a JavaScript launcher finds a node in each case. |
 | `node tests/codec_test.js` | `Codec.lua` in a Lua VM, rendered to PNG with noise and gamma, decoded by `capture.ps1` (Windows) or `capture_x11.py` (elsewhere). Writes scratch images to `tests/tmp/` (gitignored). |
 | `npm run test:live` | Not part of `npm test`. Builds a sandbox under `tests/tmp/inject/` with a 5-slot pool and runs the bridge with `--inject` against a real agent CLI: Claude by default, `-- --agent codex` or `-- --agent grok` for the others. Needs that CLI installed and logged in. |
 
