@@ -497,6 +497,28 @@ function screenshotLevels(raw) {
   return { off, on, threshold: Math.floor((off + on) / 2) + 1 };
 }
 
+// Which codec the addon draws on the screenshot transport (capture.screenshotCodec).
+// 2, the default: 2 px cells, four levels per channel between `off` and `on`,
+// six bits a cell, 400 cells a row, so a message of a few hundred bytes is one
+// 800x2 px line; 1: the capture scripts' 4 px cells with a bit per channel, for
+// a client whose screenshots should turn out not to be exact at 2 px. Shipped in
+// every slot file as `codec` next to the levels. An addon from before the field
+// draws codec 1, which the bridge reads as well (decode.js tries both magics),
+// so mixed versions keep talking; the magic tells the strips apart.
+const STRIP_CODECS = [1, 2];
+const DEFAULT_STRIP_CODEC = 2;
+function stripCodec(raw) {
+  return STRIP_CODECS.includes(raw) ? raw : DEFAULT_STRIP_CODEC;
+}
+
+// Codec 2's four levels, integers spread evenly from off to on (0/60 gives
+// 0, 20, 40, 60), the same arithmetic as the addon's Codec.DenseLevels. The
+// decoder reads the levels off each strip's ramp anyway; this is for the banner.
+function denseLevels(raw) {
+  const lv = screenshotLevels(raw);
+  return [0, 1, 2, 3].map(k => Math.floor(lv.off + k * (lv.on - lv.off) / 3 + 0.5));
+}
+
 function luaTable(globalName, records, opts = {}) {
   const now = opts.now || Date.now();
   const agents = Array.isArray(opts.agents) ? opts.agents : [];
@@ -517,7 +539,7 @@ function luaTable(globalName, records, opts = {}) {
   ];
   if (transport === 'screenshot') {
     const lv = screenshotLevels(opts.levels);
-    lines.splice(lines.length - 1, 0, `\tstrip = { on = ${lv.on}, off = ${lv.off} },`);
+    lines.splice(lines.length - 1, 0, `\tstrip = { on = ${lv.on}, off = ${lv.off}, codec = ${stripCodec(opts.codec)} },`);
   }
   // Why a bridge is on the pixel transport when nobody asked for it (transportFallback);
   // the addon shows it in /claude-wow diag.
@@ -771,7 +793,7 @@ module.exports = {
   resolveCwd, sameFolder, baseName,
   parseFlags, jobsFromStrip, parseOutbox, systemPrompt, messagePrompt, visionHint, splitSummary,
   ruleFor, describeToolUse,
-  luaStr, luaTable, SILENT_WAV, TRANSPORTS, DEFAULT_TRANSPORT, transportName, chooseTransport, FALLBACK_REASONS, transportFallback, transportNote, DEFAULT_LEVELS, screenshotLevels,
+  luaStr, luaTable, SILENT_WAV, TRANSPORTS, DEFAULT_TRANSPORT, transportName, chooseTransport, FALLBACK_REASONS, transportFallback, transportNote, DEFAULT_LEVELS, screenshotLevels, STRIP_CODECS, DEFAULT_STRIP_CODEC, stripCodec, denseLevels,
   MAP_LIMITS, validateMapCommand, newMap, applyMapCommands, extractMapBlocks, parseMapFile, luaMap,
   MACRO_LIMITS, extractMacros, stripMacroBlocks, luaMacros,
 };

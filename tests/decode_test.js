@@ -17,13 +17,13 @@ const D = require('../bridge/decode');
 const CODEC = path.join(__dirname, '..', 'addon', 'ClaudeWoW', 'Codec.lua');
 const CELL = 4, CELLS = 200, MAXROWS = 48;
 
-function encodeWithLua(id, payload) {
+function encodeWithLua(id, payload, codec = 1) {
   const bytes = Buffer.from(payload, 'utf8');
   const lit = '"' + [...bytes].map(b => '\\' + b).join('') + '"';
   const L = lauxlib.luaL_newstate();
   lualib.luaL_openlibs(L);
   const code = fs.readFileSync(CODEC, 'utf8') +
-    `\nlocal cells = ClaudeWoW_Codec.Encode(${id}, ${lit})\n` +
+    `\nlocal cells = ClaudeWoW_Codec.Encode(${id}, ${lit}, ${codec})\n` +
     `local t = {}\nfor i = 1, #cells do t[i] = string.format("%d", cells[i]) end\n` +
     `RESULT = table.concat(t, ",")\n`;
   if (lauxlib.luaL_dostring(L, to_luastring(code)) !== 0) throw new Error('Lua error: ' + to_jsstring(lua.lua_tostring(L, -1)));
@@ -49,6 +49,26 @@ function frame({ width, height, cells, ox = 0, oy = 0, on = 255, off = 0, jitter
         const n = jitter ? Math.round((rnd() * 2 - 1) * jitter) : 0;
         rgb[o + k] = Math.max(0, Math.min(255, lv[k] + n));
       }
+    }
+  }
+  return rgb;
+}
+
+// Codec 2: 2 px cells, each channel at one of four levels (the addon draws
+// 0/20/40/60 by default), `cells` as the encoder emits them, ramp included.
+const DCELL = 2, DCELLS = 400;
+function denseFrame({ width, height, cells, ox = 0, oy = 0, levels = [0, 20, 40, 60], seed = 1 }) {
+  let s = seed;
+  const rnd = () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x7fffffff; };
+  const rgb = Buffer.alloc(width * height * 3);
+  for (let i = 0; i < rgb.length; i++) rgb[i] = Math.floor(rnd() * 256);
+  const rows = Math.ceil(cells.length / DCELLS);
+  for (let r = 0; r < rows; r++) for (let c = 0; c < DCELLS; c++) {
+    const v = cells[r * DCELLS + c] || 0;
+    const lv = [levels[(v >> 4) & 3], levels[(v >> 2) & 3], levels[v & 3]];
+    for (let y = 0; y < DCELL; y++) for (let x = 0; x < DCELL; x++) {
+      const o = ((oy + r * DCELL + y) * width + (ox + c * DCELL + x)) * 3;
+      for (let k = 0; k < 3; k++) rgb[o + k] = lv[k];
     }
   }
   return rgb;
@@ -260,4 +280,104 @@ test('the decoder agrees with tests/codec_test.js on what the capture scripts re
   assert.equal(D.MAGIC, 0xC71A);
   assert.equal(D.DEFAULTS.threshold, 128);
   assert.deepEqual([D.DEFAULTS.cell, D.DEFAULTS.cells, D.DEFAULTS.maxRows], [CELL, CELLS, MAXROWS]);
+});
+
+// ---------------------------------------------------------------------------
+// Codec 2, the screenshot transport's dense strip.
+// ---------------------------------------------------------------------------
+
+test('codec 2: a dense strip in the corner of a full-frame screenshot decodes from PNG and TGA, with its codec and height', () => {
+  for (const [id, payload] of [[7, PAYLOAD], [4242, LONG]]) {
+    const cells = encodeWithLua(id, payload, 2);
+    assert.deepEqual(cells.slice(0, 4), [0, 21, 42, 63], 'the ramp leads: every channel at level 0, 1, 2, 3');
+    const rgb = denseFrame({ width: W, height: H, cells });
+    const files = [
+      ['png rgb', png(W, H, rgb)],
+      ['png rgba', png(W, H, rgb, { alpha: true })],
+      ['tga rle32 top-down (the client\'s)', tga(W, H, rgb, { bpp: 32, rle: true, topDown: true })],
+      ['tga raw24 bottom-up', tga(W, H, rgb, { bpp: 24, rle: false, topDown: false })],
+    ];
+    for (const [name, buf] of files) {
+      const img = D.readImage(buf);
+      const { msg, offset } = D.findStrip(img, { threshold: 31 });
+      assert.ok(msg && !msg.error, `${name} id=${id}: ${JSON.stringify(msg)}`);
+      assert.equal(msg.codec, 2, name);
+      assert.equal(msg.id, id, name);
+      assert.equal(msg.text, payload, name);
+      assert.deepEqual(offset, [0, 0], name);
+      const rows = Math.ceil(cells.length / DCELLS);
+      assert.equal(msg.rows, rows, name);
+      assert.equal(msg.height, rows * DCELL, `${name}: the pixels the strip covered (vision crops them off)`);
+    }
+  }
+  // Eight times the payload per screen area: the same message is two 4 px rows
+  // as codec 1 (an 800x8 band) and one 2 px row as codec 2 (an 800x2 line).
+  const one = encodeWithLua(7, PAYLOAD), two = encodeWithLua(7, PAYLOAD, 2);
+  assert.equal(Math.ceil(one.length / CELLS), 2);
+  assert.equal(Math.ceil(two.length / DCELLS), 1);
+  assert.equal(D.findStrip(D.readPNG(png(800, 8, frame({ width: 800, height: 8, cells: one }))), {}).msg.height, 8);
+  assert.equal(D.findStrip(D.readPNG(png(800, 2, denseFrame({ width: 800, height: 2, cells: two }))), {}).msg.height, 2);
+});
+
+test('codec 2: the ramp calibrates the levels, nearest-level classing has margin, and a ramp that does not rise is no strip', () => {
+  const cells = encodeWithLua(9, PAYLOAD, 2);
+  // Any four rising levels a drawer picks read the same: the decoder never sees a number.
+  for (const levels of [[0, 20, 40, 60], [0, 26, 44, 75], [10, 14, 18, 22], [120, 160, 200, 255]]) {
+    const r = D.findStrip(D.readPNG(png(900, 60, denseFrame({ width: 900, height: 60, cells, levels }))), {});
+    assert.equal(r.msg && r.msg.text, PAYLOAD, `levels ${levels}`);
+    assert.equal(r.msg.codec, 2);
+  }
+  // With the default levels every sample is 10 away from the next level: the
+  // data cells shifted by 9 either way (the ramp left exact) still read.
+  const rgb = denseFrame({ width: 900, height: 60, cells });
+  const rows = Math.ceil(cells.length / DCELLS);
+  for (let y = 0; y < rows * DCELL; y++) for (let x = 4 * DCELL; x < DCELLS * DCELL; x++) {
+    const o = (y * 900 + x) * 3, d = ((x >> 1) + (y >> 1)) & 1 ? 9 : -9;
+    for (let k = 0; k < 3; k++) rgb[o + k] = Math.max(0, Math.min(255, rgb[o + k] + d));
+  }
+  assert.equal(D.findStrip(D.readPNG(png(900, 60, rgb)), {}).msg.text, PAYLOAD);
+  // A flat or a falling ramp is not a strip: nothing found, nothing decoded by mistake.
+  const flat = cells.slice(); flat[1] = 0; flat[2] = 0; flat[3] = 0;
+  assert.equal(D.findStrip(D.readPNG(png(900, 60, denseFrame({ width: 900, height: 60, cells: flat }))), {}).msg, null);
+  const falling = cells.slice(); falling[1] = 63; falling[2] = 42; falling[3] = 21;
+  assert.equal(D.findStrip(D.readPNG(png(900, 60, denseFrame({ width: 900, height: 60, cells: falling }))), {}).msg, null);
+});
+
+test('codec 2 and codec 1 never read each other\'s strips, and each is found on its own', () => {
+  const v1 = encodeWithLua(5, PAYLOAD), v2 = encodeWithLua(5, PAYLOAD, 2);
+  const dark = D.readPNG(png(900, 60, frame({ width: 900, height: 60, cells: v1, on: 60, off: 0 })));
+  const dense = D.readPNG(png(900, 60, denseFrame({ width: 900, height: 60, cells: v2 })));
+  assert.equal(D.decodeDense(dark, {}), null, 'a 4 px strip has no rising ramp');
+  assert.equal(D.decodeStrip(dense, { threshold: 31 }), null, 'a dense strip has no codec-1 magic');
+  assert.equal(D.findStrip(dark, { threshold: 31 }).msg.codec, 1);
+  assert.equal(D.findStrip(dark, { threshold: 31 }).msg.text, PAYLOAD);
+  assert.equal(D.findStrip(dense, { threshold: 31 }).msg.codec, 2);
+  assert.equal(D.findStrip(dense, { threshold: 31, dense: false }).msg, null, 'dense: false reads codec 1 only');
+});
+
+test('codec 2: a dense strip off the origin is found, and a bad checksum, a short frame and a length bomb are told apart', () => {
+  const cells = encodeWithLua(11, PAYLOAD, 2);
+  const off = D.findStrip(D.readPNG(png(900, 60, denseFrame({ width: 900, height: 60, cells, ox: 3, oy: 5 }))), {});
+  assert.equal(off.msg && off.msg.id, 11);
+  assert.ok(Math.abs(off.offset[0] - 3) <= 1 && Math.abs(off.offset[1] - 5) <= 1, JSON.stringify(off.offset));
+  const bad = cells.slice(); bad[40] ^= 1; // a payload bit
+  assert.deepEqual(D.findStrip(D.readPNG(png(900, 60, denseFrame({ width: 900, height: 60, cells: bad }))), {}).msg, { error: 'checksum' });
+  const long = encodeWithLua(12, LONG, 2);
+  assert.ok(long.length > DCELLS, 'several rows');
+  assert.deepEqual(D.findStrip(D.readPNG(png(800, 2, denseFrame({ width: 800, height: 2, cells: long.slice(0, DCELLS) }))), {}).msg, { error: 'truncated' });
+  // The length bytes are bits 32..47 of the stream: cells 5..7 after the ramp. All ones = 0xFFFF.
+  const bomb = cells.slice(0, 40);
+  for (let i = 4 + 5; i < 4 + 8; i++) bomb[i] = 63;
+  assert.deepEqual(D.findStrip(D.readPNG(png(800, 4, denseFrame({ width: 800, height: 4, cells: bomb }))), {}).msg, { error: 'length' });
+});
+
+test('the dense decoder\'s constants match Codec.lua\'s GEOMETRY[2] and its magic', () => {
+  assert.equal(D.MAGIC_DENSE, 0xC72A);
+  assert.deepEqual(D.DENSE, { cell: 2, cells: 400, maxRows: 48, ramp: 4, minStep: 2 });
+  const L = lauxlib.luaL_newstate();
+  lualib.luaL_openlibs(L);
+  const code = fs.readFileSync(CODEC, 'utf8') + '\nlocal g = ClaudeWoW_Codec.GEOMETRY[2]\nRESULT = g.cell .. "," .. g.cells .. "," .. g.rows .. "," .. g.bits .. "," .. g.ramp .. "," .. ClaudeWoW_Codec.MAGIC2_DENSE .. "," .. table.concat(ClaudeWoW_Codec.DenseLevels(60, 0), "/")\n';
+  if (lauxlib.luaL_dostring(L, to_luastring(code)) !== 0) throw new Error('Lua error: ' + to_jsstring(lua.lua_tostring(L, -1)));
+  lua.lua_getglobal(L, to_luastring('RESULT'));
+  assert.equal(to_jsstring(lua.lua_tostring(L, -1)), '2,400,48,6,4,42,0/20/40/60');
 });

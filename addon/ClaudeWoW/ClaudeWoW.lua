@@ -401,36 +401,52 @@ local function HideStrip()
 	run.stripShown = nil
 end
 
--- Levels a channel is drawn at, 0..1. Full primaries, except on the screenshot
--- transport, where the bridge asked for two levels of its own (see StripLevels):
--- a screenshot is bit-exact, so dark levels read as well as bright ones and the
--- strip all but disappears.
-local function StripPalette()
+-- Which codec the strip is drawn with (see Codec.lua) and the two levels, 0..255,
+-- its channels span. Codec 1 at full primaries, except on the screenshot
+-- transport, where the bridge asked for levels of its own (see StripLevels): a
+-- screenshot is bit-exact, so dark levels read as well as bright ones and the
+-- strip all but disappears. Codec 2 (2 px cells, four levels a channel between
+-- the same two numbers) only when that bridge asked for it.
+local function StripCodec()
 	local lv = db and db.settings.mode == "pixel" and db.settings.transport == "screenshot" and db.settings.stripLevels
 	if type(lv) == "table" and type(lv.on) == "number" and type(lv.off) == "number" then
-		return lv.on / 255, lv.off / 255
+		return lv.codec == 2 and 2 or 1, lv.on, lv.off
 	end
-	return 1, 0
+	return 1, 255, 0
 end
 
 local function ShowStrip(id, payload)
-	local cells = Codec.Encode(id % 65536, payload)
+	local codec, on, off = StripCodec()
+	local geo = Codec.GEOMETRY[codec]
+	local cells = Codec.Encode(id % 65536, payload, codec)
 	local s = EnsureStrip()
-	local on, off = StripPalette()
-	local rows = math.ceil(#cells / CELLS_PER_ROW)
-	local total = rows * CELLS_PER_ROW
+	local rows = math.ceil(#cells / geo.cells)
+	local total = rows * geo.cells
+	local levels = codec == 2 and Codec.DenseLevels(on, off) or nil
 	for i = 1, total do
 		local t = cellPool[i]
 		if not t then
 			t = s:CreateTexture(nil, "OVERLAY")
-			t:SetSize(CELL, CELL)
-			local c = (i - 1) % CELLS_PER_ROW
-			local r = math.floor((i - 1) / CELLS_PER_ROW)
-			t:SetPoint("TOPLEFT", s, "TOPLEFT", c * CELL, -r * CELL)
 			cellPool[i] = t
 		end
-		local cr, cg, cb = Codec.CellColor(cells[i] or 0)
-		t:SetColorTexture(off + cr * (on - off), off + cg * (on - off), off + cb * (on - off), 1)
+		-- A texture is laid out for one codec; a switch (the bridge changed its
+		-- mind, or an older saved setting) places it again.
+		if t.codec ~= codec then
+			t:SetSize(geo.cell, geo.cell)
+			local c = (i - 1) % geo.cells
+			local r = math.floor((i - 1) / geo.cells)
+			t:ClearAllPoints()
+			t:SetPoint("TOPLEFT", s, "TOPLEFT", c * geo.cell, -r * geo.cell)
+			t.codec = codec
+		end
+		local v = cells[i] or 0
+		if codec == 2 then
+			local cr, cg, cb = Codec.DenseCellColor(v)
+			t:SetColorTexture(levels[cr + 1] / 255, levels[cg + 1] / 255, levels[cb + 1] / 255, 1)
+		else
+			local cr, cg, cb = Codec.CellColor(v)
+			t:SetColorTexture((off + cr * (on - off)) / 255, (off + cg * (on - off)) / 255, (off + cb * (on - off)) / 255, 1)
+		end
 		t:Show()
 	end
 	for i = total + 1, #cellPool do
@@ -700,13 +716,14 @@ RefreshStrip = function()
 end
 
 -- The two levels the bridge wants the strip drawn at on the screenshot transport
--- (`strip = { on, off }` in its slot files), sanity-checked and remembered.
+-- and the codec it decodes (`strip = { on, off, codec }` in its slot files; no
+-- codec, as an older bridge writes it, is codec 1), sanity-checked and remembered.
 local function StripLevels(data)
 	local lv = type(data) == "table" and data.strip
 	if type(lv) ~= "table" or type(lv.on) ~= "number" or type(lv.off) ~= "number" then return nil end
 	local on, off = math.floor(lv.on), math.floor(lv.off)
 	if off < 0 or on > 255 or on - off < 8 then return nil end
-	return { on = on, off = off }
+	return { on = on, off = off, codec = lv.codec == 2 and 2 or 1 }
 end
 
 -- The bridge's slot files and Inbox.lua say which transport it listens on, and
@@ -720,7 +737,7 @@ local function ApplyTransport(data)
 	db.settings.transportNote = type(data.transportNote) == "string" and data.transportNote ~= "" and data.transportNote or nil
 	local lv = StripLevels(data)
 	local cur = db.settings.stripLevels
-	local sameLevels = (lv == nil and cur == nil) or (lv ~= nil and cur ~= nil and lv.on == cur.on and lv.off == cur.off)
+	local sameLevels = (lv == nil and cur == nil) or (lv ~= nil and cur ~= nil and lv.on == cur.on and lv.off == cur.off and lv.codec == (cur.codec or 1))
 	if db.settings.transport == t and sameLevels then return end
 	db.settings.transport = t
 	db.settings.stripLevels = lv

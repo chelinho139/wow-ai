@@ -165,7 +165,7 @@ test('a report the bridge cannot use (an unknown reason) changes nothing, and a 
   assert.equal(state.transportFallback, undefined);
   const lua = fs.readFileSync(path.join(addons, 'ClaudeWoW_S001', 'Inbox.lua'), 'utf8');
   assert.match(lua, /^\ttransport = "screenshot",$/m);
-  assert.match(lua, /^\tstrip = \{ on = 60, off = 0 \},$/m);
+  assert.match(lua, /^\tstrip = \{ on = 60, off = 0, codec = 2 \},$/m);
   assert.ok(!/transportNote/.test(lua));
   fs.rmSync(dir, { recursive: true, force: true });
 });

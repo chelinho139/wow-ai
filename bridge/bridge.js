@@ -155,6 +155,9 @@ const vis = Object.assign({}, V.DEFAULTS, cfg.vision || {});
 // Screenshot mode draws the strip dark (capture.screenshotLevels) and reads it
 // with the threshold between the two levels; pixel mode stays bright and >= 128.
 const LEVELS = P.screenshotLevels(cap.screenshotLevels);
+// ... and which strip the addon draws there: codec 2 (2 px cells, four levels,
+// the default) or 1 (the capture scripts' 4 px cells). The decoder reads both.
+const STRIP_CODEC = P.stripCodec(cap.screenshotCodec);
 // The game-side files. A config.json written for one of the addon's old names
 // (WoWClaude, WoWAI) still works: the paths are derived from addonDir instead.
 const INBOX_FILE = cfg.inboxFile && !P.OLD_ADDON_PATH.test(cfg.inboxFile) ? cfg.inboxFile : path.join(cfg.addonDir || '', P.ADDON, 'Inbox.lua');
@@ -357,7 +360,7 @@ function takeMapCommands(job, text) {
 function slotFile(globalName, records, urgent = true) {
   const map = Date.now() < mapShareUntil && (urgent || mapLuaSize() <= MAP_PROGRESS_MAX) ? state.map : null;
   const transportNote = TRANSPORT_SOURCE === 'fallback' ? P.transportNote(state.transportFallback) : '';
-  return P.luaTable(globalName, records, { cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), plugin: DEFAULT_PLUGIN, plugins: registry.ids(), map, transport: TRANSPORT, levels: LEVELS, transportNote });
+  return P.luaTable(globalName, records, { cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), plugin: DEFAULT_PLUGIN, plugins: registry.ids(), map, transport: TRANSPORT, levels: LEVELS, codec: STRIP_CODEC, transportNote });
 }
 
 // The addon cannot take the screenshot the transport needs (no Screenshot() in
@@ -984,6 +987,10 @@ function startCapture() {
 // player's own screenshot and stays. Files from before the bridge started are
 // the sweep's business (sweepScreenshots below): strip-bearing ones go, the rest stay.
 const stripOptions = () => ({ cell: cap.cellPx, cells: cap.cellsPerRow, maxRows: cap.maxRows, threshold: LEVELS.threshold });
+// The strip the addon is asked to draw, for the banner and the log.
+const stripGeometry = () => (STRIP_CODEC === 2
+  ? `${D.DENSE.cells}x${D.DENSE.maxRows} cells of ${D.DENSE.cell}px, levels ${P.denseLevels(cap.screenshotLevels).join('/')}`
+  : `${cap.cellsPerRow}x${cap.maxRows} cells of ${cap.cellPx}px, levels ${LEVELS.off}/${LEVELS.on}, threshold ${LEVELS.threshold}`);
 let shotHint = null;
 function handleScreenshot(file) {
   let buf;
@@ -1000,12 +1007,12 @@ function handleScreenshot(file) {
     log(`screenshot: strip in ${path.basename(file)} rejected: ${msg.error}` + (msg.error === 'checksum' ? ' (is the strip drawn at 1 UI unit per pixel?)' : ''));
   } else {
     const jobs = jobsFromStrip(msg.id, msg.text).map(job => ({ ...job, via: 'screenshot' }));
-    log(`strip #${msg.id} (screenshot ${path.basename(file)}, ${img.width}x${img.height} ${img.format}): ${jobs.length} message(s)`);
+    log(`strip #${msg.id} (screenshot ${path.basename(file)}, ${img.width}x${img.height} ${img.format}, codec ${msg.codec}, ${msg.rows} row(s)): ${jobs.length} message(s)`);
     // Vision: the frame below the strip is the game as the player saw it. Cut
     // it out once for the messages that asked, before the file goes (not for a
     // retried shot of a message already handled or under way: no orphan file).
     const seeing = jobs.filter(job => job.vision && !job.hello && !job.forget && !alreadyHandled(job) && !inFlight(job));
-    if (seeing.length) attachGameView(img, offset[1] + msg.rows * cap.cellPx, seeing, path.basename(file));
+    if (seeing.length) attachGameView(img, offset[1] + msg.height, seeing, path.basename(file));
     for (const job of jobs) submit(job);
   }
   try { fs.unlinkSync(file); } catch (e) { log(`screenshot: could not delete ${path.basename(file)} (${e.message})`); }
@@ -1074,7 +1081,7 @@ function startScreenshotWatch() {
     return;
   }
   shotWatch = S.watchScreenshots(SCREENSHOT_DIR, handleScreenshot, { log });
-  log(`screenshot transport: watching ${SCREENSHOT_DIR} (strip levels ${LEVELS.off}/${LEVELS.on}, threshold ${LEVELS.threshold})`);
+  log(`screenshot transport: watching ${SCREENSHOT_DIR} (strip codec ${STRIP_CODEC}: ${stripGeometry()})`);
   sweepScreenshots('startup');
   const sweeper = setInterval(() => sweepScreenshots('periodic'), SWEEP_MS);
   if (sweeper.unref) sweeper.unref();
@@ -1097,7 +1104,7 @@ function banner() {
   console.log(`  addons   : ${cfg.addonDir}`);
   console.log(`  addon    : ${addonInstalled() ? 'installed' : 'NOT INSTALLED - run: node setup.js, then restart WoW'}`);
   console.log(`  slots    : ${slotsInstalled() ? SLOTS + ' installed' : 'NOT INSTALLED - run: node setup.js (or node bridge/install-slots.js), then restart WoW'}`);
-  console.log(`  capture  : ${!cap.enabled ? 'off' : TRANSPORT === 'screenshot' ? 'screenshot transport' + (TRANSPORT_SOURCE === 'default' ? ' (the default; no screen capture, no permissions, no python)' : ' (capture.mode in config.json)') + ': ' + SCREENSHOT_DIR + ', ' + cap.cellsPerRow + 'x' + cap.maxRows + ' cells of ' + cap.cellPx + 'px, levels ' + LEVELS.off + '/' + LEVELS.on : 'pixel transport, DEPRECATED (' + (TRANSPORT_SOURCE === 'fallback' ? 'FALLBACK: ' + P.transportNote(state.transportFallback) : 'capture.mode in config.json; kept only until Screenshot() is confirmed on Windows and Linux/Wine') + '): screen capture of ' + cap.processName + ', ' + cap.cellsPerRow + 'x' + cap.maxRows + ' cells of ' + cap.cellPx + 'px'}`);
+  console.log(`  capture  : ${!cap.enabled ? 'off' : TRANSPORT === 'screenshot' ? 'screenshot transport' + (TRANSPORT_SOURCE === 'default' ? ' (the default; no screen capture, no permissions, no python)' : ' (capture.mode in config.json)') + ': ' + SCREENSHOT_DIR + ', strip codec ' + STRIP_CODEC + ': ' + stripGeometry() : 'pixel transport, DEPRECATED (' + (TRANSPORT_SOURCE === 'fallback' ? 'FALLBACK: ' + P.transportNote(state.transportFallback) : 'capture.mode in config.json; kept only until Screenshot() is confirmed on Windows and Linux/Wine') + '): screen capture of ' + cap.processName + ', ' + cap.cellsPerRow + 'x' + cap.maxRows + ' cells of ' + cap.cellPx + 'px'}`);
   console.log(`  vision   : ${TRANSPORT === 'screenshot' ? 'per chat (/claude-wow vision on, or /claude-wow look <question>); the game view goes out up to ' + vis.maxWidth + 'px wide' : 'needs capture.mode "screenshot" (the pixel capture never sees more than the strip)'}`);
   console.log(`  parallel : up to ${MAX_PARALLEL} chats at once`);
   console.log(`  fallback : ${SAVED_VARS}`);

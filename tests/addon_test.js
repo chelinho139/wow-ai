@@ -813,6 +813,72 @@ test('screenshot transport: the strip is shot once per message, hidden on the ev
   assert.equal(vm.num('STUB.screenshots'), 4, 'no screenshots in pixel mode');
 });
 
+// The dense strip (codec 2): a screenshot-mode bridge that asks for it in its
+// slot gets 2 px cells at four levels, which the bridge's own decoder reads
+// straight off the textures; a bridge that names no codec (an older one) gets
+// the 4 px strip at the two levels, as before. stripImage paints the shown
+// textures into a frame decode.js can read.
+function stripImage(vm, width, height) {
+  vm.run(`
+    local parts = {}
+    for _, t in ipairs(ClaudeWoWStrip.textures) do
+      if t.shown and t.color then
+        parts[#parts + 1] = string.format("%d:%d:%d:%d:%d:%d", t.x, -t.y, t.width, math.floor(t.color[1] * 255 + 0.5), math.floor(t.color[2] * 255 + 0.5), math.floor(t.color[3] * 255 + 0.5))
+      end
+    end
+    RESULT = table.concat(parts, ",")`);
+  const rgb = Buffer.alloc(width * height * 3, 128);
+  let cells = 0;
+  const sizes = new Set();
+  for (const p of vm.evaluate('RESULT').split(',')) {
+    if (!p) continue;
+    const [x, y, w, r, g, b] = p.split(':').map(Number);
+    cells++; sizes.add(w);
+    for (let dy = 0; dy < w; dy++) for (let dx = 0; dx < w; dx++) { const o = ((y + dy) * width + x + dx) * 3; rgb[o] = r; rgb[o + 1] = g; rgb[o + 2] = b; }
+  }
+  const img = { width, height, px: (x, y) => { const o = (y * width + x) * 3; return [rgb[o], rgb[o + 1], rgb[o + 2]]; } };
+  return { img, cells, sizes: [...sizes].sort() };
+}
+
+test('screenshot transport: the strip is dense (2 px cells, four levels) when the bridge asks for codec 2, 4 px when it does not', () => {
+  const D = require('../bridge/decode');
+  const vm = newVM();
+  vm.run('STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW\\\\ctl\\\\valid.wav"] = true');
+  login(vm);
+  vm.run('STUB.RunTimers()');
+  nextSlot(vm, '{ now = time(), cwd = "", transport = "screenshot", strip = { on = 60, off = 0, codec = 2 }, replies = {} }');
+  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.stripLevels.codec'), '2', 'remembered with the levels');
+  vm.run('ClaudeWoW.Send("dense hello")');
+  assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'true');
+  let shot = stripImage(vm, 800, 192);
+  assert.deepEqual(shot.sizes, [2], 'every cell is 2 px');
+  let r = D.findStrip(shot.img, { threshold: 31 });
+  assert.ok(r.msg && !r.msg.error, JSON.stringify(r.msg));
+  assert.equal(r.msg.codec, 2);
+  assert.deepEqual(r.offset, [0, 0]);
+  const fields = text => text.split('\x1E').map(x => x.split('\x1F'));
+  assert.ok(fields(r.msg.text).some(p => p[p.length - 1] === 'dense hello'), 'the message is on the dense strip');
+  assert.ok(fields(r.msg.text).some(p => p[4] === 'h;c'), 'the unacknowledged hello too');
+  assert.equal(r.msg.height, r.msg.rows * 2);
+  assert.equal(shot.cells, r.msg.rows * 400, 'whole rows are drawn, the tail padded');
+  // Only the four levels appear: 0/20/40/60 of 255, from strip = { on = 60, off = 0 }.
+  vm.run('local seen = {} for _, t in ipairs(ClaudeWoWStrip.textures) do if t.shown and t.color then for k = 1, 3 do seen[math.floor(t.color[k] * 255 + 0.5)] = true end end end local l = {} for v in pairs(seen) do l[#l + 1] = v end table.sort(l) RESULT = table.concat(l, ",")');
+  assert.equal(vm.evaluate('RESULT'), '0,20,40,60');
+  // A bridge that names no codec (an older one) gets the 4 px strip at the same two levels.
+  nextSlot(vm, '{ now = time(), cwd = "", transport = "screenshot", strip = { on = 60, off = 0 }, replies = {} }');
+  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.stripLevels.codec'), '1');
+  assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'true', 'the unacknowledged records go up again the new way');
+  shot = stripImage(vm, 800, 192);
+  assert.deepEqual(shot.sizes, [4], 'every cell is 4 px again, laid out afresh');
+  r = D.findStrip(shot.img, { threshold: 31 });
+  assert.ok(r.msg && !r.msg.error, JSON.stringify(r.msg));
+  assert.equal(r.msg.codec, 1);
+  assert.ok(fields(r.msg.text).some(p => p[p.length - 1] === 'dense hello'));
+  assert.ok(stripRecords(vm, 0.1).some(rec => rec.text === 'dense hello'), 'and the test\'s own codec-1 reader agrees');
+});
+
 test('screenshot transport: a failed shot is retried a few times, a missing event times out, logout restores the CVar', () => {
   const vm = newVM();
   login(vm);

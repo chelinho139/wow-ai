@@ -308,9 +308,16 @@ test('screenshot mode ships its strip levels; pixel mode never does', () => {
     assert.deepEqual(P.screenshotLevels(bad), { off: 0, on: 60, threshold: 31 }, JSON.stringify(bad));
   }
   const shot = P.luaTable('ClaudeWoW_SlotData', [], { transport: 'screenshot', levels: { off: 0, on: 60 } });
-  assert.ok(shot.includes('\tstrip = { on = 60, off = 0 },'), shot);
-  assert.ok(P.luaTable('ClaudeWoW_SlotData', [], { transport: 'screenshot' }).includes('\tstrip = { on = 60, off = 0 },'), 'default levels when none are given');
-  assert.ok(!P.luaTable('ClaudeWoW_SlotData', [], { transport: 'pixel', levels: { off: 0, on: 60 } }).includes('strip ='), 'pixel mode draws full primaries whatever the config says');
+  assert.ok(shot.includes('\tstrip = { on = 60, off = 0, codec = 2 },'), shot);
+  assert.ok(P.luaTable('ClaudeWoW_SlotData', [], { transport: 'screenshot' }).includes('\tstrip = { on = 60, off = 0, codec = 2 },'), 'default levels and the dense codec when none are given');
+  assert.ok(P.luaTable('ClaudeWoW_SlotData', [], { transport: 'screenshot', codec: 1 }).includes('\tstrip = { on = 60, off = 0, codec = 1 },'), 'capture.screenshotCodec 1 asks for the 4 px strip');
+  assert.ok(!P.luaTable('ClaudeWoW_SlotData', [], { transport: 'pixel', levels: { off: 0, on: 60 }, codec: 2 }).includes('strip ='), 'pixel mode draws full primaries, codec 1, whatever the config says');
+  // The codec: 1 or 2, anything else the default; the dense levels as the addon computes them.
+  assert.equal(P.DEFAULT_STRIP_CODEC, 2);
+  for (const [raw, want] of [[1, 1], [2, 2], [undefined, 2], [3, 2], ['2', 2], [null, 2]]) assert.equal(P.stripCodec(raw), want, String(raw));
+  assert.deepEqual(P.denseLevels(undefined), [0, 20, 40, 60]);
+  assert.deepEqual(P.denseLevels({ off: 10, on: 90 }), [10, 37, 63, 90]);
+  assert.deepEqual(P.denseLevels({ off: 0, on: 255 }), [0, 85, 170, 255]);
 });
 
 test('context growth: noteUsage counts turns per session, keeps the last known size, and the slot file carries it', () => {
