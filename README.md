@@ -135,6 +135,7 @@ Right-clicking a chat in the left panel opens a small menu with **Rename...**, *
 | `/claude-wow context <n>` | warn once, with a **New chat** button, when a chat's context passes `n` tokens (`100k` by default, `0` = never). Every message resumes the chat's agent session, so its context only grows and each reply costs more than the last; the window's footer shows it like Claude Code's own status line (`11m 58s · ↓ 106.9k tokens · ≈$2.41 API`: time since the session started, the context, the session at API list prices, a comparison and not a bill), and `/claude-wow diag` lists it per chat |
 | `/claude-wow vision [on\|off]` | send a picture of your screen with each message, so the agent sees what you see: "what is this item?", "why is this boss killing me?", "read this quest" (off by default; needs the screenshot transport) |
 | `/claude-wow look <question>` | one message with a picture of your screen, whatever the setting (`/claude look what is this?` from the chat box too) |
+| `/claude-wow roast [on\|off]` | when you die, the agent gets a recap of what killed you and writes a short roast in the **Death roasts** chat (off by default; at most one every 2 minutes). See [Death roast](#death-roast) |
 | `/claude-wow rename`, `/claude-wow delete`, `/claude-wow clear` | manage the current chat |
 | `/claude-wow echo summary\|full\|short\|off\|<chars>` | how much of each reply to print into the game chat. `summary` (the default) prints only the agent's closing TL;DR lines, the full reply is in the window behind `[open]`; `full` prints up to 4000 chars, `short` one preview line |
 | `/claude-wow longchat on` | let the game chat box take 4000 characters, for long `/claude` messages |
@@ -165,6 +166,15 @@ Click the input box, then **shift-click** an item in your bags, a spell in the s
 ### The agent sees your screen
 
 On the screenshot transport (`capture.mode: "screenshot"`) the game already takes a screenshot of the whole screen for every message you send; the strip is only its top-left corner. `/claude-wow vision on` tells the bridge to keep the rest: it crops the strip's rows off, scales the frame down (1280 pixels wide by default, 1-2 MB as PNG) and attaches it to the agent's message as an image, with a paragraph at the top of the message saying an image of your screen is attached and what it is (only when one is). So "what is this item, should I equip it?", "why does this boss keep killing me?" or "read me this quest text" are answered from what is actually on your screen, tooltips and open windows included. `/claude-wow look <question>` does it for one message with the setting off. Off by default; the window's footer and `/claude-wow diag` show the state. Claude Code gets the pixels inline (an `image` block in a stream-json user message, no tool call); Codex, Grok and Hermes get the PNG's path in `~/.claude-wow/tmp`, where it is deleted after the run. With it off nothing changes, and the pixel transport never sees more than the strip.
+
+### Death roast
+
+`/claude-wow roast on` (off by default) turns your deaths into content. When you die, the addon takes the last 10 seconds of the combat log that hit you (who, with what, how much, crits, overkill, the killing blow), adds your level, zone and the attackers' levels when it can see them, and sends that recap to the agent in a **Death roasts** chat of its own. The reply is a two or three sentence roast, affectionate and aimed at the play, never the person, and it lands in the window and the game chat like any other reply. With vision on, the agent also sees your screen at the moment of death.
+
+- At most one roast every 2 minutes, so a wipe does not spam the agent. A death while the last roast is still being written, or while the bridge is not connected, is skipped.
+- The recap stays under 900 bytes, so it fits the strip with the game context next to it.
+- The chat is bound to the bridge's `roast` plugin and runs in the same scratch folder as `ask` (`plugins.roast.cwd` to change it). Type in that chat to talk back.
+- `/claude-wow roast` shows the state, the cooldown, and why the last death was not roasted.
 
 ### Transports
 

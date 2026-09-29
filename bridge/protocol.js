@@ -195,6 +195,7 @@ function parseFlags(flags) {
     else if (tok.startsWith('allow=')) out.allow.push(...tok.slice(6).split(',').map(s => s.trim()).filter(Boolean));
     else if (tok.startsWith('agent=')) out.agent = tok.slice(6).trim().toLowerCase();
     else if (tok.startsWith('plugin=')) { const p = tok.slice(7).trim().toLowerCase(); if (p) out.plugin = p; }
+    else if (tok.startsWith('kind=')) { const k = tok.slice(5).trim().toLowerCase(); if (/^[a-z][a-z0-9-]*$/.test(k)) out.kind = k; }
     // "shot=missing" / "shot=failed": the addon is on the screenshot transport but
     // cannot take the shot (no Screenshot() in this client, or SCREENSHOT_FAILED on
     // every try). The bridge falls back to the pixel transport on it (transportFallback).
