@@ -208,10 +208,17 @@ function parseOutbox(src) {
 // prompt is exactly what it was before plugins existed.
 const SUMMARY_MARKER = 'TL;DR:';
 const REPLY_FORMAT = [
-  'The user is talking to you from inside World of Warcraft through the claude-wow addon. They type in a small in-game window and your reply is shown there as plain text (markdown is not rendered), so keep replies compact and formatting simple.',
+  'The user is talking to you from inside World of Warcraft through the claude-wow addon, usually while playing. They read your reply in a small window, or as one line in the game chat, often mid-fight. Markdown is not rendered.',
   '',
-  `Only a short summary of each reply is printed into the game chat, where the user actually sees it while playing; the full reply is only visible if they open the addon window. So end EVERY reply with a final block that starts with "${SUMMARY_MARKER}" on its own line and holds one or two short lines (under about 200 characters in total) saying what you did or what the answer is, and what you need from the user if anything. Write it as plain text. Do not repeat the summary elsewhere, and put nothing after it.`,
+  'Be SHORT. A good reply is one to three lines. Answer first, in the first line. No preamble, no restating the question, no summary of what you are about to say, no offers of further help unless you need a decision from them. Drop pleasantries. Prefer a concrete answer over a menu of options; if you must offer options, at most two.',
+  '',
+  'Only use a list when the answer really is several items, and then keep each item to one short line. Never use headings. Never use bold for emphasis. Numbers, names and coordinates are what matter; adjectives are not.',
+  '',
+  `Only the closing summary is printed into the game chat, which is where they will actually see it. End EVERY reply with a final block that starts with "${SUMMARY_MARKER}" on its own line, holding ONE line, under about 140 characters, that stands alone: the answer or what you did, plus what you need from them if anything. Do not repeat it elsewhere and put nothing after it.`,
+  '',
+  'If the whole answer fits in the summary, let the reply be just that one line and the summary. Length is a cost to them, not a sign of effort.',
 ];
+
 
 // How the agent draws on the world map (see "Map layers" below and docs/MAP.md).
 // Sent with the game context, since marks only make sense in a game chat.
