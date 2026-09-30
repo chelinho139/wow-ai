@@ -15,6 +15,8 @@ const PASS_TEXT = 'Denied.';
 const DEV_FLAG = '--dangerously-load-development-channels';
 const CHANNELS_FLAG = '--channels';
 const CHANNEL_ARG = `server:${SERVER_NAME}`;
+const PRINT_LONG_FLAG = '--print';
+const PRINT_FLAGS = ['-p', PRINT_LONG_FLAG];
 const CHANNEL_VALUE_RE = new RegExp(`^(?:server|plugin):${SERVER_NAME}(?:@\\S*)?$`);
 const COMMAND_LINE_TIMEOUT_MS = 5000;
 const WINDOWS_COMMAND_LINE_TIMEOUT_MS = 20000;
@@ -173,8 +175,12 @@ function startCommand(opts = {}) {
   return parts.join(' ');
 }
 
+function commandTokens(commandLine) {
+  return String(commandLine || '').split(/\s+/).filter(Boolean).map(t => t.replace(/^["']|["']$/g, ''));
+}
+
 function channelFlagValues(commandLine) {
-  const tokens = String(commandLine || '').split(/\s+/).filter(Boolean).map(t => t.replace(/^["']|["']$/g, ''));
+  const tokens = commandTokens(commandLine);
   const values = [];
   for (let i = 0; i < tokens.length; i++) {
     const tok = tokens[i];
@@ -188,6 +194,14 @@ function channelFlagValues(commandLine) {
 
 function listensToChannel(commandLine) {
   return channelFlagValues(commandLine).some(v => CHANNEL_VALUE_RE.test(v));
+}
+
+function isPrintMode(commandLine) {
+  return commandTokens(commandLine).some(t => PRINT_FLAGS.includes(t) || t.startsWith(`${PRINT_LONG_FLAG}=`));
+}
+
+function sessionListens(commandLine) {
+  return listensToChannel(commandLine) && !isPrintMode(commandLine);
 }
 
 function execText(file, args, timeout) {
@@ -256,5 +270,5 @@ module.exports = {
   SERVER_NAME, REPLY_TOOL, PASS_TEXT, DEV_FLAG, CHANNELS_FLAG, CHANNEL_ARG, PERMISSION_ID_RE, MAX_LINE, UNIX_PATH_MAX,
   endpoint, tokenFile, writeToken, readToken, proof, sameProof, nonce, encode, lineReader,
   cleanMeta, channelMeta, channelContent, channelNotification, permissionVerdict, ruleForPermission, permissionPrompt,
-  isVerdictJob, startCommand, restartCommand, channelFlagValues, listensToChannel, commandLine, shellQuote, instructions, replyToolSchema, socketOwnerOnly, homeHash,
+  isVerdictJob, startCommand, restartCommand, channelFlagValues, listensToChannel, isPrintMode, sessionListens, commandLine, shellQuote, instructions, replyToolSchema, socketOwnerOnly, homeHash,
 };

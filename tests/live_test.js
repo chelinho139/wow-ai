@@ -7,7 +7,7 @@ const os = require('os');
 const path = require('path');
 const LP = require('../bridge/liveproto');
 const P = require('../bridge/protocol');
-const { createChannel, pickProtocol } = require('../bridge/channel');
+const { createChannel, parentListens, pickProtocol } = require('../bridge/channel');
 const { createLive } = require('../bridge/plugins/live');
 
 const POSIX = process.platform !== 'win32';
@@ -228,6 +228,112 @@ test('the channel registers with the bridge only once Claude Code has listed its
     assert.deepEqual(r.live.status(), [], 'not before tools/list, or wow_reply may be missing when the first message lands');
     r.ch.feed(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }) + '\n');
     await until(() => r.live.status().length === 1);
+  } finally { r.cleanup(); }
+});
+
+const PRINT_JOB = 'claude -p --output-format stream-json --dangerously-load-development-channels server:claude-wow';
+
+test('parentListens: only a parent that loads the claude-wow channel and is not a -p/--print job listens', async () => {
+  const cases = [
+    [LISTENING, true],
+    ['claude --resume 6624f327 --channels=server:claude-wow', true],
+    [DEAF, false],
+    ['claude', false],
+    [PRINT_JOB, false],
+    ['claude --print "hi" --dangerously-load-development-channels server:claude-wow', false],
+    ['claude --print=text --channels server:claude-wow', false],
+    ['node /opt/claude/cli.js -p --model haiku', false],
+  ];
+  for (const [line, want] of cases) {
+    const seen = [];
+    const got = await parentListens(4242, { commandLine: async pid => { seen.push(pid); return line; } });
+    assert.equal(got, want, line);
+    assert.deepEqual(seen, [4242]);
+  }
+  assert.equal(LP.isPrintMode('claude --dangerously-load-development-channels server:claude-wow'), false);
+  assert.equal(LP.isPrintMode('claude --permission-mode plan -p'), true);
+  assert.equal(LP.isPrintMode('claude --printer'), false);
+  assert.equal(await parentListens(4242, { commandLine: async () => null }), true, 'an unreadable parent keeps the old behaviour; the bridge still checks it');
+  assert.equal(await parentListens(4242, { commandLine: async () => { throw new Error('ps failed'); } }), true);
+});
+
+test('not listening: the channel lists no tools, declares no channel, sends no instructions, and never dials the bridge', async () => {
+  const r = await rig({ connect: false });
+  const dials = [];
+  const out = fakeStdout();
+  const ch = createChannel({ stdout: out, home: r.home, retryMs: 20, ppid: 4242, listening: parentListens(4242, { commandLine: async () => PRINT_JOB }), connect: addr => { dials.push(addr); return net.connect(addr); } });
+  try {
+    ch.connectWhenReady();
+    await initialize(ch, out);
+    const init = out.lines.find(l => l.id === 1);
+    assert.deepEqual(init.result.capabilities, {});
+    assert.equal(init.result.instructions, undefined);
+    assert.equal(init.result.serverInfo.name, 'claude-wow');
+    ch.feed(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }) + '\n');
+    assert.deepEqual((await until(() => out.lines.find(l => l.id === 2))).result, { tools: [] });
+    ch.feed(JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'ping' }) + '\n');
+    assert.deepEqual((await until(() => out.lines.find(l => l.id === 3))).result, {});
+    ch.feed(JSON.stringify({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'wow_reply', arguments: { chat_id: 'c', text: 'hi' } } }) + '\n');
+    assert.equal((await until(() => out.lines.find(l => l.id === 4))).result.isError, true);
+    ch.connect();
+    await new Promise(res => setTimeout(res, 150));
+    assert.deepEqual(dials, [], 'no socket is opened');
+    assert.equal(ch.listening, false);
+    assert.equal(r.live._state.sessions.size, 0);
+    assert.deepEqual(r.live.sessions(), []);
+  } finally { ch.stop(); r.cleanup(); }
+});
+
+test('listening: a parent started with the channel gets the full server and connects after tools/list', async () => {
+  const r = await rig({ connect: false });
+  const out = fakeStdout();
+  const ch = createChannel({ stdout: out, home: r.home, name: 'proj', cwd: '/work/proj', retryMs: 20, ppid: 777, listening: parentListens(777, { commandLine: async () => LISTENING }) });
+  try {
+    ch.connectWhenReady();
+    await initialize(ch, out);
+    const init = out.lines.find(l => l.id === 1);
+    assert.deepEqual(init.result.capabilities, { experimental: { 'claude/channel': {}, 'claude/channel/permission': {} }, tools: {} });
+    assert.match(init.result.instructions, /wow_reply/);
+    ch.feed(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }) + '\n');
+    assert.deepEqual((await until(() => out.lines.find(l => l.id === 2))).result.tools.map(t => t.name), ['wow_reply']);
+    await until(() => r.live.status().length === 1);
+    assert.equal(ch.listening, true);
+  } finally { ch.stop(); r.cleanup(); }
+});
+
+test('channel.js started by a process without the channel flag answers MCP with an empty server', { timeout: 60000 }, async () => {
+  const home = tmpHome();
+  const child = require('child_process').spawn(process.execPath, [path.join(__dirname, '..', 'bridge', 'channel.js')], { env: { ...process.env, CLAUDE_WOW_HOME: home }, stdio: ['pipe', 'pipe', 'pipe'] });
+  const out = fakeStdout();
+  let err = '';
+  child.stdout.on('data', d => out.write(d.toString()));
+  child.stderr.on('data', d => { err += d; });
+  try {
+    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } }) + '\n');
+    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
+    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }) + '\n');
+    const init = await until(() => out.lines.find(l => l.id === 1), 30000);
+    assert.deepEqual(init.result.capabilities, {});
+    assert.deepEqual((await until(() => out.lines.find(l => l.id === 2), 15000)).result, { tools: [] });
+    await until(() => /staying idle/.test(err), 15000);
+    assert.equal(child.exitCode, null, 'it stays up');
+  } finally {
+    child.kill('SIGTERM');
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('the /claude -r picker never lists a -p/--print process, even one that connected', async () => {
+  const r = await rig({ connect: false, commandLine: () => PRINT_JOB, options: { waitMs: 0 } });
+  try {
+    r.ch.connect();
+    await until(() => r.ch.verified);
+    await until(() => r.calls.log.some(l => l.includes('runs one prompt with -p/--print')));
+    assert.deepEqual(r.live.sessions(), []);
+    assert.deepEqual(r.live.status(), []);
+    const job = { id: 1, session: 'tok', chat: 'c1', text: 'hi', allow: [] };
+    await r.live.handle(job, r.core);
+    assert.doesNotMatch(r.calls.fail[0].text, /started without the channel/, 'a print job is not counted as a deaf session');
   } finally { r.cleanup(); }
 });
 

@@ -24,7 +24,7 @@ claude --resume <session-id> --dangerously-load-development-channels server:clau
 
 ### Restarting a session that is not listening
 
-Every Claude Code session opened in this repository starts the channel server, because `.mcp.json` registers it. That server connects to the bridge whether or not the session was started with the channel flag, but only a session started with the flag receives the messages. The bridge tells the two apart (see [How listening is detected](#how-listening-is-detected)) and never offers a session without the flag as live.
+Every Claude Code session opened in this repository starts the channel server, because `.mcp.json` registers it. Only a session started with the channel flag receives the messages. The channel server reads its parent's command line at startup (see [How listening is detected](#how-listening-is-detected)); without the flag, or in a `-p`/`--print` run, it stays idle: it lists no tools, declares no channel, sends no instructions and does not connect to the bridge. The bridge checks again on its side and never offers a session without the flag as live.
 
 To make such a session live, quit it in its terminal and start it again with its own session id. The exact command, as the bridge and `/claude -r` print it:
 
@@ -61,6 +61,26 @@ The channel server is `bridge/channel.js` (or `claude-wow channel` with the comp
 
 and start Claude Code there with the same flag. The name must be `claude-wow`.
 
+### Use it from every session
+
+Register the channel server once at user scope, with absolute paths:
+
+```sh
+claude mcp add-json --scope user claude-wow '{"type":"stdio","command":"/usr/local/bin/node","args":["/path/to/claude-wow/bridge/channel.js"],"alwaysLoad":true}'
+```
+
+Then start interactive sessions with the flag from your shell, for example in `~/.zshrc`:
+
+```sh
+claude() {
+  command claude --dangerously-load-development-channels server:claude-wow "$@"
+}
+```
+
+Every Claude Code process now starts the channel server, including `claude -p` jobs, sub-agents and sessions started without the wrapper. In those the server stays idle: no `wow_reply`, no instructions, no bridge connection, so it costs no context. `/claude -r` never lists a `-p`/`--print` process.
+
+The "WARNING: Loading development channels" dialog appears at every start of a session with the flag. This is by design during the channels preview.
+
 ## In game
 
 ```
@@ -81,7 +101,7 @@ Live sessions come first, the same session never shows twice, and the list stops
 
 ### How listening is detected
 
-The channel server sends the bridge its parent pid, which is the Claude Code process that started it, and the session id from `CLAUDE_CODE_SESSION_ID` (the bridge prefers `sessions/<pid>.json` in the Claude Code folder, which follows a `/resume` inside the session). It does not use `CLAUDE_PID`: a Claude Code started from inside another session inherits the outer session's value. The bridge reads that process's command line once, when the server connects (`ps -ww -o args= -p <pid>` on macOS and Linux, `Win32_Process.CommandLine` through PowerShell on Windows). The read does not block the bridge; a message for that session waits until it is done. The session is `listening` only when the command line has `--dangerously-load-development-channels` or `--channels` with `server:claude-wow` (or `plugin:claude-wow@...`) among its values. Another server name, no flag, or a command line that cannot be read counts as not listening. The bridge log says which: `session "wow-ai" connected from /Users/me/wow-ai, pid 3460, not listening (Claude Code pid 3421 was started without --dangerously-load-development-channels server:claude-wow)`.
+The channel server sends the bridge its parent pid, which is the Claude Code process that started it, and the session id from `CLAUDE_CODE_SESSION_ID` (the bridge prefers `sessions/<pid>.json` in the Claude Code folder, which follows a `/resume` inside the session). It does not use `CLAUDE_PID`: a Claude Code started from inside another session inherits the outer session's value. The bridge reads that process's command line once, when the server connects (`ps -ww -o args= -p <pid>` on macOS and Linux, `Win32_Process.CommandLine` through PowerShell on Windows). The read does not block the bridge; a message for that session waits until it is done. The session is `listening` only when the command line has `--dangerously-load-development-channels` or `--channels` with `server:claude-wow` (or `plugin:claude-wow@...`) among its values, and no `-p`/`--print`. Another server name, no flag, a print run, or a command line that cannot be read counts as not listening. The channel server applies the same rule to its parent at startup, before it answers `initialize`; only when it cannot read the command line does it keep the full server and leave the decision to the bridge. The bridge log says which: `session "wow-ai" connected from /Users/me/wow-ai, pid 3460, not listening (Claude Code pid 3421 was started without --dangerously-load-development-channels server:claude-wow)`.
 
 The MCP `initialize` request carries no channel signal. Claude Code 2.1.285 sends the same `initialize` (protocol `2025-11-25`, capabilities `roots` and `elicitation`, the same `clientInfo`) with and without the flag, and the server's environment is the same too, so the command line is the only signal.
 
