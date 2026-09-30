@@ -95,7 +95,7 @@ function createLive(overrides = {}) {
   function sessionsList() {
     const seen = new Set();
     const out = [];
-    for (const s of newestFirst(connected().filter(x => !x.detecting))) {
+    for (const s of newestFirst(connected().filter(x => !x.detecting && !x.print))) {
       const info = sessionOf(s);
       const key = info.id || `${info.name}\n${info.cwd}`;
       if (seen.has(key)) continue;
@@ -282,7 +282,8 @@ function createLive(overrides = {}) {
     let line = null;
     try { line = await commandLineOf(s.ppid); } catch {}
     if (!line) return { listening: false, why: `cannot read the command line of Claude Code pid ${s.ppid}` };
-    if (LP.listensToChannel(line)) return { listening: true, why: '' };
+    if (LP.isPrintMode(line)) return { listening: false, print: true, why: `Claude Code pid ${s.ppid} runs one prompt with -p/--print` };
+    if (LP.sessionListens(line)) return { listening: true, why: '' };
     return { listening: false, why: `Claude Code pid ${s.ppid} was started without ${LP.DEV_FLAG} ${LP.CHANNEL_ARG}` };
   }
 
@@ -316,6 +317,7 @@ function createLive(overrides = {}) {
         s.detecting = false;
         if (sessions.get(s.id) !== s) return;
         s.listening = heard.listening;
+        s.print = !!heard.print;
         log(`session "${s.name}" connected${s.cwd ? ' from ' + s.cwd : ''}${s.pid ? ', pid ' + s.pid : ''}, ${s.listening ? 'listening' : 'not listening (' + heard.why + ')'}`);
         wake();
         changed();
@@ -375,7 +377,7 @@ function createLive(overrides = {}) {
   }
 
   function deaf() {
-    return connected().filter(s => !s.listening && !s.detecting);
+    return connected().filter(s => !s.listening && !s.detecting && !s.print);
   }
 
   function deafMatch(target) {

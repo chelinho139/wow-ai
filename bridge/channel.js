@@ -16,6 +16,13 @@ function version() {
   try { return require('../package.json').version; } catch { return '0.0.0'; }
 }
 
+async function parentListens(ppid, { commandLine = LP.commandLine, platform } = {}) {
+  let line = null;
+  try { line = await commandLine(ppid, { platform }); } catch {}
+  const unreadable = !line;
+  return unreadable || LP.sessionListens(line);
+}
+
 function createChannel(opts) {
   const out = opts.stdout;
   const log = opts.log || (() => {});
@@ -42,9 +49,13 @@ function createChannel(opts) {
   let toolsListed = false;
   let waitingForReady = false;
   let readyTimer = null;
+  let listening = typeof opts.listening === 'boolean' ? opts.listening : (opts.listening ? null : true);
+  const listeningKnown = listening === null
+    ? Promise.resolve(opts.listening).then(v => !!v, () => true).then(v => { listening = v; return v; })
+    : Promise.resolve(listening);
 
   function maybeReady() {
-    if (!waitingForReady || !initialized || !toolsListed) return;
+    if (!waitingForReady || !initialized || !toolsListed || listening !== true) return;
     waitingForReady = false;
     if (readyTimer) { clearTimeout(readyTimer); readyTimer = null; }
     connect();
@@ -54,6 +65,11 @@ function createChannel(opts) {
     waitingForReady = true;
     maybeReady();
   }
+
+  listeningKnown.then(on => {
+    if (!on) log('the parent Claude Code process does not load the claude-wow channel; staying idle');
+    maybeReady();
+  });
 
   function send(msg) { out.write(JSON.stringify(msg) + '\n'); }
 
@@ -104,7 +120,7 @@ function createChannel(opts) {
   }
 
   function connect() {
-    if (stopped || sock) return;
+    if (stopped || sock || listening !== true) return;
     const addr = LP.endpoint(home, platform);
     if (platform !== 'win32' && !opts.skipPermissionCheck && !LP.socketOwnerOnly(addr)) { scheduleRetry(); return; }
     const token = LP.readToken(home);
@@ -148,6 +164,9 @@ function createChannel(opts) {
   async function onRequest(msg) {
     const { id, method, params } = msg;
     if (method === 'initialize') {
+      if (!(await listeningKnown)) {
+        return { protocolVersion: pickProtocol(params && params.protocolVersion), capabilities: {}, serverInfo: { name: LP.SERVER_NAME, version: version() } };
+      }
       return {
         protocolVersion: pickProtocol(params && params.protocolVersion),
         capabilities: { experimental: { 'claude/channel': {}, 'claude/channel/permission': {} }, tools: {} },
@@ -157,13 +176,14 @@ function createChannel(opts) {
     }
     if (method === 'ping') return {};
     if (method === 'tools/list') {
+      if (!(await listeningKnown)) return { tools: [] };
       toolsListed = true;
       setImmediate(maybeReady);
       return { tools: [LP.replyToolSchema()] };
     }
     if (method === 'tools/call') {
       const tool = params && params.name;
-      if (tool !== LP.REPLY_TOOL) return { content: [{ type: 'text', text: `Unknown tool: ${tool}` }], isError: true };
+      if (tool !== LP.REPLY_TOOL || !(await listeningKnown)) return { content: [{ type: 'text', text: `Unknown tool: ${tool}` }], isError: true };
       const r = await reply(params.arguments || {});
       return { content: [{ type: 'text', text: r.text || (r.ok ? 'sent' : 'not sent') }], isError: !r.ok };
     }
@@ -211,7 +231,7 @@ function createChannel(opts) {
     if (sock) sock.destroy();
   }
 
-  return { feed, connect, connectWhenReady, stop, handle, get verified() { return verified; }, get initialized() { return initialized; } };
+  return { feed, connect, connectWhenReady, stop, handle, get verified() { return verified; }, get initialized() { return initialized; }, get listening() { return listening; }, listeningKnown };
 }
 
 function main() {
@@ -223,6 +243,7 @@ function main() {
     home,
     name,
     cwd: process.cwd(),
+    listening: parentListens(process.ppid),
     log: line => process.stderr.write(`[claude-wow channel] ${line}\n`),
   });
   process.stdin.on('data', ch.feed);
@@ -232,6 +253,6 @@ function main() {
   ch.connectWhenReady();
 }
 
-module.exports = { createChannel, pickProtocol, PROTOCOL_VERSIONS, main };
+module.exports = { createChannel, parentListens, pickProtocol, PROTOCOL_VERSIONS, main };
 
 if (require.main === module) main();
