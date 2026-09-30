@@ -8,6 +8,7 @@ const SS = require('../sessions');
 
 const DEFAULTS = { waitMs: 3000, permissionTimeoutMs: 120000, helloTimeoutMs: 5000, pickupMs: 45000, pickupPollMs: 5000 };
 const CLAUDE_INFO_TTL_MS = 5000;
+const DETECT_WAIT_MS = 25000;
 
 function pickupMarkers(chatId, messageId) {
   const plain = `chat_id="${chatId}" message_id="${messageId}"`;
@@ -94,7 +95,7 @@ function createLive(overrides = {}) {
   function sessionsList() {
     const seen = new Set();
     const out = [];
-    for (const s of newestFirst(connected())) {
+    for (const s of newestFirst(connected().filter(x => !x.detecting))) {
       const info = sessionOf(s);
       const key = info.id || `${info.name}\n${info.cwd}`;
       if (seen.has(key)) continue;
@@ -276,13 +277,17 @@ function createLive(overrides = {}) {
     else if (msg.type === 'permission_request') onPermissionRequest(s, msg);
   }
 
-  function detectListening(s) {
+  async function detectListening(s) {
     if (!s.ppid) return { listening: false, why: 'the channel server did not name its Claude Code process' };
     let line = null;
-    try { line = commandLineOf(s.ppid); } catch {}
+    try { line = await commandLineOf(s.ppid); } catch {}
     if (!line) return { listening: false, why: `cannot read the command line of Claude Code pid ${s.ppid}` };
     if (LP.listensToChannel(line)) return { listening: true, why: '' };
     return { listening: false, why: `Claude Code pid ${s.ppid} was started without ${LP.DEV_FLAG} ${LP.CHANNEL_ARG}` };
+  }
+
+  function wake() {
+    for (const w of [...waiters]) w();
   }
 
   function onConnection(sock) {
@@ -305,12 +310,16 @@ function createLive(overrides = {}) {
       s.pid = Number(msg.pid) || 0;
       s.ppid = Number(msg.ppid) || 0;
       s.sessionId = SS.SESSION_ID_RE.test(String(msg.session || '')) ? String(msg.session) : '';
-      const heard = detectListening(s);
-      s.listening = heard.listening;
+      s.detecting = true;
       sock.write(LP.encode({ type: 'welcome', proof: LP.proof(token, 'bridge', msg.nonce) }));
-      log(`session "${s.name}" connected${s.cwd ? ' from ' + s.cwd : ''}${s.pid ? ', pid ' + s.pid : ''}, ${s.listening ? 'listening' : 'not listening (' + heard.why + ')'}`);
-      for (const w of [...waiters]) w();
-      changed();
+      detectListening(s).then(heard => {
+        s.detecting = false;
+        if (sessions.get(s.id) !== s) return;
+        s.listening = heard.listening;
+        log(`session "${s.name}" connected${s.cwd ? ' from ' + s.cwd : ''}${s.pid ? ', pid ' + s.pid : ''}, ${s.listening ? 'listening' : 'not listening (' + heard.why + ')'}`);
+        wake();
+        changed();
+      });
     }, () => sock.destroy()));
     sock.on('error', () => {});
     sock.on('close', () => {
@@ -365,16 +374,27 @@ function createLive(overrides = {}) {
     return sticky || newestFirst(live)[0];
   }
 
+  function deaf() {
+    return connected().filter(s => !s.listening && !s.detecting);
+  }
+
   function deafMatch(target) {
-    return newestFirst(connected().filter(s => !s.listening && matchesTarget(s, target)))[0] || null;
+    return newestFirst(deaf().filter(s => matchesTarget(s, target)))[0] || null;
   }
 
   function waitForSession(ms, target) {
     return new Promise(resolve => {
-      if (listening().some(s => matchesTarget(s, target))) { resolve(); return; }
-      const done = () => { clearTimeout(timer); waiters.delete(done); resolve(); };
-      const timer = setTimeout(done, ms);
-      waiters.add(done);
+      const ready = () => listening().some(s => matchesTarget(s, target));
+      const detecting = () => connected().some(s => s.detecting && matchesTarget(s, target));
+      if (ready()) { resolve(); return; }
+      let expired = false;
+      let timer = null;
+      let cap = null;
+      const done = () => { clearTimeout(timer); clearTimeout(cap); waiters.delete(check); resolve(); };
+      const check = () => { if (ready() || (expired && !detecting())) done(); };
+      timer = setTimeout(() => { expired = true; check(); }, ms);
+      cap = setTimeout(done, ms + DETECT_WAIT_MS);
+      waiters.add(check);
     });
   }
 
@@ -392,8 +412,8 @@ function createLive(overrides = {}) {
 
   function noSessionText(target) {
     if (target) return `The running Claude Code session "${target}" is not connected. /claude -r lists the ones that are, and /claude -r <id> resumes a session headless when its terminal is closed.`;
-    const deaf = connected().filter(s => !s.listening).length;
-    const note = deaf ? `\n${deaf} running session${deaf === 1 ? ' was' : 's were'} started without the channel; /claude -r shows how to restart ${deaf === 1 ? 'it' : 'them'}.` : '';
+    const n = deaf().length;
+    const note = n ? `\n${n} running session${n === 1 ? ' was' : 's were'} started without the channel; /claude -r shows how to restart ${n === 1 ? 'it' : 'them'}.` : '';
     return `No live Claude Code session is connected. Start one with:\n${core.liveStartCommand}\n(see docs/LIVE-SESSION.md)${note}`;
   }
 

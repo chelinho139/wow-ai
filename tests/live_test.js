@@ -444,7 +444,7 @@ function claudeFixture(pid, id, cwd, lines = []) {
   return { dir, transcript };
 }
 
-test('listening detection: the Claude Code command line must load the claude-wow channel', () => {
+test('listening detection: the Claude Code command line must load the claude-wow channel', { timeout: 60000 }, async () => {
   const yes = [
     'claude --dangerously-load-development-channels server:claude-wow',
     'claude --resume 6624f327 --dangerously-load-development-channels server:claude-wow',
@@ -469,18 +469,19 @@ test('listening detection: the Claude Code command line must load the claude-wow
   assert.deepEqual(LP.channelFlagValues('claude --dangerously-load-development-channels server:a server:b -c'), ['server:a', 'server:b']);
 
   const calls = [];
-  const run = (file, args) => { calls.push([file, ...args]); return 'claude --dangerously-load-development-channels server:claude-wow\n'; };
-  assert.equal(LP.commandLine(3421, { platform: 'darwin', run }), 'claude --dangerously-load-development-channels server:claude-wow');
-  assert.deepEqual(calls[0], ['ps', '-ww', '-o', 'args=', '-p', '3421']);
-  LP.commandLine(3421, { platform: 'win32', run });
+  const run = (file, args, timeout) => { calls.push([file, timeout, ...args]); return 'claude --dangerously-load-development-channels server:claude-wow\n'; };
+  assert.equal(await LP.commandLine(3421, { platform: 'darwin', run }), 'claude --dangerously-load-development-channels server:claude-wow');
+  assert.deepEqual(calls[0], ['ps', 5000, '-ww', '-o', 'args=', '-p', '3421']);
+  await LP.commandLine(3421, { platform: 'win32', run });
   assert.equal(calls[1][0], 'powershell.exe');
+  assert.equal(calls[1][1], 20000, 'PowerShell gets time for a cold start');
   assert.match(calls[1].at(-1), /Win32_Process -Filter 'ProcessId=3421'\)\.CommandLine/);
-  assert.equal(LP.commandLine(0, { run }), null);
-  assert.equal(LP.commandLine('1; rm -rf /', { run }), null, 'only a numeric pid reaches the command');
-  assert.equal(LP.commandLine(5, { run: () => { throw new Error('no such process'); } }), null);
-  assert.equal(LP.commandLine(5, { run: () => '' }), null);
+  assert.equal(await LP.commandLine(0, { run }), null);
+  assert.equal(await LP.commandLine('1; rm -rf /', { run }), null, 'only a numeric pid reaches the command');
+  assert.equal(await LP.commandLine(5, { run: () => { throw new Error('no such process'); } }), null);
+  assert.equal(await LP.commandLine(5, { run: async () => '' }), null);
   assert.equal(LP.restartCommand({ cwd: '/Users/me/wow ai', id: SESSION_A }, ''), `cd '/Users/me/wow ai' && claude --resume ${SESSION_A} --dangerously-load-development-channels server:claude-wow`);
-  assert.equal(typeof LP.commandLine(process.pid), 'string', 'reads a real process on this machine');
+  assert.match(String(await LP.commandLine(process.pid)), /node|bun/i, 'reads a real process on this machine');
 });
 
 test('a session started without the channel is connected but never offered as live: a targeted message gets the exact restart command, an untargeted one is told why', async () => {
@@ -511,6 +512,21 @@ test('a session started without the channel is connected but never offered as li
     assert.match(r.calls.fail.find(f => f.job === plain).text, /^No live Claude Code session is connected\. Start one with:\n[\s\S]*\n1 running session was started without the channel; \/claude -r shows how to restart it\.$/);
     assert.equal(r.out.lines.filter(l => l.method === 'notifications/claude/channel').length, 0, 'nothing is sent into a session that cannot hear it');
   } finally { r.cleanup(); fs.rmSync(fx.dir, { recursive: true, force: true }); }
+});
+
+test('a message waits for a slow command-line read (PowerShell on Windows) instead of calling the session deaf', async () => {
+  const slow = () => new Promise(res => setTimeout(() => res(LISTENING), 150));
+  const r = await rig({ connect: false, commandLine: slow, options: { waitMs: 0 } });
+  try {
+    await initialize(r.ch, r.out);
+    r.ch.connect();
+    await until(() => r.ch.verified);
+    assert.deepEqual(r.live.sessions(), [], 'not listed while it is being checked');
+    const job = { id: 1, session: 'tok', chat: 'c1', text: 'hi', allow: [] };
+    await r.live.handle(job, r.core);
+    assert.equal(r.calls.fail.length, 0, JSON.stringify(r.calls.fail));
+    await until(() => r.out.lines.find(l => l.method === 'notifications/claude/channel'));
+  } finally { r.cleanup(); }
 });
 
 test('another channel server, or a command line that cannot be read, is not listening either', async () => {
