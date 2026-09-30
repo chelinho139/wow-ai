@@ -9,7 +9,9 @@ addon/ClaudeWoW/     the in-game addon (Lua 5.1, WoW API)
   ClaudeWoW.lua        everything: strip, slots, chats, UI, slash commands
   Codec.lua             pixel-strip encoder, pure Lua, no WoW calls
   Inbox.lua             placeholder the bridge overwrites at runtime
-  Widgets.lua           live UI widgets from the agent, sandboxed, /claude config ui
+  Widgets.lua           live UI widgets from the agent, sandboxed, /claude config ui list|remove|run
+  Window.lua            the workspace window's behaviour: dodging Blizzard panels, dimming, per-character layout
+  Bindings.xml          the "open or close the workspace" key binding
   ClaudeWoW.toc
 bridge/               the companion process (Node.js, no runtime dependencies)
   bridge.js             I/O, processes, publishing
@@ -69,6 +71,7 @@ To try changes in the game, run `node setup.js` (it re-copies the addon into `In
 | `node --test tests/assets_test.js` | `bridge/assets.js`: every embedded file exists and the addon folder is covered in full, `build/entry.js` embeds exactly that list, an embedded set is written out once and rewritten only where it differs, and `build.js` names one binary per target. |
 | `node --test tests/widget_test.js` | The widget protocol in `protocol.js`: validation and the display-only deny-list, versioned application and budgets, ```` ```wowui ```` blocks and widget files, the hint only for a plugin with the `ui` surface, the `widgets` table in slot files read back in a Lua VM, and that the addon blocks the same names. |
 | `node --test tests/widget_addon_test.js` | The real `Widgets.lua` (with `ClaudeWoW.lua`) in a Lua VM: a widget running live from slot data, errors surfaced to the chat window, blocked calls in the sandbox, `/claude config ui` list, remove and run, restart at login, and the reload path. |
+| `node --test tests/window_addon_test.js` | The real `Window.lua` (with `ClaudeWoW.lua`) in a Lua VM with Blizzard panels stubbed at fixed places (`STUB.Panel`): the window steps aside for the character sheet and the bags and goes home when they close (through the `ShowUIPanel` hook and through the poll), stays home when there is no room, hides under the game menu and the maximized map and comes back, dims while moving and in combat and fades back, is opaque under the mouse and while typing, keeps working in combat without touching a protected frame (`STUB.blocked`) or calling a panel function, remembers its place per character, snaps to the edges, respects a panel's scale and a smaller UI, and replaces no Blizzard function or frame script. |
 | `node --test tests/live_test.js` | The live-session link: the socket endpoint, the newline-delimited JSON framing, the token handshake both ways, owner-only socket permissions, the channel server's MCP surface (`initialize`, `tools/list`, `tools/call`), the channel notification's shape, reply routing through `wow_reply`, the no-session message, and the permission relay as a Need/Greed roll, against `bridge/plugins/live.js` with a fake core. |
 | `node --test tests/sessions_test.js` | `bridge/sessions.js`: Claude Code's folder, recent sessions from a fake `history.jsonl` named by their titles, an id or prefix found in `projects/` with its folder, a running session from its pid file, the bridge's own sessions, the merged list, and resolving a reference (exact id, name, id prefix, name prefix, ambiguity). |
 | `npm run test:live-session` | Not part of `npm test`. A sandbox bridge (its own `CLAUDE_WOW_HOME`) and a real interactive `claude --dangerously-load-development-channels server:claude-wow` in a detached tmux session (Haiku, `--permission-mode manual`): the no-session message, a reply, a Greed and a Pass, read back from the slot files. Needs tmux and a logged-in Claude Code. |

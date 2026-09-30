@@ -34,7 +34,16 @@ local function Try(fn, ...)
 end
 
 local function Print(msg)
-	print("|cff66ccff[Claude WoW map]|r " .. msg)
+	if ClaudeWoW and ClaudeWoW.Print then
+		ClaudeWoW.Print(msg, "Claude WoW map")
+	else
+		print("|cff66ccff[Claude WoW map]|r " .. msg)
+	end
+end
+
+local function MapLink(l)
+	if not (ClaudeWoW and ClaudeWoW.Link) then return "Open the map (M) to see it." end
+	return ClaudeWoW.Link("map", l.name, l.ordered and "show route" or "show on map", "ffd100")
 end
 
 local function DB()
@@ -445,6 +454,28 @@ function M.Step(delta, arrived)
 	if not arrived then M.UpdateNavigator() end
 end
 
+function M.ShowLayer(name)
+	local l = FindLayer(name)
+	if not l then Print("no layer " .. tostring(name)); return end
+	DB().hidden[name] = nil
+	if l.ordered and #l.points > 0 and (not mdb.nav or mdb.nav.layer ~= name) then mdb.nav = { layer = name, index = 1 } end
+	M.UpdateNavigator()
+	if InCombatLockdown() then
+		Print((l.title or name) .. " is on the map; it opens after combat, or press M.")
+		M.Refresh()
+		return
+	end
+	local first = l.points[1]
+	local mapID = first and tonumber(first[1])
+	if type(OpenWorldMap) == "function" then
+		Try(OpenWorldMap, mapID)
+	elseif type(ToggleWorldMap) == "function" and not (WorldMapFrame and WorldMapFrame:IsShown()) then
+		Try(ToggleWorldMap)
+	end
+	if mapID and WorldMapFrame and WorldMapFrame.SetMapID and WorldMapFrame:IsShown() then Try(WorldMapFrame.SetMapID, WorldMapFrame, mapID) end
+	M.Refresh()
+end
+
 function M.Stop()
 	DB().nav = nil
 	M.UpdateNavigator()
@@ -479,7 +510,7 @@ function M.Sync(m)
 	if mdb.nav and not FindLayer(mdb.nav.layer) then mdb.nav = nil end
 	for _, l in ipairs(changed) do
 		mdb.hidden[l.name] = nil
-		Print(string.format("%s: %d point(s)%s. Open the map (M) to see it.", l.title or l.name, #l.points, l.ordered and ", route" or ""))
+		Print(string.format("%s: %d point(s)%s. %s", l.title or l.name, #l.points, l.ordered and ", route" or "", MapLink(l)))
 		-- A new or changed route on the player's continent starts navigation at its first
 		-- stop, unless the player is already following another route.
 		local here = PlayerOnContinent()

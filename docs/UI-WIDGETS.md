@@ -54,7 +54,7 @@ The first run is in a `pcall`, and so are the widget's script handlers (`SetScri
 
 | Command | Does |
 |---|---|
-| `/claude config ui` or `/claude config ui list` | list the widgets: running, removed, or failed with the error |
+| `/claude config ui` or `/claude config ui list` | list the widgets: running, removed, or failed with the error (bare, it also shows the tab and window settings) |
 | `/claude config ui remove <name>` | stop a widget and keep it off after login. It comes back only when the agent sends a new version |
 | `/claude config ui run <name>` | start a widget again (after an error or a remove) |
 
