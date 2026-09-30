@@ -3909,7 +3909,7 @@ end
 local PANEL_W = 150
 Q.PORTRAIT = "Interface\\AddOns\\ClaudeWoW\\Portrait"
 Q.NATIVE_TEMPLATES = { "ButtonFrameTemplate", "InsetFrameTemplate" }
-Q.LIST_W = 280
+Q.LIST_W = 300
 Q.NAV_TOP = -24
 Q.NAV_H = 34
 Q.LIST_ROW_H = 20
@@ -3924,7 +3924,34 @@ Q.QUEST_ART = {
 	working = "Quest-In-Progress-Icon-yellow",
 	reply = "UI-QuestIcon-TurnIn-Normal",
 	parchment = "QuestBG-Parchment",
+	poi = "UI-QuestPoi-QuestNumber",
+	poiSelected = "UI-QuestPoi-QuestNumber-SuperTracked",
+	poiPushed = "UI-QuestPoi-QuestNumber-Pressed",
+	poiOuter = "UI-QuestPoi-OuterGlow",
+	poiInner = "UI-QuestPoi-InnerGlow",
+	workingSelected = "Quest-In-Progress-Icon-Brown",
+	frame = "questlog-frame",
+	filigree = "questlog-frame-filigree",
+	gradient = "questlog-frame-gradient-bottom",
+	gear = "questlog-icon-setting",
 }
+Q.ROW_TITLE_X = 31
+Q.ROW_TOP = 8
+Q.ROW_BOTTOM = 6
+Q.ROW_BOTTOM_BARE = 4
+Q.OBJECTIVE_GAP = 3
+Q.OBJECTIVE_LINE_GAP = 2
+Q.HEADER_INSET = 9
+Q.HEADER_RIGHT = 6
+Q.PAD_FIRST = 8
+Q.PAD_HEADER_AFTER_HEADER = 6
+Q.PAD_HEADER_AFTER_ROW = 4
+Q.PAD_ROW_AFTER_HEADER = 2
+Q.PAD_ROW_AFTER_ROW = -3
+Q.TITLE_IDLE = { 0.75, 0.61, 0 }
+Q.TITLE_WORKING = { 1, 1, 0 }
+Q.TITLE_REPLY = { 0.25, 0.75, 0.25 }
+Q.COUNT_W = 92
 Q.PARCHMENT_STYLE = {
 	user      = { color = { 0.10, 0.22, 0.45 }, bg = { 0.10, 0.20, 0.40, 0.07 } },
 	assistant = { color = { 0.45, 0.13, 0.02 }, bg = { 0, 0, 0, 0 } },
@@ -4004,36 +4031,182 @@ function Q.ChatRowClicks(row)
 	end)
 end
 
+function Q.Color(name, r, g, b)
+	local c = _G[name]
+	if type(c) == "table" and type(c.GetRGB) == "function" then return c:GetRGB() end
+	return r, g, b
+end
+
+function Q.PreviewsOn()
+	return db.settings.chatPreviews ~= false
+end
+
+function Q.ChatObjectives(c)
+	if c.pendingId then return { "Working: " .. ActivityLine(c) } end
+	local last, count = nil, 0
+	for _, m in ipairs(c.history) do
+		if m.role == "user" or m.role == "assistant" then
+			last = m
+			count = count + 1
+		end
+	end
+	if not last then return { "No messages yet" } end
+	local who = last.role == "user" and "You" or ReplyAgentName(c, last.agent)
+	local first = tostring(last.text or ""):match("^%s*([^\n]*)") or ""
+	return {
+		who .. ": " .. first,
+		count .. (count == 1 and " message" or " messages") .. (last.t and (", last at " .. date("%H:%M", last.t)) or ""),
+	}
+end
+
+function Q.PoiState(poi, glyphKey, number, selected)
+	if not Q.SetArt(poi.bg, selected and "poiSelected" or "poi", true) then Q.SetArt(poi.bg, "poi", true) end
+	poi.outer:SetShown(selected)
+	if glyphKey then
+		poi.glyph:SetShown(Q.SetArt(poi.glyph, glyphKey, true))
+		poi.number:Hide()
+	else
+		poi.glyph:Hide()
+		poi.number:SetText(number)
+		poi.number:Show()
+	end
+end
+
+function Q.Poi(parent)
+	local poi = CreateFrame("Button", nil, parent)
+	poi:SetSize(20, 20)
+	poi.outer = poi:CreateTexture(nil, "BACKGROUND")
+	poi.outer:SetPoint("CENTER")
+	if Q.SetArt(poi.outer, "poiOuter", true) then poi.outer:SetBlendMode("ADD") end
+	poi.outer:Hide()
+	poi.bg = poi:CreateTexture(nil, "BORDER")
+	poi.bg:SetPoint("CENTER")
+	poi.glyph = poi:CreateTexture(nil, "ARTWORK", nil, 1)
+	poi.glyph:SetPoint("CENTER")
+	poi.number = poi:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	poi.number:SetPoint("CENTER", poi, "CENTER", 0, 0)
+	local inner = poi:CreateTexture(nil, "HIGHLIGHT")
+	inner:SetPoint("CENTER")
+	if Q.SetArt(inner, "poiInner", true) then inner:SetBlendMode("ADD") end
+	poi:SetScript("OnMouseDown", function(self)
+		self.glyph:SetPoint("CENTER", 1, -1)
+		self.number:SetPoint("CENTER", self, "CENTER", 1, -1)
+		Q.SetArt(self.bg, "poiPushed", true)
+	end)
+	poi:SetScript("OnMouseUp", function(self)
+		self.glyph:SetPoint("CENTER")
+		self.number:SetPoint("CENTER", self, "CENTER", 0, 0)
+		local row = self:GetParent()
+		Q.SetArt(self.bg, row.active and "poiSelected" or "poi", true)
+	end)
+	poi:SetScript("OnClick", function(self) ClaudeWoW.SwitchChat(self:GetParent().chatId) end)
+	return poi
+end
+
+function Q.Objective(r, k)
+	local line = r.objectives[k]
+	if line then return line end
+	local font = Q.FontObject("ObjectiveFont", "GameFontHighlightSmall")
+	line = {
+		dash = r:CreateFontString(nil, "OVERLAY", font),
+		text = r:CreateFontString(nil, "OVERLAY", font),
+	}
+	line.dash:SetText(_G.QUEST_DASH or "- ")
+	line.text:SetPoint("TOPLEFT", line.dash, "TOPRIGHT", 0, 0)
+	line.text:SetJustifyH("LEFT")
+	line.text:SetWordWrap(false)
+	r.objectives[k] = line
+	return line
+end
+
+function Q.RowColors(r, hover)
+	local c = hover and { 1, 1, 1 } or r.titleColor
+	r.title:SetTextColor(c[1], c[2], c[3])
+	local or_, og, ob
+	if hover then
+		or_, og, ob = Q.Color("QUEST_OBJECTIVE_HIGHLIGHT_FONT_COLOR", 1, 1, 1)
+	else
+		or_, og, ob = Q.Color("QUEST_OBJECTIVE_FONT_COLOR", 0.8, 0.8, 0.8)
+	end
+	for _, line in ipairs(r.objectives) do
+		line.dash:SetTextColor(or_, og, ob)
+		line.text:SetTextColor(or_, og, ob)
+	end
+end
+
 function Q.QuestRow(i)
 	local q = ui.questList
 	local r = q.rows[i]
 	if r then return r end
 	r = CreateFrame("Button", nil, q.content)
-	r:SetHeight(Q.LIST_ROW_H)
+	r.objectives = {}
 	r.glow = r:CreateTexture(nil, "BACKGROUND")
 	r.glow:SetAllPoints()
-	if not Q.SetArt(r.glow, "rowGlow") then r.glow:SetColorTexture(1, 0.82, 0, 0.15) end
+	if not Q.SetArt(r.glow, "rowGlow") then r.glow:SetColorTexture(1, 0.82, 0, 0.12) end
 	r.glow:Hide()
-	local hl = r:CreateTexture(nil, "HIGHLIGHT")
-	hl:SetAllPoints()
-	if Q.SetArt(hl, "rowGlow") then hl:SetAlpha(0.5) else hl:SetColorTexture(1, 1, 1, 0.08) end
-	r.icon = r:CreateTexture(nil, "ARTWORK")
-	r.icon:SetSize(14, 14)
-	r.icon:SetPoint("LEFT", r, "LEFT", 6, 0)
+	r.poi = Q.Poi(r)
+	r.poi:SetPoint("TOPLEFT", r, "TOPLEFT", 6, -4)
 	r.del = Q.DeleteButton(r)
-	r.del:SetPoint("RIGHT", r, "RIGHT", -2, 0)
-	r.label = r:CreateFontString(nil, "OVERLAY", Q.FontObject("GameFontNormalLeft", "GameFontNormalSmall"))
-	r.label:SetPoint("LEFT", r.icon, "RIGHT", 5, 0)
-	r.label:SetPoint("RIGHT", r, "RIGHT", -22, 0)
-	r.label:SetJustifyH("LEFT")
-	r.label:SetWordWrap(false)
+	r.del:SetPoint("TOPRIGHT", r, "TOPRIGHT", -2, -Q.ROW_TOP + 2)
+	r.title = r:CreateFontString(nil, "OVERLAY", Q.FontObject("GameFontNormalLeft", "GameFontNormalSmall"))
+	r.title:SetPoint("TOPLEFT", r, "TOPLEFT", Q.ROW_TITLE_X, -Q.ROW_TOP)
+	r.title:SetPoint("RIGHT", r, "RIGHT", -22, 0)
+	r.title:SetJustifyH("LEFT")
+	r.title:SetWordWrap(false)
+	r.label = r.title
 	Q.ChatRowClicks(r)
-	r:SetScript("OnEnter", function(self) self.del:Show() end)
+	r:SetScript("OnEnter", function(self)
+		self.del:Show()
+		Q.RowColors(self, true)
+	end)
 	r:SetScript("OnLeave", function(self)
 		if not Try(self.del.IsMouseOver, self.del) then self.del:Hide() end
+		Q.RowColors(self, false)
 	end)
 	q.rows[i] = r
 	return r
+end
+
+function Q.FillRow(r, c, index, width)
+	local active = c.id == db.activeChat
+	local unread = c.unread or 0
+	r.chatId = c.id
+	r.poi.chatId = c.id
+	r.active = active
+	r:SetWidth(width)
+	r.glow:SetShown(active)
+	local title = Display(c.name)
+	if c.agent and c.agent ~= "" then title = title .. " |cff9d9d9d" .. AgentName(c.agent) .. "|r" end
+	if unread > 0 then title = title .. " (" .. unread .. ")" end
+	r.title:SetText(title)
+	r.titleColor = active and { 1, 1, 1 } or (unread > 0 and Q.TITLE_REPLY) or (c.pendingId and Q.TITLE_WORKING) or Q.TITLE_IDLE
+	local glyph = (c.pendingId and (active and "workingSelected" or "working")) or (unread > 0 and "reply") or nil
+	Q.PoiState(r.poi, glyph, tostring(index), active)
+	local lines = Q.PreviewsOn() and Q.ChatObjectives(c) or {}
+	local textW = width - Q.ROW_TITLE_X - 22
+	local titleH = Try(r.title.GetStringHeight, r.title) or 14
+	if titleH < 1 then titleH = 14 end
+	local y = Q.ROW_TOP + titleH + Q.OBJECTIVE_GAP
+	for k, text in ipairs(lines) do
+		local line = Q.Objective(r, k)
+		line.dash:ClearAllPoints()
+		line.dash:SetPoint("TOPLEFT", r, "TOPLEFT", Q.ROW_TITLE_X, -y)
+		line.text:SetWidth(textW - 8)
+		line.text:SetText(Display(text))
+		line.dash:Show()
+		line.text:Show()
+		local h = Try(line.text.GetStringHeight, line.text) or 12
+		if h < 1 then h = 12 end
+		y = y + h + Q.OBJECTIVE_LINE_GAP
+	end
+	for k = #lines + 1, #r.objectives do
+		r.objectives[k].dash:Hide()
+		r.objectives[k].text:Hide()
+	end
+	local height = #lines > 0 and (y - Q.OBJECTIVE_LINE_GAP + Q.ROW_BOTTOM) or (Q.ROW_TOP + titleH + Q.ROW_BOTTOM_BARE)
+	r:SetHeight(height)
+	Q.RowColors(r, false)
+	return height
 end
 
 function Q.QuestHeader(i)
@@ -4053,28 +4226,44 @@ function Q.QuestHeader(i)
 	else
 		hl:SetColorTexture(1, 1, 1, 0.08)
 	end
-	h.icon = h:CreateTexture(nil, "ARTWORK")
-	h.icon:SetSize(14, 14)
-	h.icon:SetPoint("RIGHT", h, "RIGHT", -8, 0)
+	h.collapse = CreateFrame("Button", nil, h)
+	h.collapse:SetSize(20, 20)
+	h.collapse:SetPoint("RIGHT", h, "RIGHT", -6, 0)
+	h.icon = h.collapse:CreateTexture(nil, "ARTWORK")
+	h.icon:SetPoint("CENTER")
+	h.iconHighlight = h.collapse:CreateTexture(nil, "HIGHLIGHT")
+	h.iconHighlight:SetPoint("CENTER")
 	h.text = h:CreateFontString(nil, "OVERLAY", Q.FontObject("Game15Font_Shadow", "GameFontNormal"))
-	h.text:SetPoint("LEFT", h, "LEFT", 8, 0)
-	h.text:SetPoint("RIGHT", h.icon, "LEFT", -4, 0)
+	h.text:SetPoint("LEFT", h, "LEFT", 8, 1)
+	h.text:SetPoint("RIGHT", h.collapse, "LEFT", -4, 0)
 	h.text:SetJustifyH("LEFT")
 	h.text:SetWordWrap(false)
-	h.text:SetTextColor(1, 0.82, 0)
-	h:SetScript("OnClick", function(self)
+	local function Toggle(self)
+		local header = self.key and self or self:GetParent()
 		local collapsed = db.settings.collapsedFolders or {}
 		db.settings.collapsedFolders = collapsed
-		collapsed[self.key] = (not collapsed[self.key]) or nil
+		collapsed[header.key] = (not collapsed[header.key]) or nil
 		ClaudeWoW.RenderChatList()
-	end)
+	end
+	h:SetScript("OnClick", Toggle)
+	h.collapse:SetScript("OnClick", Toggle)
+	h:SetScript("OnEnter", function(self) self.text:SetTextColor(Q.Color("HIGHLIGHT_FONT_COLOR", 1, 1, 1)) end)
+	h:SetScript("OnLeave", function(self) self.text:SetTextColor(Q.Color("DISABLED_FONT_COLOR", 0.5, 0.5, 0.5)) end)
+	h:SetScript("OnMouseDown", function(self) self.text:SetPoint("LEFT", self, "LEFT", 9, 0) end)
+	h:SetScript("OnMouseUp", function(self) self.text:SetPoint("LEFT", self, "LEFT", 8, 1) end)
+	h.text:SetTextColor(Q.Color("DISABLED_FONT_COLOR", 0.5, 0.5, 0.5))
 	q.headers[i] = h
 	return h
 end
 
 function Q.SetHeaderIcon(h, collapsed)
 	local key = collapsed and "plus" or "minus"
-	if not Q.SetArt(h.icon, key, true) then
+	if Q.SetArt(h.icon, key, true) then
+		Q.SetArt(h.iconHighlight, key, true)
+		h.iconHighlight:SetBlendMode("ADD")
+		h.iconHighlight:SetAlpha(0.4)
+	else
+		h.icon:SetSize(14, 14)
 		h.icon:SetTexture(collapsed and "Interface\\Buttons\\UI-PlusButton-Up" or "Interface\\Buttons\\UI-MinusButton-Up")
 	end
 end
@@ -4095,7 +4284,8 @@ function ClaudeWoW.RenderQuestList()
 	local width = Try(q.scroll.GetWidth, q.scroll) or (Q.LIST_W - 32)
 	if width < 80 then width = Q.LIST_W - 32 end
 	q.content:SetWidth(width)
-	local y, nh, nr, matched = 0, 0, 0, 0
+	local y, nh, nr, matched, index = 0, 0, 0, 0, 0
+	local last
 	for _, key in ipairs(order) do
 		local matches = {}
 		for _, c in ipairs(groups[key]) do
@@ -4103,54 +4293,70 @@ function ClaudeWoW.RenderQuestList()
 		end
 		if #matches > 0 then
 			matched = matched + #matches
+			y = y + ((last == nil and Q.PAD_FIRST) or (last == "header" and Q.PAD_HEADER_AFTER_HEADER) or Q.PAD_HEADER_AFTER_ROW)
 			nh = nh + 1
 			local h = Q.QuestHeader(nh)
 			local closed = filter == "" and collapsed[key] == true
 			h.key = key
 			h.collapsed = closed
-			h.text:SetText(Display(key) .. " (" .. #matches .. ")")
+			h.text:SetText(Display(key))
 			Q.SetHeaderIcon(h, closed)
-			h:SetWidth(width)
+			h:SetWidth(width - Q.HEADER_INSET - Q.HEADER_RIGHT)
 			h:ClearAllPoints()
-			h:SetPoint("TOPLEFT", q.content, "TOPLEFT", 0, -y)
+			h:SetPoint("TOPLEFT", q.content, "TOPLEFT", Q.HEADER_INSET, -y)
 			h:Show()
-			y = y + Q.LIST_HEADER_H + 2
+			y = y + Q.LIST_HEADER_H
+			last = "header"
 			if not closed then
 				for _, c in ipairs(matches) do
+					index = index + 1
+					y = y + (last == "header" and Q.PAD_ROW_AFTER_HEADER or Q.PAD_ROW_AFTER_ROW)
 					nr = nr + 1
 					local r = Q.QuestRow(nr)
-					local active = c.id == db.activeChat
-					local unread = c.unread or 0
-					r.chatId = c.id
-					r.glow:SetShown(active)
-					local state = (c.pendingId and "working") or (unread > 0 and "reply") or nil
-					r.icon:SetShown(state ~= nil and Q.SetArt(r.icon, state))
-					local label = Display(c.name)
-					if c.agent and c.agent ~= "" then label = label .. " |cff9d9d9d" .. AgentName(c.agent) .. "|r" end
-					if unread > 0 then label = label .. " (" .. unread .. ")" end
-					r.label:SetText(label)
-					if active then
-						r.label:SetTextColor(1, 1, 1)
-					elseif unread > 0 then
-						r.label:SetTextColor(0.25, 0.75, 0.25)
-					else
-						r.label:SetTextColor(1, 0.82, 0)
-					end
-					r:SetWidth(width)
+					local height = Q.FillRow(r, c, index, width)
 					r:ClearAllPoints()
 					r:SetPoint("TOPLEFT", q.content, "TOPLEFT", 0, -y)
 					r:Show()
-					y = y + Q.LIST_ROW_H + 1
+					y = y + height
+					last = "row"
 				end
+			else
+				index = index + #matches
 			end
-			y = y + 4
 		end
 	end
 	for i = nh + 1, #q.headers do q.headers[i]:Hide() end
 	for i = nr + 1, #q.rows do q.rows[i]:Hide() end
 	q.empty:SetShown(filter ~= "" and matched == 0)
-	q.content:SetHeight(math.max(y, 1))
-	ui.chatCount:SetText("Chats: " .. #db.chats .. "/" .. MAX_CHATS)
+	q.content:SetHeight(math.max(y + Q.PAD_FIRST, 1))
+	local full = #db.chats >= MAX_CHATS
+	ui.chatCount:SetText("Chats: " .. (full and (_G.RED_FONT_COLOR_CODE or "|cffff2020") or "|cffffffff") .. #db.chats .. "/" .. MAX_CHATS .. "|r")
+end
+
+function Q.ListSettingsMenu(anchor)
+	local s = db.settings
+	local function SetAll(value)
+		local collapsed = {}
+		if value then
+			for _, c in ipairs(db.chats) do collapsed[Q.FolderKey(c)] = true end
+		end
+		s.collapsedFolders = collapsed
+		ClaudeWoW.RenderChatList()
+	end
+	local function TogglePreviews()
+		s.chatPreviews = not Q.PreviewsOn()
+		ClaudeWoW.RenderChatList()
+	end
+	if type(MenuUtil) == "table" and type(MenuUtil.CreateContextMenu) == "function" then
+		local shown = pcall(MenuUtil.CreateContextMenu, anchor, function(_, root)
+			root:CreateCheckbox("Show message previews", Q.PreviewsOn, TogglePreviews)
+			root:CreateDivider()
+			root:CreateButton("Expand all folders", function() SetAll(false) end)
+			root:CreateButton("Collapse all folders", function() SetAll(true) end)
+		end)
+		if shown then return end
+	end
+	TogglePreviews()
 end
 
 function Q.NavChoices(items, chatId, apply)
@@ -4211,38 +4417,66 @@ function ClaudeWoW.RefreshNav(force)
 end
 
 function Q.BuildQuestFrames(f)
-	local list = Q.Panel(f, true)
+	local list = CreateFrame("Frame", nil, f)
 	list:SetPoint("TOPRIGHT", f, "TOPRIGHT", -6, Q.NAV_TOP)
 	list:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -6, 28)
 	list:SetWidth(Q.LIST_W)
-	local listBg = list:CreateTexture(nil, "BACKGROUND", nil, 1)
-	listBg:SetPoint("TOPLEFT", list, "TOPLEFT", 3, -3)
-	listBg:SetPoint("BOTTOMRIGHT", list, "BOTTOMRIGHT", -3, 3)
-	Q.SetArt(listBg, "listBg")
 	ui.listPanel = list
 
+	local gear = CreateFrame("Button", "ClaudeWoWChatSettings", list)
+	gear:SetSize(15, 16)
+	gear:SetPoint("TOPRIGHT", list, "TOPRIGHT", -4, -10)
+	local gearIcon = gear:CreateTexture(nil, "ARTWORK")
+	gearIcon:SetAllPoints()
+	if not Q.SetArt(gearIcon, "gear") then gearIcon:SetTexture("Interface\\Buttons\\UI-OptionsButton") end
+	local gearHl = gear:CreateTexture(nil, "HIGHLIGHT")
+	gearHl:SetAllPoints()
+	if Q.SetArt(gearHl, "gear") then
+		gearHl:SetBlendMode("ADD")
+		gearHl:SetAlpha(0.4)
+	end
+	gear:SetScript("OnMouseDown", function() gearIcon:SetPoint("TOPLEFT", gear, "TOPLEFT", 1, -1) end)
+	gear:SetScript("OnMouseUp", function() gearIcon:SetAllPoints() end)
+	gear:SetScript("OnClick", function(self) Q.ListSettingsMenu(self) end)
+	gear:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+		GameTooltip:SetText("Chat list options")
+		GameTooltip:Show()
+	end)
+	gear:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	ui.listSettings = gear
+
+	local countBox = CreateFrame("Frame", "ClaudeWoWChatCount", list, Q.TemplateExists("InsetFrameTemplate3") and "InsetFrameTemplate3" or "InsetFrameTemplate")
+	countBox:SetSize(Q.COUNT_W, 20)
+	countBox:SetPoint("RIGHT", gear, "LEFT", -6, 0)
+	local count = countBox:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	count:SetPoint("CENTER", countBox, "CENTER", 0, 0)
+	ui.chatCount = count
+
 	local search = CreateFrame("EditBox", "ClaudeWoWChatSearch", list, Q.TemplateExists("SearchBoxTemplate") and "SearchBoxTemplate" or "InputBoxTemplate")
-	search:SetSize(Q.LIST_W - 100, 20)
-	search:SetPoint("TOPLEFT", list, "TOPLEFT", 14, -8)
+	search:SetHeight(20)
+	search:SetPoint("LEFT", list, "LEFT", 10, 0)
+	search:SetPoint("TOP", countBox, "TOP", 0, 0)
+	search:SetPoint("RIGHT", countBox, "LEFT", -6, 0)
 	search:SetAutoFocus(false)
+	if type(search.Instructions) == "table" then search.Instructions:SetText("Search Chats") end
 	search:HookScript("OnTextChanged", function(self)
 		ui.chatFilter = Trim(self:GetText() or ""):lower()
 		ClaudeWoW.RenderChatList()
 	end)
 	ui.search = search
 
-	local count = list:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-	count:SetPoint("TOPRIGHT", list, "TOPRIGHT", -12, -12)
-	count:SetJustifyH("RIGHT")
-	ui.chatCount = count
-
-	local newChat = MakeButton(list, "New chat", Q.LIST_W - 24, function() ClaudeWoW.NewChat() end)
-	newChat:SetPoint("BOTTOM", list, "BOTTOM", 0, 7)
+	local newChat = MakeButton(list, "New chat", Q.LIST_W - 12, function() ClaudeWoW.NewChat() end)
+	newChat:SetPoint("BOTTOM", list, "BOTTOM", 0, 2)
 	ui.newChat = newChat
 
 	local listScroll = CreateFrame("ScrollFrame", "ClaudeWoWChatScroll", list, Q.TemplateExists("ScrollFrameTemplate") and "ScrollFrameTemplate" or "UIPanelScrollFrameTemplate")
-	listScroll:SetPoint("TOPLEFT", list, "TOPLEFT", 8, -36)
-	listScroll:SetPoint("BOTTOMRIGHT", list, "BOTTOMRIGHT", -24, 34)
+	listScroll:SetPoint("TOPLEFT", list, "TOPLEFT", 6, -40)
+	listScroll:SetPoint("BOTTOMRIGHT", list, "BOTTOMRIGHT", -20, 34)
+	local listBg = list:CreateTexture(nil, "BACKGROUND", nil, 1)
+	listBg:SetPoint("TOPLEFT", listScroll, "TOPLEFT", 0, 0)
+	listBg:SetPoint("BOTTOMRIGHT", listScroll, "BOTTOMRIGHT", 16, 0)
+	if not Q.SetArt(listBg, "listBg") then listBg:SetColorTexture(0.06, 0.05, 0.04, 0.9) end
 	local listContent = CreateFrame("Frame", "ClaudeWoWChatListContent", listScroll)
 	listContent:SetSize(Q.LIST_W - 32, 1)
 	listScroll:SetScrollChild(listContent)
@@ -4252,6 +4486,28 @@ function Q.BuildQuestFrames(f)
 	empty:SetText("There are no chats that match your search.")
 	empty:Hide()
 	ui.questList = { scroll = listScroll, content = listContent, headers = {}, rows = {}, empty = empty }
+
+	local border = CreateFrame("Frame", "ClaudeWoWChatBorder", list)
+	border:SetPoint("TOPLEFT", listScroll, "TOPLEFT", -3, 7)
+	border:SetPoint("BOTTOMRIGHT", listScroll, "BOTTOMRIGHT", 19, -6)
+	border:SetFrameLevel((Try(listScroll.GetFrameLevel, listScroll) or 1) + 20)
+	border:EnableMouse(false)
+	local edge = border:CreateTexture(nil, "BORDER")
+	edge:SetAllPoints()
+	if Q.SetArt(edge, "frame") then
+		local filigree = border:CreateTexture(nil, "ARTWORK")
+		filigree:SetPoint("TOP", border, "TOP", 0, 1)
+		Q.SetArt(filigree, "filigree", true)
+		local gradient = border:CreateTexture(nil, "BACKGROUND")
+		gradient:SetPoint("BOTTOM", border, "BOTTOM", 0, 4)
+		Q.SetArt(gradient, "gradient", true)
+	else
+		edge:Hide()
+		local inset = Q.Panel(list, true)
+		inset:SetAllPoints(border)
+		inset:SetFrameLevel((Try(listScroll.GetFrameLevel, listScroll) or 1) - 1)
+	end
+	ui.listBorder = border
 
 	local parchment = Q.Panel(f, true)
 	parchment:SetPoint("TOPLEFT", f, "TOPLEFT", 8, Q.NAV_TOP - Q.NAV_H - 2)

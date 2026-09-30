@@ -333,7 +333,6 @@ test('the window is built from Blizzard frame templates where the client has the
   assert.equal(vm.evaluate('ClaudeWoWFrame.Inset.shown'), 'false', 'the template inset is replaced by our own panels');
   assert.equal(vm.evaluate('ClaudeWoW.UI.title == ClaudeWoWFrame.TitleText'), 'true', 'the title goes in the Blizzard title bar');
   assert.equal(vm.evaluate('ClaudeWoW.UI.minimize == ClaudeWoWFrame.CloseButton'), 'true', 'the red close button collapses to the bar');
-  assert.equal(vm.evaluate('ClaudeWoW.UI.listPanel.template'), 'InsetFrameTemplate');
   assert.equal(vm.evaluate('ClaudeWoW.UI.art.listBg'), 'QuestLog-main-background');
   assert.equal(vm.evaluate('ClaudeWoW.UI.art.parchment'), 'QuestBG-Parchment', 'the transcript sits on quest parchment');
   assert.equal(vm.evaluate('ClaudeWoWScroll.parent == ClaudeWoW.UI.parchment'), 'true');
@@ -343,8 +342,12 @@ test('the window is built from Blizzard frame templates where the client has the
   assert.equal(vm.evaluate('ClaudeWoWWindow.skinned'), 'true');
   assert.equal(vm.evaluate('ClaudeWoWFrame.claudewowBorder'), null, 'no extra border on top of the template');
 
-  assert.equal(shownHeaders(vm), 'every (2)|wow-ai (1)', 'chats are grouped under folder headers in first-seen order');
-  assert.equal(vm.evaluate('ClaudeWoW.UI.chatCount:GetText()'), 'Chats: 3/16');
+  assert.equal(shownHeaders(vm), 'every|wow-ai', 'chats are grouped under folder headers in first-seen order');
+  assert.equal(vm.evaluate('ClaudeWoW.UI.chatCount:GetText()'), 'Chats: |cffffffff3/16|r');
+  assert.equal(vm.evaluate('ClaudeWoW.UI.art.frame'), 'questlog-frame');
+  assert.equal(vm.evaluate('ClaudeWoW.UI.art.filigree'), 'questlog-frame-filigree');
+  assert.equal(vm.evaluate('ClaudeWoW.UI.art.poi'), 'UI-QuestPoi-QuestNumber', 'each chat has a round POI button');
+  assert.equal(vm.evaluate('ClaudeWoW.UI.questList.rows[1].objectives[1].text:GetText()'), 'No messages yet', 'objective lines sit under each title');
   assert.equal(vm.evaluate('ClaudeWoW.UI.art.minus'), 'common-button-list-minus');
 
   vm.run('ClaudeWoW.UI.questList.headers[1].scripts.OnClick(ClaudeWoW.UI.questList.headers[1])');
@@ -355,12 +358,16 @@ test('the window is built from Blizzard frame templates where the client has the
 
   vm.run('ClaudeWoWChatSearch:SetText("leather"); for _, fn in ipairs(ClaudeWoWChatSearch.hooks.OnTextChanged) do fn(ClaudeWoWChatSearch) end');
   assert.equal(shownRows(vm), 'Leatherworking route', 'search filters by chat name');
-  assert.equal(shownHeaders(vm), 'every (1)');
+  assert.equal(shownHeaders(vm), 'every');
   vm.run('ClaudeWoWChatSearch:SetText("zzz"); for _, fn in ipairs(ClaudeWoWChatSearch.hooks.OnTextChanged) do fn(ClaudeWoWChatSearch) end');
   assert.equal(vm.evaluate('ClaudeWoW.UI.questList.empty.shown'), 'true');
   vm.run('ClaudeWoWChatSearch:SetText(""); for _, fn in ipairs(ClaudeWoWChatSearch.hooks.OnTextChanged) do fn(ClaudeWoWChatSearch) end');
 
   vm.run('ClaudeWoWDB.chats[2].unread = 1; ClaudeWoW.Render()');
+  vm.run('ClaudeWoWChatSettings.scripts.OnClick(ClaudeWoWChatSettings)');
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.chatPreviews'), 'false', 'the gear turns message previews off');
+  assert.equal(vm.evaluate('ClaudeWoW.UI.questList.rows[1].objectives[1].text.shown'), 'false');
+  vm.run('ClaudeWoWChatSettings.scripts.OnClick(ClaudeWoWChatSettings)');
   assert.equal(vm.evaluate('ClaudeWoW.UI.art.reply'), 'UI-QuestIcon-TurnIn-Normal', 'an unread reply shows the turn-in icon');
 
   vm.run('ClaudeWoWFrame.CloseButton.scripts.OnClick(ClaudeWoWFrame.CloseButton)');
@@ -383,7 +390,7 @@ test('the breadcrumb bar shows folder, agent and plugin, and its dropdowns chang
   vm.run('for _, e in ipairs(LIST) do if e.text == "every" then e.func() end end');
   assert.equal(vm.evaluate('ClaudeWoWDB.chats[2].cwd'), '~/every-io/every', 'picking a folder from the crumb moves the chat');
   assert.equal(vm.evaluate('STUB.nav.buttons[1].name'), 'every', 'and the crumb follows');
-  assert.equal(shownHeaders(vm), 'every (3)');
+  assert.equal(shownHeaders(vm), 'every');
 
   vm.run('LIST = STUB.nav.buttons[2].listFunc(); for _, e in ipairs(LIST) do if e.text == "Codex" then e.func() end end');
   assert.equal(vm.evaluate('ClaudeWoWDB.chats[2].agent'), 'codex');
