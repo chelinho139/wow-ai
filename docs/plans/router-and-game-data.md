@@ -118,11 +118,19 @@ Data first, router last. Each step must pay off on its own before the next one s
 - **Third-party text:** names and quest text can carry prompt injection. Structured fields, validation at sync, and no Bash on data agents.
 - **Cost:** a router can cost more than it saves. §3 measures first; §7.2 is conditional.
 
-## 11. Open decisions
+## 11. Decisions (2026-09-30)
 
-1. The `ask` model: `claude-sonnet-5-5` (recommended) or `claude-haiku-4-5`.
-2. Accept caching wago.tools client data (EULA risk unverified), or use only the game files already on the user's machine (more work).
-3. Contact the QuestieDB maintainers for permission before step 2 ships.
-4. Install the user-scope plugin and `wowdata` automatically, or ask first.
-5. Isolate `ask` runs from the user's personal `~/.claude` setup (predictable, cheaper) or inherit it (today).
-6. Ship `wow-deep` (Fable), or keep it opt-in behind config.
+1. The `ask` model is `claude-sonnet-5-5`, pending the step 1 measurement.
+2. wago.tools client data is cached locally only, never committed or shipped.
+3. Ask the QuestieDB maintainers for permission before step 2 ships QuestieDB data. Step 2 can start with wago data alone.
+4. The installers offer the user-scope plugin and `wowdata` with a prompt; they do not install them silently.
+5. `ask` runs keep inheriting the user's `~/.claude` setup for now. Revisit after step 1.
+6. `wow-deep` (Fable) is opt-in behind config.
+7. The TypeSafe router PRs (#6, #9) are closed. The 183 labeled cases in `evals/router/cases.jsonl` on branch `feat/router-evals` are the starting eval set for §7.2.
+
+## 12. Ready to start: step 1
+
+- [ ] Set `agents.claude.model` to `claude-sonnet-5-5` in a test config (`dev/sandbox.js` with `agentPath` pointing at the real `claude`).
+- [ ] Run 10 fixed game prompts (where-is, macro, route, lore) on `opus[1m]` and on Sonnet 5.5. Record cost from the result's `modelUsage` and latency per prompt.
+- [ ] Check `CLAUDE_RATES` in `bridge/agents.js` against the current price list and fix it in the same PR.
+- [ ] Write the numbers into this file under §3. If Sonnet quality holds, set it in `config.example.json` and the owner's config.
