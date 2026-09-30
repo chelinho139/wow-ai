@@ -37,6 +37,7 @@ const FILES = [
   'addon/ClaudeWoW/Widgets.lua',
   'addon/ClaudeWoW/Window.lua',
   'addon/ClaudeWoW/Bindings.xml',
+  'addon/ClaudeWoW/Portrait.tga',
   'bridge/capture.ps1',
   'bridge/capture_mac.py',
   'bridge/capture_x11.py',

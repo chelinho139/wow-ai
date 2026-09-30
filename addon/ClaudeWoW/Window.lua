@@ -306,6 +306,7 @@ function W.Apply()
 end
 
 local function Skin(f)
+	if f.claudewowNative then return true end
 	local util, layouts = _G.NineSliceUtil, _G.NineSliceLayouts
 	if not (type(util) == "table" and type(util.ApplyLayoutByName) == "function" and type(layouts) == "table" and layouts.ButtonFrameTemplateNoPortrait) then return false end
 	local ok, border = pcall(CreateFrame, "Frame", nil, f, "NineSlicePanelTemplate")

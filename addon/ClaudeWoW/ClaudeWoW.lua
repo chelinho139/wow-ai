@@ -3902,13 +3902,46 @@ local function MakeButton(parent, label, width, onClick)
 end
 
 local PANEL_W = 150
+local PORTRAIT = "Interface\\AddOns\\ClaudeWoW\\Portrait"
+local NATIVE_TEMPLATES = { "ButtonFrameTemplate", "InsetFrameTemplate" }
+local NAV_ATLAS = { normal = "auctionhouse-nav-button", highlight = "auctionhouse-nav-button-highlight", selected = "auctionhouse-nav-button-select" }
+
+local function NativeFrames()
+	if type(C_XMLUtil) ~= "table" then return false end
+	for _, name in ipairs(NATIVE_TEMPLATES) do
+		if not Try(C_XMLUtil.GetTemplateInfo, name) then return false end
+	end
+	return true
+end
+
+local function AtlasExists(name)
+	return C_Texture and C_Texture.GetAtlasExists and C_Texture.GetAtlasExists(name) and true or false
+end
+
+local function Panel(parent, native)
+	local p = CreateFrame("Frame", nil, parent, native and "InsetFrameTemplate" or "BackdropTemplate")
+	if not native then
+		p:SetBackdrop({
+			bgFile = "Interface\\ChatFrame\\ChatFrameBackground",
+			edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+			tile = true, tileSize = 16, edgeSize = 12,
+			insets = { left = 3, right = 3, top = 3, bottom = 3 },
+		})
+		p:SetBackdropColor(0, 0, 0, 0.4)
+		p:SetBackdropBorderColor(0.4, 0.4, 0.4, 1)
+	end
+	return p
+end
 
 local function BuildUI()
 	if ui.frame then return end
 	local s = db.settings
+	local native = NativeFrames()
+	ui.native = native
 
-	local f = CreateFrame("Frame", "ClaudeWoWFrame", UIParent, "BackdropTemplate")
+	local f = CreateFrame("Frame", "ClaudeWoWFrame", UIParent, native and "ButtonFrameTemplate" or "BackdropTemplate")
 	ui.frame = f
+	f.claudewowNative = native
 	f:SetSize(s.width, s.height)
 	f:SetPoint("CENTER")
 	f:SetFrameStrata("DIALOG")
@@ -3916,9 +3949,14 @@ local function BuildUI()
 	f:SetClampedToScreen(true)
 	f:SetResizeBounds(560, 300)
 	f:EnableMouse(true)
-	f:SetBackdrop(BACKDROP)
-	f:SetBackdropColor(0.05, 0.05, 0.07, 0.95)
-	f:SetBackdropBorderColor(0.6, 0.6, 0.6, 1)
+	if native then
+		Try(f.SetPortraitToAsset, f, PORTRAIT)
+		if type(f.Inset) == "table" then f.Inset:Hide() end
+	else
+		f:SetBackdrop(BACKDROP)
+		f:SetBackdropColor(0.05, 0.05, 0.07, 0.95)
+		f:SetBackdropBorderColor(0.6, 0.6, 0.6, 1)
+	end
 	f:Hide()
 	tinsert(UISpecialFrames, "ClaudeWoWFrame")
 
@@ -3940,26 +3978,32 @@ local function BuildUI()
 	end
 
 	local dotHolder, dot = MakeDot(f)
-	dotHolder:SetPoint("TOPLEFT", f, "TOPLEFT", 14, -16)
 	ui.dot = dot
 	ui.dotHolder = dotHolder
 
-	local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-	title:SetPoint("LEFT", dotHolder, "RIGHT", 6, 0)
+	local nativeTitle = native and Try(f.GetTitleText, f)
+	local title = nativeTitle or f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+	if not nativeTitle then title:SetPoint("LEFT", dotHolder, "RIGHT", 6, 0) end
 	title:SetText("Claude WoW")
 	ui.title = title
 
 	local status = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	status:SetPoint("TOPLEFT", f, "TOPLEFT", 14, -34)
 	status:SetPoint("RIGHT", f, "RIGHT", -60, 0)
 	status:SetJustifyH("LEFT")
 	ui.status = status
+	if native then
+		dotHolder:SetPoint("TOPLEFT", f, "TOPLEFT", 64, -32)
+		status:SetPoint("LEFT", dotHolder, "RIGHT", 6, 0)
+	else
+		dotHolder:SetPoint("TOPLEFT", f, "TOPLEFT", 14, -16)
+		status:SetPoint("TOPLEFT", f, "TOPLEFT", 14, -34)
+	end
 
 	-- Minimize button in the corner where a close X would be: this window is never
 	-- closed from here, only collapsed to the mini bar (Esc does the same, see OnHide).
 	-- The mini bar's own X is the one that hides everything.
-	local mini
-	if C_Texture and C_Texture.GetAtlasExists and C_Texture.GetAtlasExists("RedButton-MiniCondense") then
+	local mini = native and type(f.CloseButton) == "table" and f.CloseButton or nil
+	if not mini and AtlasExists("RedButton-MiniCondense") then
 		-- Blizzard's own minimize button: the close button's chrome with a "condense" glyph.
 		local ok, b = pcall(CreateFrame, "Button", nil, f, "UIPanelHideButtonNoScripts")
 		if ok and b then mini = b end
@@ -3976,7 +4020,7 @@ local function BuildUI()
 		hl:SetAllPoints()
 		hl:SetColorTexture(1, 1, 1, 0.15)
 	end
-	mini:SetPoint("TOPRIGHT", f, "TOPRIGHT", -4, -4)
+	if mini ~= rawget(f, "CloseButton") then mini:SetPoint("TOPRIGHT", f, "TOPRIGHT", -4, -4) end
 	ui.minimize = mini
 	mini:SetScript("OnClick", function() ClaudeWoW.Minimize(true) end)
 	mini:SetScript("OnEnter", function(self)
@@ -4001,18 +4045,13 @@ local function BuildUI()
 	end)
 
 	-- Left panel: chat list
-	local panel = CreateFrame("Frame", nil, f, "BackdropTemplate")
-	panel:SetPoint("TOPLEFT", f, "TOPLEFT", 14, -52)
-	panel:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 14, 50)
+	local contentLeft, contentTop = 14, -52
+	if native then contentLeft, contentTop = 10, -60 end
+	local panel = Panel(f, native)
+	panel:SetPoint("TOPLEFT", f, "TOPLEFT", contentLeft, contentTop)
+	panel:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", contentLeft, 50)
 	panel:SetWidth(PANEL_W)
-	panel:SetBackdrop({
-		bgFile = "Interface\\ChatFrame\\ChatFrameBackground",
-		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-		tile = true, tileSize = 16, edgeSize = 12,
-		insets = { left = 3, right = 3, top = 3, bottom = 3 },
-	})
-	panel:SetBackdropColor(0, 0, 0, 0.4)
-	panel:SetBackdropBorderColor(0.4, 0.4, 0.4, 1)
+	ui.listPanel = panel
 
 	local newBtn = MakeButton(panel, "+ New chat", PANEL_W - 16, function() ClaudeWoW.NewChat() end)
 	newBtn:SetPoint("TOP", panel, "TOP", 0, -8)
@@ -4091,13 +4130,23 @@ local function BuildUI()
 		local b = CreateFrame("Button", nil, panel)
 		b:SetSize(PANEL_W - 16, 20)
 		b:SetPoint("TOP", newBtn, "BOTTOM", 0, -6 - (i - 1) * 21)
-		b.selected = b:CreateTexture(nil, "BACKGROUND")
+		local nav = native and AtlasExists(NAV_ATLAS.normal)
+		b.selected = b:CreateTexture(nil, nav and "ARTWORK" or "BACKGROUND")
 		b.selected:SetAllPoints()
-		b.selected:SetColorTexture(1, 1, 1, 0.12)
 		b.selected:Hide()
 		local hl = b:CreateTexture(nil, "HIGHLIGHT")
 		hl:SetAllPoints()
-		hl:SetColorTexture(1, 1, 1, 0.08)
+		if nav then
+			local bg = b:CreateTexture(nil, "BACKGROUND")
+			bg:SetAllPoints()
+			bg:SetAtlas(NAV_ATLAS.normal)
+			b.navBg = bg
+			b.selected:SetAtlas(NAV_ATLAS.selected)
+			hl:SetAtlas(NAV_ATLAS.highlight)
+		else
+			b.selected:SetColorTexture(1, 1, 1, 0.12)
+			hl:SetColorTexture(1, 1, 1, 0.08)
+		end
 
 		-- Trash can: delete this chat (asks first). Blizzard's red delete button
 		-- where the client has it, a plain X elsewhere.
@@ -4125,7 +4174,7 @@ local function BuildUI()
 			GameTooltip:Hide()
 		end)
 
-		b.label = b:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+		b.label = b:CreateFontString(nil, "OVERLAY", nav and "GameFontNormalSmall" or "GameFontHighlightSmall")
 		b.label:SetPoint("LEFT", b, "LEFT", 6, 0)
 		b.label:SetPoint("RIGHT", b.del, "LEFT", -4, 0)
 		b.label:SetJustifyH("LEFT")
@@ -4153,6 +4202,13 @@ local function BuildUI()
 	scroll:SetPoint("TOPLEFT", panel, "TOPRIGHT", 8, 0)
 	scroll:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -32, 110)
 	ui.scroll = scroll
+	if native then
+		local transcriptBg = Panel(f, true)
+		transcriptBg:SetPoint("TOPLEFT", scroll, "TOPLEFT", -4, 4)
+		transcriptBg:SetPoint("BOTTOMRIGHT", scroll, "BOTTOMRIGHT", 26, -4)
+		transcriptBg:SetFrameLevel(math.max(0, (Try(scroll.GetFrameLevel, scroll) or 1) - 1))
+		ui.transcriptPanel = transcriptBg
+	end
 
 	local content = CreateFrame("Frame", "ClaudeWoWContent", scroll)
 	content:SetSize(500, 1)
@@ -4165,18 +4221,14 @@ local function BuildUI()
 
 	-- Input box, with Send docked at its right end like a messaging app.
 	local SEND_W = 84
-	local inputBg = CreateFrame("Frame", nil, f, "BackdropTemplate")
+	local inputBg = Panel(f, native)
 	inputBg:SetPoint("BOTTOMLEFT", panel, "BOTTOMRIGHT", 8, 0)
 	inputBg:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -14 - SEND_W - 6, 50)
 	inputBg:SetHeight(54)
-	inputBg:SetBackdrop({
-		bgFile = "Interface\\ChatFrame\\ChatFrameBackground",
-		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-		tile = true, tileSize = 16, edgeSize = 12,
-		insets = { left = 3, right = 3, top = 3, bottom = 3 },
-	})
-	inputBg:SetBackdropColor(0, 0, 0, 0.6)
-	inputBg:SetBackdropBorderColor(0.5, 0.5, 0.5, 1)
+	if not native then
+		inputBg:SetBackdropColor(0, 0, 0, 0.6)
+		inputBg:SetBackdropBorderColor(0.5, 0.5, 0.5, 1)
+	end
 
 	local inScroll = CreateFrame("ScrollFrame", "ClaudeWoWInputScroll", inputBg, "UIPanelScrollFrameTemplate")
 	inScroll:SetPoint("TOPLEFT", inputBg, "TOPLEFT", 8, -6)

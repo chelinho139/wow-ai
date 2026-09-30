@@ -293,3 +293,44 @@ test('the Dragonflight metal border is used where the client has it, and the pla
   assert.equal(metal.evaluate('STUB.layout'), 'ButtonFrameTemplateNoPortrait');
   assert.equal(metal.evaluate('ClaudeWoWFrame.claudewowBorder.template'), 'NineSlicePanelTemplate');
 });
+
+const NATIVE_TEMPLATES = `
+  C_XMLUtil = { GetTemplateInfo = function(name) if name == "ButtonFrameTemplate" or name == "InsetFrameTemplate" then return { type = "Frame" } end end }
+  local plainCreate = CreateFrame
+  CreateFrame = function(kind, name, parent, template)
+    local f = plainCreate(kind, name, parent, template)
+    if template == "ButtonFrameTemplate" then
+      f.CloseButton = plainCreate("Button", nil, f, "UIPanelCloseButton")
+      f.Inset = plainCreate("Frame", nil, f, "InsetFrameTemplate")
+      f.TitleText = f:CreateFontString()
+      function f:GetTitleText() return self.TitleText end
+      function f:SetPortraitToAsset(path) self.portrait = path end
+    end
+    return f
+  end`;
+
+test('the window is built from Blizzard frame templates where the client has them: portrait, title bar, close button and inset panels', () => {
+  const vm = newVM({ before: NATIVE_TEMPLATES });
+  open(vm);
+  assert.equal(vm.evaluate('ClaudeWoWFrame.template'), 'ButtonFrameTemplate');
+  assert.equal(vm.evaluate('ClaudeWoWFrame.portrait'), 'Interface\\AddOns\\ClaudeWoW\\Portrait');
+  assert.equal(vm.evaluate('ClaudeWoWFrame.Inset.shown'), 'false', 'the template inset is replaced by our own panels');
+  assert.equal(vm.evaluate('ClaudeWoW.UI.title == ClaudeWoWFrame.TitleText'), 'true', 'the title goes in the Blizzard title bar');
+  assert.equal(vm.evaluate('ClaudeWoW.UI.minimize == ClaudeWoWFrame.CloseButton'), 'true', 'the red close button collapses to the bar');
+  assert.equal(vm.evaluate('ClaudeWoW.UI.listPanel.template'), 'InsetFrameTemplate');
+  assert.equal(vm.evaluate('ClaudeWoW.UI.transcriptPanel.template'), 'InsetFrameTemplate');
+  assert.equal(vm.evaluate('ClaudeWoW.UI.chatButtons[1].navBg ~= nil'), 'true', 'chat rows use the auction house list art');
+  assert.equal(vm.evaluate('ClaudeWoWWindow.skinned'), 'true');
+  assert.equal(vm.evaluate('ClaudeWoWFrame.claudewowBorder'), null, 'no extra border on top of the template');
+
+  vm.run('ClaudeWoWFrame.CloseButton.scripts.OnClick(ClaudeWoWFrame.CloseButton)');
+  assert.equal(vm.evaluate('ClaudeWoWFrame.shown'), 'false');
+  assert.equal(vm.evaluate('ClaudeWoWMini.shown'), 'true');
+});
+
+test('without the templates the window keeps its own backdrop', () => {
+  const vm = newVM();
+  open(vm);
+  assert.equal(vm.evaluate('ClaudeWoWFrame.template'), 'BackdropTemplate');
+  assert.equal(vm.evaluate('ClaudeWoW.UI.transcriptPanel'), null);
+});
