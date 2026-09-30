@@ -126,6 +126,11 @@ for (const oldName of P.OLD_ADDONS) {
     assert.ok(fs.existsSync(path.join(dest, `${P.ADDON}.toc`)));
     assert.match(fs.readFileSync(path.join(dest, `${P.ADDON}.toc`), 'utf8'), new RegExp(`^## SavedVariables: ${P.ADDON}DB, ${P.ADDON}MapDB, ${P.ADDON}WidgetDB$`, 'm'),
       'the .toc declares the globals the migrated file now holds');
+    if (process.platform !== 'win32') {
+      assert.equal(fs.statSync(newFile).mode & 0o777, 0o777, 'the migrated SavedVariables file matches the game install');
+      assert.equal(fs.statSync(dest).mode & 0o777, 0o777, 'the addon folder matches the game install');
+      for (const f of fs.readdirSync(dest)) assert.equal(fs.statSync(path.join(dest, f)).mode & 0o777, 0o777, f);
+    }
     fs.rmSync(dir, { recursive: true, force: true });
   });
 }
@@ -211,6 +216,21 @@ test('node setup.js --wow <fake client>: migrates the chats, installs ClaudeWoW 
   assert.ok(fs.existsSync(path.join(addons, 'ClaudeWoW', 'ClaudeWoW.toc')));
   assert.ok(fs.existsSync(path.join(addons, 'ClaudeWoW', 'ctl', 'valid.wav')));
   for (const d of ['sig', 'ack', 'act', 'presence']) assert.ok(fs.statSync(path.join(addons, 'ClaudeWoW', d)).isDirectory(), d);
+  const slotInbox = path.join(addons, 'ClaudeWoW_S001', 'Inbox.lua');
+  if (process.platform !== 'win32') {
+    const locked = [];
+    for (const folder of names.filter(n => /^ClaudeWoW(_S\d{3})?$/.test(n))) {
+      const pending = [path.join(addons, folder)];
+      while (pending.length) {
+        const current = pending.pop();
+        const st = fs.statSync(current);
+        if ((st.mode & 0o777) !== 0o777) locked.push(current);
+        if (st.isDirectory()) for (const n of fs.readdirSync(current)) pending.push(path.join(current, n));
+      }
+    }
+    assert.deepEqual(locked, [], 'every file and folder setup and install-slots made is 0777, like the game install');
+    fs.chmodSync(slotInbox, 0o644);
+  }
 
   // The config: in the home folder, naming the new addon; nothing in bridge/ was touched.
   const cfg = JSON.parse(fs.readFileSync(path.join(home, 'config.json'), 'utf8'));
@@ -239,6 +259,10 @@ test('node setup.js --wow <fake client>: migrates the chats, installs ClaudeWoW 
   assert.equal(again.status, 0, again.stdout + again.stderr);
   assert.ok(!/migrate/.test(again.stdout), 'second run migrates nothing');
   assert.match(again.stdout, /already exists, keeping it/);
+  if (process.platform !== 'win32') {
+    assert.equal(fs.statSync(slotInbox).mode & 0o777, 0o777, 'the re-run repaired a 0644 slot file');
+    assert.match(again.stdout, /^permissions: 1 of \d+ file\(s\) and folder\(s\) under the ClaudeWoW addon folders set to 0777/m);
+  }
   assert.equal(JSON.parse(fs.readFileSync(path.join(home, 'config.json'), 'utf8')).capture.mode, 'pixel', 'an existing config keeps its explicit mode');
   assert.match(again.stdout, /^transport: pixel \(capture\.mode in config\.json\): DEPRECATED screen capture, kept only until Screenshot\(\) is confirmed on Windows and on Linux under Wine/m);
   if (process.platform !== 'win32') assert.match(again.stdout, /^python {3}: (?!.*only the deprecated)/m, 'on the pixel transport python is simply required');

@@ -3,6 +3,7 @@ const path = require('path');
 const Service = require('../../bridge/service');
 const Screens = require('../../bridge/screenshots');
 const { slotNumber, pad3 } = require('../../bridge/protocol');
+const GameFs = require('../../bridge/gamefs');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const QUIET_LIMIT_MS = 10 * 60 * 1000;
@@ -400,6 +401,37 @@ function checkInterface(ctx) {
   return finish('interface', 'Interface version', summary, issues);
 }
 
+function lockedGameFiles(ctx, addonDir) {
+  const locked = [];
+  let checked = 0;
+  const folders = (ctx.sys.listDir(addonDir) || []).filter(n => GameFs.ADDON_FOLDER.test(n)).map(n => path.join(addonDir, n));
+  const pending = [...folders];
+  while (pending.length) {
+    const current = pending.pop();
+    const st = ctx.sys.stat(current);
+    if (!st) continue;
+    checked++;
+    if ((st.mode & GameFs.WORLD_WRITABLE) === 0) locked.push(current);
+    if (st.isDir) for (const name of ctx.sys.listDir(current) || []) pending.push(path.join(current, name));
+  }
+  return { folders: folders.length, checked, locked: locked.sort() };
+}
+
+function checkPermissions(ctx) {
+  const addonDir = ctx.config.addonDir;
+  if (!addonDir) return finish('permissions', 'Game file permissions', 'no addonDir in config', []);
+  if (!GameFs.matchesGame(ctx.sys.platform)) return finish('permissions', 'Game file permissions', `not checked on ${ctx.sys.platform}`, []);
+  const { folders, checked, locked } = lockedGameFiles(ctx, addonDir);
+  const issues = [];
+  if (locked.length) {
+    const rel = locked.slice(0, 3).map(f => path.relative(addonDir, f));
+    issues.push(warn(`${locked.length} of ${checked} file(s) and folder(s) under the ClaudeWoW addon folders are not world-writable: ${rel.join(', ')}${locked.length > 3 ? ', ...' : ''}.`,
+      'Blizzard installs every game file as 0777; Battle.net error 2113 (permissions check failure) blocks updates and marks the game not playable when one is not.',
+      'Run "claude-wow setup" (or "npm run slots"), which sets them to 0777, and restart the bridge on this version so new files are written 0777.'));
+  }
+  return finish('permissions', 'Game file permissions', `${checked} entr${checked === 1 ? 'y' : 'ies'} in ${folders} addon folder(s), ${locked.length} not world-writable`, issues);
+}
+
 function claudeProjectDir(home, cwd) {
   return path.join(home, '.claude', 'projects', String(cwd).replace(/[^A-Za-z0-9]/g, '-'));
 }
@@ -526,7 +558,7 @@ function checkCi(ctx) {
   return finish('ci', 'CI', `${repo.branch} latest run ${state} on ${String(latest.headSha).slice(0, 7)} (HEAD ${shortHead})`, issues);
 }
 
-const CHECKS = [checkService, checkDrift, checkLogs, checkSignals, checkInterface, checkDisk, checkData, checkCost, checkConfig, checkCi];
+const CHECKS = [checkService, checkDrift, checkLogs, checkSignals, checkInterface, checkPermissions, checkDisk, checkData, checkCost, checkConfig, checkCi];
 
 function runChecks(ctx, checks = CHECKS) {
   return checks.map(check => {
@@ -538,6 +570,6 @@ function runChecks(ctx, checks = CHECKS) {
 
 module.exports = {
   CHECKS, LIMITS, TROUBLE_PATTERN,
-  runChecks, checkService, checkDrift, checkLogs, checkSignals, checkInterface, checkDisk, checkData, checkCost, checkConfig, checkCi,
+  runChecks, checkService, checkDrift, checkLogs, checkSignals, checkInterface, checkPermissions, checkDisk, checkData, checkCost, checkConfig, checkCi,
   parseEtime, formatBytes, summarizeLog, parseLastSeq, slotsAhead, tocInterface, interfaceFromVersion, productForFlavor, parseBuildInfo, parseReflog, claudeProjectDir, allowsEdits,
 };
