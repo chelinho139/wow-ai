@@ -522,3 +522,13 @@ test('titles: generateTitle runs the command and cleans its output, and gives up
   const bad = await T.generateTitle({ file: process.execPath, args: ['-e', 'process.exit(2)', '--'], model: 'm', text: 't' });
   assert.equal(bad, '');
 });
+
+test('a "w" record asks to warm a cold chat, and the restore bundle marks warm replies and cold chats', () => {
+  assert.equal(P.parseFlags('w').warm, true);
+  assert.equal(P.parseFlags('d').warm, undefined);
+  const lua = P.luaTable('ClaudeWoW_SlotData', [], { restore: { token: 't', warm: true, chats: [{ id: 'a', name: 'A', cwd: '', cold: true, messages: [] }] } });
+  assert.ok(lua.includes('\t\ttoken = "t",\n\t\twarm = true,\n\t\tchats = {'), lua);
+  assert.ok(lua.includes('\t\t\t\tcold = true,'), lua);
+  const plain = P.luaTable('ClaudeWoW_SlotData', [], { restore: { token: 't', chats: [{ id: 'a', name: 'A', cwd: '', messages: [] }] } });
+  assert.ok(!plain.includes('warm = true') && !plain.includes('cold = true'), 'an ordinary restore is unchanged');
+});

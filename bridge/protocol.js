@@ -217,6 +217,7 @@ function parseFlags(flags) {
     if (tok === 'n') out.newSession = true;
     else if (tok === 'h') out.hello = true;
     else if (tok === 'd') out.forget = true;
+    else if (tok === 'w') out.warm = true;
     else if (tok === 'c') out.context = true;
     else if (tok === 't') out.title = true;
     else if (tok === 'v') out.vision = true; // attach the screenshot's game view to the run (screenshot transport only)
@@ -787,9 +788,12 @@ function luaTable(globalName, records, opts = {}) {
   if (opts.widgets) lines.push(luaWidgets(opts.widgets));
   const restore = opts.restore;
   if (restore) {
-    lines.push('\trestore = {', `\t\ttoken = ${luaStr(restore.token)},`, '\t\tchats = {');
+    lines.push('\trestore = {', `\t\ttoken = ${luaStr(restore.token)},`);
+    if (restore.warm) lines.push('\t\twarm = true,');
+    lines.push('\t\tchats = {');
     for (const c of restore.chats) {
       lines.push('\t\t\t{', `\t\t\t\tid = ${luaStr(c.id)},`, `\t\t\t\tname = ${luaStr(c.name)},`, `\t\t\t\tcwd = ${luaStr(c.cwd)},`, `\t\t\t\tplugin = ${luaStr(c.plugin || '')},`);
+      if (c.cold) lines.push('\t\t\t\tcold = true,');
       if (Number(c.ctx) > 0) lines.push(`\t\t\t\tctx = ${Math.round(Number(c.ctx))},`);
       if (Number(c.turns) > 0) lines.push(`\t\t\t\tturns = ${Math.round(Number(c.turns))},`);
       if (Number(c.since) > 0) lines.push(`\t\t\t\tsince = ${Math.floor(Number(c.since))},`);

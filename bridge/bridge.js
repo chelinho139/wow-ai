@@ -277,6 +277,27 @@ function noteMessage(job, role, text) {
   saveTranscripts();
 }
 
+// The newest RESTORE_HOT chats come back with their last RESTORE_MESSAGES
+// messages; older ones come back cold (listed, no messages) and the addon asks
+// for one ("w") when the player opens it.
+const RESTORE_HOT = 16;
+const RESTORE_MESSAGES = 40;
+const RESTORE_TEXT_MAX = 2000;
+
+function restoreEntry(c, cold) {
+  // A transcript from before plugins existed was a coding chat: it comes back bound to that.
+  const entry = { id: c.id, name: c.name, cwd: c.cwd, plugin: c.plugin || 'claude-code', ...P.usageFields(state.sessionUsage && state.sessionUsage['chat:' + c.id]) };
+  if (cold) return { ...entry, cold: true, messages: [] };
+  return { ...entry, messages: c.messages.slice(-RESTORE_MESSAGES).map(m => ({ ...m, text: m.text.slice(0, RESTORE_TEXT_MAX) })) };
+}
+
+function warmChat(job) {
+  const c = transcripts.chats[job.chat];
+  if (!c || !c.messages.length || !job.session) return;
+  pendingRestore = { token: job.session, warm: true, chats: [restoreEntry(c, false)] };
+  log(`warming chat ${job.chat} for session ${job.session} (${Math.min(c.messages.length, RESTORE_MESSAGES)} messages)`);
+}
+
 // First message from an addon session token we haven't seen: its saved data is
 // fresh (or reset), so offer everything we know once, in the next publish.
 function maybeOfferRestore(job) {
@@ -285,9 +306,7 @@ function maybeOfferRestore(job) {
   const chats = Object.values(transcripts.chats)
     .filter(c => c.id !== job.chat && c.messages.length)
     .sort((a, b) => (b.updated || 0) - (a.updated || 0))
-    .slice(0, 16)
-    // A transcript from before plugins existed was a coding chat: it comes back bound to that.
-    .map(c => ({ id: c.id, name: c.name, cwd: c.cwd, plugin: c.plugin || 'claude-code', ...P.usageFields(state.sessionUsage && state.sessionUsage['chat:' + c.id]), messages: c.messages.slice(-40).map(m => ({ ...m, text: m.text.slice(0, 2000) })) }));
+    .map((c, i) => restoreEntry(c, i >= RESTORE_HOT));
   saveTranscripts();
   if (chats.length) {
     pendingRestore = { token: job.session, chats };
@@ -787,6 +806,14 @@ function submit(job) {
     forgetChat(job);
     saveState();
     signal('ack', job.id, true);
+    return;
+  }
+  if (job.warm) {
+    markHandled(job);
+    saveState();
+    signal('ack', job.id, true);
+    warmChat(job);
+    publishNow();
     return;
   }
   if (job.cancel) {
