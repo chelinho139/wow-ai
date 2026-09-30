@@ -2370,6 +2370,44 @@ local function WhisperAgentChat(target)
 	return best
 end
 
+function Whisper.ReplyName(chat)
+	local label = Trim(Display(chat.name))
+	if label == "" then label = tostring(chat.id) end
+	return ChatAgentName(chat) .. " [" .. label .. "]"
+end
+
+local function ReplyNameChat(target)
+	target = tostring(target or ""):lower()
+	if target == "" or not db then return nil end
+	local offered = run.replyNames and run.replyNames[target]
+	if offered then return FindChat(offered) or FindChat(run.lastReplyChat) or ActiveChat() end
+	local best
+	for _, c in ipairs(db.chats) do
+		if Whisper.ReplyName(c):lower() == target then
+			if c.id == run.lastReplyChat then return c end
+			best = best or c
+		end
+	end
+	return best
+end
+
+local function SetLastTellFunction()
+	if type(ChatFrameUtil) == "table" and type(ChatFrameUtil.SetLastTellTarget) == "function" then return ChatFrameUtil.SetLastTellTarget end
+	if type(ChatEdit_SetLastTellTarget) == "function" then return ChatEdit_SetLastTellTarget end
+	return nil
+end
+
+function Whisper.OfferReply(chat)
+	local setLastTell = SetLastTellFunction()
+	if not preSendHooked or not setLastTell then return false end
+	local name = Whisper.ReplyName(chat)
+	run.replyNames = run.replyNames or {}
+	run.replyNames[name:lower()] = chat.id
+	local ok = pcall(setLastTell, name, "WHISPER")
+	if ok then run.replyTarget = name end
+	return ok
+end
+
 function Whisper.TabChat(eb)
 	if not WhisperOn() or type(eb) ~= "table" then return nil end
 	local frame = eb.chatFrame or (eb.GetParent and eb:GetParent())
@@ -2379,9 +2417,13 @@ function Whisper.TabChat(eb)
 end
 
 function Whisper.ChatForBox(eb)
-	if not WhisperOn() or type(eb) ~= "table" or not eb.GetAttribute then return nil end
+	if type(eb) ~= "table" or not eb.GetAttribute then return nil end
 	if eb:GetAttribute("chatType") ~= "WHISPER" then return nil end
-	return Whisper.TabChat(eb) or WhisperAgentChat(eb:GetAttribute("tellTarget"))
+	local target = eb:GetAttribute("tellTarget")
+	local replied = ReplyNameChat(target)
+	if replied then return replied end
+	if not WhisperOn() then return nil end
+	return Whisper.TabChat(eb) or WhisperAgentChat(target)
 end
 
 function Whisper.Intercept(eb, layer)
@@ -2416,11 +2458,13 @@ end
 -- A whisper that got out comes back as this system message: make it a loud
 -- leak report instead of a line that looks like the game's business.
 local function WhisperLeakFilter(_, _, msg, ...)
-	if not WhisperOn() then return false end
+	if not db then return false end
 	local name = WhisperNotFoundName(msg)
 	if not name then return false end
 	name = name:lower()
-	local ours = name == WHISPER_PROBE_NAME:lower()
+	local ours = ReplyNameChat(name) ~= nil or (run.replyTarget and run.replyTarget:lower() == name)
+	if not ours and not WhisperOn() then return false end
+	ours = ours or name == WHISPER_PROBE_NAME:lower()
 	for _, c in ipairs(db.chats) do
 		if ChatAgentName(c):lower() == name then ours = true end
 	end
@@ -2453,6 +2497,7 @@ function Whisper.Status()
 	return "whisper tabs: " .. (WhisperOn() and "on" or "off") .. ", " .. tabs .. " open, send hook: " .. (preSendHooked and "pre-send" or "MISSING")
 		.. ", sends swallowed: " .. (run.whisperSwallowed or 0)
 		.. ", LEAKS: " .. (run.whisperLeaks or 0) .. (run.whisperError and (", last open error: " .. run.whisperError) or "")
+		.. ", /r: " .. (run.replyTarget or "the game's last whisper")
 end
 
 -- opts.vision asks for a picture of the screen with this one message, whatever
@@ -3702,6 +3747,7 @@ function ClaudeWoW.Notify(chat, text, agent, summary, role, denied, msgId, macro
 	if ClaudeWoWVoice then ClaudeWoWVoice.Reply(role, denied) end
 	ClaudeWoW.UpdateMini()
 	run.lastReplyChat = chat.id
+	Whisper.OfferReply(chat)
 	if not Whisper.Reply(chat, text, agent, role, denied, summary, msgId, macros) then
 		EchoToChat(chat, text, agent, summary)
 	end
@@ -4406,6 +4452,7 @@ local HELP = table.concat({
 	"/claude diag                       transport diagnostics",
 	"/claude hide | mini                hide the window, or collapse it to the small bar",
 	"/claude help                       this list",
+	"/r <text>                          reply to the chat that answered last, until a real player whispers you",
 	"/w <agent> <text>                  send to that agent's chat when whisper tabs are on",
 	"A command word followed by something it does not take is a message: /claude delete the unused imports starts a new chat with that text.",
 }, "\n")
@@ -5535,7 +5582,7 @@ ev:SetScript("OnEvent", function(self, event, arg1)
 		end
 		ClaudeWoW.Render()
 		InstallChatHooks()
-		if db.settings.whisper then Whisper.Install() end
+		Whisper.Install()
 		if db.settings.shown then
 			if db.settings.minimized or Whisper.Active() then
 				ClaudeWoW.Minimize(true)
