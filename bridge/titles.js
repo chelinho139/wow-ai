@@ -2,10 +2,11 @@
 const PR = require('./procs');
 
 const DEFAULT_TITLE_MODEL = 'claude-haiku-4-5';
-const TITLE_MAX = 32;
+const TITLE_MAX = 24;
 const TITLE_INPUT_MAX = 2000;
 const TITLE_TIMEOUT_MS = 30000;
-const TITLE_SYSTEM = 'You name chat threads. Reply with only a title of 2 to 5 words for the conversation that starts with the user\'s message. Use title case. No quotes, no emoji, no trailing punctuation, nothing else.';
+const TITLE_SYSTEM = 'You name chat threads. Reply with only a title of 2 to 4 words for the conversation that starts with the user\'s message. Use title case. No quotes, no emoji, no trailing punctuation, nothing else.';
+const live = new Set();
 
 function titleModel(cfg) {
   if (cfg && cfg.titleModel === false) return '';
@@ -13,10 +14,9 @@ function titleModel(cfg) {
   return DEFAULT_TITLE_MODEL;
 }
 
-function titleArgs(model, text) {
+function titleArgs(model) {
   return ['-p', '--model', model, '--output-format', 'text', '--tools', '', '--no-session-persistence',
-    '--strict-mcp-config', '--setting-sources', '', '--system-prompt', TITLE_SYSTEM,
-    String(text || '').slice(0, TITLE_INPUT_MAX)];
+    '--strict-mcp-config', '--setting-sources', '', '--system-prompt', TITLE_SYSTEM];
 }
 
 function cleanTitle(raw) {
@@ -35,16 +35,24 @@ function generateTitle({ file, args = [], model, text, cwd, env, timeoutMs = TIT
       if (done) return;
       done = true;
       clearTimeout(timer);
+      live.delete(child);
       resolve(title);
     };
     const timer = setTimeout(() => { if (child) PR.killTree(child); end(''); }, timeoutMs);
     try {
-      child = PR.spawnChild(file, [...args, ...titleArgs(model, text)], { cwd, env, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+      child = PR.spawnChild(file, [...args, ...titleArgs(model)], { cwd, env, windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] });
     } catch { end(''); return; }
+    live.add(child);
+    child.stdin.on('error', () => {});
+    child.stdin.end(String(text || '').slice(0, TITLE_INPUT_MAX));
     child.stdout.on('data', d => { out += d; });
     child.on('error', () => end(''));
     child.on('close', code => end(code === 0 ? cleanTitle(out) : ''));
   });
 }
 
-module.exports = { DEFAULT_TITLE_MODEL, TITLE_MAX, titleModel, titleArgs, cleanTitle, generateTitle };
+function titleChildren() {
+  return [...live];
+}
+
+module.exports = { DEFAULT_TITLE_MODEL, TITLE_MAX, titleModel, titleArgs, cleanTitle, generateTitle, titleChildren };

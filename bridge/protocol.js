@@ -764,6 +764,7 @@ function luaTable(globalName, records, opts = {}) {
     if (r.plugin) lines.push(`\t\t\tplugin = ${luaStr(r.plugin)},`);
     if (r.summary) lines.push(`\t\t\tsummary = ${luaStr(r.summary)},`);
     if (r.title) lines.push(`\t\t\ttitle = ${luaStr(r.title)},`);
+    if (r.title && Number(r.titleFor) > 0) lines.push(`\t\t\ttitleFor = ${Math.floor(Number(r.titleFor))},`);
     if (r.late) lines.push('\t\t\tlate = true,');
     if (r.lateOk) lines.push('\t\t\tlateOk = true,');
     // Context growth (noteUsage): only on a final record, and only what is known.

@@ -407,7 +407,7 @@ function shutdown(sig) {
   if (shuttingDown) return;
   shuttingDown = true;
   stopPlugins();
-  const kids = [...running.values()].map(r => r.child).filter(Boolean);
+  const kids = [...running.values()].map(r => r.child).concat(T.titleChildren()).filter(Boolean);
   if (captureChild) kids.push(captureChild);
   const n = kids.filter(PR.alive).length;
   log(`${sig}: stopping${n ? `; ending ${n} child process${n === 1 ? '' : 'es'} (SIGTERM, SIGKILL after ${KILL_GRACE_MS} ms)` : ''}`);
@@ -417,7 +417,7 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 function crash(kind, err) {
   try { log(`CRASH (${kind}): ${err && err.stack ? err.stack : err}`); } catch {}
-  const kids = [...running.values()].map(r => r.child).concat(captureChild ? [captureChild] : []).filter(Boolean);
+  const kids = [...running.values()].map(r => r.child).concat(T.titleChildren(), captureChild ? [captureChild] : []).filter(Boolean);
   for (const child of kids) { try { if (process.platform !== 'win32') process.kill(-child.pid, 'SIGKILL'); else child.kill('SIGKILL'); } catch {} }
   process.exit(70);
 }
@@ -635,7 +635,8 @@ function publishNow(urgent = true, { refresh = false } = {}) {
 // Final results publish immediately; progress is throttled. `key` is the chat
 // (record.session is the agent's session id, a different thing).
 function publish(key, record, urgent) {
-  if (!record.title && titles.has(record.id)) record.title = titles.get(record.id);
+  const named = titles.get(key);
+  if (named && !record.title) { record.title = named.title; record.titleFor = named.id; }
   live.set(key, record);
   if (urgent) { if (publishTimer) { clearTimeout(publishTimer); publishTimer = null; } publishNow(); return; }
   const wait = (cfg.progressWriteMs || 3000) - (Date.now() - lastPublish);
@@ -1311,19 +1312,23 @@ function nameChat(job, key) {
   const claude = A.resolveCommand('claude', A.agentConfig(cfg, 'claude'));
   if (!claude.found) { log(`#${job.id} title: claude not found, the chat keeps its first words`); return; }
   try { fs.mkdirSync(TMP_DIR, { recursive: true }); } catch {}
-  job.titlePending = T.generateTitle({ file: claude.file, args: claude.args, model, text: job.text, cwd: TMP_DIR, env: { ...process.env } }).then(title => {
+  titles.delete(key);
+  job.titlePending = T.generateTitle({ file: claude.file, args: claude.args, model, text: job.text, cwd: TMP_DIR, env: A.AGENTS.claude.env({ ...process.env }) }).then(title => {
     if (!title) { log(`#${job.id} title: ${model} gave none`); return; }
-    titles.set(job.id, title);
+    titles.set(key, { id: job.id, title });
     while (titles.size > TITLES_KEPT) titles.delete(titles.keys().next().value);
     log(`#${job.id} title (${model}): ${title}`);
+    const kept = transcripts.chats[job.chat];
+    if (kept && (!kept.name || kept.name === job.name)) { kept.name = title; saveTranscripts(); }
     const rec = live.get(key);
-    if (rec && rec.id === job.id) publish(key, { ...rec, title }, true);
+    if (rec) publish(key, { ...rec, title: '' }, true);
   });
 }
 
 function finish(job, status, text, session, denied) {
   if (job.finished) return; // spawn failures fire both 'error' and 'close'
-  if (job.titlePending && !job.titleWaited && !titles.has(job.id)) {
+  const named = titles.get(chatKey(job));
+  if (status === 'done' && job.titlePending && !job.titleWaited && !(named && named.id === job.id)) {
     job.titleWaited = true;
     const go = () => finish(job, status, text, session, denied);
     Promise.race([job.titlePending, new Promise(r => setTimeout(r, TITLE_WAIT_MS))]).then(go, go);
