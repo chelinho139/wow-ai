@@ -3515,7 +3515,7 @@ function ClaudeWoW.Render()
 			else
 				Place("system", Whisper.Active()
 					and ("Nothing here yet. Type below and press Enter, or talk to " .. ChatAgentName(c) .. " in its chat tab: this window is the full record, the tab is the everyday way in. Shift-click an item, spell or quest to link it. /claude help lists the commands.")
-					or "Click the box below and type to start. Shift-click an item, spell or quest to link it into your message. /claude help lists the commands. From the game chat, /claude <text> starts a new chat with that message, /claude -c <text> and /r continue the current one.", "", true)
+					or "Click the box below and type to start. Shift-click an item, spell or quest to link it into your message. /claude help lists the commands. From the game chat, /claude <text> starts a new chat with that message, /claude -c <text> continues the current one.", "", true)
 			end
 		end
 		for i = n + 1, #ui.bubbles do
@@ -3701,8 +3701,6 @@ function ClaudeWoW.Notify(chat, text, agent, summary, role, denied, msgId, macro
 	pcall(PlaySound, 3081)
 	if ClaudeWoWVoice then ClaudeWoWVoice.Reply(role, denied) end
 	ClaudeWoW.UpdateMini()
-	-- Until a real whisper arrives, /r replies to this chat.
-	run.lastMessenger = "agent"
 	run.lastReplyChat = chat.id
 	if not Whisper.Reply(chat, text, agent, role, denied, summary, msgId, macros) then
 		EchoToChat(chat, text, agent, summary)
@@ -3721,90 +3719,13 @@ function ClaudeWoW.SystemNote(text)
 	ClaudeWoW.Render()
 end
 
-local AGENT_R, AGENT_G, AGENT_B = 0.49, 0.78, 1.0
-
-local agentReply = setmetatable({}, { __mode = "k" })
-local agentPainting = setmetatable({}, { __mode = "k" })
-local replyHooked = setmetatable({}, { __mode = "k" })
-
-local function PaintAgentHeader(eb, chat)
-	local header = _G[eb:GetName() .. "Header"]
-	local suffix = _G[eb:GetName() .. "HeaderSuffix"]
-	if not header then return end
-	agentPainting[eb] = true
-	pcall(eb.UpdateHeader, eb)
-	agentPainting[eb] = nil
-	header:SetWidth(0)
-	header:SetText("To " .. ChatAgentName(chat) .. " [" .. Display(chat.name) .. "]: ")
-	header:SetTextColor(AGENT_R, AGENT_G, AGENT_B)
-	if suffix then suffix:Hide() end
-	eb:SetTextInsets(15 + header:GetWidth(), 13, 0, 0)
-	eb:SetTextColor(AGENT_R, AGENT_G, AGENT_B)
-end
-
-local function ReplyToAgent(chatId, text)
-	local chat = FindChat(chatId)
-	if chat and db.activeChat ~= chat.id then ClaudeWoW.SwitchChat(chat.id) end
-	if text ~= "" then
-		ClaudeWoW.Send(text)
-	elseif not Whisper.Active() then
-		ClaudeWoW.OpenWorkspace(nil, true)
-	end
-end
-
-local function AfterProcessChatType(eb, msg, index, send)
-	if index ~= "REPLY" or not (db and run.lastMessenger == "agent") then
-		agentReply[eb] = nil
-		return
-	end
-	local chat = FindChat(run.lastReplyChat) or ActiveChat()
-	if not chat then return end
-	if send == 1 then
-		agentReply[eb] = { chat = chat.id, text = Trim(msg or "") }
-		return
-	end
-	if eb:GetText() ~= (msg or "") then eb:SetText(msg or "") end
-	agentReply[eb] = { chat = chat.id }
-	PaintAgentHeader(eb, chat)
-end
-
 local function OnPreSendText(_, eb)
 	if not db or type(eb) ~= "table" then return end
-	local reply = agentReply[eb]
-	if reply then
-		agentReply[eb] = nil
-		local text = Trim(eb:GetText() or "")
-		if text == "" then text = reply.text or "" end
-		eb:SetText("")
-		ReplyToAgent(reply.chat, text)
-		return
-	end
 	Whisper.Intercept(eb, "pre-send")
-end
-
-local function HookReplyCommand()
-	for i = 1, (NUM_CHAT_WINDOWS or 10) do
-		local eb = _G["ChatFrame" .. i .. "EditBox"]
-		if eb and not replyHooked[eb] and type(eb.ProcessChatType) == "function" then
-			replyHooked[eb] = true
-			hooksecurefunc(eb, "ProcessChatType", AfterProcessChatType)
-			if type(eb.UpdateHeader) == "function" then
-				hooksecurefunc(eb, "UpdateHeader", function(self)
-					if not agentPainting[self] then agentReply[self] = nil end
-				end)
-			end
-			if type(eb.ClearChat) == "function" then
-				hooksecurefunc(eb, "ClearChat", function(self)
-					agentReply[self] = nil
-				end)
-			end
-		end
-	end
 end
 
 local function InstallChatHooks()
 	Whisper.HookPreSend(OnPreSendText)
-	HookReplyCommand()
 end
 
 function Cli.Split(s)
@@ -4485,7 +4406,7 @@ local HELP = table.concat({
 	"/claude diag                       transport diagnostics",
 	"/claude hide | mini                hide the window, or collapse it to the small bar",
 	"/claude help                       this list",
-	"/r <text>                          reply to the agent when it was the last to message you (else a normal whisper reply)",
+	"/w <agent> <text>                  send to that agent's chat when whisper tabs are on",
 	"A command word followed by something it does not take is a message: /claude delete the unused imports starts a new chat with that text.",
 }, "\n")
 
@@ -5568,8 +5489,6 @@ ev:RegisterEvent("ADDON_LOADED")
 ev:RegisterEvent("PLAYER_LOGIN")
 ev:RegisterEvent("PLAYER_REGEN_ENABLED")
 ev:RegisterEvent("UPDATE_MACROS")
-ev:RegisterEvent("CHAT_MSG_WHISPER")
-ev:RegisterEvent("CHAT_MSG_BN_WHISPER")
 ev:RegisterEvent("SCREENSHOT_SUCCEEDED")
 ev:RegisterEvent("SCREENSHOT_FAILED")
 ev:RegisterEvent("PLAYER_LOGOUT")
@@ -5589,9 +5508,6 @@ ev:SetScript("OnEvent", function(self, event, arg1)
 	elseif event == "PLAYER_LOGOUT" then
 		-- The player's screenshot format goes back before the client saves its CVars.
 		if db then ScreenshotCVarsOff() end
-	elseif event == "CHAT_MSG_WHISPER" or event == "CHAT_MSG_BN_WHISPER" then
-		-- A real person whispered: /r belongs to them again.
-		run.lastMessenger = "player"
 	elseif event == "PLAYER_LOGIN" then
 		if not db then InitDB() end
 		BuildUI()
