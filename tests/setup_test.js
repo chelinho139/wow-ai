@@ -124,7 +124,7 @@ for (const oldName of P.OLD_ADDONS) {
     assert.equal(dest, path.join(addons, P.ADDON));
     assert.ok(copied >= 4);
     assert.ok(fs.existsSync(path.join(dest, `${P.ADDON}.toc`)));
-    assert.match(fs.readFileSync(path.join(dest, `${P.ADDON}.toc`), 'utf8'), new RegExp(`^## SavedVariables: ${P.ADDON}DB, ${P.ADDON}MapDB, ${P.ADDON}WidgetDB, ${P.ADDON}NpcDB$`, 'm'),
+    assert.match(fs.readFileSync(path.join(dest, `${P.ADDON}.toc`), 'utf8'), new RegExp(`^## SavedVariables: ${P.ADDON}DB, ${P.ADDON}MapDB, ${P.ADDON}WidgetDB$`, 'm'),
       'the .toc declares the globals the migrated file now holds');
     if (process.platform !== 'win32') {
       assert.equal(fs.statSync(newFile).mode & 0o777, 0o777, 'the migrated SavedVariables file matches the game install');

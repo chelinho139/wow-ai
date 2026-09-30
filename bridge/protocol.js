@@ -385,12 +385,8 @@ function visionHint(image) {
 // messagePrompt). Sent while the addon sends a context at all.
 const SITUATION_RULE = 'A message may open with a block marked as the player\'s in-game situation, reported by the addon the moment they wrote it (not written by them): character, zone, map coordinates, money, professions, quest log. Use it when the request is about the game or the character (questions, macros, addon code, gear advice); ignore it when the task is unrelated. Every message carries a fresh one, so the latest block is where they are now. Items, spells or quests the player shift-clicked into a message appear as [Name] in the text, with their tooltip in a "Linked from the game" block at the end of the message.';
 
-// Where things are in the player's game. WoW Forever (interface 16xxx) is its
-// own game: web databases describe retail or Classic and send the agent to the
-// wrong spot, so in-game records come first (addon/ClaudeWoW/Sightings.lua).
 const WHERE_HINT = [
   'The situation block\'s "Game:" line names the client. World of Warcraft: Forever is its own game: its NPCs, quests, drops and spawns can differ from retail and from Classic, so web databases and wikis (Wowhead and the like) are unverified guides there.',
-  'To say where an NPC, vendor, trainer or flight master is, look in this order: the "NPCs seen on this map" line of the situation block; then the ClaudeWoWNpcDB table in the saved-variables file named by the CLAUDE_WOW_SAVED_VARIABLES environment variable (npcs[npcID] = { name, spots = { [uiMapID] = { x, y, exact, role } } } and flights[uiMapID][name] = { x, y }: every NPC the player has talked to or seen, as of their last /reload or logout); then the quest log. Only then the web, preferring Classic Era sources, and say the spot is unverified and that talking to the NPC once records it.',
   'Coordinates are percent of the map with that uiMapID, 0 to 100, with 0,0 at the top left; give them as "x, y" and mark the spot on the map as well.',
 ];
 
