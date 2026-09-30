@@ -1402,7 +1402,12 @@ local function ApplyReplies(replies)
 			c.titleFor = nil
 			Whisper.Retitle(c)
 		end
-		if c and c.pendingId and r.id == c.pendingId then
+		if c and r.late == true then
+			if r.status == "done" and r.id ~= c.pendingId and (tonumber(c.lateSeen) or 0) < (tonumber(r.id) or 0) then
+				c.lateSeen = r.id
+				ClaudeWoW.LateReply(c, r)
+			end
+		elseif c and c.pendingId and r.id == c.pendingId then
 			matched = true
 			MarkAcked(r.id)
 			local denied = type(r.denied) == "table" and #r.denied > 0 and r.denied or nil
@@ -1415,6 +1420,10 @@ local function ApplyReplies(replies)
 			if r.status == "done" then
 				Finish(c, "assistant", r.text or "", denied, r.agent, r.summary, ClaudeWoW.CleanMacros(r.macros))
 			elseif r.status == "error" then
+				if r.lateOk == true then
+					run.lateWait = run.lateWait or {}
+					run.lateWait[c.id] = { id = r.id, since = GetTime(), step = 1 }
+				end
 				Finish(c, "system", "Bridge error: " .. tostring(r.text), denied)
 			elseif r.status == "working" then
 				if ClaudeWoWVoice then ClaudeWoWVoice.Started(r.id) end
@@ -1528,6 +1537,21 @@ local function TryLoadSlot(why)
 	ClaudeWoW.Render()
 end
 
+local LATE_POLLS = { 10, 20, 30, 45, 60, 90, 120, 180, 240, 300 }
+
+local function PollLate(now)
+	for chatId, w in pairs(run.lateWait or {}) do
+		local due = LATE_POLLS[w.step]
+		if not due or not FindChat(chatId) then
+			run.lateWait[chatId] = nil
+		elseif now - w.since >= due then
+			w.step = w.step + 1
+			TryLoadSlot("late")
+			return
+		end
+	end
+end
+
 local function Tick()
 	if not db then return end
 	local now = GetTime()
@@ -1622,7 +1646,10 @@ local function Tick()
 		RefreshStrip()
 		ClaudeWoW.UpdateStatus()
 	end
-	if not AnyPending() then return end
+	if not AnyPending() then
+		PollLate(now)
+		return
+	end
 	local moved = false
 	for _, c in ipairs(db.chats) do
 		if c.pendingId and PollActivity(c) then moved = true end
@@ -1685,6 +1712,17 @@ Finish = function(chat, role, text, denied, agent, summary, macros)
 	if chat.draft and chat.draft ~= "" and not visible then
 		Whisper.System(chat, "Waiting to go: " .. Flat(chat.draft) .. "  " .. Link("send", chat.id, "send it", "55ff55"), false, true)
 	end
+end
+
+function ClaudeWoW.LateReply(chat, r)
+	local text = type(r.text) == "string" and r.text or ""
+	local agent = type(r.agent) == "string" and r.agent ~= "" and r.agent or nil
+	if run.lateWait then run.lateWait[chat.id] = nil end
+	AddHistory(chat, "assistant", text, r.id, nil, agent)
+	local visible = ui.frame and ui.frame:IsShown() and db.activeChat == chat.id
+	if not visible and not Whisper.Active() then chat.unread = (chat.unread or 0) + 1 end
+	ClaudeWoW.Render()
+	ClaudeWoW.Notify(chat, text, agent, r.summary, "assistant", nil, r.id, nil)
 end
 
 ---------------------------------------------------------------------------
@@ -1810,6 +1848,8 @@ function ClaudeWoW.GameContext()
 	if x and y and (x > 0 or y > 0) then
 		local where = (mapName and mapName ~= zone) and (" on " .. mapName) or ""
 		table.insert(lines, string.format("Position: %.1f, %.1f%s%s", x * 100, y * 100, where, mapId and (" (map " .. mapId .. ")") or ""))
+		local seen = ClaudeWoWSightings and Try(ClaudeWoWSightings.ContextLine, mapId, x * 100, y * 100)
+		if seen then table.insert(lines, seen) end
 	end
 
 	local progress = {}
@@ -2797,6 +2837,10 @@ function ClaudeWoW.ApplySessions(list, now)
 				chat = type(e.chat) == "string" and e.chat or "",
 				at = tonumber(e.at) or 0,
 				live = e.live == true,
+				running = e.running == true or e.live == true,
+				title = type(e.title) == "string" and e.title or "",
+				branch = type(e.branch) == "string" and e.branch or "",
+				restart = type(e.restart) == "string" and e.restart or "",
 			})
 		end
 	end
@@ -3445,6 +3489,24 @@ function ClaudeWoW.UpdateStatus()
 	ClaudeWoW.UpdateMini()
 end
 
+local PICKER_ROW_HEIGHT = 20
+
+local function GetPickerRow(b, k)
+	local rb = b.rowBtns[k]
+	if rb then return rb end
+	rb = CreateFrame("Button", nil, b)
+	rb:SetHeight(PICKER_ROW_HEIGHT - 2)
+	rb.label = rb:CreateFontString(nil, "OVERLAY", "ChatFontNormal")
+	rb.label:SetPoint("LEFT", rb, "LEFT", 4, 0)
+	rb.label:SetPoint("RIGHT", rb, "RIGHT", -4, 0)
+	rb.label:SetJustifyH("LEFT")
+	rb.label:SetWordWrap(false)
+	rb:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight", "ADD")
+	rb:SetScript("OnClick", function(self) ClaudeWoW.PickRow(self.row) end)
+	b.rowBtns[k] = rb
+	return rb
+end
+
 -- One message bubble: accent bar, colored label, timestamp, wrapped body.
 local function GetBubble(i)
 	local b = ui.bubbles[i]
@@ -3482,6 +3544,7 @@ local function GetBubble(i)
 	b.fresh:SetScript("OnClick", function() ClaudeWoW.NewChat() end)
 	b.fresh:Hide()
 	b.macroBtns = {}
+	b.rowBtns = {}
 	-- FontStrings can't be selected, so a click opens the message in the copy box.
 	b:EnableMouse(true)
 	b:SetScript("OnMouseUp", function(self, button)
@@ -3498,7 +3561,7 @@ function ClaudeWoW.Render()
 		if not width or width < 80 then width = 400 end
 		ui.content:SetWidth(width)
 		local y, n = 0, 0
-		local function Place(role, text, when, dim, denied, agent, macros, newChat)
+		local function Place(role, text, when, dim, denied, agent, macros, newChat, picker)
 			n = n + 1
 			local b = GetBubble(n)
 			local st = ROLE_STYLE[role] or ROLE_STYLE.system
@@ -3566,6 +3629,19 @@ function ClaudeWoW.Render()
 				shownMacros = k
 			end
 			for k = shownMacros + 1, #b.macroBtns do b.macroBtns[k]:Hide() end
+			local shownRows = 0
+			for k, row in ipairs(picker or {}) do
+				local rb = GetPickerRow(b, k)
+				rb.row = row
+				rb.label:SetText(row.text or "")
+				rb:SetWidth(width - 24)
+				rb:ClearAllPoints()
+				rb:SetPoint("TOPLEFT", b.body, "BOTTOMLEFT", 0, -4 - extra)
+				rb:Show()
+				extra = extra + PICKER_ROW_HEIGHT
+				shownRows = k
+			end
+			for k = shownRows + 1, #b.rowBtns do b.rowBtns[k]:Hide() end
 			b:SetHeight(6 + 12 + 4 + h + 8 + extra)
 			b:ClearAllPoints()
 			b:SetPoint("TOPLEFT", ui.content, "TOPLEFT", 0, -y)
@@ -3577,7 +3653,8 @@ function ClaudeWoW.Render()
 		for i, m in ipairs(c.history) do
 			-- The Allow button only makes sense on the newest reply, and only while idle.
 			local denied = (i == last and not c.pendingId and type(m.denied) == "table" and #m.denied > 0) and m.denied or nil
-			Place(m.role, m.text, m.t and date("%H:%M", m.t) or "", false, denied, m.agent, m.macros, m.newChat)
+			local picker = type(m.picker) == "table" and #m.picker > 0 and m.picker or nil
+			Place(m.role, picker and m.head or m.text, m.t and date("%H:%M", m.t) or "", false, denied, m.agent, m.macros, m.newChat, picker)
 		end
 		if c.pendingId then
 			local p = c.progress
@@ -5251,7 +5328,7 @@ end
 HELP = table.concat({
 	"/claude <text>                     start a new chat with that message, like claude \"<text>\" in a terminal. Bare /claude in the game chat opens the workspace window; in a chat's tab it starts a new chat",
 	"/claude -c [text]                  continue the current chat (--continue); alone it points at its tab (with the tabs off, it opens the window on it)",
-	"/claude -r [id|name|n] [text]      resume a session (--resume). A Claude Code session running in a terminal gets the chat live; any other session is resumed headless in its folder. Bare -r lists the running and recent sessions: click one or give its number",
+	"/claude -r [id|name|n] [text]      resume a session (--resume). A Claude Code session started with the claude-wow channel gets the chat live; any other session is resumed headless in its folder. Bare -r lists the sessions (live ones first, marked live, running not listening, or resume): click a row or give its number; -r more lists them all",
 	"/claude -n <name> [text]           name the new chat (--name); with -c it renames the current one",
 	"/claude --model <model> [text]     the model for the chat (opus, sonnet, a full model name)",
 	"/claude --effort <level> [text]    low, medium, high, xhigh or max",
@@ -5830,70 +5907,185 @@ function Cli.LastActivity(ch)
 	return (last and last.t) or ch.created or 0
 end
 
+Cli.PICKER_ROWS = 8
+Cli.TITLE_MAX = 48
+Cli.BADGES = {
+	live = { "live", "55ff55" },
+	deaf = { "running, not listening", "ff9933" },
+	resume = { "resume", "aaaaaa" },
+}
+
 function Cli.SessionEntries()
-	local list, seen = {}, {}
+	local live, deaf, rest, seen, seenId = {}, {}, {}, {}, {}
 	for _, e in ipairs(run.bridgeSessions or {}) do
-		local chat = e.chat ~= "" and FindChat(e.chat) or nil
-		for _, ch in ipairs(db.chats) do
-			if not chat and e.id ~= "" and (ch.session == e.id or ch.resumeId == e.id) and not e.live then chat = ch end
-			if not chat and e.live and ch.liveTarget and (ch.liveTarget == e.id or ch.liveTarget:lower() == e.name:lower()) then chat = ch end
-		end
-		if not (chat and seen[chat.id]) then
-			table.insert(list, {
-				kind = e.live and "live" or (chat and "chat" or "headless"),
-				id = e.id, name = chat and chat.name or e.name, cwd = e.cwd, agent = e.agent, plugin = e.plugin,
-				at = e.at, live = e.live, chat = chat and chat.id or nil,
-			})
-			if chat then seen[chat.id] = true end
+		if e.id == "" or not seenId[e.id] then
+			if e.id ~= "" then seenId[e.id] = true end
+			local alias = e.name
+			local chat = e.chat ~= "" and FindChat(e.chat) or nil
+			for _, ch in ipairs(db.chats) do
+				if not chat and e.id ~= "" and (ch.session == e.id or ch.resumeId == e.id) and not e.running then chat = ch end
+				if not chat and e.running and ch.liveTarget and (ch.liveTarget == e.id or ch.liveTarget:lower() == alias:lower()) then chat = ch end
+			end
+			if not (chat and seen[chat.id]) then
+				local kind = e.live and "live" or (e.running and "deaf" or (chat and "chat" or "headless"))
+				local title = e.title ~= "" and e.title or e.name
+				local entry = {
+					kind = kind, id = e.id, name = (chat and not e.running) and chat.name or title, alias = alias,
+					cwd = e.cwd, branch = e.branch, agent = e.agent, plugin = e.plugin, at = e.at,
+					live = e.live, running = e.running, restart = e.restart, chat = chat and chat.id or nil,
+				}
+				table.insert(kind == "live" and live or (kind == "deaf" and deaf or rest), entry)
+				if chat then seen[chat.id] = true end
+			end
 		end
 	end
 	for _, ch in ipairs(db.chats) do
 		if not seen[ch.id] then
-			table.insert(list, { kind = "chat", id = ch.session or "", name = ch.name, cwd = ch.cwd or "", agent = ch.agent or "", at = Cli.LastActivity(ch), chat = ch.id })
+			table.insert(rest, { kind = "chat", id = ch.session or "", name = ch.name, cwd = ch.cwd or "", branch = "", agent = ch.agent or "", at = Cli.LastActivity(ch), chat = ch.id })
 		end
+	end
+	for i, e in ipairs(rest) do e.order = i end
+	table.sort(rest, function(a, b)
+		local x, y = tonumber(a.at) or 0, tonumber(b.at) or 0
+		if x ~= y then return x > y end
+		return a.order < b.order
+	end)
+	local list = {}
+	for _, group in ipairs({ live, deaf, rest }) do
+		for _, e in ipairs(group) do table.insert(list, e) end
 	end
 	return list
 end
 
-function Cli.EntryLine(i, e)
-	local parts = {}
-	if e.live then table.insert(parts, "[running]") end
-	table.insert(parts, Display(e.name ~= "" and e.name or (e.id ~= "" and e.id:sub(1, 8) or "?")))
-	if e.cwd and e.cwd ~= "" then table.insert(parts, Display(e.cwd)) end
-	if e.id and e.id ~= "" then table.insert(parts, e.id:sub(1, 8)) end
-	if e.at and e.at > 0 then table.insert(parts, Cli.Age(e.at)) end
-	if e.chat and e.chat == db.activeChat then table.insert(parts, "(this chat)") end
-	return i .. ". " .. table.concat(parts, "  ")
+function Cli.Badge(e)
+	if e.kind == "live" then return Cli.BADGES.live end
+	if e.kind == "deaf" then return Cli.BADGES.deaf end
+	return Cli.BADGES.resume
 end
 
-function ClaudeWoW.ShowResumePicker(entries, header)
+function Cli.EntryParts(e)
+	local title = Flat(e.name ~= "" and e.name or (e.id ~= "" and e.id:sub(1, 8) or "?"))
+	if #title > Cli.TITLE_MAX then title = title:sub(1, Cli.TITLE_MAX - 3) .. "..." end
+	local where = Display(FolderName(e.cwd or ""))
+	if (e.branch or "") ~= "" then where = (where ~= "" and (where .. " ") or "") .. "(" .. Display(e.branch) .. ")" end
+	local meta = {}
+	if where ~= "" then table.insert(meta, where) end
+	if e.at and e.at > 0 then table.insert(meta, Cli.Age(e.at)) end
+	local current = e.chat ~= nil and e.chat == db.activeChat
+	return title, table.concat(meta, " " .. SEG_DOT .. " "), Cli.Badge(e), current
+end
+
+function Cli.EntryLine(i, e)
+	local title, meta, badge, current = Cli.EntryParts(e)
+	local parts = { title }
+	if meta ~= "" then table.insert(parts, meta) end
+	table.insert(parts, badge[1])
+	return i .. ". " .. table.concat(parts, " " .. SEG_DOT .. " ") .. (current and " (this chat)" or "")
+end
+
+function Cli.EntryRich(i, e)
+	local title, meta, badge, current = Cli.EntryParts(e)
+	return "|cff7ec8ff[" .. i .. "]|r " .. title
+		.. (meta ~= "" and (" |cff888888" .. SEG_DOT .. " " .. meta .. "|r") or "")
+		.. " |cff" .. badge[2] .. badge[1] .. "|r"
+		.. (current and " |cffffd100(this chat)|r" or "")
+end
+
+function Cli.EntryLink(i, e)
+	return "|H" .. LINK_PREFIX .. "resume:" .. i .. "|h" .. Cli.EntryRich(i, e) .. "|h"
+end
+
+function Cli.EntryCopy(e)
+	local copy = {}
+	for k, v in pairs(e) do
+		if type(v) ~= "table" and type(v) ~= "function" then copy[k] = v end
+	end
+	return copy
+end
+
+function Cli.MoreRich(left)
+	return "|cff7ec8ff[more]|r |cff888888" .. left .. " older session" .. (left == 1 and "" or "s") .. "|r"
+end
+
+function ClaudeWoW.ShowResumePicker(entries, header, all)
 	entries = entries or Cli.SessionEntries()
 	run.resumeList = entries
 	local c = ActiveChat()
-	local lines = { header or "Sessions (/claude -r <n> [text] picks one; a [running] one gets the chat live, any other is resumed in its folder):" }
-	for i, e in ipairs(entries) do table.insert(lines, Cli.EntryLine(i, e)) end
-	if #entries == 0 then table.insert(lines, "none yet") end
-	local live = run.bridgeLive
-	if live and #live.sessions == 0 and live.start ~= "" then
-		table.insert(lines, "To run a terminal session the game can attach to, start Claude Code with: " .. live.start)
+	header = header or "Sessions: click one to attach this chat, or /claude -r <n>."
+	local shown = all and #entries or math.min(#entries, Cli.PICKER_ROWS)
+	local left = #entries - shown
+	local lines, rows = { header }, {}
+	for i = 1, shown do
+		local e = entries[i]
+		table.insert(lines, Cli.EntryLine(i, e))
+		table.insert(rows, { text = Cli.EntryRich(i, e), entry = Cli.EntryCopy(e) })
 	end
+	if #entries == 0 then table.insert(lines, "No sessions yet.") end
+	if left > 0 then
+		table.insert(lines, "[more] " .. left .. " older session" .. (left == 1 and "" or "s") .. ": /claude -r more")
+		table.insert(rows, { text = Cli.MoreRich(left), more = true })
+	end
+	local live = run.bridgeLive
+	local startHint = live and #live.sessions == 0 and live.start ~= "" and ("No session is listening to the game. Start one with: " .. live.start) or nil
+	if startHint then table.insert(lines, startHint) end
 	AddHistory(c, "system", table.concat(lines, "\n"))
-	Cli.emitted[c.history[#c.history]] = true
+	local m = c.history[#c.history]
+	m.picker = rows
+	m.head = header .. (startHint and ("\n" .. startHint) or "")
+	Cli.emitted[m] = true
 	ClaudeWoW.Render()
 	if not Whisper.Active() then ClaudeWoW.Toggle(true) end
-	ClaudeWoW.Print(header or "Sessions, click one to attach:")
-	for i, e in ipairs(entries) do
-		ClaudeWoW.Print(Link("resume", tostring(i), tostring(i)) .. " " .. Cli.EntryLine(i, e):gsub("^%d+%.%s+", ""))
+	ClaudeWoW.Print(Display(header))
+	for i = 1, shown do ClaudeWoW.Print(Cli.EntryLink(i, entries[i])) end
+	if #entries == 0 then ClaudeWoW.Print("No sessions yet.") end
+	if left > 0 then ClaudeWoW.Print("|H" .. LINK_PREFIX .. "sessions:all|h" .. Cli.MoreRich(left) .. "|h") end
+	if startHint then ClaudeWoW.Print(Display(startHint)) end
+end
+
+function Cli.Links.sessions(arg)
+	ClaudeWoW.ShowResumePicker(nil, nil, arg == "all")
+end
+
+function Cli.Links.headless(arg)
+	local id = Cli.Split(arg)[1]
+	if not db or id == "" then return end
+	local found
+	for _, e in ipairs(run.resumeList or {}) do
+		if e.id == id then found = e end
 	end
+	if not found then
+		for _, e in ipairs(Cli.SessionEntries()) do
+			if e.id == id then found = e end
+		end
+	end
+	local e = Cli.EntryCopy(found or { id = id, name = id:sub(1, 8), cwd = "", agent = "" })
+	e.kind, e.live, e.running, e.chat = "headless", false, false, nil
+	Cli.AttachWith(e, { text = "", addDir = {}, flags = 1 })
+end
+
+function ClaudeWoW.PickRow(row)
+	if type(row) ~= "table" or not db then return end
+	if row.more then
+		ClaudeWoW.ShowResumePicker(nil, nil, true)
+		return
+	end
+	if row.headless then
+		Cli.Links.headless(row.headless)
+		return
+	end
+	if type(row.entry) == "table" then Cli.AttachWith(Cli.EntryCopy(row.entry), { text = "", addDir = {}, flags = 1 }) end
 end
 
 function Cli.MatchEntries(entries, ref)
 	local want = tostring(ref or ""):lower()
+	local function alias(e) return tostring(e.alias or ""):lower() end
 	local rules = {
 		function(e) return e.id ~= "" and e.id:lower() == want end,
 		function(e) return e.name:lower() == want end,
+		function(e) return alias(e) ~= "" and alias(e) == want end,
 		function(e) return #want >= 4 and e.id ~= "" and e.id:lower():sub(1, #want) == want end,
 		function(e) return e.name:lower():sub(1, #want) == want end,
+		function(e) return alias(e) ~= "" and alias(e):sub(1, #want) == want end,
 	}
 	for _, rule in ipairs(rules) do
 		local hits = {}
@@ -5924,7 +6116,7 @@ function Cli.AttachTo(e)
 	c.plugin = ""
 	c.agent = ""
 	if e.live then
-		c.liveTarget = e.id ~= "" and e.id or e.name
+		c.liveTarget = e.id ~= "" and e.id or (e.alias or e.name)
 		c.agent = "claude"
 		c.cwd = e.cwd or ""
 		AddHistory(c, "system", "Attached to the running Claude Code session " .. Display(e.name) .. (e.cwd ~= "" and (" in " .. Display(e.cwd)) or "") .. ". Messages here go to that terminal session, and its answers come back here.")
@@ -5944,6 +6136,24 @@ function Cli.AttachTo(e)
 	return c, true
 end
 
+function Cli.NotListening(e, text)
+	local c = ActiveChat()
+	local lines = { Display(e.name) .. " is running in a terminal, but it was not started with the claude-wow channel, so it cannot hear the game." }
+	if (e.restart or "") ~= "" then
+		table.insert(lines, "Restart it in its terminal with:")
+		table.insert(lines, e.restart)
+	end
+	if (e.id or "") ~= "" then table.insert(lines, "Or resume it headless here: click [resume headless] below.") end
+	if (text or "") ~= "" then table.insert(lines, "Your message was not sent.") end
+	Cli.Out(c, table.concat(lines, "\n"), true)
+	if (e.id or "") ~= "" then
+		local link = "|cff55ff55[resume headless]|r |cff888888continue " .. Display(e.name) .. " here without its terminal|r"
+		c.history[#c.history].picker = { { text = link, headless = e.id } }
+		ClaudeWoW.Render()
+		ClaudeWoW.Print("|H" .. LINK_PREFIX .. "headless:" .. e.id .. "|h" .. link .. "|h")
+	end
+end
+
 function Cli.ResolveResume(ref)
 	local n = tonumber(ref)
 	if n and n == math.floor(n) and n >= 1 then
@@ -5957,21 +6167,12 @@ function Cli.ResolveResume(ref)
 	return hits
 end
 
-function Cli.RunResume(o)
-	if o.resume == true then
-		ClaudeWoW.ShowResumePicker()
+function Cli.AttachWith(e, o)
+	if e.kind == "deaf" then
+		Cli.NotListening(e, o.text)
 		return
 	end
-	local hits = Cli.ResolveResume(o.resume)
-	if #hits == 0 then
-		Cli.Say(ActiveChat(), "No chat or session matches \"" .. Display(o.resume) .. "\". /claude -r lists them.")
-		return
-	end
-	if #hits > 1 then
-		ClaudeWoW.ShowResumePicker(hits, "\"" .. Display(o.resume) .. "\" matches " .. #hits .. " sessions; pick one with /claude -r <n> or a click:")
-		return
-	end
-	local c = Cli.AttachTo(hits[1])
+	local c = Cli.AttachTo(e)
 	if not c then return end
 	if type(o.name) == "string" then
 		c.name = o.name:sub(1, 24)
@@ -5985,6 +6186,27 @@ function Cli.RunResume(o)
 		ClaudeWoW.Render()
 		Cli.Show(c)
 	end
+end
+
+function Cli.RunResume(o)
+	if o.resume == true then
+		ClaudeWoW.ShowResumePicker()
+		return
+	end
+	if tostring(o.resume):lower() == "more" and o.text == "" then
+		ClaudeWoW.ShowResumePicker(nil, nil, true)
+		return
+	end
+	local hits = Cli.ResolveResume(o.resume)
+	if #hits == 0 then
+		Cli.Say(ActiveChat(), "No chat or session matches \"" .. Display(o.resume) .. "\". /claude -r lists them.")
+		return
+	end
+	if #hits > 1 then
+		ClaudeWoW.ShowResumePicker(hits, "\"" .. Display(o.resume) .. "\" matches " .. #hits .. " sessions: click one, or /claude -r <n>.", true)
+		return
+	end
+	Cli.AttachWith(hits[1], o)
 end
 
 function ClaudeWoW.ResumePick(n)

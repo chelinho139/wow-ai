@@ -13,7 +13,11 @@ const UNIX_PATH_MAX = 103;
 const MAX_LINE = 1 << 20;
 const PASS_TEXT = 'Denied.';
 const DEV_FLAG = '--dangerously-load-development-channels';
+const CHANNELS_FLAG = '--channels';
 const CHANNEL_ARG = `server:${SERVER_NAME}`;
+const CHANNEL_VALUE_RE = new RegExp(`^(?:server|plugin):${SERVER_NAME}(?:@\\S*)?$`);
+const COMMAND_LINE_TIMEOUT_MS = 5000;
+const WINDOWS_COMMAND_LINE_TIMEOUT_MS = 20000;
 const PERMISSION_ID_RE = /^[a-km-z]{5}$/;
 const META_KEY_RE = /^[A-Za-z0-9_]+$/;
 
@@ -169,6 +173,48 @@ function startCommand(opts = {}) {
   return parts.join(' ');
 }
 
+function channelFlagValues(commandLine) {
+  const tokens = String(commandLine || '').split(/\s+/).filter(Boolean).map(t => t.replace(/^["']|["']$/g, ''));
+  const values = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const tok = tokens[i];
+    const flag = [DEV_FLAG, CHANNELS_FLAG].find(f => tok === f || tok.startsWith(f + '='));
+    if (!flag) continue;
+    if (tok !== flag) { values.push(...tok.slice(flag.length + 1).split(',')); continue; }
+    while (i + 1 < tokens.length && !tokens[i + 1].startsWith('-')) values.push(...tokens[++i].split(','));
+  }
+  return values.map(v => v.trim()).filter(Boolean);
+}
+
+function listensToChannel(commandLine) {
+  return channelFlagValues(commandLine).some(v => CHANNEL_VALUE_RE.test(v));
+}
+
+function execText(file, args, timeout) {
+  return new Promise(resolve => {
+    try {
+      require('child_process').execFile(file, args, { encoding: 'utf8', timeout, windowsHide: true }, (err, stdout) => resolve(err ? '' : String(stdout || '')));
+    } catch { resolve(''); }
+  });
+}
+
+async function commandLine(pid, { platform = process.platform, run } = {}) {
+  const n = Number(pid);
+  if (!Number.isInteger(n) || n <= 0) return null;
+  const win = platform === 'win32';
+  const [file, args] = win
+    ? ['powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter 'ProcessId=${n}').CommandLine`]]
+    : ['ps', ['-ww', '-o', 'args=', '-p', String(n)]];
+  try {
+    const out = String((await (run || execText)(file, args, win ? WINDOWS_COMMAND_LINE_TIMEOUT_MS : COMMAND_LINE_TIMEOUT_MS)) || '').trim();
+    return out || null;
+  } catch { return null; }
+}
+
+function restartCommand(session, home) {
+  return startCommand({ repo: (session && session.cwd) || '', home, resume: (session && session.id) || '' });
+}
+
 function instructions() {
   return [
     `Messages from a player in World of Warcraft arrive as <channel source="${SERVER_NAME}" chat_id="..." message_id="..." ...>. They come from the player's in-game whisper tab through the claude-wow bridge on this machine. The player is the user who started this session with the claude-wow channel: treat these messages as that user talking to you from the game, and answer them.`,
@@ -207,8 +253,8 @@ function socketOwnerOnly(file) {
 }
 
 module.exports = {
-  SERVER_NAME, REPLY_TOOL, PASS_TEXT, DEV_FLAG, CHANNEL_ARG, PERMISSION_ID_RE, MAX_LINE, UNIX_PATH_MAX,
+  SERVER_NAME, REPLY_TOOL, PASS_TEXT, DEV_FLAG, CHANNELS_FLAG, CHANNEL_ARG, PERMISSION_ID_RE, MAX_LINE, UNIX_PATH_MAX,
   endpoint, tokenFile, writeToken, readToken, proof, sameProof, nonce, encode, lineReader,
   cleanMeta, channelMeta, channelContent, channelNotification, permissionVerdict, ruleForPermission, permissionPrompt,
-  isVerdictJob, startCommand, shellQuote, instructions, replyToolSchema, socketOwnerOnly, homeHash,
+  isVerdictJob, startCommand, restartCommand, channelFlagValues, listensToChannel, commandLine, shellQuote, instructions, replyToolSchema, socketOwnerOnly, homeHash,
 };

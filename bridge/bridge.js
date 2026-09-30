@@ -141,7 +141,7 @@ const DEFAULT_CWD_SOURCE = projectIdx >= 0 ? '--project' : PROJECT_ENV ? (proces
   : !insideRepo(process.cwd()) ? 'started here' : 'config.json';
 
 const CLAUDE_DIR = SS.claudeDir(process.env, cfg.claudeDir);
-const SESSION_LIST_MAX = 12;
+const SESSION_LIST_MAX = 20;
 const CLAUDE_SESSIONS_TTL_MS = 30000;
 let claudeSessionsCache = { at: 0, list: [] };
 
@@ -511,7 +511,8 @@ function recentClaudeSessions() {
 function sessionList() {
   const lp = livePlugin();
   const live = lp && typeof lp.sessions === 'function' ? lp.sessions() : [];
-  return SS.mergeSessions({ live, own: SS.ownSessions(state, transcripts), claude: recentClaudeSessions(), limit: SESSION_LIST_MAX });
+  const merged = SS.mergeSessions({ live, own: SS.ownSessions(state, transcripts), claude: recentClaudeSessions(), limit: SESSION_LIST_MAX });
+  return merged.map(s => ({ ...s, branch: SS.gitBranch(s.cwd) }));
 }
 
 function resolveResume(job) {
@@ -913,6 +914,7 @@ const core = {
   sessionFolder: job => (state.sessionCwd && state.sessionCwd[sessKey(job)]) || '',
   fail: (job, text) => finish(job, 'error', text),
   reply: (job, text, denied) => finish(job, 'done', text, undefined, denied),
+  late: (job, text) => lateReply(job, text),
   progress: (job, text) => publish(chatKey(job), { chat: job.chat, id: job.id, status: 'working', text, cwd: job.cwd, session: '', agent: job.agent || '', plugin: job.plugin || '' }, true),
   accept: (job) => { maybeOfferRestore(job); noteMessage(job, 'user', job.text); },
   gameContext: () => gameContext(),
@@ -920,12 +922,24 @@ const core = {
   get home() { return HOME.dir; },
   get timeoutMs() { return cfg.timeoutMs || 1800000; },
   get liveStartCommand() { return liveStartCommand(); },
+  get liveHome() { return liveHomeArg(); },
   get claudeDir() { return CLAUDE_DIR; },
   runAgent,
 };
 
+function liveHomeArg() {
+  return HOME.source === 'CLAUDE_WOW_HOME' ? HOME.dir : '';
+}
+
 function liveStartCommand() {
-  return LP.startCommand({ repo: REPO, home: HOME.source === 'CLAUDE_WOW_HOME' ? HOME.dir : '' });
+  return LP.startCommand({ repo: REPO, home: liveHomeArg() });
+}
+
+function lateReply(job, raw) {
+  const { text, summary } = P.splitSummary(String(raw || ''));
+  noteMessage(job, 'assistant', text);
+  publish(`${chatKey(job)}#late`, { chat: job.chat, id: job.id, status: 'done', late: true, text, summary, cwd: job.cwd, agent: job.agent || '', plugin: job.plugin || '' }, true);
+  log(`${tagOf(job)} late reply delivered (${text.length} chars)`);
 }
 
 function livePlugin() {
@@ -1056,6 +1070,7 @@ function runAgent(job, opts = {}) {
       fs.rmSync(mapFileFor(job), { force: true });
       env.CLAUDE_WOW_MAP_FILE = mapFileFor(job);
     } catch (e) { log(`${tag} map file unavailable: ${e.message}`); }
+    if (SAVED_VARS) env.CLAUDE_WOW_SAVED_VARIABLES = SAVED_VARS;
   }
   if (surfaces.has('ui')) {
     try {
@@ -1316,7 +1331,7 @@ function finish(job, status, text, session, denied) {
   noteMessage(job, status === 'done' ? 'assistant' : 'system', status === 'done' ? text : 'Bridge error: ' + text);
   awardAchievements(job, status);
   const usage = P.usageFields(job.usage);
-  publish(chatKey(job), { chat: job.chat, id: job.id, status, text, summary, cwd: job.cwd, session, denied, macros, agent: job.agent || '', plugin: job.plugin || '', ...usage }, true);
+  publish(chatKey(job), { chat: job.chat, id: job.id, status, text, summary, cwd: job.cwd, session, denied, macros, agent: job.agent || '', plugin: job.plugin || '', lateOk: status === 'error' && !!job.lateOk, ...usage }, true);
   signal('sig', job.id, true);
   const growth = usage.turns ? `, turn ${usage.turns}${usage.ctx ? ', ctx ' + P.tokensLabel(usage.ctx) + (usage.window ? ' of ' + P.tokensLabel(usage.window) : '') : ''}${usage.cost !== undefined ? ', ~$' + usage.cost.toFixed(2) + ' API so far' : ''}` : '';
   log(`#${job.id}${job.session ? '@' + job.session : ''} ${status} (${text.length} chars${summary ? ', summary ' + summary.length : ', no summary'}${growth})`);

@@ -86,3 +86,20 @@ test('slot file carries the session list for /claude -r: running sessions flagge
   assert.deepEqual(empty.sessions, {});
   assert.equal(readSlot(P.luaTable('ClaudeWoW_SlotData', [], {}), 'ClaudeWoW_SlotData').sessions, undefined, 'no list, no key');
 });
+
+test('slot file carries the picker fields (title, branch, running, restart) and the late-reply flags', () => {
+  const restart = 'cd /Users/me/wow-ai && claude --resume f02436b8-8a5f-4c05-823e-bef25f88ff7b --dangerously-load-development-channels server:claude-wow';
+  const sessions = [{ id: 'f02436b8-8a5f-4c05-823e-bef25f88ff7b', name: 'wow-ai', title: 'Refactor the bridge', branch: 'main', cwd: '/Users/me/wow-ai', agent: 'claude', at: 5, running: true, restart }];
+  const records = [
+    { chat: 'c1', id: 159, status: 'error', text: 'did not pick it up', lateOk: true },
+    { chat: 'c1', id: 159, status: 'done', text: 'late hi', late: true },
+    { chat: 'c2', id: 3, status: 'done', text: 'plain' },
+  ];
+  const t = readSlot(P.luaTable('ClaudeWoW_SlotData', records, { sessions }), 'ClaudeWoW_SlotData');
+  assert.deepEqual(t.sessions, [{ id: sessions[0].id, name: 'wow-ai', cwd: '/Users/me/wow-ai', agent: 'claude', at: 5, running: true, title: 'Refactor the bridge', branch: 'main', restart }]);
+  assert.equal(t.replies[0].lateOk, true);
+  assert.equal(t.replies[0].late, undefined);
+  assert.equal(t.replies[1].late, true);
+  assert.equal(t.replies[2].late, undefined);
+  assert.equal(t.replies[2].lateOk, undefined);
+});
