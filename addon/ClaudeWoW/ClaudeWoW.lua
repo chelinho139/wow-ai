@@ -70,6 +70,8 @@ local BACKDROP = {
 }
 
 -- The assistant bubble is labelled with the agent that wrote it (see AgentName).
+local Q = {}
+
 local ROLE_STYLE = {
 	user      = { label = "You",    color = { 0.49, 0.78, 1.00 }, bg = { 0.25, 0.45, 0.75, 0.16 } },
 	assistant = { label = "AI",     color = { 1.00, 0.82, 0.25 }, bg = { 0.85, 0.70, 0.30, 0.10 } },
@@ -3376,11 +3378,14 @@ function ClaudeWoW.UpdateStatus()
 	ClaudeWoW.UpdateConnect()
 	if ui.title then
 		local t = c and Display(c.name) or "Claude WoW"
-		local folder = FolderName(ChatFolder(c))
-		if folder ~= "" then t = t .. "  |cff888888" .. Display(folder) .. "|r" end
-		if c and c.agent and c.agent ~= "" then t = t .. "  |cff888888" .. AgentName(c.agent) .. "|r" end
+		if not ui.nav then
+			local folder = FolderName(ChatFolder(c))
+			if folder ~= "" then t = t .. "  |cff888888" .. Display(folder) .. "|r" end
+			if c and c.agent and c.agent ~= "" then t = t .. "  |cff888888" .. AgentName(c.agent) .. "|r" end
+		end
 		ui.title:SetText(t)
 	end
+	if ui.nav then ClaudeWoW.RefreshNav() end
 	local cwdText
 	if c and c.cwd ~= "" then
 		cwdText = Display(c.cwd)
@@ -3423,12 +3428,13 @@ local function GetBubble(i)
 	b.accent:SetPoint("TOPLEFT", b, "TOPLEFT", 0, 0)
 	b.accent:SetPoint("BOTTOMLEFT", b, "BOTTOMLEFT", 0, 0)
 	b.accent:SetWidth(3)
-	b.who = b:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	local onParchment = ui.parchment ~= nil
+	b.who = b:CreateFontString(nil, "OVERLAY", onParchment and Q.FontObject("QuestFontNormalSmall", "GameFontNormalSmall") or "GameFontNormalSmall")
 	b.who:SetPoint("TOPLEFT", b, "TOPLEFT", 10, -6)
 	b.who:SetJustifyH("LEFT")
-	b.when = b:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+	b.when = b:CreateFontString(nil, "OVERLAY", onParchment and Q.FontObject("QuestFontNormalSmall", "GameFontDisableSmall") or "GameFontDisableSmall")
 	b.when:SetPoint("TOPRIGHT", b, "TOPRIGHT", -8, -6)
-	b.body = b:CreateFontString(nil, "OVERLAY", "ChatFontNormal")
+	b.body = b:CreateFontString(nil, "OVERLAY", onParchment and Q.FontObject("QuestFont", "ChatFontNormal") or "ChatFontNormal")
 	b.body:SetPoint("TOPLEFT", b.who, "BOTTOMLEFT", 0, -4)
 	b.body:SetJustifyH("LEFT")
 	b.body:SetJustifyV("TOP")
@@ -3468,19 +3474,17 @@ function ClaudeWoW.Render()
 			n = n + 1
 			local b = GetBubble(n)
 			local st = ROLE_STYLE[role] or ROLE_STYLE.system
+			local look = ui.parchment and (Q.PARCHMENT_STYLE[role] or Q.PARCHMENT_STYLE.system) or st
 			b:SetWidth(width)
-			b.bg:SetColorTexture(st.bg[1], st.bg[2], st.bg[3], st.bg[4])
-			b.accent:SetColorTexture(st.color[1], st.color[2], st.color[3], 0.9)
+			b.bg:SetColorTexture(look.bg[1], look.bg[2], look.bg[3], look.bg[4])
+			b.accent:SetColorTexture(look.color[1], look.color[2], look.color[3], ui.parchment and 0.6 or 0.9)
 			b.who:SetText(st == ROLE_STYLE.assistant and ReplyAgentName(c, agent) or st.label)
-			b.who:SetTextColor(st.color[1], st.color[2], st.color[3])
+			b.who:SetTextColor(look.color[1], look.color[2], look.color[3])
 			b.when:SetText(when or "")
 			b.body:SetWidth(width - 18)
 			b.body:SetText(Display(text))
-			if dim then
-				b.body:SetTextColor(0.72, 0.72, 0.72)
-			else
-				b.body:SetTextColor(0.93, 0.93, 0.93)
-			end
+			local ink = ui.parchment and (dim and Q.PARCHMENT_DIM or Q.PARCHMENT_TEXT) or (dim and { 0.72, 0.72, 0.72 } or { 0.93, 0.93, 0.93 })
+			b.body:SetTextColor(ink[1], ink[2], ink[3])
 			local h = b.body:GetStringHeight()
 			if not h or h < 1 then h = 14 end
 			local extra = 0
@@ -3623,6 +3627,7 @@ function ClaudeWoW.ShowCopy(text)
 end
 
 function ClaudeWoW.RenderChatList()
+	if ui.questList then return ClaudeWoW.RenderQuestList() end
 	if not ui.chatButtons then return end
 	for i, btn in ipairs(ui.chatButtons) do
 		local c = db.chats[i]
@@ -3902,23 +3907,391 @@ local function MakeButton(parent, label, width, onClick)
 end
 
 local PANEL_W = 150
-local PORTRAIT = "Interface\\AddOns\\ClaudeWoW\\Portrait"
-local NATIVE_TEMPLATES = { "ButtonFrameTemplate", "InsetFrameTemplate" }
-local NAV_ATLAS = { normal = "auctionhouse-nav-button", highlight = "auctionhouse-nav-button-highlight", selected = "auctionhouse-nav-button-select" }
+Q.PORTRAIT = "Interface\\AddOns\\ClaudeWoW\\Portrait"
+Q.NATIVE_TEMPLATES = { "ButtonFrameTemplate", "InsetFrameTemplate" }
+Q.LIST_W = 280
+Q.NAV_TOP = -24
+Q.NAV_H = 34
+Q.LIST_ROW_H = 20
+Q.LIST_HEADER_H = 22
+Q.NO_FOLDER = "No folder"
+Q.QUEST_ART = {
+	listBg = "QuestLog-main-background",
+	header = "common-button-list-collapseExpand",
+	plus = "common-button-list-plus",
+	minus = "common-button-list-minus",
+	rowGlow = "questlog-quest-glow-yellow",
+	working = "Quest-In-Progress-Icon-yellow",
+	reply = "UI-QuestIcon-TurnIn-Normal",
+	parchment = "QuestBG-Parchment",
+}
+Q.PARCHMENT_STYLE = {
+	user      = { color = { 0.10, 0.22, 0.45 }, bg = { 0.10, 0.20, 0.40, 0.07 } },
+	assistant = { color = { 0.45, 0.13, 0.02 }, bg = { 0, 0, 0, 0 } },
+	system    = { color = { 0.32, 0.25, 0.16 }, bg = { 0, 0, 0, 0 } },
+}
+Q.PARCHMENT_TEXT, Q.PARCHMENT_DIM = { 0.18, 0.12, 0.06 }, { 0.38, 0.30, 0.20 }
 
-local function NativeFrames()
-	if type(C_XMLUtil) ~= "table" then return false end
-	for _, name in ipairs(NATIVE_TEMPLATES) do
-		if not Try(C_XMLUtil.GetTemplateInfo, name) then return false end
+function Q.TemplateExists(name)
+	return type(C_XMLUtil) == "table" and Try(C_XMLUtil.GetTemplateInfo, name) ~= nil
+end
+
+function Q.NativeFrames()
+	for _, name in ipairs(Q.NATIVE_TEMPLATES) do
+		if not Q.TemplateExists(name) then return false end
 	end
 	return true
 end
 
-local function AtlasExists(name)
+function Q.AtlasExists(name)
 	return C_Texture and C_Texture.GetAtlasExists and C_Texture.GetAtlasExists(name) and true or false
 end
 
-local function Panel(parent, native)
+function Q.SetArt(tex, key, useSize)
+	local name = Q.QUEST_ART[key]
+	local ok = name ~= nil and Q.AtlasExists(name) and pcall(tex.SetAtlas, tex, name, useSize)
+	ui.art = ui.art or {}
+	ui.art[key] = ok and name or false
+	return ok and true or false
+end
+
+function Q.FontObject(name, fallback)
+	return _G[name] ~= nil and name or fallback
+end
+
+function Q.FolderKey(c)
+	local name = FolderName(ChatFolder(c))
+	return name ~= "" and name or Q.NO_FOLDER
+end
+
+function Q.DeleteButton(parent)
+	local del = CreateFrame("Button", nil, parent)
+	del:SetSize(16, 16)
+	if Q.AtlasExists("128-RedButton-Delete") then
+		del:SetNormalAtlas("128-RedButton-Delete")
+		del:SetPushedAtlas("128-RedButton-Delete-Pressed")
+		del:SetHighlightAtlas("128-RedButton-Delete-Highlight")
+	else
+		del:SetNormalTexture("Interface\\Buttons\\UI-GroupLoot-Pass-Up")
+		del:SetHighlightTexture("Interface\\Buttons\\UI-GroupLoot-Pass-Highlight")
+	end
+	del:SetScript("OnClick", function() ClaudeWoW.ConfirmDelete(parent.chatId) end)
+	del:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+		GameTooltip:SetText("Delete this chat")
+		GameTooltip:Show()
+	end)
+	del:SetScript("OnLeave", function(self)
+		GameTooltip:Hide()
+		if not Try(parent.IsMouseOver, parent) then self:Hide() end
+	end)
+	del:Hide()
+	return del
+end
+
+function Q.ChatRowClicks(row)
+	row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+	row:SetScript("OnClick", function(self, button)
+		if button == "RightButton" then
+			ClaudeWoW.ShowChatMenu(self.chatId, self)
+		else
+			ClaudeWoW.SwitchChat(self.chatId)
+		end
+	end)
+	row:SetScript("OnDoubleClick", function(self)
+		ClaudeWoW.SwitchChat(self.chatId)
+		ClaudeWoW.RenamePrompt(self.chatId)
+	end)
+end
+
+function Q.QuestRow(i)
+	local q = ui.questList
+	local r = q.rows[i]
+	if r then return r end
+	r = CreateFrame("Button", nil, q.content)
+	r:SetHeight(Q.LIST_ROW_H)
+	r.glow = r:CreateTexture(nil, "BACKGROUND")
+	r.glow:SetAllPoints()
+	if not Q.SetArt(r.glow, "rowGlow") then r.glow:SetColorTexture(1, 0.82, 0, 0.15) end
+	r.glow:Hide()
+	local hl = r:CreateTexture(nil, "HIGHLIGHT")
+	hl:SetAllPoints()
+	if Q.SetArt(hl, "rowGlow") then hl:SetAlpha(0.5) else hl:SetColorTexture(1, 1, 1, 0.08) end
+	r.icon = r:CreateTexture(nil, "ARTWORK")
+	r.icon:SetSize(14, 14)
+	r.icon:SetPoint("LEFT", r, "LEFT", 6, 0)
+	r.del = Q.DeleteButton(r)
+	r.del:SetPoint("RIGHT", r, "RIGHT", -2, 0)
+	r.label = r:CreateFontString(nil, "OVERLAY", Q.FontObject("GameFontNormalLeft", "GameFontNormalSmall"))
+	r.label:SetPoint("LEFT", r.icon, "RIGHT", 5, 0)
+	r.label:SetPoint("RIGHT", r, "RIGHT", -22, 0)
+	r.label:SetJustifyH("LEFT")
+	r.label:SetWordWrap(false)
+	Q.ChatRowClicks(r)
+	r:SetScript("OnEnter", function(self) self.del:Show() end)
+	r:SetScript("OnLeave", function(self)
+		if not Try(self.del.IsMouseOver, self.del) then self.del:Hide() end
+	end)
+	q.rows[i] = r
+	return r
+end
+
+function Q.QuestHeader(i)
+	local q = ui.questList
+	local h = q.headers[i]
+	if h then return h end
+	h = CreateFrame("Button", nil, q.content)
+	h:SetHeight(Q.LIST_HEADER_H)
+	local bg = h:CreateTexture(nil, "BACKGROUND")
+	bg:SetAllPoints()
+	if not Q.SetArt(bg, "header") then bg:SetColorTexture(0.25, 0.18, 0.08, 0.6) end
+	local hl = h:CreateTexture(nil, "HIGHLIGHT")
+	hl:SetAllPoints()
+	if Q.SetArt(hl, "header") then
+		hl:SetBlendMode("ADD")
+		hl:SetAlpha(0.4)
+	else
+		hl:SetColorTexture(1, 1, 1, 0.08)
+	end
+	h.icon = h:CreateTexture(nil, "ARTWORK")
+	h.icon:SetSize(14, 14)
+	h.icon:SetPoint("RIGHT", h, "RIGHT", -8, 0)
+	h.text = h:CreateFontString(nil, "OVERLAY", Q.FontObject("Game15Font_Shadow", "GameFontNormal"))
+	h.text:SetPoint("LEFT", h, "LEFT", 8, 0)
+	h.text:SetPoint("RIGHT", h.icon, "LEFT", -4, 0)
+	h.text:SetJustifyH("LEFT")
+	h.text:SetWordWrap(false)
+	h.text:SetTextColor(1, 0.82, 0)
+	h:SetScript("OnClick", function(self)
+		local collapsed = db.settings.collapsedFolders or {}
+		db.settings.collapsedFolders = collapsed
+		collapsed[self.key] = (not collapsed[self.key]) or nil
+		ClaudeWoW.RenderChatList()
+	end)
+	q.headers[i] = h
+	return h
+end
+
+function Q.SetHeaderIcon(h, collapsed)
+	local key = collapsed and "plus" or "minus"
+	if not Q.SetArt(h.icon, key, true) then
+		h.icon:SetTexture(collapsed and "Interface\\Buttons\\UI-PlusButton-Up" or "Interface\\Buttons\\UI-MinusButton-Up")
+	end
+end
+
+function ClaudeWoW.RenderQuestList()
+	local q = ui.questList
+	local filter = ui.chatFilter or ""
+	local collapsed = db.settings.collapsedFolders or {}
+	local groups, order = {}, {}
+	for _, c in ipairs(db.chats) do
+		local key = Q.FolderKey(c)
+		if not groups[key] then
+			groups[key] = {}
+			table.insert(order, key)
+		end
+		table.insert(groups[key], c)
+	end
+	local width = Try(q.scroll.GetWidth, q.scroll) or (Q.LIST_W - 32)
+	if width < 80 then width = Q.LIST_W - 32 end
+	q.content:SetWidth(width)
+	local y, nh, nr, matched = 0, 0, 0, 0
+	for _, key in ipairs(order) do
+		local matches = {}
+		for _, c in ipairs(groups[key]) do
+			if filter == "" or tostring(c.name or ""):lower():find(filter, 1, true) then table.insert(matches, c) end
+		end
+		if #matches > 0 then
+			matched = matched + #matches
+			nh = nh + 1
+			local h = Q.QuestHeader(nh)
+			local closed = filter == "" and collapsed[key] == true
+			h.key = key
+			h.collapsed = closed
+			h.text:SetText(Display(key) .. " (" .. #matches .. ")")
+			Q.SetHeaderIcon(h, closed)
+			h:SetWidth(width)
+			h:ClearAllPoints()
+			h:SetPoint("TOPLEFT", q.content, "TOPLEFT", 0, -y)
+			h:Show()
+			y = y + Q.LIST_HEADER_H + 2
+			if not closed then
+				for _, c in ipairs(matches) do
+					nr = nr + 1
+					local r = Q.QuestRow(nr)
+					local active = c.id == db.activeChat
+					local unread = c.unread or 0
+					r.chatId = c.id
+					r.glow:SetShown(active)
+					local state = (c.pendingId and "working") or (unread > 0 and "reply") or nil
+					r.icon:SetShown(state ~= nil and Q.SetArt(r.icon, state))
+					local label = Display(c.name)
+					if c.agent and c.agent ~= "" then label = label .. " |cff9d9d9d" .. AgentName(c.agent) .. "|r" end
+					if unread > 0 then label = label .. " (" .. unread .. ")" end
+					r.label:SetText(label)
+					if active then
+						r.label:SetTextColor(1, 1, 1)
+					elseif unread > 0 then
+						r.label:SetTextColor(0.25, 0.75, 0.25)
+					else
+						r.label:SetTextColor(1, 0.82, 0)
+					end
+					r:SetWidth(width)
+					r:ClearAllPoints()
+					r:SetPoint("TOPLEFT", q.content, "TOPLEFT", 0, -y)
+					r:Show()
+					y = y + Q.LIST_ROW_H + 1
+				end
+			end
+			y = y + 4
+		end
+	end
+	for i = nh + 1, #q.headers do q.headers[i]:Hide() end
+	for i = nr + 1, #q.rows do q.rows[i]:Hide() end
+	q.empty:SetShown(filter ~= "" and matched == 0)
+	q.content:SetHeight(math.max(y, 1))
+	ui.chatCount:SetText("Chats: " .. #db.chats .. "/" .. MAX_CHATS)
+end
+
+function Q.NavChoices(items, chatId, apply)
+	local out = {}
+	for i, item in ipairs(items) do
+		table.insert(out, { text = item.text, id = i, func = function()
+			local c = FindChat(chatId)
+			if c then apply(item.value, c) end
+			ClaudeWoW.RefreshNav(true)
+		end })
+	end
+	return out
+end
+
+function Q.FolderChoices()
+	local items, seen = { { text = "Bridge default" .. (run.bridgeCwd and (" (" .. Display(FolderName(run.bridgeCwd)) .. ")") or ""), value = "-" } }, {}
+	for _, c in ipairs(db.chats) do
+		if c.cwd ~= "" and not seen[c.cwd] then
+			seen[c.cwd] = true
+			table.insert(items, { text = Display(FolderName(c.cwd)), value = c.cwd })
+		end
+	end
+	return items
+end
+
+function Q.IdChoices(ids, fallback, label)
+	local items = { { text = "Bridge default", value = "default" } }
+	for _, id in ipairs(ids or fallback) do table.insert(items, { text = label(id), value = id }) end
+	return items
+end
+
+function ClaudeWoW.RefreshNav(force)
+	local nav = ui.nav
+	if not nav then return end
+	local c = ActiveChat()
+	local chatId = c and c.id
+	local folder = Q.FolderKey(c)
+	local agent = AgentName((c and c.agent ~= "" and c.agent) or run.bridgeAgent)
+	local plugin = (c and (c.plugin or "") ~= "" and c.plugin) or run.bridgePlugin or "default"
+	local key = table.concat({ tostring(chatId), folder, agent, plugin }, "\1")
+	if key == ui.navKey and not force then return end
+	ui.navKey = key
+	local function Reopen() C_Timer.After(0, function() ClaudeWoW.RefreshNav(true) end) end
+	pcall(NavBar_Reset, nav)
+	pcall(NavBar_AddButton, nav, { name = Display(folder), id = 1,
+		OnClick = function() Reopen(); ClaudeWoW.FolderPrompt(chatId) end,
+		listFunc = function()
+			local out = Q.NavChoices(Q.FolderChoices(), chatId, ClaudeWoW.SetFolder)
+			table.insert(out, { text = "Other folder...", id = #out + 1, func = function() ClaudeWoW.FolderPrompt(chatId); Reopen() end })
+			return out
+		end })
+	pcall(NavBar_AddButton, nav, { name = agent, id = 2,
+		OnClick = function() Reopen(); ClaudeWoW.AgentPrompt(chatId) end,
+		listFunc = function() return Q.NavChoices(Q.IdChoices(run.bridgeAgents, { "claude", "codex", "grok" }, AgentName), chatId, ClaudeWoW.SetAgent) end })
+	pcall(NavBar_AddButton, nav, { name = Display(plugin), id = 3,
+		OnClick = function() Reopen(); ClaudeWoW.PluginPrompt(chatId) end,
+		listFunc = function() return Q.NavChoices(Q.IdChoices(run.bridgePlugins, { "ask", "claude-code" }, tostring), chatId, ClaudeWoW.SetPlugin) end })
+end
+
+function Q.BuildQuestFrames(f)
+	local list = Q.Panel(f, true)
+	list:SetPoint("TOPRIGHT", f, "TOPRIGHT", -6, Q.NAV_TOP)
+	list:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -6, 28)
+	list:SetWidth(Q.LIST_W)
+	local listBg = list:CreateTexture(nil, "BACKGROUND", nil, 1)
+	listBg:SetPoint("TOPLEFT", list, "TOPLEFT", 3, -3)
+	listBg:SetPoint("BOTTOMRIGHT", list, "BOTTOMRIGHT", -3, 3)
+	Q.SetArt(listBg, "listBg")
+	ui.listPanel = list
+
+	local search = CreateFrame("EditBox", "ClaudeWoWChatSearch", list, Q.TemplateExists("SearchBoxTemplate") and "SearchBoxTemplate" or "InputBoxTemplate")
+	search:SetSize(Q.LIST_W - 100, 20)
+	search:SetPoint("TOPLEFT", list, "TOPLEFT", 14, -8)
+	search:SetAutoFocus(false)
+	search:HookScript("OnTextChanged", function(self)
+		ui.chatFilter = Trim(self:GetText() or ""):lower()
+		ClaudeWoW.RenderChatList()
+	end)
+	ui.search = search
+
+	local count = list:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	count:SetPoint("TOPRIGHT", list, "TOPRIGHT", -12, -12)
+	count:SetJustifyH("RIGHT")
+	ui.chatCount = count
+
+	local newChat = MakeButton(list, "New chat", Q.LIST_W - 24, function() ClaudeWoW.NewChat() end)
+	newChat:SetPoint("BOTTOM", list, "BOTTOM", 0, 7)
+	ui.newChat = newChat
+
+	local listScroll = CreateFrame("ScrollFrame", "ClaudeWoWChatScroll", list, Q.TemplateExists("ScrollFrameTemplate") and "ScrollFrameTemplate" or "UIPanelScrollFrameTemplate")
+	listScroll:SetPoint("TOPLEFT", list, "TOPLEFT", 8, -36)
+	listScroll:SetPoint("BOTTOMRIGHT", list, "BOTTOMRIGHT", -24, 34)
+	local listContent = CreateFrame("Frame", "ClaudeWoWChatListContent", listScroll)
+	listContent:SetSize(Q.LIST_W - 32, 1)
+	listScroll:SetScrollChild(listContent)
+	local empty = listContent:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	empty:SetPoint("TOP", listContent, "TOP", 0, -20)
+	empty:SetWidth(Q.LIST_W - 60)
+	empty:SetText("There are no chats that match your search.")
+	empty:Hide()
+	ui.questList = { scroll = listScroll, content = listContent, headers = {}, rows = {}, empty = empty }
+
+	local parchment = Q.Panel(f, true)
+	parchment:SetPoint("TOPLEFT", f, "TOPLEFT", 8, Q.NAV_TOP - Q.NAV_H - 2)
+	parchment:SetPoint("BOTTOMRIGHT", list, "BOTTOMLEFT", -6, 52)
+	local paper = parchment:CreateTexture(nil, "BACKGROUND", nil, 1)
+	paper:SetPoint("TOPLEFT", parchment, "TOPLEFT", 3, -3)
+	paper:SetPoint("BOTTOMRIGHT", parchment, "BOTTOMRIGHT", -3, 3)
+	if not Q.SetArt(paper, "parchment") then paper:SetColorTexture(0.80, 0.70, 0.52, 1) end
+	ui.parchment = parchment
+	ui.transcriptPanel = parchment
+
+	local help
+	if Q.TemplateExists("MainHelpPlateButton") then
+		help = CreateFrame("Button", "ClaudeWoWHelpButton", f, "MainHelpPlateButton")
+		help:SetScale(0.6)
+		help:SetPoint("TOPRIGHT", list, "TOPLEFT", -4 / 0.6, 2 / 0.6)
+		help:SetScript("OnClick", function() ClaudeWoW.ShowHelp() end)
+		help:SetScript("OnEnter", function(self)
+			GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+			GameTooltip:SetText("Commands and tips")
+			GameTooltip:Show()
+		end)
+		help:SetScript("OnLeave", function() GameTooltip:Hide() end)
+		ui.help = help
+	end
+
+	if Q.TemplateExists("NavBarTemplate") and type(NavBar_Initialize) == "function" and type(NavBar_AddButton) == "function" and type(NavBar_Reset) == "function" then
+		local nav = CreateFrame("Frame", "ClaudeWoWNavBar", f, "NavBarTemplate")
+		nav:SetPoint("TOPLEFT", f, "TOPLEFT", 60, Q.NAV_TOP)
+		nav:SetPoint("RIGHT", help or list, "LEFT", -6, 0)
+		nav:SetHeight(Q.NAV_H)
+		if pcall(NavBar_Initialize, nav, "NavButtonTemplate", { name = "Claude", OnClick = function() ClaudeWoW.RefreshNav(true) end }, nav.home, nav.overflow) then
+			ui.nav = nav
+		else
+			nav:Hide()
+		end
+	end
+end
+
+function Q.Panel(parent, native)
 	local p = CreateFrame("Frame", nil, parent, native and "InsetFrameTemplate" or "BackdropTemplate")
 	if not native then
 		p:SetBackdrop({
@@ -3936,7 +4309,7 @@ end
 local function BuildUI()
 	if ui.frame then return end
 	local s = db.settings
-	local native = NativeFrames()
+	local native = Q.NativeFrames()
 	ui.native = native
 
 	local f = CreateFrame("Frame", "ClaudeWoWFrame", UIParent, native and "ButtonFrameTemplate" or "BackdropTemplate")
@@ -3950,7 +4323,7 @@ local function BuildUI()
 	f:SetResizeBounds(560, 300)
 	f:EnableMouse(true)
 	if native then
-		Try(f.SetPortraitToAsset, f, PORTRAIT)
+		Try(f.SetPortraitToAsset, f, Q.PORTRAIT)
 		if type(f.Inset) == "table" then f.Inset:Hide() end
 	else
 		f:SetBackdrop(BACKDROP)
@@ -3971,6 +4344,7 @@ local function BuildUI()
 		holder:SetScript("OnEnter", function(self)
 			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
 			GameTooltip:SetText(dot.tip or "Bridge status", 0.9, 0.9, 0.9, 1, true)
+			if ui.native and ui.cwd then GameTooltip:AddLine(ui.cwd:GetText(), 0.8, 0.8, 0.8, true) end
 			GameTooltip:Show()
 		end)
 		holder:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -3992,8 +4366,11 @@ local function BuildUI()
 	status:SetJustifyH("LEFT")
 	ui.status = status
 	if native then
-		dotHolder:SetPoint("TOPLEFT", f, "TOPLEFT", 64, -32)
+		dotHolder:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 12, 6)
+		status:ClearAllPoints()
 		status:SetPoint("LEFT", dotHolder, "RIGHT", 6, 0)
+		status:SetPoint("RIGHT", f, "RIGHT", -230, 0)
+		status:SetWordWrap(false)
 	else
 		dotHolder:SetPoint("TOPLEFT", f, "TOPLEFT", 14, -16)
 		status:SetPoint("TOPLEFT", f, "TOPLEFT", 14, -34)
@@ -4003,7 +4380,7 @@ local function BuildUI()
 	-- closed from here, only collapsed to the mini bar (Esc does the same, see OnHide).
 	-- The mini bar's own X is the one that hides everything.
 	local mini = native and type(f.CloseButton) == "table" and f.CloseButton or nil
-	if not mini and AtlasExists("RedButton-MiniCondense") then
+	if not mini and Q.AtlasExists("RedButton-MiniCondense") then
 		-- Blizzard's own minimize button: the close button's chrome with a "condense" glyph.
 		local ok, b = pcall(CreateFrame, "Button", nil, f, "UIPanelHideButtonNoScripts")
 		if ok and b then mini = b end
@@ -4045,13 +4422,12 @@ local function BuildUI()
 	end)
 
 	-- Left panel: chat list
-	local contentLeft, contentTop = 14, -52
-	if native then contentLeft, contentTop = 10, -60 end
-	local panel = Panel(f, native)
-	panel:SetPoint("TOPLEFT", f, "TOPLEFT", contentLeft, contentTop)
-	panel:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", contentLeft, 50)
+	if native then Q.BuildQuestFrames(f) end
+	local panel = Q.Panel(f, false)
+	panel:SetPoint("TOPLEFT", f, "TOPLEFT", 14, -52)
+	panel:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 14, 50)
 	panel:SetWidth(PANEL_W)
-	ui.listPanel = panel
+	if native then panel:Hide() else ui.listPanel = panel end
 
 	local newBtn = MakeButton(panel, "+ New chat", PANEL_W - 16, function() ClaudeWoW.NewChat() end)
 	newBtn:SetPoint("TOP", panel, "TOP", 0, -8)
@@ -4112,6 +4488,18 @@ local function BuildUI()
 	function ClaudeWoW.ShowChatMenu(chatId, anchor)
 		local c = FindChat(chatId)
 		if not c then return end
+		if ui.native and type(MenuUtil) == "table" and type(MenuUtil.CreateContextMenu) == "function" then
+			local shown = pcall(MenuUtil.CreateContextMenu, anchor, function(_, root)
+				root:CreateTitle(Display(c.name))
+				root:CreateButton("Rename...", function() ClaudeWoW.RenamePrompt(chatId) end)
+				root:CreateButton("Folder...", function() ClaudeWoW.FolderPrompt(chatId) end)
+				root:CreateButton("Agent...", function() ClaudeWoW.AgentPrompt(chatId) end)
+				root:CreateButton("Plugin...", function() ClaudeWoW.PluginPrompt(chatId) end)
+				root:CreateDivider()
+				root:CreateButton("|cffff4040Delete|r", function() ClaudeWoW.ConfirmDelete(chatId) end)
+			end)
+			if shown then return end
+		end
 		if menu:IsShown() and menu.chatId == chatId then
 			menu:Hide()
 			return
@@ -4130,23 +4518,13 @@ local function BuildUI()
 		local b = CreateFrame("Button", nil, panel)
 		b:SetSize(PANEL_W - 16, 20)
 		b:SetPoint("TOP", newBtn, "BOTTOM", 0, -6 - (i - 1) * 21)
-		local nav = native and AtlasExists(NAV_ATLAS.normal)
-		b.selected = b:CreateTexture(nil, nav and "ARTWORK" or "BACKGROUND")
+		b.selected = b:CreateTexture(nil, "BACKGROUND")
 		b.selected:SetAllPoints()
+		b.selected:SetColorTexture(1, 1, 1, 0.12)
 		b.selected:Hide()
 		local hl = b:CreateTexture(nil, "HIGHLIGHT")
 		hl:SetAllPoints()
-		if nav then
-			local bg = b:CreateTexture(nil, "BACKGROUND")
-			bg:SetAllPoints()
-			bg:SetAtlas(NAV_ATLAS.normal)
-			b.navBg = bg
-			b.selected:SetAtlas(NAV_ATLAS.selected)
-			hl:SetAtlas(NAV_ATLAS.highlight)
-		else
-			b.selected:SetColorTexture(1, 1, 1, 0.12)
-			hl:SetColorTexture(1, 1, 1, 0.08)
-		end
+		hl:SetColorTexture(1, 1, 1, 0.08)
 
 		-- Trash can: delete this chat (asks first). Blizzard's red delete button
 		-- where the client has it, a plain X elsewhere.
@@ -4174,7 +4552,7 @@ local function BuildUI()
 			GameTooltip:Hide()
 		end)
 
-		b.label = b:CreateFontString(nil, "OVERLAY", nav and "GameFontNormalSmall" or "GameFontHighlightSmall")
+		b.label = b:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 		b.label:SetPoint("LEFT", b, "LEFT", 6, 0)
 		b.label:SetPoint("RIGHT", b.del, "LEFT", -4, 0)
 		b.label:SetJustifyH("LEFT")
@@ -4198,17 +4576,15 @@ local function BuildUI()
 	end
 
 	-- Transcript: a scrolling stack of message bubbles
-	local scroll = CreateFrame("ScrollFrame", "ClaudeWoWScroll", f, "UIPanelScrollFrameTemplate")
-	scroll:SetPoint("TOPLEFT", panel, "TOPRIGHT", 8, 0)
-	scroll:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -32, 110)
-	ui.scroll = scroll
+	local scroll = CreateFrame("ScrollFrame", "ClaudeWoWScroll", native and ui.parchment or f, "UIPanelScrollFrameTemplate")
 	if native then
-		local transcriptBg = Panel(f, true)
-		transcriptBg:SetPoint("TOPLEFT", scroll, "TOPLEFT", -4, 4)
-		transcriptBg:SetPoint("BOTTOMRIGHT", scroll, "BOTTOMRIGHT", 26, -4)
-		transcriptBg:SetFrameLevel(math.max(0, (Try(scroll.GetFrameLevel, scroll) or 1) - 1))
-		ui.transcriptPanel = transcriptBg
+		scroll:SetPoint("TOPLEFT", ui.parchment, "TOPLEFT", 12, -10)
+		scroll:SetPoint("BOTTOMRIGHT", ui.parchment, "BOTTOMRIGHT", -30, 10)
+	else
+		scroll:SetPoint("TOPLEFT", panel, "TOPRIGHT", 8, 0)
+		scroll:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -32, 110)
 	end
+	ui.scroll = scroll
 
 	local content = CreateFrame("Frame", "ClaudeWoWContent", scroll)
 	content:SetSize(500, 1)
@@ -4221,10 +4597,15 @@ local function BuildUI()
 
 	-- Input box, with Send docked at its right end like a messaging app.
 	local SEND_W = 84
-	local inputBg = Panel(f, native)
-	inputBg:SetPoint("BOTTOMLEFT", panel, "BOTTOMRIGHT", 8, 0)
-	inputBg:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -14 - SEND_W - 6, 50)
-	inputBg:SetHeight(54)
+	local inputBg = Q.Panel(f, native)
+	if native then
+		inputBg:SetPoint("TOPLEFT", ui.parchment, "BOTTOMLEFT", 0, -4)
+		inputBg:SetPoint("BOTTOMRIGHT", ui.listPanel, "BOTTOMLEFT", -6 - SEND_W - 6, 0)
+	else
+		inputBg:SetPoint("BOTTOMLEFT", panel, "BOTTOMRIGHT", 8, 0)
+		inputBg:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -14 - SEND_W - 6, 50)
+		inputBg:SetHeight(54)
+	end
 	if not native then
 		inputBg:SetBackdropColor(0, 0, 0, 0.6)
 		inputBg:SetBackdropBorderColor(0.5, 0.5, 0.5, 1)
@@ -4289,6 +4670,14 @@ local function BuildUI()
 	resend:SetPoint("LEFT", clear, "RIGHT", 6, 0)
 	resend:Hide()
 	ui.resend = resend
+	if native then
+		clear:ClearAllPoints()
+		clear:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -26, 4)
+		resend:ClearAllPoints()
+		resend:SetPoint("RIGHT", clear, "LEFT", -4, 0)
+		refresh:ClearAllPoints()
+		refresh:SetPoint("RIGHT", resend, "LEFT", -4, 0)
+	end
 
 	-- A named, always-present button so a keybinding can click it (see /claude-wow bind).
 	local hotkey = CreateFrame("Button", "ClaudeWoWRefreshButton", UIParent)
@@ -4309,6 +4698,7 @@ local function BuildUI()
 	cwd:SetJustifyH("LEFT")
 	cwd:SetWordWrap(false)
 	ui.cwd = cwd
+	if native then cwd:Hide() end
 
 	-- Resize grip
 	local grip = CreateFrame("Button", nil, f)
@@ -4465,7 +4855,14 @@ end
 -- Slash commands
 ---------------------------------------------------------------------------
 
-local HELP = table.concat({
+local HELP
+function ClaudeWoW.ShowHelp()
+	local c = ActiveChat()
+	if not c then return end
+	AddHistory(c, "system", HELP)
+	ClaudeWoW.Render()
+end
+HELP = table.concat({
 	"/claude <text>                     start a new chat with that message, like claude \"<text>\" in a terminal. Bare /claude in the game chat opens the workspace window; in a chat's tab it starts a new chat",
 	"/claude -c [text]                  continue the current chat (--continue); alone it points at its tab (with the tabs off, it opens the window on it)",
 	"/claude -r [id|name|n] [text]      resume a session (--resume). A Claude Code session running in a terminal gets the chat live; any other session is resumed headless in its folder. Bare -r lists the running and recent sessions: click one or give its number",

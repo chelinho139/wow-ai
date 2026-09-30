@@ -295,7 +295,12 @@ test('the Dragonflight metal border is used where the client has it, and the pla
 });
 
 const NATIVE_TEMPLATES = `
-  C_XMLUtil = { GetTemplateInfo = function(name) if name == "ButtonFrameTemplate" or name == "InsetFrameTemplate" then return { type = "Frame" } end end }
+  local templates = { ButtonFrameTemplate = true, InsetFrameTemplate = true, SearchBoxTemplate = true, ScrollFrameTemplate = true, NavBarTemplate = true, MainHelpPlateButton = true }
+  C_XMLUtil = { GetTemplateInfo = function(name) if templates[name] then return { type = "Frame" } end end }
+  STUB.nav = { resets = 0, buttons = {} }
+  function NavBar_Initialize(bar, template, home) STUB.nav.home = home.name end
+  function NavBar_Reset(bar) STUB.nav.resets = STUB.nav.resets + 1; STUB.nav.buttons = {} end
+  function NavBar_AddButton(bar, data) table.insert(STUB.nav.buttons, data) end
   local plainCreate = CreateFrame
   CreateFrame = function(kind, name, parent, template)
     local f = plainCreate(kind, name, parent, template)
@@ -309,23 +314,86 @@ const NATIVE_TEMPLATES = `
     return f
   end`;
 
-test('the window is built from Blizzard frame templates where the client has them: portrait, title bar, close button and inset panels', () => {
+const nativeVM = () => {
   const vm = newVM({ before: NATIVE_TEMPLATES });
   open(vm);
+  vm.run('ClaudeWoW.SetFolder("~/every-io/every", ClaudeWoWDB.chats[1])');
+  vm.run('ClaudeWoW.NewChat(); ClaudeWoW.SetFolder("~/wow-ai", ClaudeWoW.UI and ClaudeWoWDB.chats[2]); ClaudeWoWDB.chats[2].name = "Fix the bridge"');
+  vm.run('ClaudeWoW.NewChat(); ClaudeWoWDB.chats[3].name = "Leatherworking route"; ClaudeWoW.SetFolder("~/every-io/every", ClaudeWoWDB.chats[3])');
+  vm.run('ClaudeWoW.Render()');
+  return vm;
+};
+const shownHeaders = (vm) => vm.evaluate('(function() local t = {} for _, h in ipairs(ClaudeWoW.UI.questList.headers) do if h.shown then table.insert(t, h.text:GetText()) end end return table.concat(t, "|") end)()');
+const shownRows = (vm) => vm.evaluate('(function() local t = {} for _, r in ipairs(ClaudeWoW.UI.questList.rows) do if r.shown then table.insert(t, r.label:GetText()) end end return table.concat(t, "|") end)()');
+
+test('the window is built from Blizzard frame templates where the client has them: portrait, title bar, close button, parchment and a quest-log chat list', () => {
+  const vm = nativeVM();
   assert.equal(vm.evaluate('ClaudeWoWFrame.template'), 'ButtonFrameTemplate');
   assert.equal(vm.evaluate('ClaudeWoWFrame.portrait'), 'Interface\\AddOns\\ClaudeWoW\\Portrait');
   assert.equal(vm.evaluate('ClaudeWoWFrame.Inset.shown'), 'false', 'the template inset is replaced by our own panels');
   assert.equal(vm.evaluate('ClaudeWoW.UI.title == ClaudeWoWFrame.TitleText'), 'true', 'the title goes in the Blizzard title bar');
   assert.equal(vm.evaluate('ClaudeWoW.UI.minimize == ClaudeWoWFrame.CloseButton'), 'true', 'the red close button collapses to the bar');
   assert.equal(vm.evaluate('ClaudeWoW.UI.listPanel.template'), 'InsetFrameTemplate');
-  assert.equal(vm.evaluate('ClaudeWoW.UI.transcriptPanel.template'), 'InsetFrameTemplate');
-  assert.equal(vm.evaluate('ClaudeWoW.UI.chatButtons[1].navBg ~= nil'), 'true', 'chat rows use the auction house list art');
+  assert.equal(vm.evaluate('ClaudeWoW.UI.art.listBg'), 'QuestLog-main-background');
+  assert.equal(vm.evaluate('ClaudeWoW.UI.art.parchment'), 'QuestBG-Parchment', 'the transcript sits on quest parchment');
+  assert.equal(vm.evaluate('ClaudeWoWScroll.parent == ClaudeWoW.UI.parchment'), 'true');
+  assert.equal(vm.evaluate('ClaudeWoWChatSearch.template'), 'SearchBoxTemplate');
+  assert.equal(vm.evaluate('ClaudeWoWHelpButton.template'), 'MainHelpPlateButton');
+  assert.equal(vm.evaluate('ClaudeWoW.UI.cwd.shown'), 'false', 'the breadcrumbs replace the cwd footer');
   assert.equal(vm.evaluate('ClaudeWoWWindow.skinned'), 'true');
   assert.equal(vm.evaluate('ClaudeWoWFrame.claudewowBorder'), null, 'no extra border on top of the template');
+
+  assert.equal(shownHeaders(vm), 'every (2)|wow-ai (1)', 'chats are grouped under folder headers in first-seen order');
+  assert.equal(vm.evaluate('ClaudeWoW.UI.chatCount:GetText()'), 'Chats: 3/16');
+  assert.equal(vm.evaluate('ClaudeWoW.UI.art.minus'), 'common-button-list-minus');
+
+  vm.run('ClaudeWoW.UI.questList.headers[1].scripts.OnClick(ClaudeWoW.UI.questList.headers[1])');
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.collapsedFolders.every'), 'true');
+  assert.equal(shownRows(vm), 'Fix the bridge', 'a collapsed folder hides its chats');
+  assert.equal(vm.evaluate('ClaudeWoW.UI.art.plus'), 'common-button-list-plus');
+  vm.run('ClaudeWoW.UI.questList.headers[1].scripts.OnClick(ClaudeWoW.UI.questList.headers[1])');
+
+  vm.run('ClaudeWoWChatSearch:SetText("leather"); for _, fn in ipairs(ClaudeWoWChatSearch.hooks.OnTextChanged) do fn(ClaudeWoWChatSearch) end');
+  assert.equal(shownRows(vm), 'Leatherworking route', 'search filters by chat name');
+  assert.equal(shownHeaders(vm), 'every (1)');
+  vm.run('ClaudeWoWChatSearch:SetText("zzz"); for _, fn in ipairs(ClaudeWoWChatSearch.hooks.OnTextChanged) do fn(ClaudeWoWChatSearch) end');
+  assert.equal(vm.evaluate('ClaudeWoW.UI.questList.empty.shown'), 'true');
+  vm.run('ClaudeWoWChatSearch:SetText(""); for _, fn in ipairs(ClaudeWoWChatSearch.hooks.OnTextChanged) do fn(ClaudeWoWChatSearch) end');
+
+  vm.run('ClaudeWoWDB.chats[2].unread = 1; ClaudeWoW.Render()');
+  assert.equal(vm.evaluate('ClaudeWoW.UI.art.reply'), 'UI-QuestIcon-TurnIn-Normal', 'an unread reply shows the turn-in icon');
 
   vm.run('ClaudeWoWFrame.CloseButton.scripts.OnClick(ClaudeWoWFrame.CloseButton)');
   assert.equal(vm.evaluate('ClaudeWoWFrame.shown'), 'false');
   assert.equal(vm.evaluate('ClaudeWoWMini.shown'), 'true');
+});
+
+test('the breadcrumb bar shows folder, agent and plugin, and its dropdowns change the chat', () => {
+  const vm = nativeVM();
+  vm.run('ClaudeWoW.SwitchChat(ClaudeWoWDB.chats[2].id)');
+  assert.equal(vm.evaluate('STUB.nav.home'), 'Claude');
+  assert.equal(vm.evaluate('STUB.nav.buttons[1].name'), 'wow-ai');
+  assert.equal(vm.evaluate('STUB.nav.buttons[2].name ~= nil'), 'true');
+  const resets = vm.num('STUB.nav.resets');
+  vm.run('ClaudeWoW.Render()');
+  assert.equal(vm.num('STUB.nav.resets'), resets, 'an unchanged chat does not rebuild the bar');
+
+  vm.run('LIST = STUB.nav.buttons[1].listFunc()');
+  assert.equal(vm.evaluate('LIST[#LIST].text'), 'Other folder...');
+  vm.run('for _, e in ipairs(LIST) do if e.text == "every" then e.func() end end');
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[2].cwd'), '~/every-io/every', 'picking a folder from the crumb moves the chat');
+  assert.equal(vm.evaluate('STUB.nav.buttons[1].name'), 'every', 'and the crumb follows');
+  assert.equal(shownHeaders(vm), 'every (3)');
+
+  vm.run('LIST = STUB.nav.buttons[2].listFunc(); for _, e in ipairs(LIST) do if e.text == "Codex" then e.func() end end');
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[2].agent'), 'codex');
+});
+
+test('the help button lists the commands in the chat', () => {
+  const vm = nativeVM();
+  vm.run('ClaudeWoWHelpButton.scripts.OnClick(ClaudeWoWHelpButton)');
+  const chat = 'ClaudeWoW.UI and ClaudeWoWDB.chats[1]';
+  assert.ok(vm.evaluate(`(function() for _, c in ipairs(ClaudeWoWDB.chats) do if c.id == ClaudeWoWDB.activeChat then return c.history[#c.history].text end end end)()`).includes('/claude'), chat);
 });
 
 test('without the templates the window keeps its own backdrop', () => {
