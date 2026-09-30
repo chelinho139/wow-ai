@@ -34,7 +34,11 @@ local failures = {}
 local containers = {}
 
 local function Print(msg)
-	print("|cff66ccff[Claude WoW ui]|r " .. msg)
+	if ClaudeWoW and ClaudeWoW.Print then
+		ClaudeWoW.Print(msg, "Claude WoW ui")
+	else
+		print("|cff66ccff[Claude WoW ui]|r " .. msg)
+	end
 end
 
 local function Report(msg)

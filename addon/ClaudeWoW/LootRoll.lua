@@ -16,6 +16,10 @@ local ROLL_BUTTONS = {
 	greed = { atlas = "lootroll-toast-icon-greed", file = "Interface\\Buttons\\UI-GroupLoot-Coin", label = GREED or "Greed", hint = "Allow it for this one retry only. Nothing is added to the allowlist." },
 	pass = { atlas = "lootroll-toast-icon-pass", file = "Interface\\Buttons\\UI-GroupLoot-Pass", label = PASS or "Pass", hint = "Deny it. The agent is not retried." },
 }
+local FOLDER_HINTS = {
+	need = "Add the folder to this chat for good, like /claude --add-dir, and retry.",
+	greed = "Add the folder for this one retry only. The chat's folders stay as they are.",
+}
 
 local SOUND_KIT_IDS = {
 	UI_EPICLOOT_TOAST = 31578,
@@ -39,7 +43,27 @@ local function AtlasExists(atlas)
 	return C_Texture and C_Texture.GetAtlasExists and C_Texture.GetAtlasExists(atlas) or false
 end
 
+local function FolderOf(rule)
+	return tostring(rule):match("^AddDir%((.+)%)$")
+end
+
+function R.HasFolder(rules)
+	for _, rule in ipairs(rules or {}) do
+		if FolderOf(rule) then return true end
+	end
+	return false
+end
+
+function R.Hint(choice, rules)
+	local spec = ROLL_BUTTONS[choice]
+	if not spec then return "" end
+	if FOLDER_HINTS[choice] and R.HasFolder(rules) then return FOLDER_HINTS[choice] end
+	return spec.hint
+end
+
 function R.CommandOf(rule)
+	local folder = FolderOf(rule)
+	if folder then return folder end
 	local tool, inside = tostring(rule):match("^([%w_]+)%((.*)%)$")
 	if not tool then return tostring(rule) end
 	local prefix = inside:match("^(.-):%*$")
@@ -48,14 +72,14 @@ end
 
 function R.ItemName(rules)
 	local first = tostring(rules[1])
-	local name = first:match("^Bash%(") and ("Scroll of " .. R.CommandOf(first)) or R.CommandOf(first)
+	local name = (first:match("^Bash%(") or FolderOf(first)) and ("Scroll of " .. R.CommandOf(first)) or R.CommandOf(first)
 	if #rules > 1 then name = name .. " +" .. (#rules - 1) end
 	return name
 end
 
 function R.IconFor(rules)
 	for _, rule in ipairs(rules) do
-		if tostring(rule):match("^Bash") then return SCROLL_ICON end
+		if tostring(rule):match("^Bash") or FolderOf(rule) then return SCROLL_ICON end
 	end
 	return GEAR_ICON
 end
@@ -77,12 +101,13 @@ local function ShowItemTooltip(owner)
 	GameTooltip:AddLine(R.ItemName(offer.rules), EPIC_COLOR[1], EPIC_COLOR[2], EPIC_COLOR[3])
 	GameTooltip:AddLine(AgentLabel(offer.agent) .. " was denied:", 1, 0.82, 0)
 	for _, rule in ipairs(offer.rules) do
-		GameTooltip:AddLine(rule, 1, 1, 1, true)
+		local folder = FolderOf(rule)
+		GameTooltip:AddLine(folder and ("Folder outside this chat: " .. folder) or rule, 1, 1, 1, true)
 	end
 	GameTooltip:AddLine(" ")
 	for _, choice in ipairs({ "need", "greed", "pass" }) do
 		local spec = ROLL_BUTTONS[choice]
-		GameTooltip:AddLine(spec.label .. ": " .. spec.hint, 0.8, 0.8, 0.8, true)
+		GameTooltip:AddLine(spec.label .. ": " .. R.Hint(choice, offer.rules), 0.8, 0.8, 0.8, true)
 	end
 	GameTooltip:Show()
 end
@@ -91,7 +116,7 @@ local function ShowButtonTooltip(button)
 	local spec = ROLL_BUTTONS[button.choice]
 	GameTooltip:SetOwner(button, "ANCHOR_RIGHT")
 	GameTooltip:AddLine(spec.label)
-	GameTooltip:AddLine(spec.hint, 1, 1, 1, true)
+	GameTooltip:AddLine(R.Hint(button.choice, current and current.rules), 1, 1, 1, true)
 	GameTooltip:Show()
 end
 

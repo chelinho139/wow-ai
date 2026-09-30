@@ -8,6 +8,7 @@ const MODEL = 'claude-opus-5';
 const RATES = { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 };
 const BASE_CONTEXT = 20000;
 const TURN_GROWTH = 1500;
+const ACCEPT_EDITS_COMMANDS = new Set(['mkdir', 'touch', 'rm', 'rmdir', 'mv', 'cp', 'sed']);
 
 function arg(argv, name) {
   const i = argv.indexOf(name);
@@ -91,6 +92,46 @@ function promptText(raw) {
   return { text: raw, images: 0 };
 }
 
+function argList(argv, name) {
+  const out = [];
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] !== name) continue;
+    for (let j = i + 1; j < argv.length && !String(argv[j]).startsWith('--'); j++) out.push(argv[j]);
+  }
+  return out;
+}
+
+function insideAny(p, dirs) {
+  return dirs.some(d => {
+    const rel = path.relative(path.resolve(d), path.resolve(p));
+    return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+  });
+}
+
+function bashRefusal(command, argv, stuck) {
+  const word = String(command).trim().split(/\s+/)[0];
+  const rules = argList(argv, '--allowedTools');
+  const dirs = stuck ? [process.cwd()] : [process.cwd(), ...argList(argv, '--add-dir')];
+  const outside = String(command).split(/\s+/).slice(1).find(a => path.isAbsolute(a) && !insideAny(a, dirs));
+  if (outside) return `${word} in '${outside}' needs approval. The path is outside the working directories for this session ('${process.cwd()}'). Allowing runs the command as written.`;
+  const autoEdit = arg(argv, '--permission-mode') === 'acceptEdits' && ACCEPT_EDITS_COMMANDS.has(word);
+  if (!autoEdit && !rules.includes(`Bash(${word}:*)`)) return 'This command requires approval';
+  return '';
+}
+
+function runBash(session, command, argv) {
+  const id = `toolu_fake_${session.turns}`;
+  emit({ type: 'assistant', session_id: session.id, message: { model: MODEL, role: 'assistant', content: [{ type: 'tool_use', id, name: 'Bash', input: { command } }], usage: turnUsage(session.turns) } });
+  const refusal = bashRefusal(command, argv, session.stuck);
+  if (!refusal) {
+    emit({ type: 'user', session_id: session.id, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, is_error: false, content: '(Bash completed with no output)' }] } });
+    return null;
+  }
+  emit({ type: 'system', subtype: 'permission_denied', tool_name: 'Bash', tool_use_id: id, message: refusal, session_id: session.id });
+  emit({ type: 'user', session_id: session.id, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, is_error: true, content: refusal }] } });
+  return { tool_name: 'Bash', tool_use_id: id, tool_input: { command } };
+}
+
 function lastUserLine(text) {
   const lines = String(text).split('\n').map(l => l.trim()).filter(Boolean);
   return lines[lines.length - 1] || '';
@@ -136,15 +177,24 @@ async function main() {
     process.exit(1);
   }
 
+  if (typeof d['bash-stuck'] === 'string') { d.bash = d['bash-stuck']; session.stuck = true; }
+  const command = typeof d.bash === 'string' ? d.bash : session.pendingBash;
+  const denials = [];
+  if (command) {
+    const denial = runBash(session, command, argv);
+    if (denial) { denials.push(denial); session.pendingBash = command; } else delete session.pendingBash;
+  }
+
   const u = turnUsage(session.turns);
   session.total = addUsage(session.total, u);
   saveSession(session);
-  const reply = d.reply !== undefined && d.reply !== true ? String(d.reply) : `echo (turn ${session.turns}): ${lastUserLine(text).slice(0, 200)}`;
+  const said = denials.length ? `blocked (turn ${session.turns}): ${command}` : command ? `ran (turn ${session.turns}): ${command}` : '';
+  const reply = d.reply !== undefined && d.reply !== true ? String(d.reply) : said || `echo (turn ${session.turns}): ${lastUserLine(text).slice(0, 200)}`;
   const body = d.long ? `${reply}\n` + 'lorem ipsum dolor sit amet '.repeat(Number(d.long) || 100) : reply;
   emit({ type: 'assistant', session_id: session.id, message: { model: MODEL, role: 'assistant', content: [{ type: 'text', text: body }], usage: u } });
   emit({
     type: 'result', subtype: 'success', is_error: false, result: body, session_id: session.id,
-    num_turns: session.turns, usage: u,
+    num_turns: session.turns, usage: u, permission_denials: denials,
     modelUsage: { [MODEL]: session.total },
     total_cost_usd: session.total.costUSD,
   });

@@ -117,7 +117,9 @@ Every chat that hasn't picked its own folder now works in `realms`, and the pane
 
 ## Use
 
-In game: `/claude` opens the window on a new chat (`/claude -c` on the current one). Until the bridge has answered, a **Connect** button sits where Send would be: start the bridge, click it, and the light turns green (a message typed before that stays in the box). Then click the input box, type, Enter. The reply arrives with the whisper sound; the window's light shows the bridge state (green/yellow/red, hover for details), and **Reconnect** shows up if the bridge goes quiet.
+In game, the chat tab is the way in. Once the bridge answers, a **Claude** tab opens in the chat dock, next to General, like a whisper from a friend. Click it, type, press Enter: the message goes to the agent and never to the server. You see `To Claude: ...`, then one progress line that updates in place (`Claude is working... 45s · 12 actions - Editing Map.lua  [cancel]`), then the reply as a whisper. A short reply shows whole; a long one shows its TL;DR and a **[full reply]** link. Everything else happens in the tab too: `/claude` commands answer there, a denied command offers **[Need] [Greed] [Pass]** links, a macro comes as a **[Create macro: Name]** link that opens the Create-macro prompt, a route as a **[show route]** link that opens the map, and the bridge status says itself in one line with a **[connect]** link when the bridge goes quiet. A compact bar with the status light (green/yellow/red, hover for details) sits at the top of the screen.
+
+The big window is the workspace: full transcripts, the chat list and settings. It opens only when you ask: bare `/claude` in the game chat, the **Claude WoW: open or close the workspace** key binding (Key Bindings > AddOns), a click on the compact bar or on **[full reply]**. Esc closes it to the bar. While it is open it keeps out of the way: it steps aside when bags, the character sheet, the spellbook, a vendor, the bank, the mail or another Blizzard panel opens and goes back when they close, it steps away while the maximized map or the game menu is up, and it dims to 35% while you move or fight (full again under the mouse or while you type). It remembers its size and place per character and snaps to the screen edges. Until the bridge has answered, a **Connect** button sits where Send would be.
 
 Right-clicking a chat in the left panel opens a small menu with **Rename...**, **Folder...**, **Agent...** and **Plugin...** (right-click again to close it); the trash can on the row deletes the chat after an OK/Cancel confirm. **Folder...** sets the folder this chat's agent works in (same as `/claude cd` below), **Agent...** which agent answers it (same as `/claude -c --agent`), **Plugin...** the advanced binding (same as `/claude config plugin`); each chat keeps its own, so you can have a general chat next to chats on different projects, with different agents, side by side. The window's footer shows them.
 
@@ -125,7 +127,7 @@ Right-clicking a chat in the left panel opens a small menu with **Rename...**, *
 
 | In game | Like | What it does |
 |---|---|---|
-| `/claude <text>` | `claude "<text>"` | start a new chat and send `<text>` there, straight from the normal chat box. At the chat limit (16) the game chat says so and the text waits in the window's input box. Bare `/claude` opens an empty new chat |
+| `/claude <text>` | `claude "<text>"` | start a new chat and send `<text>` there, straight from the normal chat box; the new chat gets a tab of its own. At the chat limit (16) the game chat says so and the text waits in the window's input box. Bare `/claude` in the game chat opens the workspace window; in a chat's tab it starts a new chat |
 | `/claude -c <text>` | `claude -c` | continue the current chat (`--continue`); alone it opens the window on it |
 | `/claude -r <id\|name\|n> [text]` | `claude -r` | resume a session (`--resume`). A Claude Code session that is running in a terminal with the claude-wow channel gets the chat live; any other session (one of your chats, or a Claude Code session from its history) is resumed headless with `claude -p --resume <id>` in its own folder. Names match chat and session names, ids match by prefix; a prefix two sessions share lists both |
 | `/claude -r` | `/resume` | list the running and recent sessions (id, name, folder, age) in the window and the game chat; click one, or `/claude -r <n>` |
@@ -159,16 +161,17 @@ Settings, with `/claude config <key> [value]`:
 
 | Key | What it does |
 |---|---|
-| `whisper on\|off` | each chat as a native whisper tab in the chat dock (off by default): replies arrive there as whispers and flash the tab, what you type there goes to the agent, never to the server, and slash commands typed there (`/claude ...`, `/cast ...`) run as usual, so `/claude -c ...` in a tab continues that tab's chat. The window stays the full record |
+| `ui [setting]` | the tabs and the window, alone it lists them: `ui whisper on\|off` (on by default; the same as `whisper on\|off`), `ui dim <10-100>\|off` (how far the window dims while you move or fight, 35 by default), `ui dodge on\|off` (step aside for Blizzard panels, on), `ui autohide on\|off` (step away while the maximized map, the game menu or the settings are up, on), `ui reset` (this character's window size and place back to the default). `ui list`, `ui remove <name>` and `ui run <name>` manage [Live UI widgets](#live-ui-widgets) |
+| `whisper on\|off` | each chat as a native whisper tab in the chat dock (on by default; an install where you had turned it off keeps it off): replies arrive there as whispers and flash the tab, what you type there goes to the agent, never to the server, and slash commands typed there (`/claude ...`, `/cast ...`) run as usual, so `/claude -c ...` in a tab continues that tab's chat. Off, replies go to the game chat and `/claude` opens the window, as before |
 | `context [on\|off]` | show what the agent is told about your character and location, or turn it on/off. Bare, it first prints this chat's context growth: the tokens your next message re-reads, the turns in the session, how long it has run and what it comes to at API list prices |
 | `context <n>` | warn once, with a **New chat** button, when a chat's context passes `n` tokens (`100k` by default, `0` = never). Every message resumes the chat's agent session, so its context only grows and each reply costs more than the last; the window's footer shows it like Claude Code's own status line (`11m 58s · ↓ 106.9k tokens · ≈$2.41 API`: time since the session started, the context, the session at API list prices, a comparison and not a bill), and `/claude diag` lists it per chat |
 | `vision [on\|off]` | send a picture of your screen with each message, so the agent sees what you see: "what is this item?", "why is this boss killing me?", "read this quest" (off by default; needs the screenshot transport) |
 | `roast [on\|off]` | when you die, the agent gets a recap of what killed you and writes a short roast in the **Death roasts** chat (off by default; at most one every 2 minutes). See [Death roast](#death-roast) |
 | `achievements [on\|off\|test]` | list the achievements your agents earned; `on`/`off` turns the toasts on or off, `test` shows a sample (see [Achievement toasts](#achievement-toasts)) |
 | `echo summary\|full\|short\|off\|<chars>` | how much of each reply to print into the game chat. `summary` (the default) prints only the agent's closing TL;DR lines, the full reply is in the window behind `[open]`; `full` prints up to 4000 chars, `short` one preview line |
-| `voice ...`, `map ...`, `ui ...`, `macro undo`, `roll on\|off` | see [Voice lines](#voice-lines), [Map](#map-routes-and-gathering-nodes), [Live UI widgets](#live-ui-widgets), [Macros](#macros-ready-to-use) and [Need, Greed or Pass](#need-greed-or-pass) |
+| `voice ...`, `map ...`, `macro undo`, `roll on\|off` | see [Voice lines](#voice-lines), [Map](#map-routes-and-gathering-nodes), [Macros](#macros-ready-to-use) and [Need, Greed or Pass](#need-greed-or-pass) |
 | `longchat on` | let the game chat box take 4000 characters, for long `/claude` messages |
-| `bind <key>` | hotkey: checks for a reply while waiting, otherwise toggles the window |
+| `bind <key>` | hotkey: checks for a reply while waiting, otherwise toggles the window (the **Claude WoW: open or close the workspace** binding in Key Bindings > AddOns does the toggle alone) |
 | `mode reload` | fallback transport that costs a `/reload` per step, if pixels or slots can't work |
 | `signal on\|off`, `auto on\|off\|<seconds>` | the sound-file readiness check, and the reload-mode auto refresh |
 | `plugin <name>\|default` | advanced: pin the chat to `ask`, `claude-code` or `live` by hand |
@@ -177,7 +180,7 @@ Click any message, or `/claude copy` for the last reply, to open it in a selecta
 
 ### Short in the chat, full in the window
 
-Every run tells the agent that only a short summary of its reply is printed in the game chat, and asks it to end each reply with a `TL;DR:` block of one or two lines. The bridge splits that block off and the addon prints just those lines under `[Claude · chat]`, with the `[open]` link to the whole reply in the window (the window keeps the full text, TL;DR included). When an agent forgets the block, the first two lines of the reply are printed instead, with a hint to open the rest. `/claude config echo full` goes back to printing the whole reply.
+Every run tells the agent that only a short summary of its reply is printed in the game chat, and asks it to end each reply with a `TL;DR:` block of one or two lines. The bridge splits that block off. In the chat's tab, a reply of up to 8 lines and 700 characters shows whole; a longer one shows just those TL;DR lines with a **[full reply]** link to the workspace window (which keeps the full text, TL;DR included). With the tabs off, the addon prints the TL;DR under `[Claude · chat]` with `[open]`. When an agent forgets the block, the first two lines of the reply are shown instead, with a hint to open the rest. `/claude config echo full` goes back to showing the whole reply in both places.
 
 ### The agent knows where you are
 
@@ -301,6 +304,8 @@ By default a denial does not show that button. It pops a frame in the style of t
 | **Need** (dice) | Allow & retry: the rules go into your config for good |
 | **Greed** (coin) | Allow for this one retry only: the bridge passes the rules to that run and saves nothing |
 | **Pass** (X) | Deny: nothing is sent, the agent is not retried |
+
+Claude Code also blocks a command that touches a path outside the chat's folder, and no allow rule can change that. That denial rolls for the folder instead, as **Scroll of /tmp**: Need adds the folder to the chat for good (what `/claude --add-dir /tmp` does), Greed adds it for the retry only. When a retry is blocked again for something it was just granted, the reply says so in one line and no new roll comes up.
 
 The bar under the item counts down 60 seconds. When it runs out, that is a Pass. Each choice plays the game's own loot sounds. `/claude config roll off` brings back the **Allow & retry** button, and `/claude config roll on` returns to the roll frame.
 

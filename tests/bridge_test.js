@@ -298,6 +298,63 @@ test('ruleFor turns denials into prefix rules', () => {
   assert.equal(P.ruleFor({}), 'Unknown');
 });
 
+test('folder grants: AddDir(<folder>) entries split from rules, and folder containment', () => {
+  assert.equal(P.folderRule('/tmp'), 'AddDir(/tmp)');
+  assert.equal(P.ruleFolder('AddDir(/a (b))'), '/a (b)');
+  assert.equal(P.ruleFolder('Bash(ls:*)'), '');
+  assert.deepEqual(P.splitGrants(['Bash(ls:*)', 'AddDir(/tmp)', '', 'WebSearch']), { rules: ['Bash(ls:*)', 'WebSearch'], dirs: ['/tmp'] });
+  assert.deepEqual(P.splitGrants(undefined), { rules: [], dirs: [] });
+  assert.equal(P.insideFolder('/tmp/x.txt', '/tmp'), true);
+  assert.equal(P.insideFolder('/tmp', '/tmp/'), true);
+  assert.equal(P.insideFolder('/tmpfoo/x', '/tmp'), false);
+  assert.equal(P.insideFolder('/srv/x', '/tmp'), false);
+  assert.equal(P.insideFolder('C:\\Games\\wow\\x.lua', 'c:\\games'), true);
+  assert.equal(P.insideFolder('', '/tmp'), false);
+  const dirs = new Set(['/', '/tmp']);
+  assert.equal(P.nearestFolder('/tmp/a/b/c.txt', p => dirs.has(p)), '/tmp');
+  assert.equal(P.nearestFolder('/tmp', p => dirs.has(p)), '/tmp');
+  assert.equal(P.nearestFolder('/tmp/x.txt'), '/tmp');
+});
+
+test('classifyDenial: outside the working folders becomes a folder, anything else a rule; deniedAgain spots a repeat', () => {
+  const isDir = p => ['/', '/tmp', '/work'].includes(p);
+  const touch = { tool_name: 'Bash', tool_input: { command: 'touch /tmp/demo.txt' } };
+  const outside = P.classifyDenial(touch, { message: "touch in '/tmp/demo.txt' needs approval. The path is outside the working directories for this session ('/work'). Allowing runs the command as written." }, { cwd: '/work', isDir });
+  assert.deepEqual({ kind: outside.kind, rule: outside.rule, folder: outside.folder, path: outside.path }, { kind: 'folder', rule: 'AddDir(/tmp)', folder: '/tmp', path: '/tmp/demo.txt' });
+  const relative = P.classifyDenial(touch, { message: "touch in '../tmp/demo.txt' needs approval. The path is outside the working directories for this session." }, { cwd: '/work', isDir });
+  assert.equal(relative.path, '/tmp/demo.txt');
+  const write = P.classifyDenial({ tool_name: 'Write', tool_input: { file_path: '/tmp/w.txt' } }, { reasonType: 'workingDir', message: 'Claude requested permissions to write to /tmp/w.txt, but you haven\'t granted it yet.' }, { cwd: '/work', isDir });
+  assert.equal(write.rule, 'AddDir(/tmp)');
+  const plain = P.classifyDenial({ tool_name: 'Bash', tool_input: { command: 'curl x' } }, { message: 'This command requires approval' }, { cwd: '/work', isDir });
+  assert.deepEqual({ kind: plain.kind, rule: plain.rule }, { kind: 'rule', rule: 'Bash(curl:*)' });
+  assert.equal(P.classifyDenial({ tool_name: 'Bash', tool_input: { command: 'ls /x' } }, { message: 'outside the working directories' }, {}).kind, 'rule', 'no path named: a rule');
+  assert.equal(P.classifyDenial(touch).rule, 'Bash(touch:*)');
+
+  const granted = P.grantsFor({ allowedTools: ['Bash(curl:*)'], addDirs: ['/tmp'] }, '/work');
+  assert.deepEqual(granted, { rules: ['Bash(curl:*)'], dirs: ['/work', '/tmp'] });
+  assert.equal(P.deniedAgain(outside, granted), true);
+  assert.equal(P.deniedAgain(plain, granted), true);
+  assert.equal(P.deniedAgain(outside, P.grantsFor({ allowedTools: ['Bash(touch:*)'] }, '/work')), false, 'an allowed rule never covers a folder');
+  assert.equal(P.deniedAgain({ kind: 'rule', rule: 'WebSearch' }, granted), false);
+  assert.equal(P.deniedAgain(outside, undefined), false);
+
+  const notes = P.denialNotes('Claude', [outside, plain], []);
+  assert.equal(notes.length, 2);
+  assert.match(notes[0], /needed 1 action\(s\)[\s\S]*Bash: curl x/);
+  assert.match(notes[1], /blocked outside this chat's folders:\n {2}Bash: touch \/tmp\/demo\.txt \(folder \/tmp\)/);
+  const again = P.denialNotes('Claude', [], [outside, outside]);
+  assert.equal(again.length, 1, 'one line per repeat');
+  assert.ok(!again[0].includes('\n'));
+});
+
+test('flags: a retry granted a folder carries it in dirs=, never in allow=', () => {
+  const hex = Buffer.from(['/srv/data', '/tmp'].join('\x1F')).toString('hex');
+  const f = P.parseFlags(`once=Bash(curl:*);dirs=${hex}`);
+  assert.deepEqual(f.allowOnce, ['Bash(curl:*)']);
+  assert.deepEqual(f.addDirs, ['/srv/data', '/tmp']);
+  assert.deepEqual(f.allow, []);
+});
+
 test('describeToolUse gives one short line per tool call', () => {
   assert.equal(P.describeToolUse({ name: 'Bash', input: { command: 'npm test\nsecond line' } }), '$ npm test');
   assert.equal(P.describeToolUse({ name: 'Edit', input: { file_path: 'C:\\x\\player.gd' } }), 'edit player.gd');

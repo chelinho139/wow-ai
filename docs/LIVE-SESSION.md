@@ -54,7 +54,7 @@ and start Claude Code there with the same flag. The name must be `claude-wow`.
 
 The bridge matches a running session by the Claude Code session id (the channel server tells it the pid of the Claude Code process that started it, and Claude Code's `sessions/<pid>.json` names the session), by the session's name in Claude Code, or by the name the channel server gives it (`CLAUDE_WOW_LIVE_NAME`, else the folder's name). If that session is gone when a message is sent, the chat says so; `/claude -r <id>` then resumes it headless.
 
-With whisper tabs on (`/claude config whisper on`), each chat is a tab: type there and the text goes to the session. The session sees:
+With whisper tabs on (the default; `/claude config ui whisper on|off`), each chat is a tab: type there and the text goes to the session. The session sees:
 
 ```
 <channel source="claude-wow" chat_id="..." message_id="12" chat_name="Live" character="Thrall, level 12 Orc Shaman" zone="Durotar (Razor Hill) 52.1, 43.0">

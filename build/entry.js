@@ -15,6 +15,8 @@ import addonVoice from '../addon/ClaudeWoW/Voice.lua' with { type: 'file' };
 import addonLootRoll from '../addon/ClaudeWoW/LootRoll.lua' with { type: 'file' };
 import addonAchievements from '../addon/ClaudeWoW/Achievements.lua' with { type: 'file' };
 import addonWidgets from '../addon/ClaudeWoW/Widgets.lua' with { type: 'file' };
+import addonWindow from '../addon/ClaudeWoW/Window.lua' with { type: 'file' };
+import addonBindings from '../addon/ClaudeWoW/Bindings.xml' with { type: 'file' };
 import capturePs1 from '../bridge/capture.ps1' with { type: 'file' };
 import captureMac from '../bridge/capture_mac.py' with { type: 'file' };
 import captureX11 from '../bridge/capture_x11.py' with { type: 'file' };
@@ -32,6 +34,8 @@ require('../bridge/assets').embed({
   'addon/ClaudeWoW/LootRoll.lua': addonLootRoll,
   'addon/ClaudeWoW/Achievements.lua': addonAchievements,
   'addon/ClaudeWoW/Widgets.lua': addonWidgets,
+  'addon/ClaudeWoW/Window.lua': addonWindow,
+  'addon/ClaudeWoW/Bindings.xml': addonBindings,
   'bridge/capture.ps1': capturePs1,
   'bridge/capture_mac.py': captureMac,
   'bridge/capture_x11.py': captureX11,

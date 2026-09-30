@@ -85,6 +85,7 @@ class WowClient {
       disabled: [],
       fileIndex: 'launch',
       deletionVisible: true,
+      chatDock: false,
     }, opts);
     this.clientRoot = assertSafe(sb.client);
     this.L = null;
@@ -215,6 +216,7 @@ class WowClient {
     this.runLua(`for _, n in ipairs({${this.indexed.map(luaQuote).join(',')}}) do DEV.indexed[n] = true end`);
     this.runLua(`for _, n in ipairs({${(o.disabled || []).map(luaQuote).join(',')}}) do DEV.disabled[n] = true end`);
     if (!o.hasScreenshot) this.runLua('Screenshot = nil');
+    if (o.chatDock) this.runLua('STUB.ChatDock()');
     this.syncClock();
     this.runLua(`
       local src = HOST_read("Interface/AddOns/${MAIN_ADDON}/${MAIN_ADDON}.toc")
@@ -340,6 +342,56 @@ class WowClient {
       for _, f in ipairs(STUB.frames) do
         if f.shown ~= false and f.scripts.OnKeyDown then pcall(f.scripts.OnKeyDown, f, ${luaQuote(key)}) end
       end`);
+  }
+
+  showPanel(name, left = 16, top = 1000, width = 700, height = 600) {
+    this.runLua(`if not _G[${luaQuote(name)}] then STUB.Panel(${luaQuote(name)}, ${left}, ${top}, ${width}, ${height}) end; ShowUIPanel(_G[${luaQuote(name)}])`);
+  }
+
+  hidePanel(name) {
+    this.runLua(`if _G[${luaQuote(name)}] then HideUIPanel(_G[${luaQuote(name)}]) end`);
+  }
+
+  move(moving) {
+    this.runLua(`DEV.Fire(${luaQuote(moving ? 'PLAYER_STARTED_MOVING' : 'PLAYER_STOPPED_MOVING')})`);
+  }
+
+  combat(on) {
+    this.runLua(`STUB.combat = ${!!on}; DEV.Fire(${luaQuote(on ? 'PLAYER_REGEN_DISABLED' : 'PLAYER_REGEN_ENABLED')})`);
+  }
+
+  hover(frameName) {
+    this.runLua(frameName ? `STUB.mouseOver = _G[${luaQuote(frameName)}]` : 'STUB.mouseOver = nil');
+  }
+
+  clickLink(link) {
+    this.runLua(`STUB.ClickLink(${luaQuote(link)})`);
+  }
+
+  tabFor(chatId) {
+    return this.luaValue(`(function() for _, n in ipairs(CHAT_FRAMES or {}) do local f = _G[n]; if f.claudewowChatId == ${luaQuote(chatId)} and f.inUse ~= false then return n end end end)()`);
+  }
+
+  tabLines(chatId) {
+    const name = this.tabFor(chatId);
+    if (!name) return [];
+    return (this.luaValue(`STUB.Lines(${name})`) || '').split('\n').filter(Boolean);
+  }
+
+  tabLinks(chatId) {
+    const name = this.tabFor(chatId);
+    if (!name) return [];
+    return this.json(`STUB.LinksIn(${name})`) || [];
+  }
+
+  typeInTab(text, chatId) {
+    const name = this.tabFor(chatId || this.activeChat().id);
+    if (!name) throw new Error('no whisper tab for the chat');
+    this.runLua(`${name}EditBox:SetText(${luaQuote(text)}); STUB.PressEnter(${name}EditBox)`);
+  }
+
+  windowRect() {
+    return this.json('{ left = ClaudeWoWFrame:GetLeft(), top = ClaudeWoWFrame:GetTop(), right = ClaudeWoWFrame:GetRight(), bottom = ClaudeWoWFrame:GetBottom(), shown = ClaudeWoWFrame:IsShown(), alpha = ClaudeWoWFrame:GetAlpha() }');
   }
 
   setUiHidden(hidden) {
