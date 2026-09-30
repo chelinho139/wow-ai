@@ -2220,7 +2220,7 @@ function ClaudeWoW.Send(text, allow, opts)
 		-- never answers, the text is still in the box for a later try.
 		if ui.input then ui.input:SetText(text) end
 		run.sendOnConnect = { chat = c.id, text = text, allow = allow, opts = opts }
-		if not run.connectingAt then ClaudeWoW.Connect() end
+		if not run.connectingAt then ClaudeWoW.Connect(true) end
 		ClaudeWoW.Toggle(true)
 		return
 	end

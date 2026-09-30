@@ -1098,27 +1098,20 @@ test('screenshot transport: shots stop once the bridge has been dark for a while
   assert.equal(vm.num('STUB.screenshots'), 3, 'no screenshot for a bridge that has been dark 5 minutes');
   assert.ok(prints().includes('bridge not seen for 5m10s: screenshots paused'), 'the player is told in the game chat: ' + prints());
   assert.ok(vm.evaluate('ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].text').includes('screenshots paused'), 'and in the window');
-  // A message typed now: Send is gated on the connection, and the automatic
-  // Connect it triggers says hello without a file. The pause is said once.
   vm.run('STUB.prints = {}; ClaudeWoW.NewChat("Two"); ClaudeWoW.Send("anyone?")');
   assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'true');
-  frames(vm, 3);
-  assert.equal(vm.num('STUB.screenshots'), 3, 'a message typed at a dead bridge leaves no file behind');
+  frames(vm, 2);
+  assert.equal(vm.num('STUB.screenshots'), 4, 'a message typed at a dark bridge buys one hello shot, like a Connect click');
+  assert.ok(stripRecords(vm).find(r => r.text === 'still there?'), 'the message that waited rides on that one shot');
+  vm.run('STUB.FireEvent("SCREENSHOT_SUCCEEDED")');
   assert.ok(!prints().includes('screenshots paused'), 'said once, not per message');
   vm.run('SlashCmdList.CLAUDE("diag")');
   assert.ok(vm.evaluate('ClaudeWoWDB.chats[2].history[#ClaudeWoWDB.chats[2].history].text').includes('screenshots PAUSED (bridge not seen for'), 'diag says so');
-  // The Connect button is a deliberate act: it buys exactly one shot.
-  vm.run('STUB.now = STUB.now + 20; STUB.Tick()'); // the automatic connect attempt gives up
-  assert.equal(vm.evaluate('ClaudeWoWFrame ~= nil'), 'true');
-  vm.run('ClaudeWoW.Connect(true)');
-  frames(vm, 2);
-  assert.equal(vm.num('STUB.screenshots'), 4, 'one hello shot for the click');
-  assert.ok(stripRecords(vm).find(r => r.text === 'still there?'), 'the message that waited rides on that one shot');
-  vm.run('STUB.FireEvent("SCREENSHOT_SUCCEEDED")');
+  vm.run('STUB.now = STUB.now + 20; STUB.Tick()');
   vm.run('STUB.now = STUB.now + 2; STUB.Tick()');
   frames(vm, 3);
   assert.equal(vm.num('STUB.screenshots'), 4, 'and no more');
-  assert.ok(!prints().includes('resume'), 'a click is not the bridge coming back');
+  assert.ok(!prints().includes('resume'), 'a send is not the bridge coming back');
   // The bridge is back: a presence beat. Said once, and sends shoot again.
   vm.run('STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW\\\\presence\\\\a\\\\0002.wav"] = false; STUB.prints = {}; STUB.now = STUB.now + 2; STUB.Tick()');
   assert.ok(prints().includes('bridge is back: screenshots resume'), prints());
