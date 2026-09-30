@@ -1581,6 +1581,7 @@ function replacedFunctions(vm) {
         if eb[k] ~= ChatFrameEditBoxMixin[k] then bad[#bad + 1] = name .. "EditBox:" .. k .. " (send path)" end
       end
     end
+    for _, hook in ipairs(STUB.editBoxHooks) do bad[#bad + 1] = "hooksecurefunc on edit box " .. hook end
     if ChatEdit_SendText ~= SNAP.g.ChatEdit_SendText then bad[#bad + 1] = "ChatEdit_SendText (send path)" end
     if ChatFrameUtil.SendText ~= SNAP.util.SendText then bad[#bad + 1] = "ChatFrameUtil.SendText (send path)" end
     return table.concat(bad, ", ")
@@ -1690,30 +1691,31 @@ test('/claude <text> at the chat limit says so and keeps the text in the window\
   assert.ok(!stripRecords(vm).find(r => r.text === 'one too many'), 'not sent anywhere');
 });
 
-test('/r goes to the agent that replied last through the pre-send hook, typed at once or after "/r ", and to the player again after a real whisper', () => {
+test('opening chat, a chat type change, Esc and /r after an agent replied run the game\'s edit box with no addon hook on its methods', () => {
   const vm = whisperVM();
   const chatId = vm.evaluate('ClaudeWoWDB.chats[1].id');
   vm.run('SlashCmdList.CLAUDE("-c --agent claude")');
   vm.run('ClaudeWoW.Send("question")');
   replyTo(vm, chatId, 'status = "done", text = "answer", agent = "claude"');
+
+  vm.run('ChatFrameUtil.ActivateChat(ChatFrame1EditBox)');
+  vm.run('ChatFrame1EditBox:SetText("/g "); ChatFrame1EditBox:ParseText(0)');
+  assert.equal(vm.evaluate('ChatFrame1EditBox:GetChatType()'), 'GUILD');
+  vm.run('ChatFrame1EditBox:ClearChat()');
+  typeIn(vm, 'ChatFrame1EditBox', '/s hello');
+  assert.equal(vm.evaluate('STUB.chatSent[1].chatType .. ":" .. STUB.chatSent[1].text'), 'SAY:hello');
+
   typeIn(vm, 'ChatFrame1EditBox', '/r thanks');
-  assert.ok(stripRecords(vm).find(r => r.text === 'thanks'), '/r reached the agent');
-  assert.equal(vm.num('STUB.serverSends'), 0);
-  replyTo(vm, chatId, 'status = "done", text = "welcome", agent = "claude"');
+  assert.equal(vm.num('STUB.serverSends'), 1, 'with no real whisper yet /r sends nothing');
+  assert.ok(!stripRecords(vm).find(r => r.text === 'thanks'), '/r is the game\'s: it does not go to the agent');
 
   vm.run('STUB.lastTell = "Bob"');
-  vm.run('ChatFrame1EditBox:SetText("/r "); ChatFrame1EditBox:ParseText(0)');
-  assert.equal(vm.evaluate('ChatFrame1EditBoxHeader:GetText()'), 'To Claude [Question]: ', 'the header names the agent');
-  vm.run('ChatFrame1EditBox:SetText("one more")');
-  vm.run('STUB.PressEnter(ChatFrame1EditBox)');
-  assert.ok(stripRecords(vm).find(r => r.text === 'one more'), 'typed after "/r " it reached the agent');
-  assert.equal(vm.num('STUB.serverSends'), 0, 'not whispered to Bob');
-  replyTo(vm, chatId, 'status = "done", text = "sure", agent = "claude"');
-
   vm.run('STUB.FireEvent("CHAT_MSG_WHISPER", "hey", "Bob")');
+  replyTo(vm, chatId, 'status = "done", text = "later answer", agent = "claude"');
   typeIn(vm, 'ChatFrame1EditBox', '/r hi Bob');
-  assert.equal(vm.num('STUB.serverSends'), 1);
-  assert.equal(vm.evaluate('STUB.chatSent[1].target .. ":" .. STUB.chatSent[1].text'), 'Bob:hi Bob');
+  assert.equal(vm.num('STUB.serverSends'), 2);
+  assert.equal(vm.evaluate('STUB.chatSent[2].target .. ":" .. STUB.chatSent[2].text'), 'Bob:hi Bob', 'an agent reply after the whisper does not take /r');
+  assert.equal(vm.evaluate('table.concat(STUB.editBoxHooks, ", ")'), '');
   assert.equal(replacedFunctions(vm), '');
 });
 

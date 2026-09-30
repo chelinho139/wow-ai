@@ -226,9 +226,16 @@ UISpecialFrames = {}
 tinsert = table.insert
 function wipe(t) for k in pairs(t) do t[k] = nil end return t end
 STUB.secureHooks = {}
+STUB.chatEditBoxes = setmetatable({}, { __mode = "k" })
+STUB.editBoxHooks = {}
 function hooksecurefunc(a, b, c)
 	local wrapper
-	if type(a) == "table" then
+	if type(a) == "table" and STUB.chatEditBoxes[a] then
+		local orig = a[b]
+		table.insert(STUB.editBoxHooks, tostring(a.name) .. ":" .. tostring(b))
+		wrapper = function(...) orig(...); error("attempt to call a nil value", 0) end
+		a[b] = wrapper
+	elseif type(a) == "table" then
 		local orig = a[b]
 		wrapper = function(...) local r = orig(...); local saved = STUB.tainted; c(...); STUB.tainted = saved; return r end
 		a[b] = wrapper
@@ -508,9 +515,15 @@ ChatEdit_SendText = M.SendText
 ChatEdit_ParseText = M.ParseText
 ChatFrameUtil.SendText = function(eb, addHistory) return eb:SendText(addHistory) end
 
+function ChatFrameUtil.ActivateChat(eb)
+	eb:Show()
+	eb:UpdateHeader()
+end
+
 function STUB.ChatEditBox(name, frame, chatType, tellTarget)
 	local eb = CreateFrame("EditBox", name, frame)
 	for k, v in pairs(M) do eb[k] = v end
+	STUB.chatEditBoxes[eb] = true
 	eb.chatFrame = frame
 	eb.attrs = { chatType = chatType or "SAY", stickyType = chatType or "SAY", tellTarget = tellTarget }
 	eb.header = eb:CreateFontString(name .. "Header")
