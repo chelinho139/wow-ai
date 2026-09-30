@@ -301,6 +301,18 @@ const NATIVE_TEMPLATES = `
   function NavBar_Initialize(bar, template, home) STUB.nav.home = home.name end
   function NavBar_Reset(bar) STUB.nav.resets = STUB.nav.resets + 1; STUB.nav.buttons = {} end
   function NavBar_AddButton(bar, data) table.insert(STUB.nav.buttons, data) end
+  function ScrollingEdit_OnCursorChanged() end
+  function ScrollingEdit_OnTextChanged() end
+  MenuUtil = { CreateContextMenu = function(owner, gen)
+    local root = { items = {} }
+    function root:CreateTitle(t) table.insert(self.items, { text = t }) end
+    function root:CreateButton(t, fn) table.insert(self.items, { text = t, fn = fn }) end
+    function root:CreateCheckbox(t, get, fn) table.insert(self.items, { text = t, fn = fn, get = get }) end
+    function root:CreateDivider() end
+    STUB.menu = root
+    gen(owner, root)
+  end }
+  function STUB.Pick(text) for _, it in ipairs(STUB.menu.items) do if it.text == text then it.fn() return end end error("no menu item " .. text) end
   local plainCreate = CreateFrame
   CreateFrame = function(kind, name, parent, template)
     local f = plainCreate(kind, name, parent, template)
@@ -337,7 +349,9 @@ test('the window is built from Blizzard frame templates where the client has the
   assert.equal(vm.evaluate('ClaudeWoW.UI.art.parchment'), 'QuestBG-Parchment', 'the transcript sits on quest parchment');
   assert.equal(vm.evaluate('ClaudeWoWScroll.parent == ClaudeWoW.UI.parchment'), 'true');
   assert.equal(vm.evaluate('ClaudeWoWChatSearch.template'), 'SearchBoxTemplate');
-  assert.equal(vm.evaluate('ClaudeWoWHelpButton.template'), 'MainHelpPlateButton');
+  assert.equal(vm.evaluate('ClaudeWoWScroll.template'), 'ScrollFrameTemplate', 'the transcript uses the thin Blizzard scroll bar');
+  assert.equal(vm.evaluate('ClaudeWoWInputScroll.template'), null, 'the input box has no arrow scroll bar');
+  assert.equal(vm.evaluate('ClaudeWoWInput.scripts.OnCursorChanged == ScrollingEdit_OnCursorChanged'), 'true', 'it follows the cursor the Blizzard way');
   assert.equal(vm.evaluate('ClaudeWoW.UI.cwd.shown'), 'false', 'the breadcrumbs replace the cwd footer');
   assert.equal(vm.evaluate('ClaudeWoWWindow.skinned'), 'true');
   assert.equal(vm.evaluate('ClaudeWoWFrame.claudewowBorder'), null, 'no extra border on top of the template');
@@ -364,10 +378,13 @@ test('the window is built from Blizzard frame templates where the client has the
   vm.run('ClaudeWoWChatSearch:SetText(""); for _, fn in ipairs(ClaudeWoWChatSearch.hooks.OnTextChanged) do fn(ClaudeWoWChatSearch) end');
 
   vm.run('ClaudeWoWDB.chats[2].unread = 1; ClaudeWoW.Render()');
-  vm.run('ClaudeWoWChatSettings.scripts.OnClick(ClaudeWoWChatSettings)');
-  assert.equal(vm.evaluate('ClaudeWoWDB.settings.chatPreviews'), 'false', 'the gear turns message previews off');
+  vm.run('ClaudeWoWChatSettings.scripts.OnClick(ClaudeWoWChatSettings); STUB.Pick("Show message previews")');
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.chatPreviews'), 'false', 'the gear menu turns message previews off');
   assert.equal(vm.evaluate('ClaudeWoW.UI.questList.rows[1].objectives[1].text.shown'), 'false');
-  vm.run('ClaudeWoWChatSettings.scripts.OnClick(ClaudeWoWChatSettings)');
+  vm.run('ClaudeWoWChatSettings.scripts.OnClick(ClaudeWoWChatSettings); STUB.Pick("Show message previews")');
+  vm.run('ClaudeWoWChatSettings.scripts.OnClick(ClaudeWoWChatSettings); STUB.Pick("Collapse all folders")');
+  assert.equal(shownRows(vm), '', 'collapse all hides every chat');
+  vm.run('ClaudeWoWChatSettings.scripts.OnClick(ClaudeWoWChatSettings); STUB.Pick("Expand all folders")');
   assert.equal(vm.evaluate('ClaudeWoW.UI.art.reply'), 'UI-QuestIcon-TurnIn-Normal', 'an unread reply shows the turn-in icon');
 
   vm.run('ClaudeWoWFrame.CloseButton.scripts.OnClick(ClaudeWoWFrame.CloseButton)');
@@ -396,11 +413,32 @@ test('the breadcrumb bar shows folder, agent and plugin, and its dropdowns chang
   assert.equal(vm.evaluate('ClaudeWoWDB.chats[2].agent'), 'codex');
 });
 
-test('the help button lists the commands in the chat', () => {
+test('help lives in the gear menu, and Clear moves from the bottom bar into the chat menu', () => {
   const vm = nativeVM();
-  vm.run('ClaudeWoWHelpButton.scripts.OnClick(ClaudeWoWHelpButton)');
-  const chat = 'ClaudeWoW.UI and ClaudeWoWDB.chats[1]';
-  assert.ok(vm.evaluate(`(function() for _, c in ipairs(ClaudeWoWDB.chats) do if c.id == ClaudeWoWDB.activeChat then return c.history[#c.history].text end end end)()`).includes('/claude'), chat);
+  const active = '(function() for _, c in ipairs(ClaudeWoWDB.chats) do if c.id == ClaudeWoWDB.activeChat then return c end end end)()';
+  vm.run('ClaudeWoWChatSettings.scripts.OnClick(ClaudeWoWChatSettings); STUB.Pick("Commands and tips")');
+  assert.ok(vm.evaluate(`${active}.history[#${active}.history].text`).includes('/claude'));
+  assert.equal(vm.evaluate('ClaudeWoWHelpButton'), null, 'no help button crowds the breadcrumb bar');
+
+  const clearButton = '(function() for _, c in ipairs(ClaudeWoWFrame.children) do if c.kind == "Button" and c.text == "Clear" then return c end end end)()';
+  assert.equal(vm.evaluate(`${clearButton}.shown`), 'false', 'no Clear button in the bottom bar');
+  vm.run(`ClaudeWoW.ShowChatMenu(ClaudeWoWDB.activeChat, ClaudeWoWFrame); STUB.Pick("Clear messages")`);
+  assert.equal(vm.num(`#${active}.history`), 0, 'the chat menu clears the chat');
+});
+
+test('the footer is a short state on the left and context and spend on the right, with the detail on hover', () => {
+  const vm = nativeVM();
+  vm.run('ClaudeWoWDB.chats[1].cost = 2.414; ClaudeWoWDB.chats[1].ctx = 186700; ClaudeWoWDB.chats[2].cost = 12.39; ClaudeWoW.SwitchChat(ClaudeWoWDB.chats[1].id); ClaudeWoW.Render()');
+  const stats = vm.evaluate('ClaudeWoW.UI.stats:GetText()');
+  assert.ok(stats.includes('UI-GoldIcon'), stats);
+  assert.ok(stats.includes('$2.41'), 'this chat\'s spend: ' + stats);
+  assert.ok(stats.includes('all chats $14.80'), 'and the total across chats: ' + stats);
+  assert.ok(stats.includes('186.7k'), 'and the context size: ' + stats);
+
+  vm.run('ClaudeWoWDB.chats[1].pendingId = 159; ClaudeWoW.UpdateStatus()');
+  const status = vm.evaluate('ClaudeWoW.UI.status:GetText()');
+  assert.ok(status.includes('Working') && !status.includes('#159'), 'a short state, not the full line: ' + status);
+  assert.ok(vm.evaluate('ClaudeWoW.UI.cwd.shown') === 'false');
 });
 
 test('without the templates the window keeps its own backdrop', () => {

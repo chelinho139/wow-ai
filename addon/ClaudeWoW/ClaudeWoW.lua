@@ -3372,7 +3372,7 @@ function ClaudeWoW.UpdateStatus()
 	else
 		s = "Ready"
 	end
-	ui.status:SetText(s)
+	ui.status:SetText(ui.native and Q.ShortStatus(c, s) or s)
 	run.statusText = s
 	ClaudeWoW.UpdateDot()
 	ClaudeWoW.UpdateConnect()
@@ -3414,6 +3414,16 @@ function ClaudeWoW.UpdateStatus()
 	ui.cwd:SetText("cwd: " .. cwdText .. "   agent: " .. agentText .. "   mode: " .. mode .. (ScreenshotMode() and " (screenshot)" or "") .. "   vision: " .. (db.settings.vision and "on" or "off") .. "   plugin: " .. pluginText .. (growth ~= "" and ("   " .. growth) or ""))
 	if ui.resend then ui.resend:SetShown(c and c.pendingId ~= nil and mode == "pixel") end
 	if ui.refresh then ui.refresh:SetShown(mode ~= "pixel" or run.slotsExhausted or run.slotsMissing or run.pixelFailed or false) end
+	if ui.stats then
+		ui.stats:SetText(Q.FooterStats(c))
+		ui.stats:ClearAllPoints()
+		local beside = (ui.refresh:IsShown() and ui.refresh) or (ui.resend:IsShown() and ui.resend) or nil
+		if beside then
+			ui.stats:SetPoint("RIGHT", beside, "LEFT", -10, 0)
+		else
+			ui.stats:SetPoint("BOTTOMRIGHT", ui.frame, "BOTTOMRIGHT", -26, 9)
+		end
+	end
 	ClaudeWoW.UpdateMini()
 end
 
@@ -3898,6 +3908,12 @@ end
 -- UI
 ---------------------------------------------------------------------------
 
+function ClaudeWoW.ClearChat(id)
+	local c = (id and FindChat(id)) or ActiveChat()
+	if c then wipe(c.history) end
+	ClaudeWoW.Render()
+end
+
 local function MakeButton(parent, label, width, onClick)
 	local b = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
 	b:SetSize(width, 22)
@@ -3952,6 +3968,59 @@ Q.TITLE_IDLE = { 0.75, 0.61, 0 }
 Q.TITLE_WORKING = { 1, 1, 0 }
 Q.TITLE_REPLY = { 0.25, 0.75, 0.25 }
 Q.COUNT_W = 92
+Q.GOLD_ICON = "|TInterface\\MoneyFrame\\UI-GoldIcon:12:12:0:-1|t"
+Q.STATUS_HIT_W = 260
+
+function Q.ShortStatus(c, full)
+	if c and c.pendingId then
+		local a = run.act and run.act[c.id]
+		local started = (a and a.startedAt) or run.sentAt or GetTime()
+		return "|cffffd100Working|r  " .. FmtDur(GetTime() - started)
+	end
+	if not ClaudeWoW.IsConnected() then return "|cffff5050Not connected|r" end
+	return full
+end
+
+function Q.TotalCost()
+	local total, chats = 0, 0
+	for _, ch in ipairs(db.chats) do
+		if type(ch.cost) == "number" then
+			total = total + ch.cost
+			chats = chats + 1
+		end
+	end
+	return total, chats
+end
+
+function Q.FooterStats(c)
+	local parts = {}
+	if c and c.ctx then table.insert(parts, "|cffffd100" .. SEG_DOWN .. "|r " .. FmtTokens(c.ctx)) end
+	local total, chats = Q.TotalCost()
+	if c and c.cost then
+		local money = Q.GOLD_ICON .. " " .. string.format("$%.2f", c.cost)
+		if chats > 1 then money = money .. string.format("  |cff9d9d9d(all chats $%.2f)|r", total) end
+		table.insert(parts, money)
+	elseif chats > 0 then
+		table.insert(parts, Q.GOLD_ICON .. string.format(" |cff9d9d9dall chats $%.2f|r", total))
+	end
+	return table.concat(parts, "    ")
+end
+
+function Q.StatusTooltip()
+	local c = ActiveChat()
+	if run.statusText and ui.status and run.statusText ~= ui.status:GetText() then
+		GameTooltip:AddLine(run.statusText, 1, 1, 1, true)
+	end
+	local total, chats = Q.TotalCost()
+	if (c and c.cost) or chats > 0 then
+		GameTooltip:AddLine(" ")
+		if c and c.cost then GameTooltip:AddDoubleLine("This chat's session", string.format("$%.2f", c.cost), 1, 0.82, 0, 1, 1, 1) end
+		if chats > 0 then GameTooltip:AddDoubleLine("All chats", string.format("$%.2f", total), 1, 0.82, 0, 1, 1, 1) end
+		GameTooltip:AddLine("At API list prices: a comparison, not a bill. A subscription is not charged per token.", 0.6, 0.6, 0.6, true)
+	end
+	local seg = ContextSegment(c, true)
+	if seg ~= "" then GameTooltip:AddLine(seg, 0.8, 0.8, 0.8, true) end
+end
 Q.PARCHMENT_STYLE = {
 	user      = { color = { 0.10, 0.22, 0.45 }, bg = { 0.10, 0.20, 0.40, 0.07 } },
 	assistant = { color = { 0.45, 0.13, 0.02 }, bg = { 0, 0, 0, 0 } },
@@ -4351,6 +4420,7 @@ function Q.ListSettingsMenu(anchor)
 		local shown = pcall(MenuUtil.CreateContextMenu, anchor, function(_, root)
 			root:CreateCheckbox("Show message previews", Q.PreviewsOn, TogglePreviews)
 			root:CreateDivider()
+			root:CreateButton("Commands and tips", function() ClaudeWoW.ShowHelp() end)
 			root:CreateButton("Expand all folders", function() SetAll(false) end)
 			root:CreateButton("Collapse all folders", function() SetAll(true) end)
 		end)
@@ -4519,25 +4589,10 @@ function Q.BuildQuestFrames(f)
 	ui.parchment = parchment
 	ui.transcriptPanel = parchment
 
-	local help
-	if Q.TemplateExists("MainHelpPlateButton") then
-		help = CreateFrame("Button", "ClaudeWoWHelpButton", f, "MainHelpPlateButton")
-		help:SetScale(0.6)
-		help:SetPoint("TOPRIGHT", list, "TOPLEFT", -4 / 0.6, 2 / 0.6)
-		help:SetScript("OnClick", function() ClaudeWoW.ShowHelp() end)
-		help:SetScript("OnEnter", function(self)
-			GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-			GameTooltip:SetText("Commands and tips")
-			GameTooltip:Show()
-		end)
-		help:SetScript("OnLeave", function() GameTooltip:Hide() end)
-		ui.help = help
-	end
-
 	if Q.TemplateExists("NavBarTemplate") and type(NavBar_Initialize) == "function" and type(NavBar_AddButton) == "function" and type(NavBar_Reset) == "function" then
 		local nav = CreateFrame("Frame", "ClaudeWoWNavBar", f, "NavBarTemplate")
 		nav:SetPoint("TOPLEFT", f, "TOPLEFT", 60, Q.NAV_TOP)
-		nav:SetPoint("RIGHT", help or list, "LEFT", -6, 0)
+		nav:SetPoint("RIGHT", list, "LEFT", -6, 0)
 		nav:SetHeight(Q.NAV_H)
 		if pcall(NavBar_Initialize, nav, "NavButtonTemplate", { name = "Claude", OnClick = function() ClaudeWoW.RefreshNav(true) end }, nav.home, nav.overflow) then
 			ui.nav = nav
@@ -4600,7 +4655,10 @@ local function BuildUI()
 		holder:SetScript("OnEnter", function(self)
 			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
 			GameTooltip:SetText(dot.tip or "Bridge status", 0.9, 0.9, 0.9, 1, true)
-			if ui.native and ui.cwd then GameTooltip:AddLine(ui.cwd:GetText(), 0.8, 0.8, 0.8, true) end
+			if ui.native then
+				Q.StatusTooltip()
+				if ui.cwd then GameTooltip:AddLine(ui.cwd:GetText(), 0.6, 0.6, 0.6, true) end
+			end
 			GameTooltip:Show()
 		end)
 		holder:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -4623,10 +4681,15 @@ local function BuildUI()
 	ui.status = status
 	if native then
 		dotHolder:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 12, 6)
+		dotHolder:SetHitRectInsets(0, -Q.STATUS_HIT_W, -4, -4)
 		status:ClearAllPoints()
 		status:SetPoint("LEFT", dotHolder, "RIGHT", 6, 0)
-		status:SetPoint("RIGHT", f, "RIGHT", -230, 0)
+		status:SetWidth(Q.STATUS_HIT_W)
 		status:SetWordWrap(false)
+		local stats = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+		stats:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -26, 9)
+		stats:SetJustifyH("RIGHT")
+		ui.stats = stats
 	else
 		dotHolder:SetPoint("TOPLEFT", f, "TOPLEFT", 14, -16)
 		status:SetPoint("TOPLEFT", f, "TOPLEFT", 14, -34)
@@ -4752,6 +4815,7 @@ local function BuildUI()
 				root:CreateButton("Agent...", function() ClaudeWoW.AgentPrompt(chatId) end)
 				root:CreateButton("Plugin...", function() ClaudeWoW.PluginPrompt(chatId) end)
 				root:CreateDivider()
+				root:CreateButton("Clear messages", function() ClaudeWoW.ClearChat(chatId) end)
 				root:CreateButton("|cffff4040Delete|r", function() ClaudeWoW.ConfirmDelete(chatId) end)
 			end)
 			if shown then return end
@@ -4832,10 +4896,10 @@ local function BuildUI()
 	end
 
 	-- Transcript: a scrolling stack of message bubbles
-	local scroll = CreateFrame("ScrollFrame", "ClaudeWoWScroll", native and ui.parchment or f, "UIPanelScrollFrameTemplate")
+	local scroll = CreateFrame("ScrollFrame", "ClaudeWoWScroll", native and ui.parchment or f, (native and Q.TemplateExists("ScrollFrameTemplate")) and "ScrollFrameTemplate" or "UIPanelScrollFrameTemplate")
 	if native then
-		scroll:SetPoint("TOPLEFT", ui.parchment, "TOPLEFT", 12, -10)
-		scroll:SetPoint("BOTTOMRIGHT", ui.parchment, "BOTTOMRIGHT", -30, 10)
+		scroll:SetPoint("TOPLEFT", ui.parchment, "TOPLEFT", 22, -16)
+		scroll:SetPoint("BOTTOMRIGHT", ui.parchment, "BOTTOMRIGHT", -34, 14)
 	else
 		scroll:SetPoint("TOPLEFT", panel, "TOPRIGHT", 8, 0)
 		scroll:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -32, 110)
@@ -4867,9 +4931,10 @@ local function BuildUI()
 		inputBg:SetBackdropBorderColor(0.5, 0.5, 0.5, 1)
 	end
 
-	local inScroll = CreateFrame("ScrollFrame", "ClaudeWoWInputScroll", inputBg, "UIPanelScrollFrameTemplate")
+	local plainInput = native and type(ScrollingEdit_OnCursorChanged) == "function" and type(ScrollingEdit_OnTextChanged) == "function"
+	local inScroll = CreateFrame("ScrollFrame", "ClaudeWoWInputScroll", inputBg, (not plainInput) and "UIPanelScrollFrameTemplate" or nil)
 	inScroll:SetPoint("TOPLEFT", inputBg, "TOPLEFT", 8, -6)
-	inScroll:SetPoint("BOTTOMRIGHT", inputBg, "BOTTOMRIGHT", -24, 6)
+	inScroll:SetPoint("BOTTOMRIGHT", inputBg, "BOTTOMRIGHT", plainInput and -8 or -24, 6)
 
 	local input = CreateFrame("EditBox", "ClaudeWoWInput", inScroll)
 	input:SetMultiLine(true)
@@ -4879,6 +4944,11 @@ local function BuildUI()
 	input:SetSize(500, 40)
 	input:SetScript("OnEnterPressed", function() ClaudeWoW.SendFromInput() end)
 	input:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+	if plainInput then
+		input:SetScript("OnCursorChanged", ScrollingEdit_OnCursorChanged)
+		input:SetScript("OnTextChanged", ScrollingEdit_OnTextChanged)
+		if type(ScrollingEdit_OnUpdate) == "function" then input:SetScript("OnUpdate", ScrollingEdit_OnUpdate) end
+	end
 	inScroll:SetScrollChild(input)
 	inScroll:HookScript("OnSizeChanged", function(self, w, h)
 		input:SetWidth(w)
@@ -4915,11 +4985,7 @@ local function BuildUI()
 
 	-- Bottom row: Clear, plus Resend while a message is in flight. Rename, Folder
 	-- and Delete live on each chat row in the left panel.
-	local clear = MakeButton(f, "Clear", 60, function()
-		local c = ActiveChat()
-		if c then wipe(c.history) end
-		ClaudeWoW.Render()
-	end)
+	local clear = MakeButton(f, "Clear", 60, function() ClaudeWoW.ClearChat() end)
 	clear:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 14, 16)
 
 	local resend = MakeButton(f, "Resend", 70, ClaudeWoW.Resend)
@@ -4927,10 +4993,9 @@ local function BuildUI()
 	resend:Hide()
 	ui.resend = resend
 	if native then
-		clear:ClearAllPoints()
-		clear:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -26, 4)
+		clear:Hide()
 		resend:ClearAllPoints()
-		resend:SetPoint("RIGHT", clear, "LEFT", -4, 0)
+		resend:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -26, 4)
 		refresh:ClearAllPoints()
 		refresh:SetPoint("RIGHT", resend, "LEFT", -4, 0)
 	end
