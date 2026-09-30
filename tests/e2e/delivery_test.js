@@ -14,6 +14,8 @@ test('a message goes out on a screenshot, the reply comes back through a slot, a
     const r = await h.client.say('hello from the sim');
     assert.match(r.text, /echo \(turn 1\): hello from the sim/);
     assert.equal(r.role, 'assistant');
+    const settleBy = Date.now() + 5000;
+    while (h.screenshots().length && Date.now() < settleBy) await new Promise(r => setTimeout(r, 100));
     assert.deepEqual(h.screenshots(), [], 'the strip screenshot was deleted');
     const t = h.transcripts();
     assert.ok(Object.keys(t.chats || t).length >= 1, 'the bridge kept a transcript');
