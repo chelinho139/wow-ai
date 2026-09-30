@@ -3,6 +3,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { INERT_OPTIONS: INERT_STREAM } = require('../bridge/plugins/stream');
 
 const REPO = path.resolve(__dirname, '..');
 const DEFAULT_ROOT = path.join(REPO, '.dev', 'sandboxes');
@@ -94,6 +95,11 @@ function readExample() {
   return JSON.parse(fs.readFileSync(path.join(REPO, 'bridge', 'config.example.json'), 'utf8'));
 }
 
+function withInertStream(cfg) {
+  cfg.plugins = Object.assign({}, cfg.plugins, { stream: { ...INERT_STREAM } });
+  return cfg;
+}
+
 function buildConfig(L, opts = {}) {
   const cfg = readExample();
   const scale = opts.speed && opts.speed > 1 ? opts.speed : 1;
@@ -114,7 +120,7 @@ function buildConfig(L, opts = {}) {
   cfg.agents = Object.assign({}, cfg.agents, { claude });
   cfg.agent = 'claude';
   if (opts.primerFile !== undefined) cfg.primerFile = opts.primerFile;
-  return Object.assign(cfg, opts.config || {});
+  return withInertStream(Object.assign(cfg, opts.config || {}));
 }
 
 function copyAddon(L) {
@@ -166,12 +172,13 @@ function open(name = 'default', opts = {}) {
   const dir = sandboxDir(opts.root || DEFAULT_ROOT, name);
   if (!fs.existsSync(path.join(dir, 'sandbox.json'))) throw new Error(`no sandbox at ${dir}; run: npm run dev -- --fresh`);
   const L = layout(dir);
-  const cfg = JSON.parse(fs.readFileSync(L.config, 'utf8'));
+  const cfg = withInertStream(JSON.parse(fs.readFileSync(L.config, 'utf8')));
+  fs.writeFileSync(assertSafe(L.config), JSON.stringify(cfg, null, 2) + '\n');
   return { ...L, name, cfg, env: envFor(L, opts.env) };
 }
 
 function writeConfig(sb, patch) {
-  const cfg = Object.assign(JSON.parse(fs.readFileSync(sb.config, 'utf8')), patch);
+  const cfg = withInertStream(Object.assign(JSON.parse(fs.readFileSync(sb.config, 'utf8')), patch));
   fs.writeFileSync(assertSafe(sb.config), JSON.stringify(cfg, null, 2) + '\n');
   sb.cfg = cfg;
   return cfg;

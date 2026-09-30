@@ -1687,7 +1687,24 @@ local function ProcessInbox()
 	if inbox.widgets and ClaudeWoWWidgets then ClaudeWoWWidgets.Sync(inbox.widgets) end
 end
 
+local quietReplyHandlers = {}
+
+function ClaudeWoW.OnQuietReply(plugin, handler)
+	quietReplyHandlers[plugin] = handler
+end
+
+local function FinishQuiet(chat, role, text)
+	chat.pendingId = nil
+	chat.progress = nil
+	if run.act then run.act[chat.id] = nil end
+	NotedBridge()
+	if not AnyPending() then keyCatcher:Hide() end
+	local handler = quietReplyHandlers[chat.plugin]
+	if handler then pcall(handler, chat, role, text) end
+end
+
 Finish = function(chat, role, text, denied, agent, summary, macros)
+	if chat.quiet then return FinishQuiet(chat, role, text) end
 	local msgId = chat.pendingId
 	AddHistory(chat, role, text, msgId, denied, agent, macros)
 	chat.pendingId = nil
@@ -2638,13 +2655,15 @@ function ClaudeWoW.Send(text, allow, opts)
 	c.pendingId = id
 	c.draft = nil
 	c.progress = nil
-	AddHistory(c, "user", text, id)
-	if wantsTitle then
-		c.name = AutoTitle(text) or c.name
-		c.titleFor = id
+	if not c.quiet then
+		AddHistory(c, "user", text, id)
+		if wantsTitle then
+			c.name = AutoTitle(text) or c.name
+			c.titleFor = id
+		end
+		if not Whisper.Sent(c, text) then db.settings.shown = true end
+		if ClaudeWoWVoice then ClaudeWoWVoice.Event("sent") end
 	end
-	if not Whisper.Sent(c, text) then db.settings.shown = true end
-	if ClaudeWoWVoice then ClaudeWoWVoice.Event("sent") end
 
 	if db.settings.mode == "pixel" then
 		run.outbound[id] = { chat = c.id, cwd = c.cwd, flags = flags, name = c.name, text = text, ctx = ctx, sentAt = GetTime() }
