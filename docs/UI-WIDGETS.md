@@ -37,7 +37,9 @@ The source is the body of a function. `local ui = ...` gives:
 | `ui.db` | a table saved between sessions (for a position, a setting) |
 | `ui.print(text)` | print a line to the game chat |
 
-Use documented addon APIs: `CreateFrame`, events, `OnUpdate`, `C_Timer`, `Unit*`, `C_UnitAuras`, `CombatLogGetCurrentEventInfo`.
+Use documented addon APIs: `CreateFrame`, events, `OnUpdate`, `C_Timer`, `Unit*`, `C_UnitAuras`, `UNIT_COMBAT`.
+
+The combat log is off limits: this client lets only the Blizzard UI register `COMBAT_LOG_EVENT_UNFILTERED` (and `COMBAT_LOG_EVENT`, `MINIMAP_PING`, `UNIT_PING_PIN_ADDED`/`REMOVED`). An addon that registers one gets the "blocked from an action only available to the Blizzard UI" popup. The bridge refuses a widget that names these events or `CombatLogGetCurrentEventInfo`, and the sandbox refuses to register them (`WIDGET_RESTRICTED_EVENTS` in `bridge/protocol.js`, `RESTRICTED_EVENTS` in `Widgets.lua`).
 
 ## Display-only
 

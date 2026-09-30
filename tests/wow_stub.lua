@@ -32,8 +32,36 @@ end
 function Methods.SetScript(self, name, fn) self.scripts[name] = fn end
 function Methods.GetScript(self, name) return self.scripts[name] end
 function Methods.HookScript(self, name, fn) self.hooks[name] = self.hooks[name] or {}; table.insert(self.hooks[name], fn) end
-function Methods.RegisterEvent(self, ev) self.events[ev] = true end
+STUB.RESTRICTED_EVENTS = {
+	COMBAT_LOG_EVENT = true,
+	COMBAT_LOG_EVENT_UNFILTERED = true,
+	COMBAT_LOG_APPLY_FILTER_SETTINGS = true,
+	COMBAT_LOG_REFILTER_ENTRIES = true,
+	MINIMAP_PING = true,
+	UNIT_PING_PIN_ADDED = true,
+	UNIT_PING_PIN_REMOVED = true,
+}
+STUB.actionBlocked = {}
+local function Restricted(self, method, ev)
+	if not STUB.RESTRICTED_EVENTS[ev] then return false end
+	table.insert(STUB.actionBlocked, "ADDON_ACTION_BLOCKED Frame:" .. method .. "(" .. tostring(ev) .. ")")
+	return true
+end
+function Methods.RegisterEvent(self, ev)
+	if Restricted(self, "RegisterEvent", ev) then return false end
+	self.events[ev] = true
+	return true
+end
+function Methods.RegisterUnitEvent(self, ev, ...)
+	if Restricted(self, "RegisterUnitEvent", ev) then return false end
+	local units = {}
+	for i = 1, select("#", ...) do units[select(i, ...)] = true end
+	self.events[ev] = units
+	return true
+end
 function Methods.UnregisterEvent(self, ev) self.events[ev] = nil end
+function Methods.UnregisterAllEvents(self) self.events = {} end
+function Methods.IsEventRegistered(self, ev) return self.events[ev] ~= nil end
 local function RunHandlers(self, name)
 	if self.scripts[name] then self.scripts[name](self) end
 	for _, fn in ipairs(self.hooks[name] or {}) do fn(self) end
@@ -183,8 +211,11 @@ end
 
 -- Fire an event on every frame that registered for it.
 function STUB.FireEvent(ev, ...)
+	local unit = ...
 	for _, f in ipairs(STUB.frames) do
-		if f.events[ev] and f.scripts.OnEvent then f.scripts.OnEvent(f, ev, ...) end
+		local reg = f.events[ev]
+		local wanted = reg == true or (type(reg) == "table" and reg[unit])
+		if wanted and f.scripts.OnEvent then f.scripts.OnEvent(f, ev, ...) end
 	end
 end
 
@@ -548,6 +579,12 @@ C_Map = {
 	GetBestMapForUnit = function(unit) return 1431 end,
 	GetPlayerMapPosition = function(mapId, unit) return { x = STUB.posX or 0.452, y = STUB.posY or 0.678 } end,
 	GetMapInfo = function(mapId) return { name = "Duskwood", mapID = mapId } end,
+}
+C_DeathRecap = {
+	HasRecapEvents = function() return type(STUB.deathRecap) == "table" and #STUB.deathRecap > 0 end,
+	GetRecapEvents = function() return STUB.deathRecap or {} end,
+	GetRecapMaxHealth = function() return STUB.deathRecapMaxHealth or 0 end,
+	GetRecapLink = function() return "" end,
 }
 function UnitXP(unit) return 1234 end
 function UnitXPMax(unit) return 5000 end

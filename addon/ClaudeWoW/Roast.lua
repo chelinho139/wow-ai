@@ -9,24 +9,25 @@ R.COOLDOWN_SECONDS = 120
 R.MAX_HITS = 12
 R.MAX_BYTES = 900
 R.MAX_NAME = 40
+R.EVENTS = { "PLAYER_DEAD" }
+R.PLAYER_UNIT_EVENTS = { "UNIT_COMBAT" }
 
 local LEVEL_UNITS = { "target", "focus", "mouseover", "targettarget", "pettarget" }
 local NAMEPLATE_COUNT = 40
-local NO_OVERKILL = 0
-
-local SUFFIX_LAYOUT = {
-	SWING_DAMAGE = { amount = 12, overkill = 13, crit = 18, ability = "Melee" },
-	RANGE_DAMAGE = { spellName = 13, amount = 15, overkill = 16, crit = 21 },
-	SPELL_DAMAGE = { spellName = 13, amount = 15, overkill = 16, crit = 21 },
-	SPELL_PERIODIC_DAMAGE = { spellName = 13, amount = 15, overkill = 16, crit = 21, periodic = true },
-	SPELL_BUILDING_DAMAGE = { spellName = 13, amount = 15, overkill = 16, crit = 21 },
-	DAMAGE_SHIELD = { spellName = 13, amount = 15, overkill = 16, crit = 21 },
-	DAMAGE_SPLIT = { spellName = 13, amount = 15, overkill = 16, crit = 21 },
-	ENVIRONMENTAL_DAMAGE = { environment = 12, amount = 13, overkill = 14, crit = 19 },
-}
+local UNSEEN = "something unseen"
+local ENVIRONMENT = "the environment"
+local DAMAGE_ACTION = "WOUND"
+local CRIT_FLAGS = { CRITICAL = true, CRUSHING = true }
+local SCHOOL_NAMES = { [1] = "Physical", [2] = "Holy", [4] = "Fire", [8] = "Nature", [16] = "Frost", [32] = "Shadow", [64] = "Arcane" }
+local MIXED_SCHOOL = "Mixed"
+local RECAP_ABILITY = { SWING_DAMAGE = "Melee", RANGE_DAMAGE = "Shoot" }
+local PERIODIC_EVENT = "SPELL_PERIODIC_DAMAGE"
+local ENVIRONMENTAL_EVENT = "ENVIRONMENTAL_DAMAGE"
 
 local hits = {}
-local levelByGuid = {}
+local lastRecapStamp = nil
+local listening = false
+local ev = CreateFrame("Frame")
 
 local function Settings()
 	if type(ClaudeWoWDB) ~= "table" then return nil end
@@ -46,64 +47,115 @@ local function SafeCall(fn, ...)
 	if ok then return a, b, c, d end
 end
 
+local function Readable(v)
+	if v == nil then return nil end
+	if type(issecretvalue) == "function" and issecretvalue(v) then return nil end
+	return v
+end
+
+local function Number(v)
+	return tonumber(Readable(v))
+end
+
+local function Text(v)
+	v = Readable(v)
+	if type(v) ~= "string" or v == "" then return nil end
+	return v
+end
+
 local function Clip(s, max)
 	s = tostring(s or ""):gsub("[%c|]", " ")
 	if #s > max then s = s:sub(1, max) end
 	return s
 end
 
-local function PlayerGuid()
-	return SafeCall(UnitGUID, "player")
+local function UnitLevelIfNamed(unit, name)
+	if Text(SafeCall(UnitName, unit)) == name then return Number(SafeCall(UnitLevel, unit)) end
 end
 
-local function LevelOfUnitWithGuid(guid)
-	local function check(unit)
-		if SafeCall(UnitGUID, unit) == guid then return SafeCall(UnitLevel, unit) end
-	end
+function R.LevelOfName(name)
+	if not name or name == UNSEEN or name == ENVIRONMENT then return nil end
 	for _, unit in ipairs(LEVEL_UNITS) do
-		local level = check(unit)
+		local level = UnitLevelIfNamed(unit, name)
 		if level then return level end
 	end
 	for i = 1, NAMEPLATE_COUNT do
-		local level = check("nameplate" .. i)
+		local level = UnitLevelIfNamed("nameplate" .. i, name)
 		if level then return level end
 	end
 end
 
-function R.SourceLevel(guid)
-	if not guid or guid == "" then return nil end
-	local level = LevelOfUnitWithGuid(guid)
-	if level then levelByGuid[guid] = level end
-	return levelByGuid[guid]
+function R.SchoolName(mask)
+	mask = Number(mask)
+	if not mask or mask <= 0 then return "Damage" end
+	return SCHOOL_NAMES[mask] or MIXED_SCHOOL
 end
 
-function R.HitFromLog(now, ...)
-	local subevent = select(2, ...)
-	local layout = SUFFIX_LAYOUT[subevent]
-	if not layout then return nil end
-	local destGuid = select(8, ...)
-	local player = PlayerGuid()
-	if not player or destGuid ~= player then return nil end
-	local sourceGuid = select(4, ...)
-	local sourceName = select(5, ...)
-	local amount = tonumber((select(layout.amount, ...))) or 0
-	local overkill = tonumber((select(layout.overkill, ...))) or NO_OVERKILL
-	local ability = layout.ability
-	if layout.spellName then ability = select(layout.spellName, ...) end
-	if layout.environment then
-		ability = select(layout.environment, ...)
-		sourceName = "the environment"
-	end
+function R.HitFromUnitCombat(now, unit, action, flag, amount, school)
+	if Readable(unit) ~= "player" or Readable(action) ~= DAMAGE_ACTION then return nil end
+	amount = Number(amount) or 0
+	if amount <= 0 then return nil end
 	return {
 		at = now,
-		source = Clip(sourceName ~= nil and sourceName ~= "" and sourceName or "something unseen", R.MAX_NAME),
-		level = R.SourceLevel(sourceGuid),
-		ability = Clip(ability or "an attack", R.MAX_NAME),
+		ability = R.SchoolName(school),
 		amount = amount,
-		overkill = overkill > NO_OVERKILL and overkill or nil,
-		crit = select(layout.crit, ...) and true or nil,
-		periodic = layout.periodic,
+		crit = CRIT_FLAGS[Readable(flag) or ""] and true or nil,
 	}
+end
+
+local function RecapAbility(e, kind)
+	if RECAP_ABILITY[kind] and not Text(e.spellName) then return RECAP_ABILITY[kind] end
+	if kind == ENVIRONMENTAL_EVENT then
+		local env = Text(e.environmentalType)
+		return env and (env:sub(1, 1):upper() .. env:sub(2):lower()) or "The environment"
+	end
+	return Text(e.spellName) or RECAP_ABILITY[kind] or "an attack"
+end
+
+local function RecapSource(e, kind)
+	if kind == ENVIRONMENTAL_EVENT then return ENVIRONMENT end
+	if Readable(e.hideCaster) then return UNSEEN end
+	return Text(e.sourceName) or UNSEEN
+end
+
+local function HitFromRecapEvent(e, now, newest)
+	local kind = Text(e.event) or ""
+	local amount = Number(e.amount) or 0
+	local overkill = Number(e.overkill) or 0
+	local absorbed = Number(e.absorbed) or 0
+	local stamp = Number(e.timestamp) or newest
+	local source = Clip(RecapSource(e, kind), R.MAX_NAME)
+	return {
+		at = now - math.max(0, newest - stamp),
+		source = source,
+		level = R.LevelOfName(source),
+		ability = Clip(RecapAbility(e, kind), R.MAX_NAME),
+		amount = amount,
+		overkill = overkill > 0 and overkill or nil,
+		absorbed = absorbed > 0 and absorbed or nil,
+		periodic = kind == PERIODIC_EVENT or nil,
+	}
+end
+
+local function ReadRecap(now)
+	local api = C_DeathRecap
+	if type(api) ~= "table" or not SafeCall(api.HasRecapEvents) then return nil end
+	local events = SafeCall(api.GetRecapEvents)
+	if type(events) ~= "table" or type(events[1]) ~= "table" then return nil end
+	local newest = Number(events[1].timestamp)
+	if not newest or newest == lastRecapStamp then return nil end
+	local list = {}
+	for i = #events, 1, -1 do
+		if type(events[i]) == "table" then table.insert(list, HitFromRecapEvent(events[i], now, newest)) end
+	end
+	if #list == 0 then return nil end
+	lastRecapStamp = newest
+	return { hits = list, maxHealth = Number(SafeCall(api.GetRecapMaxHealth)) }
+end
+
+function R.ReadRecap(now)
+	local ok, recap = pcall(ReadRecap, now)
+	if ok then return recap end
 end
 
 function R.Prune(now)
@@ -127,7 +179,6 @@ end
 
 function R.Reset()
 	hits = {}
-	levelByGuid = {}
 end
 
 local function LevelLabel(level)
@@ -137,10 +188,12 @@ local function LevelLabel(level)
 end
 
 local function HitLine(hit, now)
-	local parts = { string.format("-%.1fs %s%s: %s %d", now - hit.at, hit.source, LevelLabel(hit.level), hit.ability, hit.amount) }
+	local who = hit.source and (hit.source .. LevelLabel(hit.level) .. ": ") or ""
+	local parts = { string.format("-%.1fs %s%s %d", now - hit.at, who, hit.ability, hit.amount) }
 	if hit.crit then table.insert(parts, " crit") end
 	if hit.periodic then table.insert(parts, " (tick)") end
 	if hit.overkill then table.insert(parts, ", overkill " .. hit.overkill) end
+	if hit.absorbed then table.insert(parts, ", absorbed " .. hit.absorbed) end
 	return table.concat(parts)
 end
 
@@ -156,18 +209,28 @@ local function WhoAndWhere()
 	return who ~= "" and who or "an adventurer", where ~= "" and where or "somewhere unmapped"
 end
 
-local function KillingBlow(list)
-	for i = #list, 1, -1 do
-		if list[i].overkill then return list[i] end
-	end
-	return list[#list]
+local function UnitLabel(unit)
+	local name = Text(SafeCall(UnitName, unit))
+	if not name then return nil end
+	return Clip(name, R.MAX_NAME) .. LevelLabel(Number(SafeCall(UnitLevel, unit)))
 end
 
-local function Summary(list)
+local function NearbyLine()
+	local target = UnitLabel("target")
+	local mouseover = UnitLabel("mouseover")
+	local parts = {}
+	if target then table.insert(parts, "your target was " .. target) end
+	if mouseover and mouseover ~= target then table.insert(parts, "the mouse was over " .. mouseover) end
+	if #parts == 0 then return "At death you had no target." end
+	local line = "At death " .. table.concat(parts, " and ") .. "."
+	return line:sub(1, 1):upper() .. line:sub(2)
+end
+
+local function Total(list)
 	local total, sources, count = 0, {}, 0
 	for _, hit in ipairs(list) do
 		total = total + hit.amount
-		if not sources[hit.source] then
+		if hit.source and not sources[hit.source] then
 			sources[hit.source] = true
 			count = count + 1
 		end
@@ -175,35 +238,51 @@ local function Summary(list)
 	return total, count
 end
 
-function R.BuildRecap(now)
-	R.Prune(now)
-	local who, where = WhoAndWhere()
-	local head = "Death recap: a " .. who .. " just died in " .. where .. "."
-	if #hits == 0 then
-		return head .. "\nNo damage in the last " .. R.WINDOW_SECONDS .. " s before death: no attacker in the combat log (a fall, a drowning, a debuff that started earlier, or something the log did not show)."
-	end
+local function Compose(opts)
 	local list = {}
-	for i = math.max(1, #hits - R.MAX_HITS + 1), #hits do table.insert(list, hits[i]) end
-	local dropped = #hits - #list
-	local blow = KillingBlow(list)
-	local total, sourceCount = Summary(hits)
+	for i = math.max(1, #opts.hits - R.MAX_HITS + 1), #opts.hits do table.insert(list, opts.hits[i]) end
+	local dropped = #opts.hits - #list
+	local blow = list[#list]
 	local function compose()
-		local lines = { head, "Hits taken in the last " .. R.WINDOW_SECONDS .. " s, oldest first:" }
+		local lines = { opts.head, opts.title }
 		if dropped > 0 then table.insert(lines, "(" .. dropped .. " earlier hits left out)") end
 		for _, hit in ipairs(list) do
-			table.insert(lines, HitLine(hit, now) .. (hit == blow and " <- killing blow" or ""))
+			table.insert(lines, HitLine(hit, opts.now) .. (hit == blow and opts.blowMark or ""))
 		end
-		table.insert(lines, string.format("Damage taken: %d from %d source%s. Killing blow: %s's %s.", total, sourceCount, sourceCount == 1 and "" or "s", blow.source, blow.ability))
+		for _, line in ipairs(opts.tail) do table.insert(lines, line) end
 		return table.concat(lines, "\n")
 	end
 	local recap = compose()
 	while #recap > R.MAX_BYTES and #list > 1 do
-		if list[1] == blow then break end
 		table.remove(list, 1)
 		dropped = dropped + 1
 		recap = compose()
 	end
 	return recap:sub(1, R.MAX_BYTES)
+end
+
+function R.BuildRecap(now, recap)
+	R.Prune(now)
+	local who, where = WhoAndWhere()
+	local head = "Death recap: a " .. who .. " just died in " .. where .. "."
+	if recap and #recap.hits > 0 then
+		local total, sourceCount = Total(recap.hits)
+		local blow = recap.hits[#recap.hits]
+		local summary = string.format("Damage taken: %d from %d source%s. Killing blow: %s's %s.", total, sourceCount, sourceCount == 1 and "" or "s", blow.source, blow.ability)
+		if recap.maxHealth and recap.maxHealth > 0 then summary = summary .. " Max health: " .. recap.maxHealth .. "." end
+		return Compose({ now = now, head = head, title = "Last hits from the game's death recap, oldest first:", hits = recap.hits, blowMark = " <- killing blow", tail = { summary } })
+	end
+	if #hits == 0 then
+		return head .. "\nNo damage seen in the last " .. R.WINDOW_SECONDS .. " s before death (a fall, a drowning, a debuff that started earlier, or a death recap the game did not share).\n" .. NearbyLine()
+	end
+	local total = Total(hits)
+	local last = hits[#hits]
+	return Compose({
+		now = now, head = head,
+		title = "Hits taken in the last " .. R.WINDOW_SECONDS .. " s, oldest first (the game does not say who dealt them):",
+		hits = hits, blowMark = " <- last hit",
+		tail = { string.format("Damage taken: %d. Last hit: %s %d.", total, last.ability, last.amount), NearbyLine() },
+	})
 end
 
 function R.CooldownLeft(nowEpoch)
@@ -244,13 +323,14 @@ function R.WhyNot(nowEpoch)
 end
 
 function R.OnDeath(now, nowEpoch)
+	local recapData = R.ReadRecap(now)
 	local why = R.WhyNot(nowEpoch)
 	if why then
 		R.lastSkip = why
 		R.Reset()
 		return false
 	end
-	local recap = R.BuildRecap(now)
+	local recap = R.BuildRecap(now, recapData)
 	R.Reset()
 	local chat = R.EnsureChat()
 	if not chat then
@@ -268,12 +348,34 @@ function R.OnDeath(now, nowEpoch)
 	return true
 end
 
+function R.Listening()
+	return listening
+end
+
+function R.Listen(on)
+	on = on and true or false
+	if on == listening then return end
+	listening = on
+	for _, name in ipairs(R.EVENTS) do
+		if on then ev:RegisterEvent(name) else ev:UnregisterEvent(name) end
+	end
+	for _, name in ipairs(R.PLAYER_UNIT_EVENTS) do
+		if not on then
+			ev:UnregisterEvent(name)
+		elseif type(ev.RegisterUnitEvent) == "function" then
+			ev:RegisterUnitEvent(name, "player")
+		else
+			ev:RegisterEvent(name)
+		end
+	end
+end
+
 function R.Status()
 	local s = Settings()
 	if not s then return "Death roast: not loaded yet" end
 	local wait = R.CooldownLeft(time())
 	return "Death roast is " .. (s.on and "ON" or "OFF")
-		.. ": when you die, the last " .. R.WINDOW_SECONDS .. " s of hits go to the agent in the \"" .. R.CHAT_NAME .. "\" chat for a short roast (at most one every " .. math.floor(R.COOLDOWN_SECONDS / 60) .. " min"
+		.. ": when you die, the game's death recap (or the last " .. R.WINDOW_SECONDS .. " s of hits you took) goes to the agent in the \"" .. R.CHAT_NAME .. "\" chat for a short roast (at most one every " .. math.floor(R.COOLDOWN_SECONDS / 60) .. " min"
 		.. (wait > 0 and (", next in " .. wait .. " s") or "") .. ")."
 		.. (R.lastSkip and R.lastSkip ~= "off" and (" Last death was not roasted: " .. R.lastSkip .. ".") or "")
 		.. " /claude config roast on|off"
@@ -290,21 +392,19 @@ function R.Command(rest)
 		s.on = false
 		R.Reset()
 	end
+	R.Listen(s.on)
 	Say(R.Status())
 end
 
-local ev = CreateFrame("Frame")
 ev:RegisterEvent("PLAYER_LOGIN")
-ev:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
-ev:RegisterEvent("PLAYER_DEAD")
-ev:SetScript("OnEvent", function(self, event)
+ev:SetScript("OnEvent", function(self, event, ...)
 	if event == "PLAYER_LOGIN" then
-		Settings()
-	elseif event == "COMBAT_LOG_EVENT_UNFILTERED" then
+		local s = Settings()
+		R.Listen(s and s.on)
+	elseif event == "UNIT_COMBAT" then
 		local s = Settings()
 		if not (s and s.on) then return end
-		if type(CombatLogGetCurrentEventInfo) ~= "function" then return end
-		R.Record(R.HitFromLog(GetTime(), CombatLogGetCurrentEventInfo()))
+		R.Record(R.HitFromUnitCombat(GetTime(), ...))
 	elseif event == "PLAYER_DEAD" then
 		R.OnDeath(GetTime(), time())
 	end

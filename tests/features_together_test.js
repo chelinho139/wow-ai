@@ -28,7 +28,7 @@ for name, id in pairs(SOUNDKIT) do SOUND_NAMES[id] = name end
 function PlaySound(id) if SOUND_NAMES[id] then table.insert(STUB.played, SOUND_NAMES[id]) end end
 `;
 
-function newVM() {
+function newVM(savedVariables = '') {
   const L = lauxlib.luaL_newstate();
   lualib.luaL_openlibs(L);
   const run = (code, arg) => {
@@ -47,6 +47,7 @@ function newVM() {
   const num = (expr) => Number(evaluate(expr));
   run(fs.readFileSync(path.join(__dirname, 'wow_stub.lua'), 'utf8'));
   run(SOUND_STUB);
+  if (savedVariables) run(savedVariables);
   for (const f of TOC_FILES) run(fs.readFileSync(path.join(ADDON, f), 'utf8'), 'ClaudeWoW');
   run('STUB.FireEvent("ADDON_LOADED", "ClaudeWoW"); STUB.FireEvent("PLAYER_LOGIN")');
   run('STUB.RunTimers()');
@@ -87,6 +88,27 @@ test('every feature module loads in .toc order and the core finds each one', () 
     assert.equal(vm.evaluate(`type(${g})`), 'table', g);
   }
   assert.equal(vm.evaluate('ClaudeWoW.LootRollEnabled()'), 'true');
+});
+
+test('the stub records ADDON_ACTION_BLOCKED when an addon registers the combat log', () => {
+  const vm = newVM();
+  vm.run('local f = CreateFrame("Frame"); f:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED"); f:RegisterUnitEvent("UNIT_PING_PIN_ADDED", "player")');
+  assert.equal(vm.num('#STUB.actionBlocked'), 2);
+  assert.equal(vm.evaluate('STUB.actionBlocked[1]'), 'ADDON_ACTION_BLOCKED Frame:RegisterEvent(COMBAT_LOG_EVENT_UNFILTERED)');
+});
+
+test('loading every file in .toc order and logging in registers no event the client blocks, with default settings or with roast on', () => {
+  const defaults = newVM();
+  assert.equal(defaults.num('#STUB.actionBlocked'), 0, defaults.evaluate('table.concat(STUB.actionBlocked, "; ")'));
+  defaults.run('SlashCmdList.CLAUDE("config roast on")');
+  defaults.run('STUB.FireEvent("UNIT_COMBAT", "player", "WOUND", "", 40, 1); STUB.FireEvent("PLAYER_DEAD")');
+  defaults.run('SlashCmdList.CLAUDE("config roast off")');
+  assert.equal(defaults.num('#STUB.actionBlocked'), 0, defaults.evaluate('table.concat(STUB.actionBlocked, "; ")'));
+
+  const roastOn = newVM('ClaudeWoWDB = { roast = { on = true } }');
+  assert.equal(roastOn.evaluate('ClaudeWoWRoast.Listening()'), 'true');
+  roastOn.run('STUB.FireEvent("PLAYER_ENTERING_WORLD"); STUB.FireEvent("UNIT_COMBAT", "player", "WOUND", "CRITICAL", 90, 4); STUB.FireEvent("PLAYER_DEAD")');
+  assert.equal(roastOn.num('#STUB.actionBlocked'), 0, roastOn.evaluate('table.concat(STUB.actionBlocked, "; ")'));
 });
 
 test('a denied command plays the permission voice line once, next to one roll-frame toast', () => {

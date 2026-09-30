@@ -4,6 +4,11 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+### Fixed
+
+- No more "ClaudeWoW has been blocked from an action only available to the Blizzard UI" at every login and `/reload`. The death roast registered `COMBAT_LOG_EVENT_UNFILTERED`, which this client restricts to the Blizzard UI. The roast now reads the game's death recap (`C_DeathRecap`, the same data as the **Death Recap** button) and falls back to the player's `UNIT_COMBAT` hits (amount, school, crit, no attacker name) plus the target and mouseover at death. It registers `PLAYER_DEAD` and `UNIT_COMBAT` only while it is on. Recap cap (900 bytes) and cooldown (2 minutes) are unchanged.
+- Live UI widgets can no longer trigger the same popup: the bridge refuses a widget that names `CombatLogGetCurrentEventInfo` or a restricted event (`COMBAT_LOG_EVENT_UNFILTERED`, `COMBAT_LOG_EVENT`, `MINIMAP_PING`, `UNIT_PING_PIN_ADDED`, ...), the widget sandbox refuses to register them, and the system-prompt hint points to `UNIT_COMBAT` instead of the combat log.
+
 ### Added
 
 - Whisper-first UI: whisper tabs are on by default and a chat's tab is where you talk to it. The active chat's tab opens at login once the bridge names its agent; a reply shows whole when short and as its TL;DR with a `[full reply]` link when long; progress is one line updated in place (`Claude is working... 45s · 12 actions - Editing Map.lua  [cancel]`); denied commands get `[Need] [Greed] [Pass]` links, macros a `[Create macro: Name]` link that opens the Create-macro prompt, map routes a `[show route]` link that opens the map; the bridge status is one line with a `[connect]` link; `/claude` commands typed in a tab answer there. An install that had turned the tabs off by hand keeps them off; one that never touched the setting moves to on once and is told so in the tab.
