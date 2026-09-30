@@ -12,6 +12,7 @@ ClaudeWoW.lua
 Map.lua
 Sightings.lua
 Roast.lua
+Stream.lua
 Voice.lua
 LootRoll.lua
 Achievements.lua

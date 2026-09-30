@@ -63,6 +63,7 @@ const registry = PL.createRegistry();
 registry.register(require('./plugins/ask'));
 registry.register(require('./plugins/claude-code'));
 registry.register(require('./plugins/roast'));
+registry.register(require('./plugins/stream'));
 registry.register(require('./plugins/live'));
 const LP = require('./liveproto');
 const T = require('./titles');
