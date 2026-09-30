@@ -17,6 +17,7 @@ bridge/               the companion process (Node.js, no runtime dependencies)
   agents.js             one entry per agent (Claude, Codex, Grok, Antigravity, Hermes): command line, prompt delivery, stream parser
   capture.ps1           screen capture and strip decoder (PowerShell)
   install-slots.js      creates the slot addons and signal files
+  gamefs.js             writes into the game folder with the game's own 0777 mode
   channel.js            the live-session channel server Claude Code spawns (MCP over stdio, by hand); liveproto.js holds what it shares with plugins/live.js
   sessions.js           the sessions /claude -r lists and resumes: the bridge's own, Claude Code's history and project folders, running ones by pid
   supervisor.js         restarts bridge.js on crash; the `claude-wow` command (and `claude-wow setup` / `claude-wow service` / `claude-wow bridge`)
@@ -60,6 +61,7 @@ To try changes in the game, run `node setup.js` (it re-copies the addon into `In
 | `node --test tests/map_addon_test.js` | The real `Map.lua` (with `ClaudeWoW.lua`) in a Lua VM: sync and versions, pin projection on zone and continent maps, the navigator's yards, bearing and auto-advance, herb/ore nodes filtered by skill, and `/claude config map`. |
 | `node --test tests/voice_test.js` | The real `Voice.lua` (with `ClaudeWoW.lua`) in a Lua VM: every classic race and gender has every line, each pack covers every event, the lines played on send, pick-up, reply, error and permission, the throttle, and `/claude config voice`. |
 | `node --test tests/decode_test.js` | `bridge/decode.js`, the screenshot transport's reader: `Codec.lua` in a Lua VM, rendered inside a 1920x1080 frame as PNG (every filter type, RGB and RGBA) and TGA (raw and RLE, 24 and 32 bit, both row orders), bright and dark palettes, offsets, bad checksum, truncation and an oversized length field. |
+| `node --test tests/gamefs_test.js` | `bridge/gamefs.js`: writes, atomic replaces, copies and new folders in the game folder end up `0777` like the rest of the install whatever the umask (Battle.net error 2113 otherwise), existing parents are left alone, and the repair pass fixes the ClaudeWoW addon folders and nothing else. |
 | `node --test tests/screenshots_test.js` | `bridge/screenshots.js`: the client's `Screenshots` folder derived from `addonDir`, the file-name filter, and the watcher reporting a new file once its size settles while ignoring files from before it started. |
 | `node --test tests/service_test.js` | `bridge/service.js`: the LaunchAgent plist (and `plutil -lint` on macOS), the systemd unit and the Windows launcher it writes, `claude-wow service` argument parsing, log rotation and the self-rotating writer, the pid file, the launchctl output parser, and `status` on a clean machine. |
 | `node --test tests/install_test.js` | `install.sh` and `install.ps1`: they parse, the Node 22.2 gate accepts and rejects the right versions, unknown options and a missing Node fail with a hint, and `install.sh` runs nothing until fully read. |

@@ -51,6 +51,7 @@ const R = require('./runtime');  // node, bun, or the compiled binary (tests/run
 const AS = require('./assets');  // the capture scripts and the primer, by path, from a checkout or the binary (tests/assets_test.js)
 const ACH = require('./achievements');
 const SS = require('./sessions');
+const G = require('./gamefs');
 
 // The plugins this bridge has (docs/PLATFORM.md). Registration order is the
 // order match() is asked in, and the first one is the default unless
@@ -590,7 +591,7 @@ function publishNow(urgent = true) {
   lastPublish = Date.now();
   const records = [...live.values()].slice(-30);
   try {
-    atomicWrite(INBOX_FILE, slotFile('ClaudeWoW_Inbox', records, urgent));
+    G.atomicWrite(INBOX_FILE, slotFile('ClaudeWoW_Inbox', records, urgent));
   } catch (e) {
     if (!warnedNoAddon) {
       warnedNoAddon = true;
@@ -601,7 +602,7 @@ function publishNow(urgent = true) {
   if (!slotsInstalled()) return;
   const body = slotFile('ClaudeWoW_SlotData', records, urgent);
   for (let i = 1; i <= SLOTS; i++) {
-    try { atomicWrite(path.join(cfg.addonDir, 'ClaudeWoW_S' + pad3(i), 'Inbox.lua'), body); } catch {}
+    try { G.atomicWrite(path.join(cfg.addonDir, 'ClaudeWoW_S' + pad3(i), 'Inbox.lua'), body); } catch {}
   }
   // The restore bundle is large; it rides along once and is then dropped.
   // (The game keeps loading fresh slots until it has read one carrying it.)
@@ -624,7 +625,7 @@ function publish(key, record, urgent) {
 // the only discriminator that actually works. It holds on every platform.
 function setSignalFile(file, on) {
   try {
-    if (on) atomicWrite(file, SILENT_WAV);
+    if (on) G.atomicWrite(file, SILENT_WAV);
     else fs.rmSync(file, { force: true });
   } catch {}
 }
@@ -659,7 +660,7 @@ function resetBeats(id) {
 function beat(job) {
   job.beats = (job.beats || 0) + 1;
   if (job.beats > ACT_MAX) return;
-  try { atomicWrite(actFile(job.id, job.beats), SILENT_WAV); } catch {}
+  try { G.atomicWrite(actFile(job.id, job.beats), SILENT_WAV); } catch {}
 }
 
 // Presence: every 30 s flip the next presence/NNNN.wav valid so the game can tell
