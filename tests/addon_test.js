@@ -1677,18 +1677,38 @@ test('/claude <text> starts a new chat and sends there; /claude <command> runs i
   assert.equal(vm.num('STUB.serverSends'), 0, 'nothing reached the server');
 });
 
-test('/claude <text> at the chat limit says so and keeps the text in the window\'s input box', () => {
+test('there is no chat limit: /claude <text> starts a 17th chat and sends there', () => {
   const vm = whisperVM();
   vm.run('for i = 2, 16 do ClaudeWoW.NewChat("c" .. i) end');
-  assert.equal(vm.num('#ClaudeWoWDB.chats'), 16);
-  const active = vm.evaluate('ClaudeWoWDB.activeChat');
-  vm.run('STUB.prints = {}');
-  typeIn(vm, 'ChatFrame1EditBox', '/claude one too many');
-  assert.equal(vm.num('#ClaudeWoWDB.chats'), 16);
-  assert.equal(vm.evaluate('ClaudeWoWDB.activeChat'), active);
-  assert.equal(vm.evaluate('ClaudeWoWInput:GetText()'), 'one too many');
-  assert.ok(vm.evaluate('table.concat(STUB.prints, "\\n")').includes('Chat limit reached (16)'));
-  assert.ok(!stripRecords(vm).find(r => r.text === 'one too many'), 'not sent anywhere');
+  typeIn(vm, 'ChatFrame1EditBox', '/claude one more');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 17);
+  assert.ok(stripRecords(vm).find(r => r.text === 'one more'), 'sent from the new chat');
+});
+
+test('chats past the 16 most recent go cold: saved data keeps their last 10 messages, and opening one asks the bridge for the rest', () => {
+  const vm = whisperVM();
+  vm.run('for i = 2, 20 do ClaudeWoW.NewChat("c" .. i) end');
+  vm.run(`local old = ClaudeWoWDB.chats[2]
+    for k = 1, 30 do table.insert(old.history, { role = k % 2 == 0 and "assistant" or "user", text = "m" .. k, t = 1000 + k }) end
+    for i = 3, 20 do table.insert(ClaudeWoWDB.chats[i].history, { role = "user", text = "new", t = 5000 + i }) end
+    ClaudeWoW.CoolChats()`);
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[2].cold'), 'true');
+  assert.equal(vm.num('#ClaudeWoWDB.chats[2].history'), 10);
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[2].history[10].text'), 'm30', 'the newest messages are the ones kept');
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[20].cold'), null, 'recent chats stay hot');
+
+  const id = vm.evaluate('ClaudeWoWDB.chats[2].id');
+  vm.run(`ClaudeWoW.SwitchChat("${id}")`);
+  const warm = stripRecords(vm).find(r => r.chat === id && /(^|;)w(;|$)/.test(r.flags));
+  assert.ok(warm, 'a warm request goes out: ' + JSON.stringify(stripRecords(vm).map(r => r.flags)));
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[2].warming'), 'true');
+
+  const token = vm.evaluate('ClaudeWoWDB.session');
+  const messages = Array.from({ length: 30 }, (_, k) => `{ role = "user", text = "m${k + 1}", id = ${k + 1}, t = ${1001 + k} }`).join(', ');
+  nextSlot(vm, `{ now = time(), cwd = "", replies = {}, restore = { token = "${token}", warm = true, chats = { { id = "${id}", name = "c2", cwd = "", messages = { ${messages} } } } } }`);
+  vm.run('ClaudeWoW.Connect(); STUB.now = STUB.now + 6; STUB.Tick()');
+  assert.equal(vm.num('#ClaudeWoWDB.chats[2].history'), 30, 'the bridge refills it');
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[2].cold'), null);
 });
 
 test('opening chat, a chat type change, Esc and "/r " after an agent replied run the game\'s edit box with no addon hook on its methods', () => {

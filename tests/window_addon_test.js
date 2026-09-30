@@ -357,7 +357,7 @@ test('the window is built from Blizzard frame templates where the client has the
   assert.equal(vm.evaluate('ClaudeWoWFrame.claudewowBorder'), null, 'no extra border on top of the template');
 
   assert.equal(shownHeaders(vm), 'every|wow-ai', 'chats are grouped under folder headers in first-seen order');
-  assert.equal(vm.evaluate('ClaudeWoW.UI.chatCount:GetText()'), 'Chats: |cffffffff3/16|r');
+  assert.equal(vm.evaluate('ClaudeWoW.UI.chatCount:GetText()'), 'Chats: |cffffffff3|r');
   assert.equal(vm.evaluate('ClaudeWoW.UI.art.frame'), 'questlog-frame');
   assert.equal(vm.evaluate('ClaudeWoW.UI.art.filigree'), 'questlog-frame-filigree');
   assert.equal(vm.evaluate('ClaudeWoW.UI.art.poi'), 'UI-QuestPoi-QuestNumber', 'each chat has a round POI button');

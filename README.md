@@ -127,7 +127,7 @@ Right-clicking a chat in the left panel opens a small menu with **Rename...**, *
 
 | In game | Like | What it does |
 |---|---|---|
-| `/claude <text>` | `claude "<text>"` | start a new chat and send `<text>` there, straight from the normal chat box; the new chat gets a tab of its own. At the chat limit (16) the game chat says so and the text waits in the window's input box. Bare `/claude` in the game chat opens the workspace window; in a chat's tab it starts a new chat |
+| `/claude <text>` | `claude "<text>"` | start a new chat and send `<text>` there, straight from the normal chat box; the new chat gets a tab of its own. There is no chat limit. Bare `/claude` in the game chat opens the workspace window; in a chat's tab it starts a new chat |
 | `/claude -c <text>` | `claude -c` | continue the current chat (`--continue`); alone it opens the window on it |
 | `/claude -r <id\|name\|n> [text]` | `claude -r` | resume a session (`--resume`). A Claude Code session that is running in a terminal with the claude-wow channel gets the chat live; any other session (one of your chats, or a Claude Code session from its history) is resumed headless with `claude -p --resume <id>` in its own folder. Names match chat and session names, ids match by prefix; a prefix two sessions share lists both |
 | `/claude -r` | `/resume` | list the running and recent sessions (id, name, folder, age) in the window and the game chat; click one, or `/claude -r <n>` |

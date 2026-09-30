@@ -27,7 +27,6 @@ local Codec = ClaudeWoW_Codec
 
 local DEFAULT_CWD = "" -- empty = the bridge's configured defaultCwd
 local MAX_HISTORY = 200
-local MAX_CHATS = 16
 
 local SLOT_COUNT = 200
 local SLOT_PREFIX = "ClaudeWoW_S"
@@ -71,6 +70,9 @@ local BACKDROP = {
 
 -- The assistant bubble is labelled with the agent that wrote it (see AgentName).
 local Q = {}
+Q.CHAT_PAGE = 16
+Q.HOT_CHATS = 16
+Q.COLD_KEEP = 10
 
 local ROLE_STYLE = {
 	user      = { label = "You",    color = { 0.49, 0.78, 1.00 }, bg = { 0.25, 0.45, 0.75, 0.16 } },
@@ -300,7 +302,6 @@ local function ActiveChat()
 end
 
 local function AddChat(name, cwd)
-	if #db.chats >= MAX_CHATS then return nil end
 	local current = ActiveChat()
 	local c = {
 		id = NewId(),
@@ -1435,16 +1436,42 @@ local function ApplyReplies(replies)
 	return matched
 end
 
+function Q.RestoredMessages(rc)
+	local out = {}
+	for _, m in ipairs(rc.messages or {}) do
+		local role, agent = m.role, m.agent
+		if role == "claude" then role, agent = "assistant", agent or "claude" end
+		if agent == "" then agent = nil end
+		table.insert(out, { role = role, text = m.text, id = m.id, t = m.t, agent = agent })
+	end
+	return out
+end
+
+function Q.ImportWarm(r)
+	local warmed = 0
+	for _, rc in ipairs(r.chats or {}) do
+		local c = type(rc) == "table" and rc.id and FindChat(rc.id)
+		if c and c.cold then
+			local messages = Q.RestoredMessages(rc)
+			if #messages > #c.history then c.history = messages end
+			c.cold, c.warming = nil, nil
+			warmed = warmed + 1
+		end
+	end
+	if warmed > 0 then ClaudeWoW.Render() end
+end
+
 -- The bridge keeps every chat's transcript. After the client wipes our saved data,
 -- it sends them back once, addressed to our new session token.
 local function ImportRestore(r)
+	if type(r) == "table" and r.warm and r.token == db.session then return Q.ImportWarm(r) end
 	if type(r) ~= "table" or r.token ~= db.session or db.restored then return end
 	db.restored = true
 	local added = 0
 	local current = ActiveChat()
 	for _, rc in ipairs(r.chats or {}) do
 		-- Skip chats deleted here that the bridge hasn't been told about yet.
-		if type(rc) == "table" and rc.id and not FindChat(rc.id) and not db.forget[rc.id] and #db.chats < MAX_CHATS then
+		if type(rc) == "table" and rc.id and not FindChat(rc.id) and not db.forget[rc.id] then
 			local chat = {
 				id = rc.id,
 				name = (rc.name and rc.name ~= "") and rc.name or ("Chat " .. (#db.chats + 1)),
@@ -1458,6 +1485,7 @@ local function ImportRestore(r)
 				history = {},
 				unread = 0,
 				created = time(),
+				cold = rc.cold == true or nil,
 			}
 			for _, m in ipairs(rc.messages or {}) do
 				local role, agent = m.role, m.agent
@@ -1611,7 +1639,7 @@ local function Tick()
 		-- A forget is the same, but the bridge must have been seen a moment after
 		-- the record went up, so it had a chance to read it. That holds for a strip
 		-- that stays up; on the screenshot transport only the ack file says it was read.
-		if (rec.hello or rec.forget) and not rec.acked and not ScreenshotMode() and run.bridgeSeen and run.bridgeSeen >= rec.sentAt + (rec.forget and 2 or 0) then
+		if (rec.hello or rec.forget or rec.warm) and not rec.acked and not ScreenshotMode() and run.bridgeSeen and run.bridgeSeen >= rec.sentAt + ((rec.forget or rec.warm) and 2 or 0) then
 			NoteAcked(rec)
 			changed = true
 		end
@@ -1628,6 +1656,11 @@ local function Tick()
 				-- Nobody picked it up: show it again (a new screenshot in that mode).
 				rec.sentAt = now
 				rec.shot = nil
+				changed = true
+			elseif rec.warm then
+				local c = FindChat(rec.warm)
+				if c then c.warming = nil end
+				run.outbound[id] = nil
 				changed = true
 			elseif rec.forget or rec.cancelOf then
 				-- The bridge is away; db.forget keeps it for the next hello.
@@ -2703,6 +2736,38 @@ local function SendCancel(chat, id)
 	RefreshStrip()
 end
 
+function Q.LastActive(c)
+	local last = c.history[#c.history]
+	return (last and last.t) or c.created or 0
+end
+
+function ClaudeWoW.CoolChats()
+	local order = {}
+	for _, c in ipairs(db.chats) do table.insert(order, c) end
+	table.sort(order, function(a, b) return Q.LastActive(a) > Q.LastActive(b) end)
+	for i = Q.HOT_CHATS + 1, #order do
+		local c = order[i]
+		if c.id ~= db.activeChat and not c.pendingId and #c.history > Q.COLD_KEEP then
+			local keep = {}
+			for k = #c.history - Q.COLD_KEEP + 1, #c.history do table.insert(keep, c.history[k]) end
+			c.history = keep
+			c.cold = true
+		end
+	end
+end
+
+function ClaudeWoW.WarmChat(c)
+	if not c or not c.cold or c.warming or db.settings.mode ~= "pixel" then return end
+	for _, rec in pairs(run.outbound) do
+		if rec.warm == c.id and not rec.acked then return end
+	end
+	c.warming = true
+	db.lastSeq = db.lastSeq + 1
+	run.outbound[db.lastSeq] = { chat = c.id, cwd = c.cwd or "", flags = "w", name = c.name or "", text = "", sentAt = GetTime(), warm = c.id }
+	NoteStaleSignals(db.lastSeq)
+	RefreshStrip()
+end
+
 local function ForgetOnBridge(c)
 	if not c or not c.id then return end
 	db.forget[c.id] = { name = c.name, cwd = c.cwd }
@@ -2895,6 +2960,7 @@ function ClaudeWoW.SwitchChat(id)
 	end
 	db.activeChat = c.id
 	c.unread = 0
+	ClaudeWoW.WarmChat(c)
 	if ui.input then
 		ui.input:SetText(c.draft or "")
 		c.draft = nil
@@ -2914,7 +2980,7 @@ end
 function ClaudeWoW.NewChat(name)
 	local c = AddChat(name and name ~= "" and name or nil)
 	if not c then
-		Cli.Out(ActiveChat(), "Chat limit reached (" .. MAX_CHATS .. "). Delete one first with /claude delete.")
+		Cli.Out(ActiveChat(), "Could not start a new chat.")
 		return nil
 	end
 	ClaudeWoW.SwitchChat(c.id)
@@ -3668,6 +3734,9 @@ function ClaudeWoW.Render()
 			b:Show()
 			y = y + b:GetHeight() + 6
 		end
+		if c.cold then
+			Place("system", c.warming and "Loading older messages from the bridge..." or "Older messages are kept by the bridge. Connect to load them.", "", true)
+		end
 		local last = #c.history
 		for i, m in ipairs(c.history) do
 			-- The Allow button only makes sense on the newest reply, and only while idle.
@@ -3753,8 +3822,18 @@ end
 function ClaudeWoW.RenderChatList()
 	if ui.questList then return ClaudeWoW.RenderQuestList() end
 	if not ui.chatButtons then return end
+	local pages = math.max(1, math.ceil(#db.chats / Q.CHAT_PAGE))
+	ui.chatPage = math.min(math.max(ui.chatPage or 1, 1), pages)
+	local offset = (ui.chatPage - 1) * Q.CHAT_PAGE
+	if ui.pageLabel then
+		ui.pageLabel:SetText(pages > 1 and (ui.chatPage .. " / " .. pages) or "")
+		ui.pagePrev:SetShown(pages > 1)
+		ui.pageNext:SetShown(pages > 1)
+		ui.pagePrev:SetEnabled(ui.chatPage > 1)
+		ui.pageNext:SetEnabled(ui.chatPage < pages)
+	end
 	for i, btn in ipairs(ui.chatButtons) do
-		local c = db.chats[i]
+		local c = db.chats[offset + i]
 		if c then
 			local label = Display(c.name)
 			local folder = FolderName(ChatFolder(c))
@@ -4574,8 +4653,7 @@ function ClaudeWoW.RenderQuestList()
 	for i = nr + 1, #q.rows do q.rows[i]:Hide() end
 	q.empty:SetShown(filter ~= "" and matched == 0)
 	q.content:SetHeight(math.max(y + Q.PAD_FIRST, 1))
-	local full = #db.chats >= MAX_CHATS
-	ui.chatCount:SetText("Chats: " .. (full and (_G.RED_FONT_COLOR_CODE or "|cffff2020") or "|cffffffff") .. #db.chats .. "/" .. MAX_CHATS .. "|r")
+	ui.chatCount:SetText("Chats: |cffffffff" .. #db.chats .. "|r")
 end
 
 function Q.ListSettingsMenu(anchor)
@@ -4995,7 +5073,7 @@ local function BuildUI()
 	end
 
 	ui.chatButtons = {}
-	for i = 1, MAX_CHATS do
+	for i = 1, Q.CHAT_PAGE do
 		local b = CreateFrame("Button", nil, panel)
 		b:SetSize(PANEL_W - 16, 20)
 		b:SetPoint("TOP", newBtn, "BOTTOM", 0, -6 - (i - 1) * 21)
@@ -5055,6 +5133,20 @@ local function BuildUI()
 		b:Hide()
 		ui.chatButtons[i] = b
 	end
+	local function PageButton(label, delta)
+		local pb = MakeButton(panel, label, 28, function()
+			ui.chatPage = (ui.chatPage or 1) + delta
+			ClaudeWoW.RenderChatList()
+		end)
+		pb:SetHeight(18)
+		return pb
+	end
+	ui.pagePrev = PageButton("<", -1)
+	ui.pagePrev:SetPoint("BOTTOMLEFT", panel, "BOTTOMLEFT", 8, 6)
+	ui.pageNext = PageButton(">", 1)
+	ui.pageNext:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -8, 6)
+	ui.pageLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+	ui.pageLabel:SetPoint("BOTTOM", panel, "BOTTOM", 0, 10)
 
 	-- Transcript: a scrolling stack of message bubbles
 	local scroll = CreateFrame("ScrollFrame", "ClaudeWoWScroll", native and ui.parchment or f, (native and Q.TemplateExists("ScrollFrameTemplate")) and "ScrollFrameTemplate" or "UIPanelScrollFrameTemplate")
@@ -5465,7 +5557,7 @@ function Cli.LimitReachedWith(text)
 	local a = ActiveChat()
 	if ui.input then ui.input:SetText(text) end
 	ClaudeWoW.Toggle(true)
-	print("|cff66ccff[Claude WoW]|r Chat limit reached (" .. MAX_CHATS .. "), so no new chat was started. Your message is in the window's input box: delete a chat with /claude delete and send it with /claude again, or press Enter there to send it to " .. Display(a and a.name or "the current chat") .. ".")
+	print("|cff66ccff[Claude WoW]|r No new chat was started. Your message is in the window's input box: press Enter there to send it to " .. Display(a and a.name or "the current chat") .. ".")
 end
 
 function ClaudeWoW.NewChatWith(text)
@@ -6129,7 +6221,7 @@ function Cli.AttachTo(e)
 	local name = (e.name ~= "" and e.name or e.id:sub(1, 8)):sub(1, 24)
 	c = AddChat(name, "")
 	if not c then
-		Cli.Say(ActiveChat(), "Chat limit reached (" .. MAX_CHATS .. "). Delete one first with /claude delete, then /claude -r again.")
+		Cli.Say(ActiveChat(), "Could not start a new chat for that session.")
 		return nil
 	end
 	c.plugin = ""
@@ -6619,6 +6711,7 @@ ev:SetScript("OnEvent", function(self, event, arg1)
 	elseif event == "PLAYER_LOGOUT" then
 		-- The player's screenshot format goes back before the client saves its CVars.
 		if db then ScreenshotCVarsOff() end
+		if db then ClaudeWoW.CoolChats() end
 	elseif event == "PLAYER_LOGIN" then
 		if not db then InitDB() end
 		BuildUI()
