@@ -171,7 +171,7 @@ test('the game context describes the character and rides on the hello, then only
   assert.equal(vm.evaluate('ClaudeWoW.IsConnected()'), 'true');
   vm.run('ClaudeWoW.Send("hello world")');
   let rec = stripRecords(vm).find(r => r.text === 'hello world');
-  assert.equal(rec.flags, '', 'unchanged context is not repeated');
+  assert.equal(rec.flags, 't', 'unchanged context is not repeated');
   assert.equal(rec.ctx, undefined);
   assert.equal(vm.evaluate('ClaudeWoWDB.outbox.ctx'), null);
   // Moving to another zone changes it, so the next message (from another chat,
@@ -376,7 +376,7 @@ test('a sent message is encoded on the strip with the chat folder and goes to th
   assert.equal(rec.chat, chatId);
   assert.equal(rec.id, id);
   assert.equal(rec.cwd, 'realms');
-  assert.equal(rec.flags, 'plugin=claude-code', 'a chat with a folder is a coding session there');
+  assert.equal(rec.flags, 'plugin=claude-code;t', 'a chat with a folder is a coding session there');
   assert.equal(vm.evaluate('ClaudeWoWDB.outbox.plugin'), 'claude-code');
   // The chat took its title from the first message.
   assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].name'), 'Hello world');
@@ -427,7 +427,7 @@ test('a chat can pick its agent: the strip says so, replies are labelled by thei
   vm.run('ClaudeWoW.Send("hello")');
   const chatId = vm.evaluate('ClaudeWoWDB.chats[1].id');
   let rec = stripRecords(vm).find(r => r.text === 'hello');
-  assert.equal(rec.flags, '');
+  assert.equal(rec.flags, 't');
   assert.equal(vm.evaluate('ClaudeWoWDB.outbox.agent'), null);
   const id = vm.num('ClaudeWoWDB.chats[1].pendingId');
   nextSlot(vm, slot(`{ chat = "${chatId}", id = ${id}, status = "done", text = "hi", agent = "claude" }`));
@@ -537,7 +537,7 @@ test('/claude-wow reset marks the next message as a new session', () => {
   vm.run('SlashCmdList.CLAUDE("reset")');
   vm.run('ClaudeWoW.Send("start over")');
   const rec = stripRecords(vm).find(r => r.text === 'start over');
-  assert.equal(rec.flags, 'n');
+  assert.equal(rec.flags, 'n;t');
   assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].resetNext'), null);
 });
 
@@ -1191,7 +1191,7 @@ test('vision: off by default; "vision on" flags every send and resend with v, "l
   };
   assert.equal(vm.evaluate('ClaudeWoWDB.settings.vision'), 'false', 'off by default');
   vm.run('ClaudeWoW.Send("plain")');
-  assert.equal(flagsOf('plain'), '', 'no flag while off');
+  assert.equal(flagsOf('plain'), 't', 'no flag while off');
   reply('ok');
   // The footer says so, and so does diag.
   vm.run('STUB.texts = {}; ClaudeWoW.UpdateStatus()');
@@ -1876,7 +1876,7 @@ test('plugins: a fresh install follows the bridge\'s default and sends no flag; 
   assert.equal(vm.evaluate('ClaudeWoW.IsConnected()'), 'true');
   vm.run('ClaudeWoW.Send("what drops the sword")');
   const rec = stripRecords(vm).find(r => r.text === 'what drops the sword');
-  assert.equal(rec.flags, '');
+  assert.equal(rec.flags, 't');
   assert.equal(vm.evaluate('ClaudeWoWDB.outbox.plugin'), null);
   // A new chat inherits the binding of the chat it was made from, like the folder and the agent.
   vm.run('ClaudeWoW.NewChat("Second")');
@@ -1930,7 +1930,7 @@ test('plugins: /claude config plugin binds the chat like --agent, the Plugin... 
   assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].plugin'), 'claude-code');
   assert.ok(last().includes('plugin set to claude-code'), last());
   vm.run('ClaudeWoW.Send("fix the build")');
-  assert.equal(stripRecords(vm).find(r => r.text === 'fix the build').flags, 'plugin=claude-code');
+  assert.equal(stripRecords(vm).find(r => r.text === 'fix the build').flags, 'plugin=claude-code;t');
   assert.equal(vm.evaluate('ClaudeWoWDB.outbox.plugin'), 'claude-code');
   vm.run('STUB.texts = {}; ClaudeWoW.UpdateStatus()');
   assert.ok(texts().includes('vision: off   plugin: claude-code'), texts());
@@ -2598,4 +2598,33 @@ test('signals: an ack already spent at launch is not trusted, a launch-time one 
   vm.run('ClaudeWoW.NewChat("Two"); ClaudeWoW.Send("second")');
   vm.run(`STUB.sounds["${gamePath('ack/003.wav')}"] = false; STUB.now = STUB.now + 2; STUB.Tick()`);
   assert.ok(!stripRecords(vm).find(r => r.text === 'second'), 'a deleted launch-time ack takes it off');
+});
+
+test('a new chat asks the bridge for a title with its first message and takes the one that comes back', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  const chatId = vm.evaluate('ClaudeWoWDB.chats[1].id');
+  vm.run('ClaudeWoW.Send("why does my pet keep running off")');
+  assert.equal(stripRecords(vm).find(r => r.text === 'why does my pet keep running off').flags, 't');
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].name'), 'Why does my pet keep', 'the first words stand in until the title arrives');
+  const id = vm.num('ClaudeWoWDB.chats[1].pendingId');
+  nextSlot(vm, `{ now = time(), cwd = "", replies = { { chat = "${chatId}", id = ${id}, status = "working", text = "thinking...", agent = "claude", title = "Hunter Pet Pathing" } } }`);
+  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].name'), 'Hunter Pet Pathing', 'the title names the chat as soon as it lands');
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].titleFor'), null);
+  nextSlot(vm, `{ now = time(), cwd = "", replies = { { chat = "${chatId}", id = ${id}, status = "done", text = "ok", agent = "claude" } } }`);
+  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].pendingId'), null);
+
+  vm.run('ClaudeWoW.Send("and in dungeons?")');
+  assert.equal(stripRecords(vm).find(r => r.text === 'and in dungeons?').flags, '', 'only the first message asks for a title');
+
+  vm.run('ClaudeWoW.NewChat(); ClaudeWoW.Send("best leveling zone")');
+  const second = vm.evaluate('ClaudeWoWDB.chats[2].id');
+  const id2 = vm.num('ClaudeWoWDB.chats[2].pendingId');
+  vm.run('ClaudeWoWDB.chats[2].name = "Mine"; ClaudeWoWDB.chats[2].titleFor = nil');
+  nextSlot(vm, `{ now = time(), cwd = "", replies = { { chat = "${second}", id = ${id2}, status = "done", text = "ok", agent = "claude", title = "Leveling Zones" } } }`);
+  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[2].name'), 'Mine', 'a name the player chose is kept');
 });

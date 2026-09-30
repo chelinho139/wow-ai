@@ -140,6 +140,7 @@ function lastUserLine(text) {
 async function main() {
   const argv = process.argv.slice(2);
   if (argv.includes('--version')) { console.log('0.0.0 (claude-wow fake)'); return; }
+  if (argv.includes('--no-session-persistence')) { console.log('Fake Chat Title'); return; }
   const raw = await readStdin();
   const { text, images } = promptText(raw);
   const d = directives(text);

@@ -184,6 +184,8 @@ test('systemPrompt always asks for the TL;DR block, and adds the game rules and 
   assert.ok(s.includes('"TL;DR:"'));
   assert.ok(s.includes('CLAUDE_WOW_MAP_FILE') && s.includes('wowmap') && s.includes('"op":"set"'), 'explains how to mark the map');
   assert.ok(!P.systemPrompt('').includes('CLAUDE_WOW_MAP_FILE'), 'map hint only with the game context');
+  assert.ok(s.includes('CLAUDE_WOW_SAVED_VARIABLES') && s.includes('World of Warcraft: Forever'), 'a game chat is told where to find NPCs in this client, before the web');
+  assert.ok(!P.systemPrompt('').includes('CLAUDE_WOW_SAVED_VARIABLES'), 'and only a game chat');
   assert.ok(s.includes('in-game situation') && s.includes('Linked from the game'), 'says what the situation block and the links are');
   assert.ok(!s.includes('Testchar') && !s.includes('51.5'), 'the context\'s text is not in the system prompt: it changes with every step (messagePrompt carries it)');
   assert.ok(!s.includes('Reference for writing addons'), 'no primer section without a primer');
@@ -490,4 +492,33 @@ test('context growth: noteUsage counts turns per session, keeps the last known s
   assert.equal((lua.match(/^\t\t\tturns = /gm) || []).length, 2);
   assert.ok(lua.includes('\t\t\t\tctx = 106863,\n\t\t\t\tturns = 8,\n\t\t\t\tsince = 1700000000,\n\t\t\t\tcost = 0,\n\t\t\t\tmessages = {'), 'the restore bundle carries it per chat, a zero cost included');
   assert.equal((lua.match(/^\t\t\t\tctx = /gm) || []).length, 1);
+});
+
+test('the title flag and a generated title cross the protocol', () => {
+  assert.equal(P.parseFlags('plugin=ask;t').title, true);
+  assert.equal(P.parseFlags('plugin=ask').title, undefined);
+  assert.match(P.luaTable('X', [{ chat: 'c', id: 1, status: 'done', text: 'x', title: 'Hunter Pet "Pathing"' }]), /title = "Hunter Pet \\"Pathing\\"",/);
+  assert.ok(!/title =/.test(P.luaTable('X', [{ chat: 'c', id: 1, status: 'done', text: 'x' }])));
+});
+
+test('titles: the model is configurable, and its answer is cut to one clean line', () => {
+  const T = require('../bridge/titles');
+  assert.equal(T.titleModel({}), 'claude-haiku-4-5');
+  assert.equal(T.titleModel({ titleModel: 'claude-sonnet-5-5' }), 'claude-sonnet-5-5');
+  assert.equal(T.titleModel({ titleModel: false }), '');
+  assert.equal(T.cleanTitle('"Hunter Pet Pathing."\nextra'), 'Hunter Pet Pathing');
+  assert.equal(T.cleanTitle('Title: **Fishing Spots**'), 'Fishing Spots');
+  assert.ok(T.cleanTitle('A very long title that keeps going well past the limit for sure').length <= T.TITLE_MAX);
+  const args = T.titleArgs('claude-haiku-4-5', 'hi');
+  assert.deepEqual(args.slice(0, 3), ['-p', '--model', 'claude-haiku-4-5']);
+  assert.equal(args[args.length - 1], 'hi');
+  assert.ok(args.includes('--no-session-persistence'));
+});
+
+test('titles: generateTitle runs the command and cleans its output, and gives up on failure', async () => {
+  const T = require('../bridge/titles');
+  const ok = await T.generateTitle({ file: process.execPath, args: ['-e', 'console.log("  Pet Pathing!  ")', '--'], model: 'm', text: 't' });
+  assert.equal(ok, 'Pet Pathing');
+  const bad = await T.generateTitle({ file: process.execPath, args: ['-e', 'process.exit(2)', '--'], model: 'm', text: 't' });
+  assert.equal(bad, '');
 });

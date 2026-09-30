@@ -14,6 +14,7 @@ The bridge reads `config.json` once at start. Restart it after editing, except f
 | `defaultCwd` | `C:\path\to\your\project` | Folder for chats that have not chosen one with `/claude cd`, when the bridge is started from inside this repo (`npm start`). See [Which folder the agent works in](#which-folder-the-agent-works-in). |
 | `claudeDir` | `$CLAUDE_CONFIG_DIR`, else `~/.claude` | Claude Code's own folder. `/claude -r` lists the recent sessions from its `history.jsonl` (names from the session files' titles) and looks up an id it was given in `projects/`; a running session's id comes from `sessions/<pid>.json`. The bridge only reads here. |
 | `claudeSessions` | `true` | `false` keeps Claude Code's sessions out of `/claude -r`: only the bridge's own chats and the running sessions are listed and resumable. |
+| `titleModel` | `"claude-haiku-4-5"` | The model that names a new chat from its first message. It runs through the Claude Code CLI with no tools and no saved session, next to the agent's run; the reply waits up to 4 s for it. Until it lands, the chat shows its first words. `false` turns it off. |
 
 ## Agents
 

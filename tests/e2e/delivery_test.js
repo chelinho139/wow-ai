@@ -22,6 +22,14 @@ test('a message goes out on a screenshot, the reply comes back through a slot, a
   });
 });
 
+test('the first message of a new chat comes back with a title from the lightweight model, and the chat takes it', async () => {
+  await withGame({}, async h => {
+    await h.client.say('name this chat');
+    const active = '(function() for _, c in ipairs(ClaudeWoWDB.chats) do if c.id == ClaudeWoWDB.activeChat then return c end end end)()';
+    assert.equal(h.client.luaValue(`${active}.name`), 'Fake Chat Title');
+  });
+});
+
 test('every file the bridge writes into the game folder is 0777 like the rest of the install (Battle.net error 2113)', { skip: process.platform === 'win32' }, async () => {
   await withGame({}, async h => {
     await h.client.say('permissions');

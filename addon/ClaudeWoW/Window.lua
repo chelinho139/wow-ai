@@ -2,12 +2,13 @@ local W = {}
 ClaudeWoWWindow = W
 
 local GAP = 8
-local SNAP = 16
 local FADE_SECONDS = 0.25
 local POLL_SECONDS = 0.25
 local DEFAULT_W, DEFAULT_H = 780, 500
 local MIN_W, MIN_H = 560, 300
 local DIM_FLOOR = 0.1
+local PANEL_TOP_OFFSET = 116
+local PANEL_LEFT_OFFSET = 16
 
 local PANELS = {
 	"CharacterFrame", "SpellBookFrame", "PlayerSpellsFrame", "PlayerTalentFrame", "TalentFrame", "ClassTalentFrame",
@@ -69,25 +70,22 @@ function W.Layout()
 	local all = Layouts()
 	local key = CharKey()
 	local l = all[key]
-	if l and l.left and l.top and l.w and l.h then return l end
+	if l and l.w and l.h then return l end
 	local s = Settings()
-	local sw, sh = Screen()
-	local w, h = tonumber(s.width) or DEFAULT_W, tonumber(s.height) or DEFAULT_H
-	local left, top = (sw - w) / 2, (sh + h) / 2
-	if s.point and win then
-		win:ClearAllPoints()
-		win:SetPoint(s.point, UIParent, s.relPoint or s.point, s.x or 0, s.y or 0)
-		left, top = Try(win.GetLeft, win) or left, Try(win.GetTop, win) or top
-	end
-	left, top, w, h = Clamp(left, top, w, h)
-	l = { left = left, top = top, w = w, h = h }
+	l = { w = tonumber(s.width) or DEFAULT_W, h = tonumber(s.height) or DEFAULT_H }
 	all[key] = l
 	return l
 end
 
+local function PanelOffset(attribute, fallback)
+	return math.abs(tonumber(Try(UIParent.GetAttribute, UIParent, attribute)) or fallback)
+end
+
 local function HomeRect()
 	local l = W.Layout()
-	local left, top, w, h = Clamp(l.left, l.top, l.w, l.h)
+	local sw, sh = Screen()
+	local _, _, w, h = Clamp(0, sh, l.w, l.h)
+	local left, top = Clamp(PanelOffset("LEFT_OFFSET", PANEL_LEFT_OFFSET), sh - PanelOffset("TOP_OFFSET", PANEL_TOP_OFFSET), w, h)
 	return { left = left, top = top, right = left + w, bottom = top - h }
 end
 W.HomeRect = HomeRect
@@ -277,33 +275,23 @@ function W.Drive()
 	if driver then driver:Show() end
 end
 
-local function Snap(left, top, w, h)
-	local sw, sh = Screen()
-	if left < SNAP then left = 0 elseif sw - (left + w) < SNAP then left = sw - w end
-	if sh - top < SNAP then top = sh elseif top - h < SNAP then top = h end
-	return left, top
-end
-W.Snap = Snap
-
 function W.SaveFromFrame()
 	if not win then return end
-	local left, top = Try(win.GetLeft, win), Try(win.GetTop, win)
 	local w, h = win:GetWidth(), win:GetHeight()
-	if not (left and top and w and h) then return end
-	left, top, w, h = Clamp(left, top, w, h)
-	left, top = Snap(left, top, w, h)
+	if not (w and h) then return end
+	local _, _, cw, ch = Clamp(0, 0, w, h)
 	local l = W.Layout()
-	l.left, l.top, l.w, l.h = left, top, w, h
+	l.w, l.h = cw, ch
 	local s = Settings()
-	s.width, s.height = w, h
+	s.width, s.height = cw, ch
 	state.dodged = false
-	Put({ left = left, top = top, right = left + w, bottom = top - h })
+	Put(HomeRect())
+	W.Schedule()
 end
 
 function W.Reset()
 	Layouts()[CharKey()] = nil
 	local s = Settings()
-	s.point, s.relPoint, s.x, s.y = nil, nil, nil, nil
 	s.width, s.height = DEFAULT_W, DEFAULT_H
 	if win then
 		W.Layout()
@@ -318,6 +306,7 @@ function W.Apply()
 end
 
 local function Skin(f)
+	if f.claudewowNative then return true end
 	local util, layouts = _G.NineSliceUtil, _G.NineSliceLayouts
 	if not (type(util) == "table" and type(util.ApplyLayoutByName) == "function" and type(layouts) == "table" and layouts.ButtonFrameTemplateNoPortrait) then return false end
 	local ok, border = pcall(CreateFrame, "Frame", nil, f, "NineSlicePanelTemplate")
@@ -369,15 +358,9 @@ function W.Attach(frame, miniBar, sizeGrip)
 	W.skinned = Skin(win)
 	W.Layout()
 	Put(HomeRect())
-	win:SetScript("OnDragStart", function(self)
-		state.dragging = true
-		self:StartMoving()
-	end)
-	win:SetScript("OnDragStop", function(self)
-		self:StopMovingOrSizing()
-		state.dragging = false
-		W.SaveFromFrame()
-	end)
+	win:RegisterForDrag()
+	win:SetScript("OnDragStart", nil)
+	win:SetScript("OnDragStop", nil)
 	if grip then
 		grip:SetScript("OnMouseDown", function()
 			state.dragging = true
