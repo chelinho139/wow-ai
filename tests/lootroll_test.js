@@ -209,3 +209,76 @@ test('/claude config roll off brings back the Allow & retry button; without the 
   plain.run('RESULT = "false"; for _, f in ipairs(STUB.frames) do if f.template == "UIPanelButtonTemplate" and f.rules and f.shown then RESULT = f.text end end');
   assert.equal(plain.evaluate('RESULT'), 'Allow WebSearch & retry');
 });
+
+const hexDirs = (...dirs) => Buffer.from(dirs.join('\x1F')).toString('hex');
+const chatDirs = vm => {
+  vm.run('RESULT = table.concat(ClaudeWoWDB.chats[1].addDirs or {}, "|")');
+  return vm.evaluate('RESULT');
+};
+
+test('a folder outside the chat is a scroll named after the folder, with folder hints on the buttons', () => {
+  const vm = newVM();
+  deliverDenial(vm, ['AddDir(/tmp)']);
+  assert.equal(vm.evaluate('ClaudeWoWRollFrame.shown'), 'true');
+  assert.equal(vm.evaluate('ClaudeWoWRollFrame.Name.text'), 'Scroll of /tmp');
+  assert.equal(vm.evaluate('ClaudeWoWRollFrame.IconFrame.Icon.texture'), 'Interface\\Icons\\INV_Scroll_03');
+  assert.equal(vm.evaluate('ClaudeWoWRoll.CommandOf("AddDir(/Users/me/My Stuff (old))")'), '/Users/me/My Stuff (old)');
+  assert.equal(vm.evaluate('ClaudeWoWRoll.ItemName({ "AddDir(/tmp)", "Bash(curl:*)" })'), 'Scroll of /tmp +1');
+  assert.match(vm.evaluate('ClaudeWoWRoll.Hint("need", { "AddDir(/tmp)" })'), /--add-dir/);
+  assert.match(vm.evaluate('ClaudeWoWRoll.Hint("greed", { "AddDir(/tmp)" })'), /this one retry only/);
+  assert.match(vm.evaluate('ClaudeWoWRoll.Hint("need", { "Bash(curl:*)" })'), /allowlist/);
+  assert.equal(vm.evaluate('ClaudeWoW.GrantsLabel({ "AddDir(/tmp)", "WebSearch" })'), 'folder /tmp, WebSearch');
+});
+
+test('Need on a folder adds it to the chat for good, like /claude --add-dir, and nothing goes to the allowlist', () => {
+  const vm = newVM();
+  const { id } = deliverDenial(vm, ['AddDir(/tmp)']);
+  vm.run('STUB.played = {}; ClaudeWoWRollFrame.NeedButton.scripts.OnClick(ClaudeWoWRollFrame.NeedButton)');
+  assert.equal(vm.evaluate('table.concat(STUB.played, ",")'), 'UI_NEED_ROLL_POSITIVE');
+  assert.equal(chatDirs(vm), '/tmp');
+  assert.equal(vm.num('ClaudeWoWDB.chats[1].pendingId'), id + 1);
+  const rec = stripFlags(vm).find(r => r.flags.includes('dirs='));
+  assert.ok(rec, 'the retry carries the folder');
+  assert.equal(rec.flags, `dirs=${hexDirs('/tmp')}`);
+  assert.equal(vm.evaluate('ClaudeWoWDB.outbox.allow'), null);
+  assert.equal(vm.evaluate('ClaudeWoWDB.outbox.allowOnce'), null);
+  assert.match(vm.evaluate('ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history - 1].text'), /^Allowed: folder \/tmp\. Extra folders for this chat: \/tmp$/);
+});
+
+test('Greed on a folder sends it with this retry only; the chat keeps its own folders', () => {
+  const vm = newVM();
+  vm.run('ClaudeWoWDB.chats[1].addDirs = { "/srv/data" }');
+  deliverDenial(vm, ['AddDir(/tmp)', 'Bash(curl:*)']);
+  vm.run('ClaudeWoWRollFrame.GreedButton.scripts.OnClick(ClaudeWoWRollFrame.GreedButton)');
+  assert.equal(chatDirs(vm), '/srv/data', 'the chat setting is untouched');
+  const rec = stripFlags(vm).find(r => r.flags.includes('once='));
+  assert.ok(rec);
+  assert.equal(rec.flags, `once=Bash(curl:*);dirs=${hexDirs('/srv/data', '/tmp')}`);
+  vm.run('ClaudeWoWDB.chats[1].pendingId = nil');
+  vm.run('ClaudeWoW.Send("next message")');
+  const next = stripFlags(vm).find(r => r.text === 'next message');
+  assert.equal(next.flags, `dirs=${hexDirs('/srv/data')}`, 'the next message goes without the retry folder');
+});
+
+test('Need on a folder and a command: the folder joins the chat, the command goes to the allowlist', () => {
+  const vm = newVM();
+  deliverDenial(vm, ['Bash(curl:*)', 'AddDir(/tmp)']);
+  vm.run('ClaudeWoWRollFrame.NeedButton.scripts.OnClick(ClaudeWoWRollFrame.NeedButton)');
+  assert.equal(chatDirs(vm), '/tmp');
+  const rec = stripFlags(vm).find(r => r.flags.includes('allow='));
+  assert.equal(rec.flags, `allow=Bash(curl:*);dirs=${hexDirs('/tmp')}`);
+});
+
+test('Pass on a folder denies it; the Allow & retry button names the folder', () => {
+  const vm = newVM();
+  deliverDenial(vm, ['AddDir(/tmp)']);
+  vm.run('SlashCmdList.CLAUDE("config roll off")');
+  vm.run('RESULT = "none"; for _, f in ipairs(STUB.frames) do if f.template == "UIPanelButtonTemplate" and f.rules and f.shown then RESULT = f.text end end');
+  assert.equal(vm.evaluate('RESULT'), 'Allow folder /tmp & retry');
+  vm.run('SlashCmdList.CLAUDE("config roll on")');
+  const seqBefore = vm.num('ClaudeWoWDB.lastSeq');
+  vm.run('ClaudeWoWRollFrame.PassButton.scripts.OnClick(ClaudeWoWRollFrame.PassButton)');
+  assert.equal(vm.num('ClaudeWoWDB.lastSeq'), seqBefore);
+  assert.equal(vm.evaluate(`${lastHistory}.text`), 'Passed on: folder /tmp');
+  assert.equal(chatDirs(vm), '');
+});

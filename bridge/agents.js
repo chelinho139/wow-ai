@@ -15,7 +15,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { describeToolUse, ruleFor, baseName } = require('./protocol');
+const { describeToolUse, ruleFor, baseName, classifyDenial, deniedAgain, denialNotes } = require('./protocol');
 const R = require('./runtime'); // which node runs a JavaScript launcher
 
 const PROGRESS_CHARS = 140;
@@ -157,13 +157,33 @@ function grokRules(rule) {
 // Claude Code
 // ---------------------------------------------------------------------------
 
-function claudeParser() {
+const DENIAL_MESSAGE_CHARS = 600;
+
+function toolResultText(content) {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content.map(c => (c && typeof c.text === 'string' ? c.text : '')).join('\n');
+}
+
+function claudeParser(opts = {}) {
   let usage = null; // the last assistant message's usage: what the next turn will carry
   let model = '';   // the model that wrote it, for pricing a result without modelUsage
+  const refusals = new Map();
+  const noteRefusal = (id, message, reasonType, replace) => {
+    if (!id || (!replace && refusals.has(id))) return;
+    refusals.set(String(id), { message: String(message || '').slice(0, DENIAL_MESSAGE_CHARS), reasonType: String(reasonType || '') });
+  };
   return {
     feed(ev) {
       const out = empty();
       if (ev.session_id) out.session = ev.session_id;
+      if (ev.type === 'system' && ev.subtype === 'permission_denied') {
+        noteRefusal(ev.tool_use_id, ev.message || ev.decision_reason, ev.decision_reason_type, true);
+      } else if (ev.type === 'user' && ev.message && Array.isArray(ev.message.content)) {
+        for (const block of ev.message.content) {
+          if (block && block.type === 'tool_result' && block.is_error) noteRefusal(block.tool_use_id, toolResultText(block.content), '', false);
+        }
+      }
       if (ev.type === 'assistant' && ev.message && Array.isArray(ev.message.content)) {
         for (const block of ev.message.content) {
           if (block.type === 'tool_use') out.progress.push(describeToolUse(block));
@@ -187,9 +207,12 @@ function claudeParser() {
           : typeof ev.result === 'string' ? ev.result : JSON.stringify(ev.result ?? '', null, 2);
         const denials = Array.isArray(ev.permission_denials) ? ev.permission_denials : [];
         if (denials.length) {
-          out.denied = [...new Set(denials.map(ruleFor))];
-          const list = denials.map(d => d.tool_name + (d.tool_input && d.tool_input.command ? ': ' + d.tool_input.command : '')).join('\n  ');
-          out.notes.push(`Claude needed ${denials.length} action(s) that aren't allowed yet:\n  ${list}\nUse the Allow button below to permit them and let it continue.`);
+          const entries = denials.map(d => classifyDenial(d, refusals.get(String(d && d.tool_use_id)) || {}, opts));
+          const again = entries.filter(e => deniedAgain(e, opts.granted));
+          const fresh = entries.filter(e => !again.includes(e));
+          out.denied = [...new Set(fresh.map(e => e.rule))];
+          if (again.length) out.deniedAgain = [...new Set(again.map(e => e.rule))];
+          out.notes.push(...denialNotes('Claude', fresh, again));
         }
         out.done = { text, error: !!ev.is_error };
       }

@@ -302,6 +302,8 @@ By default a denial does not show that button. It pops a frame in the style of t
 | **Greed** (coin) | Allow for this one retry only: the bridge passes the rules to that run and saves nothing |
 | **Pass** (X) | Deny: nothing is sent, the agent is not retried |
 
+Claude Code also blocks a command that touches a path outside the chat's folder, and no allow rule can change that. That denial rolls for the folder instead, as **Scroll of /tmp**: Need adds the folder to the chat for good (what `/claude --add-dir /tmp` does), Greed adds it for the retry only. When a retry is blocked again for something it was just granted, the reply says so in one line and no new roll comes up.
+
 The bar under the item counts down 60 seconds. When it runs out, that is a Pass. Each choice plays the game's own loot sounds. `/claude config roll off` brings back the **Allow & retry** button, and `/claude config roll on` returns to the roll frame.
 
 ## Configuration (`~/.claude-wow/config.json`)
