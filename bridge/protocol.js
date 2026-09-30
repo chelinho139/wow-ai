@@ -464,7 +464,9 @@ function splitGrants(rules) {
 }
 
 function pathApi(...paths) {
-  return paths.some(isWindowsAbsolute) ? path.win32 : path;
+  if (paths.some(isWindowsAbsolute)) return path.win32;
+  if (paths.some(p => String(p || '').startsWith('/'))) return path.posix;
+  return path;
 }
 
 function insideFolder(p, dir) {
@@ -493,8 +495,8 @@ function denialPath(d, message, cwd) {
   let raw = quoted ? quoted[1] : '';
   if (!raw && d && d.tool_name !== 'Bash') raw = FILE_TOOL_PATH_KEYS.map(k => input[k]).find(v => typeof v === 'string' && v) || '';
   if (!raw) return '';
-  if (isWindowsAbsolute(raw) || path.isAbsolute(raw)) return raw;
-  return cwd ? resolveCwd(raw, cwd) : '';
+  if (isWindowsAbsolute(raw) || raw.startsWith('/') || path.isAbsolute(raw)) return raw;
+  return cwd ? pathApi(cwd).resolve(cwd, raw) : '';
 }
 
 function denialWhat(d) {
