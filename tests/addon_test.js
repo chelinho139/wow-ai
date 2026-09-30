@@ -110,7 +110,7 @@ test('addon loads, builds its UI and creates a first chat', () => {
   assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].name'), 'Chat 1');
   assert.equal(vm.evaluate('ClaudeWoWFrame ~= nil'), 'true');
   assert.equal(vm.evaluate('ClaudeWoWMini ~= nil'), 'true');
-  assert.equal(vm.num('#STUB.tickers'), 1);
+  assert.equal(vm.num('#STUB.tickers'), 2, 'the transport tick and the whisper-tab pulse');
   assert.equal(vm.evaluate('SlashCmdList.CLAUDEWOW ~= nil'), 'true');
   // Two commands, not two spellings of one: /claude-wow shows the window, /claude
   // bare opens a new chat the way a terminal does. No other alias.
@@ -1249,143 +1249,298 @@ test('vision: off by default; "vision on" flags every send and resend with v, "l
   vm.run('STUB.FireEvent("SCREENSHOT_SUCCEEDED")');
 });
 
-// Whisper tabs: the chat dock stubbed just enough. FCF_OpenTemporaryWindow makes
-// ChatFrame11, 12, ... with a tab, a glow and an edit box whose own Enter, SendText
-// and SendMessage are the game's send (STUB.serverSends counts what would have
-// reached the server). ChatFrame1EditBox is the ordinary chat box.
-const WHISPER_DOCK = `
-  CHAT_FRAMES = { "ChatFrame1" }
-  ChatTypeInfo = { WHISPER = { r = 1, g = 0.5, b = 1 }, WHISPER_INFORM = { r = 1, g = 0.5, b = 1 }, SYSTEM = { r = 1, g = 1, b = 0 } }
-  CHAT_WHISPER_GET = "%s whispers: "
-  CHAT_WHISPER_INFORM_GET = "To %s: "
-  STUB.flashed, STUB.tempWindows, STUB.filters = {}, 0, {}
-  function ChatFrame_AddMessageEventFilter(ev, fn) STUB.filters[ev] = fn end
-  function FCF_StartAlertFlash(f) table.insert(STUB.flashed, f:GetName()) end
-  function FCF_SetWindowName(f, name) _G[f:GetName() .. "Tab"].text = name end
-  function FCF_Close(f) f.inUse = false; f.isDocked = false; f.shown = false end
-  ChatFrame1 = CreateFrame("Frame", "ChatFrame1", UIParent)
-  ChatFrame1.isDocked = true
-  ChatFrame1.editBox = STUB.ChatEditBox("ChatFrame1EditBox", ChatFrame1)
-  DEFAULT_CHAT_FRAME = ChatFrame1
-  function FCF_OpenTemporaryWindow(chatType, target, source, select)
-    STUB.tempWindows = STUB.tempWindows + 1
-    local n = 10 + STUB.tempWindows
-    local f = CreateFrame("Frame", "ChatFrame" .. n, UIParent)
-    f.isTemporary, f.inUse, f.isDocked, f.shown = true, true, true, select and true or false
-    f.chatType, f.chatTarget = chatType, target
-    local tab = CreateFrame("Button", "ChatFrame" .. n .. "Tab", f)
-    tab.text = target
-    tab.glow = CreateFrame("Frame", nil, tab)
-    f.editBox = STUB.ChatEditBox("ChatFrame" .. n .. "EditBox", f, "WHISPER", target)
-    table.insert(CHAT_FRAMES, f:GetName())
-    return f
-  end`;
+const WHISPER_DOCK = 'STUB.ChatDock()';
 
-test('whisper tabs: off by default; on, each chat is a tab, Enter there goes to the agent and never to the server, replies flash it', () => {
+function connectAs(vm, agent) {
+  vm.run('STUB.RunTimers()');
+  nextSlot(vm, `{ now = time(), cwd = "", agent = "${agent}", agents = { "claude", "codex" }, replies = {} }`);
+  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+  assert.equal(vm.evaluate('ClaudeWoW.IsConnected()'), 'true', 'connected after the hello slot');
+}
+
+function dockVM(saved) {
   const vm = newVM();
   vm.run(WHISPER_DOCK);
+  if (saved) vm.run(saved);
   login(vm);
-  connect(vm);
+  return vm;
+}
+
+const tabLines = (vm, n) => vm.evaluate(`STUB.Lines(ChatFrame${n})`) || '';
+const tabLinks = (vm, n) => JSON.parse(vm.evaluate(`(function() local t = {} for _, l in ipairs(STUB.LinksIn(ChatFrame${n})) do t[#t + 1] = string.format("%q", l) end return "[" .. table.concat(t, ",") .. "]" end)()`));
+const pendingOf = (vm, id) => vm.num(`(function() for _, c in ipairs(ClaudeWoWDB.chats) do if c.id == "${id}" then return c.pendingId end end end)()`);
+const slotReply = (vm, id, body) => {
+  nextSlot(vm, `{ now = time(), cwd = "", agent = "claude", replies = { { chat = "${id}", id = ${pendingOf(vm, id)}, ${body} } } }`);
+  for (let i = 0; i < 8; i++) vm.run('STUB.now = STUB.now + 10; STUB.Tick()');
+};
+
+test('whisper tabs: on by default; the active chat is a tab at login, Enter there goes to the agent and never to the server, replies flash it', () => {
+  const vm = dockVM();
+  connectAs(vm, 'claude');
   const chatId = vm.evaluate('ClaudeWoWDB.chats[1].id');
-  const lines = (n) => vm.evaluate(`(function() local t = {} for _, m in ipairs(ChatFrame${n}.messages or {}) do t[#t + 1] = m.text .. " @" .. m.r .. "," .. m.g .. "," .. m.b end return table.concat(t, "\\n") end)()`) || '';
   const enter = (box, text) => vm.run(`${box}:SetText("${text}"); ${box}.scripts.OnEnterPressed(${box})`);
-  const reply = (id, body) => {
-    const pending = vm.num(`(select(1, (function() for _, c in ipairs(ClaudeWoWDB.chats) do if c.id == "${id}" then return c.pendingId end end end)()))`);
-    nextSlot(vm, `{ now = time(), cwd = "", replies = { { chat = "${id}", id = ${pending}, ${body} } } }`);
-    // Polls follow a schedule that a manual check (typing while pending) pushes out: tick until the slot is read.
-    for (let i = 0; i < 8; i++) vm.run('STUB.now = STUB.now + 10; STUB.Tick()');
-  };
 
-  // Off: replies go to the game chat as before, no tab opens.
-  assert.equal(vm.evaluate('ClaudeWoWDB.settings.whisper'), 'false', 'off by default');
-  vm.run('SlashCmdList.CLAUDE("-c --agent claude")');
-  vm.run('ClaudeWoW.Send("hello there")');
-  reply(chatId, 'status = "done", text = "plain echo", agent = "claude"');
-  assert.equal(vm.num('STUB.tempWindows'), 0);
-  assert.ok(vm.evaluate('table.concat(STUB.prints, "\\n")').includes('plain echo'));
-
-  // On: the active chat's tab opens, selected, named after the chat.
-  vm.run('SlashCmdList.CLAUDE("config whisper on")');
-  assert.equal(vm.evaluate('ClaudeWoWDB.settings.whisper'), 'true');
-  assert.equal(vm.num('STUB.tempWindows'), 1);
-  assert.equal(vm.evaluate('ChatFrame11Tab.text'), 'Hello there', 'the tab carries the chat name');
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.whisper'), 'true', 'on by default');
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.whisperNews'), null, 'a fresh install gets no "new" notice');
+  assert.equal(vm.num('STUB.tempWindows'), 1, 'the tab opens once the bridge names its agent');
+  assert.equal(vm.evaluate('ChatFrame11Tab.text'), 'Claude', 'a chat with its default name is the agent\'s tab');
   assert.equal(vm.evaluate('ChatFrame11EditBox.attrs.tellTarget'), 'Claude', 'the box whispers the agent');
-  assert.equal(vm.evaluate('ChatFrame11.shown'), 'true');
+  assert.equal(vm.evaluate('ChatFrame11.shown'), 'false', 'opened in the dock without stealing the view');
+  assert.ok(tabLines(vm, 11).includes('Type here and press Enter'), 'a welcome line: ' + tabLines(vm, 11));
+  assert.ok(tabLinks(vm, 11).includes(`addon:claudewow:open:${chatId}`), 'with a workspace link');
+  assert.equal(vm.evaluate('ClaudeWoWFrame.shown'), 'false', 'the workspace window stays closed');
+  assert.equal(vm.evaluate('ClaudeWoWMini.shown'), 'true', 'a fresh install shows the compact bar with the status light');
 
-  // Enter in the tab: the text goes to the agent, the game's own send never runs.
   enter('ChatFrame11EditBox', 'from the tab');
   assert.equal(vm.num('STUB.serverSends'), 0, 'nothing reached the server');
   assert.ok(stripRecords(vm).find(r => r.text === 'from the tab'), 'the message went out on the strip');
   assert.equal(vm.evaluate('ChatFrame11EditBox:GetText()'), '', 'the box is emptied');
-  let out = lines(11);
+  assert.equal(vm.evaluate('ClaudeWoWFrame.shown'), 'false', 'sending from the tab never opens the window');
+  let out = tabLines(vm, 11);
   assert.ok(out.includes('To Claude: from the tab @1,0.5,1'), 'echoed as an outgoing whisper: ' + out);
-  assert.ok(out.includes('Claude is working on it... @1,1,0'), 'working line in system colour');
+  assert.match(out, /Claude is working\.\.\. 0s {2}\|Haddon:claudewow:cancel:\w+\|h.*@1,1,0/, 'one progress line with a cancel link');
 
-  // The bridge's working text shows once per change; the reply is an incoming
-  // whisper, line by line, the tab flashes (it is not on screen), General stays quiet.
   vm.run('ChatFrame11.shown = false; STUB.prints = {}');
-  reply(chatId, 'status = "working", text = "Reading files"'); // read again on every poll while pending
-  assert.equal((lines(11).match(/Claude: Reading files/g) || []).length, 1, 'a progress line once');
-  reply(chatId, 'status = "done", text = "hi back\\nsecond line", agent = "claude"');
-  out = lines(11);
-  assert.ok(out.includes('|Hclaudewow:reply:' + chatId + '|h[Claude]|h whispers: hi back @1,0.5,1'), 'first line formatted as a whisper: ' + out);
-  assert.ok(out.includes('second line @1,0.5,1'), 'the rest follows in whisper colour');
+  slotReply(vm, chatId, 'status = "working", text = "Reading files"');
+  out = tabLines(vm, 11);
+  assert.equal((out.match(/is working\.\.\./g) || []).length, 1, 'the progress line is edited in place, not repeated: ' + out);
+  assert.match(out, /Claude is working\.\.\. \d+m? ?\d*s? - Reading files/, out);
+  slotReply(vm, chatId, 'status = "working", text = "Editing Map.lua"');
+  out = tabLines(vm, 11);
+  assert.equal((out.match(/is working\.\.\./g) || []).length, 1, 'still one line');
+  assert.ok(out.includes('Editing Map.lua') && !out.includes('Reading files'), 'showing the latest step');
+
+  slotReply(vm, chatId, 'status = "done", text = "hi back\\nsecond line", agent = "claude"');
+  out = tabLines(vm, 11);
+  assert.ok(out.includes('|Haddon:claudewow:reply:' + chatId + '|h[Claude]|h whispers: hi back @1,0.5,1'), 'first line formatted as a whisper: ' + out);
+  assert.ok(out.includes('second line @1,0.5,1'), 'a short reply is shown whole');
+  assert.ok(!out.includes('is working'), 'the progress line is gone once the reply lands');
   assert.deepEqual(vm.evaluate('table.concat(STUB.flashed, ",")'), 'ChatFrame11', 'the tab flashed');
   assert.ok(!vm.evaluate('table.concat(STUB.prints, "\\n")').includes('hi back'), 'no duplicate in General');
   assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].text'), 'hi back\nsecond line', 'the window has it too');
 
-  // Typing while the agent works keeps the text as a draft and says so in the tab.
+  enter('ChatFrame11EditBox', 'tell me everything');
+  const long = Array.from({ length: 30 }, (_, i) => `line ${i + 1} of the long answer`).join('\\n');
+  slotReply(vm, chatId, `status = "done", text = "${long}", summary = "TL;DR: it is long.\\nRead the rest in the window.", agent = "claude"`);
+  out = tabLines(vm, 11);
+  assert.ok(out.includes('whispers: TL;DR: it is long.'), 'a long reply shows its TL;DR: ' + out);
+  assert.ok(!out.includes('line 30 of the long answer'), 'not the whole text');
+  assert.match(out, /TL;DR of a longer reply \(30 lines\):\|r \|Haddon:claudewow:open:\w+\|h\|cff7ec8ff\[full reply\]/);
+  vm.run(`STUB.ClickLink("|Haddon:claudewow:open:${chatId}|h[full reply]|h")`);
+  assert.equal(vm.evaluate('ClaudeWoWFrame.shown'), 'true', 'the full reply link opens the workspace');
+  assert.equal(vm.evaluate('ClaudeWoWDB.activeChat'), chatId);
+  vm.run('ClaudeWoW.Minimize(true)');
+
   enter('ChatFrame11EditBox', 'first');
   const before = stripRecords(vm).length;
   enter('ChatFrame11EditBox', 'too soon');
   assert.equal(stripRecords(vm).length, before, 'no second record while one is pending');
-  assert.ok(lines(11).includes('still working on your last message'), 'told in the tab');
+  assert.ok(tabLines(vm, 11).includes('still working on your last message'), 'told in the tab');
   assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].draft'), 'too soon');
-  reply(chatId, 'status = "done", text = "done", agent = "claude"');
+  slotReply(vm, chatId, 'status = "done", text = "done", agent = "claude"');
+  out = tabLines(vm, 11);
+  assert.ok(out.includes('Waiting to go: too soon  |Haddon:claudewow:send:' + chatId + '|h'), 'the waiting message is offered with a send link: ' + out);
+  vm.run(`STUB.ClickLink("|Haddon:claudewow:send:${chatId}|h[send it]|h")`);
+  assert.ok(stripRecords(vm).find(r => r.text === 'too soon'), 'the link sends it');
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].draft'), null);
+  slotReply(vm, chatId, 'status = "done", text = "ok", agent = "claude"');
 
-  // A tell to an agent's name from the ordinary box goes to the agent; any other name is the game's.
   enter('ChatFrame1EditBox', '/w Claude ping');
   assert.ok(stripRecords(vm).find(r => r.text === 'ping'), '/w Claude from General reaches the agent');
   assert.equal(vm.num('STUB.serverSends'), 0);
-  reply(chatId, 'status = "done", text = "pong", agent = "claude"');
+  slotReply(vm, chatId, 'status = "done", text = "pong", agent = "claude"');
   enter('ChatFrame1EditBox', '/w Bob hi');
   assert.equal(vm.num('STUB.serverSends'), 1, 'a real whisper still goes out');
   enter('ChatFrame11EditBox', '/s hello all');
   assert.equal(vm.num('STUB.serverSends'), 2, 'another slash command in the tab is the game\'s');
 
-  // A second chat gets a tab of its own; a reply to the first still lands in the first.
   vm.run('SlashCmdList.CLAUDE("-n Second")');
   const secondId = vm.evaluate('ClaudeWoWDB.chats[2].id');
-  vm.run('ClaudeWoW.Send("second hello")');
-  assert.equal(vm.num('STUB.tempWindows'), 2);
+  assert.equal(vm.num('STUB.tempWindows'), 2, 'a new chat is a new tab');
   assert.equal(vm.evaluate('ChatFrame12Tab.text'), 'Second');
-  assert.ok(lines(12).includes('To Claude: second hello'));
-  reply(secondId, 'status = "done", text = "for two", agent = "claude"');
-  assert.ok(lines(12).includes('whispers: for two') && !lines(11).includes('for two'));
-  // A system reply (bridge error) is a system line, and a denied one says what to allow.
+  assert.equal(vm.evaluate('ClaudeWoWFrame.shown'), 'false', 'and no window');
+  vm.run('ClaudeWoW.Send("second hello")');
+  assert.ok(tabLines(vm, 12).includes('To Claude: second hello'));
+  slotReply(vm, secondId, 'status = "done", text = "for two", agent = "claude"');
+  assert.ok(tabLines(vm, 12).includes('whispers: for two') && !tabLines(vm, 11).includes('for two'));
   vm.run('ClaudeWoW.Send("again")');
-  reply(secondId, 'status = "error", text = "boom"');
-  assert.ok(lines(12).includes('Bridge error: boom  |Hclaudewow:open:' + secondId + '|h|cff7ec8ff[open]|r|h @1,1,0'), lines(12));
-  vm.run('ClaudeWoW.Send("once more")');
-  reply(secondId, 'status = "done", text = "need it", denied = { "Bash(rm:*)" }');
-  assert.ok(lines(12).includes('needs permission for Bash(rm:*)'));
+  slotReply(vm, secondId, 'status = "error", text = "boom"');
+  assert.ok(tabLines(vm, 12).includes('Bridge error: boom  |Haddon:claudewow:open:' + secondId + '|h|cff7ec8ff[open]|r|h @1,1,0'), tabLines(vm, 12));
 
-  // The leak filter: the server's answer to a whisper that got out becomes a loud line.
+  vm.run('ClaudeWoWDB.settings.lootRoll = false');
+  vm.run('ClaudeWoW.Send("once more")');
+  const deniedId = pendingOf(vm, secondId);
+  slotReply(vm, secondId, 'status = "done", text = "need it", denied = { "Bash(rm:*)" }, macros = { { name = "Burst", body = "#showtooltip\\n/cast Arcane Power" } }');
+  out = tabLines(vm, 12);
+  assert.ok(out.includes('needs permission for Bash(rm:*): |Haddon:claudewow:roll:' + secondId + ':' + deniedId + ':need|h'), out);
+  assert.ok(out.includes('[Allow & retry]') && out.includes('[Allow once]') && out.includes('[Pass]'), 'the roll answers are links');
+  assert.ok(out.includes('|Haddon:claudewow:macro:' + secondId + ':' + deniedId + ':1|h|cffffd100[Create macro: Burst]'), 'a macro button becomes a link: ' + out);
+  vm.run(`STUB.ClickLink("|Haddon:claudewow:macro:${secondId}:${deniedId}:1|h[Create macro: Burst]|h")`);
+  assert.equal(vm.evaluate('STUB.popup.which'), 'CLAUDEWOW_MACRO', 'the macro link opens the Create-macro prompt');
+  assert.match(vm.evaluate('STUB.popup.text'), /Create the macro "Burst"\?[\s\S]*\/cast Arcane Power/);
+  assert.equal(vm.evaluate('STUB.popup.data.name'), 'Burst');
+  vm.run(`STUB.ClickLink("|Haddon:claudewow:roll:${secondId}:${deniedId}:greed|h[Allow once]|h")`);
+  const retry = stripRecords(vm).find(r => r.text === 'Those actions are allowed for this run. Continue from where you left off.');
+  assert.ok(retry && retry.flags.split(';').includes('once=Bash(rm:*)'), 'Greed from the tab retries once');
+  vm.run(`STUB.ClickLink("|Haddon:claudewow:roll:${secondId}:${deniedId}:need|h[Allow & retry]|h")`);
+  assert.ok(tabLines(vm, 12).includes('That request was answered already.'), 'a stale answer link says so');
+  slotReply(vm, secondId, 'status = "done", text = "done now", agent = "claude"');
+
   assert.ok(vm.evaluate(`select(2, STUB.filters.CHAT_MSG_SYSTEM(nil, "CHAT_MSG_SYSTEM", "No player named 'Claude' is currently playing."))`).includes('WHISPER LEAK'));
   assert.equal(vm.evaluate(`select(2, STUB.filters.CHAT_MSG_SYSTEM(nil, "CHAT_MSG_SYSTEM", "No player named 'Bob' is currently playing."))`), null, 'other names are left alone');
-  vm.run('SlashCmdList.CLAUDE("config whisper")');
-  assert.ok(vm.evaluate('ClaudeWoWDB.chats[2].history[#ClaudeWoWDB.chats[2].history].text').includes('LEAKS: 1'));
 
-  // Rename retitles the tab, delete closes it, off closes them all and the hooks go quiet.
   vm.run('SlashCmdList.CLAUDE("rename Renamed")');
   assert.equal(vm.evaluate('ChatFrame12Tab.text'), 'Renamed');
   vm.run('SlashCmdList.CLAUDE("delete")');
   assert.equal(vm.evaluate('ChatFrame12.inUse'), 'false', 'the deleted chat\'s tab is closed');
-  vm.run('SlashCmdList.CLAUDE("config whisper off")');
+  vm.run('STUB.prints = {}');
+  vm.run('SlashCmdList.CLAUDE("config ui whisper off")');
   assert.equal(vm.evaluate('ClaudeWoWDB.settings.whisper'), 'false');
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.whisperChoice'), 'off', 'the choice is remembered as explicit');
   assert.equal(vm.evaluate('ChatFrame11.inUse'), 'false');
+  assert.ok(vm.evaluate('table.concat(STUB.prints, "\\n")').includes('Whisper tabs are off'), 'said in the game chat, since the tab is gone');
   enter('ChatFrame1EditBox', '/w Claude ping');
   assert.equal(vm.num('STUB.serverSends'), 3, 'off: a whisper is the game\'s again');
+});
+
+test('whisper default for existing installs: an explicit "off" stays off, an old default flips on once and says so, "on" stays on', () => {
+  const offMsg = '{ role = "system", text = "Whisper tabs are off; replies go to the game chat as before", t = 1700000100 }';
+  const onMsg = '{ role = "system", text = "Whisper tabs are ON: this chat is the \\"x\\" tab", t = 1700000000 }';
+  const saved = (whisper, history) => `ClaudeWoWDB = { settings = { whisper = ${whisper}, echoV2 = true, pluginsV1 = true }, lastSeq = 3, session = "s1", forget = {}, activeChat = "c1", chats = { { id = "c1", name = "Chat 1", cwd = "", agent = "", plugin = "", unread = 0, history = { ${history} } } } }`;
+
+  let vm = dockVM(saved('false', `${onMsg}, ${offMsg}`));
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.whisper'), 'false', 'turned off by hand before: kept off');
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.whisperChoice'), 'off');
+  connectAs(vm, 'claude');
+  assert.equal(vm.num('STUB.tempWindows'), 0, 'no tab opens');
+
+  vm = dockVM(saved('false', `${offMsg}, ${onMsg.replace('1700000000', '1700000200')}`));
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.whisper'), 'true', 'the last choice was on: on');
+
+  vm = dockVM(saved('false', '{ role = "user", text = "hello", t = 1700000000, id = 1 }'));
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.whisper'), 'true', 'the old default (never touched) moves to the new default');
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.whisperV2'), 'true');
+  connectAs(vm, 'claude');
+  assert.match(tabLines(vm, 11), /New: chats live in whisper tabs like this one by default\. \/claude config ui whisper off goes back/, 'said once in the tab');
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.whisperNews'), null, 'only once');
+
+  vm.run('SlashCmdList.CLAUDE("config ui whisper off")');
+  vm.run('ClaudeWoW.MigrateWhisper(ClaudeWoWDB.settings, false)');
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.whisper'), 'false', 'after the migration an explicit off is never flipped again');
+
+  vm = dockVM(saved('true', ''));
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.whisper'), 'true');
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.whisperNews'), null, 'already on: nothing to announce');
+});
+
+test('from a tab, /claude commands answer in the tab and never open the window; from the game chat they answer there; bare /claude opens the workspace', () => {
+  const vm = dockVM();
+  connectAs(vm, 'claude');
+  vm.run('STUB.prints = {}');
+  typeIn(vm, 'ChatFrame11EditBox', '/claude help');
+  assert.ok(tabLines(vm, 11).includes('/claude config ui [setting]'), 'help lands in the tab');
+  assert.equal(vm.evaluate('ClaudeWoWFrame.shown'), 'false', 'no window');
+  typeIn(vm, 'ChatFrame11EditBox', '/claude config ui dim 20');
+  assert.equal(vm.num('ClaudeWoWDB.settings.dim'), 0.2);
+  assert.ok(tabLines(vm, 11).includes('The window dims to 20% while you move or fight'));
+  typeIn(vm, 'ChatFrame11EditBox', '/claude cd ~/proj');
+  assert.ok(tabLines(vm, 11).includes('cwd set to ~/proj'));
+  assert.equal(vm.evaluate('table.concat(STUB.prints, "\\n")'), '', 'nothing leaked into General');
+
+  typeIn(vm, 'ChatFrame1EditBox', '/claude config ui');
+  const prints = vm.evaluate('table.concat(STUB.prints, "\\n")');
+  assert.match(prints, /Window and tabs: whisper on, dim 20%, dodge on, autohide on/, 'typed in the game chat, answered there: ' + prints);
+  assert.equal(vm.evaluate('ClaudeWoWFrame.shown'), 'false');
+  typeIn(vm, 'ChatFrame1EditBox', '/claude -c');
+  assert.ok(vm.evaluate('table.concat(STUB.prints, "\\n")').includes('is the "Claude" tab in the chat dock'), '-c alone points at the tab');
+  assert.equal(vm.evaluate('ClaudeWoWFrame.shown'), 'false');
+
+  typeIn(vm, 'ChatFrame1EditBox', '/claude');
+  assert.equal(vm.evaluate('ClaudeWoWFrame.shown'), 'true', 'bare /claude in the game chat opens the workspace');
+  assert.equal(vm.evaluate('STUB.focus == ClaudeWoWInput'), 'true', 'with the keyboard in its input');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 1, 'and starts nothing');
+  vm.run('ClaudeWoW.Minimize(true)');
+
+  typeIn(vm, 'ChatFrame11EditBox', '/claude');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 2, 'bare /claude in a tab starts a new chat');
+  assert.equal(vm.num('STUB.tempWindows'), 2, 'in a tab of its own');
+  assert.equal(vm.evaluate('ChatFrame12.shown'), 'true', 'brought to the front');
+  assert.equal(vm.evaluate('ClaudeWoWFrame.shown'), 'false');
+
+  vm.run('ClaudeWoW.ToggleWorkspace()');
+  assert.equal(vm.evaluate('ClaudeWoWFrame.shown'), 'true', 'the keybinding opens the workspace');
+  vm.run('ClaudeWoW.ToggleWorkspace()');
+  assert.equal(vm.evaluate('ClaudeWoWFrame.shown'), 'false', 'and closes it to the bar');
+  assert.equal(vm.evaluate('ClaudeWoWMini.shown'), 'true');
+  assert.equal(vm.evaluate('BINDING_NAME_CLAUDEWOW_WORKSPACE'), 'Claude WoW: open or close the workspace');
+  assert.match(fs.readFileSync(path.join(ADDON, 'Bindings.xml'), 'utf8'), /<Binding name="CLAUDEWOW_WORKSPACE" category="ADDONS">\s*if ClaudeWoW and ClaudeWoW\.ToggleWorkspace then ClaudeWoW\.ToggleWorkspace\(\) end/);
+});
+
+test('/claude config ui: whisper, dim, dodge and autohide are settings that persist; bad values are refused', () => {
+  const vm = dockVM();
+  connectAs(vm, 'claude');
+  const last = () => vm.evaluate('ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].text');
+  assert.equal(vm.num('ClaudeWoWDB.settings.dim'), 0.35, 'dims to 35% by default');
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.dodge'), 'true');
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.autohide'), 'true');
+  vm.run('SlashCmdList.CLAUDE("config ui dim 50%")');
+  assert.equal(vm.num('ClaudeWoWDB.settings.dim'), 0.5);
+  vm.run('SlashCmdList.CLAUDE("config ui dim off")');
+  assert.equal(vm.num('ClaudeWoWDB.settings.dim'), 1);
+  assert.match(last(), /Dimming is off/);
+  const chats = vm.num('#ClaudeWoWDB.chats');
+  vm.run('SlashCmdList.CLAUDE("config ui dim 5")');
+  assert.equal(vm.num('ClaudeWoWDB.settings.dim'), 1, 'below 10% the window would vanish: not a setting');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), chats + 1, 'so, like any command word that does not fit, it is a message');
+  vm.run('ClaudeWoW.Config("ui dim 5")');
+  assert.match(vm.evaluate('ClaudeWoWDB.chats[2].history[#ClaudeWoWDB.chats[2].history].text'), /ui does not take "dim 5"/);
+  vm.run('ClaudeWoW.SwitchChat(ClaudeWoWDB.chats[1].id)');
+  vm.run('SlashCmdList.CLAUDE("config ui dim on")');
+  assert.equal(vm.num('ClaudeWoWDB.settings.dim'), 0.35);
+  vm.run('SlashCmdList.CLAUDE("config ui dodge off")');
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.dodge'), 'false');
+  vm.run('SlashCmdList.CLAUDE("config ui autohide off")');
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.autohide'), 'false');
+  vm.run('SlashCmdList.CLAUDE("config")');
+  assert.match(last(), /\nui = whisper on, dim 35%, dodge off, autohide off {2}- {2}/);
+  vm.run('SlashCmdList.CLAUDE("config whisper off")');
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.whisperChoice'), 'off', 'the old spelling is the same setting');
+  vm.run('SlashCmdList.CLAUDE("config ui whisper on")');
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.whisper'), 'true');
+  assert.match(last(), /^Whisper tabs are ON/);
+});
+
+test('a tab without line editing throttles the progress line instead of spamming it', () => {
+  const vm = newVM();
+  vm.run(WHISPER_DOCK + '; STUB.noLineEdit = true');
+  login(vm);
+  connectAs(vm, 'claude');
+  const chatId = vm.evaluate('ClaudeWoWDB.chats[1].id');
+  vm.run('ClaudeWoW.Send("go")');
+  for (const step of ['one', 'two', 'three', 'four']) {
+    nextSlot(vm, `{ now = time(), cwd = "", agent = "claude", replies = { { chat = "${chatId}", id = ${pendingOf(vm, chatId)}, status = "working", text = "${step}" } } }`);
+    vm.run('STUB.now = STUB.now + 6; ClaudeWoW.Send("")');
+  }
+  const count = (tabLines(vm, 11).match(/is working\.\.\./g) || []).length;
+  assert.ok(count >= 1 && count <= 2, `at most one line per 20 s: ${count}\n${tabLines(vm, 11)}`);
+});
+
+test('the bridge status line: a silent bridge is said once in the tab with a connect link, and its return too', () => {
+  const vm = dockVM();
+  connectAs(vm, 'claude');
+  vm.run('STUB.onLoadAddOn = nil; STUB.now = STUB.now + 800; STUB.Tick()');
+  let out = tabLines(vm, 11);
+  assert.match(out, /Bridge quiet for a while\. \|Haddon:claudewow:connect\|h/, out);
+  vm.run('STUB.now = STUB.now + 600; STUB.Tick()');
+  out = tabLines(vm, 11);
+  assert.match(out, /Bridge: not seen for .* - is the bridge running\? \|Haddon:claudewow:connect\|h/, out);
+  assert.ok(!out.includes('Bridge quiet'), 'the status line is replaced, not stacked');
+  vm.run('STUB.RunTimers()');
+  nextSlot(vm, '{ now = time(), cwd = "", agent = "claude", replies = {} }');
+  vm.run('STUB.ClickLink("|Haddon:claudewow:connect|h[connect]|h")');
+  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+  assert.equal(vm.evaluate('ClaudeWoW.IsConnected()'), 'true');
+  assert.ok(tabLines(vm, 11).includes('Bridge is back.'));
 });
 
 function whisperVM() {
@@ -1811,7 +1966,7 @@ test('/claude -r: bare lists running and recent sessions; a number, a name or an
   assert.match(list, /\n2\. Claude version check  \/Users\/me\/proj  f02436b8  2h ago/);
   assert.match(list, /\n5\. Chat 1 .*\(this chat\)/);
   const prints = vm.evaluate('table.concat(STUB.prints, "\\n")');
-  assert.ok(prints.includes('|Hclaudewow:resume:2|h'), 'each line in the game chat is a link that picks it');
+  assert.ok(prints.includes('|Haddon:claudewow:resume:2|h'), 'each line in the game chat is a link that picks it');
 
   vm.run('SlashCmdList.CLAUDE("-r 1 where is the flight master?")');
   assert.equal(vm.num('#ClaudeWoWDB.chats'), 2, 'attaching a running session opens a chat for it');

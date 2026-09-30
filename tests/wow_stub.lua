@@ -34,11 +34,28 @@ function Methods.GetScript(self, name) return self.scripts[name] end
 function Methods.HookScript(self, name, fn) self.hooks[name] = self.hooks[name] or {}; table.insert(self.hooks[name], fn) end
 function Methods.RegisterEvent(self, ev) self.events[ev] = true end
 function Methods.UnregisterEvent(self, ev) self.events[ev] = nil end
-function Methods.Show(self) self.shown = true end
+local function RunHandlers(self, name)
+	if self.scripts[name] then self.scripts[name](self) end
+	for _, fn in ipairs(self.hooks[name] or {}) do fn(self) end
+end
+
+function STUB.Guard(self, what)
+	if self.protected and STUB.combat and STUB.AddonOnStack() then
+		table.insert(STUB.blocked, (self.name or self.kind) .. ":" .. what)
+	end
+end
+
+function Methods.Show(self)
+	STUB.Guard(self, "Show")
+	local was = self.shown
+	self.shown = true
+	if not was then RunHandlers(self, "OnShow") end
+end
 function Methods.Hide(self)
+	STUB.Guard(self, "Hide")
 	local was = self.shown
 	self.shown = false
-	if was and self.scripts.OnHide then self.scripts.OnHide(self) end
+	if was then RunHandlers(self, "OnHide") end
 end
 function Methods.SetShown(self, v) if v then self:Show() else self:Hide() end end
 function Methods.IsShown(self) return self.shown end
@@ -49,18 +66,58 @@ function Methods.GetName(self) return self.name end
 function Methods.GetParent(self) return self.parent end
 function Methods.GetWidth(self) return self.width or 400 end
 function Methods.GetHeight(self) return self.height or 300 end
-function Methods.SetSize(self, w, h) self.width, self.height = w, h end
-function Methods.SetWidth(self, w) self.width = w end
-function Methods.SetHeight(self, h) self.height = h end
+function Methods.SetSize(self, w, h) STUB.Guard(self, "SetSize") self.width, self.height = w, h end
+function Methods.SetWidth(self, w) STUB.Guard(self, "SetWidth") self.width = w end
+function Methods.SetHeight(self, h) STUB.Guard(self, "SetHeight") self.height = h end
 function Methods.GetSize(self) return self:GetWidth(), self:GetHeight() end
 function Methods.GetStringHeight(self) return 14 end
 function Methods.GetStringWidth(self) return 100 end
 function Methods.GetFontString(self) return self end
-function Methods.GetPoint(self) return "CENTER", nil, "CENTER", 0, 0 end
+function Methods.GetPoint(self)
+	if self.point then return self.point, self.rel, self.relPoint, self.x, self.y end
+	return "CENTER", nil, "CENTER", 0, 0
+end
 function Methods.SetPoint(self, point, rel, relPoint, x, y)
-	if type(rel) == "number" then x, y = rel, relPoint end
+	STUB.Guard(self, "SetPoint")
+	if type(rel) == "number" then x, y, rel, relPoint = rel, relPoint, nil, nil end
+	if type(rel) == "string" then rel = _G[rel] end
+	self.point, self.rel, self.relPoint = point, rel, relPoint or point
 	self.x, self.y = x or 0, y or 0
 end
+function Methods.ClearAllPoints(self)
+	STUB.Guard(self, "ClearAllPoints")
+	self.point, self.rel, self.relPoint = nil, nil, nil
+end
+local ANCHOR_X = { LEFT = 0, TOPLEFT = 0, BOTTOMLEFT = 0, CENTER = 0.5, TOP = 0.5, BOTTOM = 0.5, RIGHT = 1, TOPRIGHT = 1, BOTTOMRIGHT = 1 }
+local ANCHOR_Y = { BOTTOM = 0, BOTTOMLEFT = 0, BOTTOMRIGHT = 0, CENTER = 0.5, LEFT = 0.5, RIGHT = 0.5, TOP = 1, TOPLEFT = 1, TOPRIGHT = 1 }
+function STUB.Rect(self)
+	if self.rect then return self.rect end
+	if self == UIParent then return { left = 0, right = self:GetWidth(), top = self:GetHeight(), bottom = 0 } end
+	if not self.point then return nil end
+	local rel = self.rel or UIParent
+	local pr = STUB.Rect(rel)
+	if not pr then return nil end
+	local rp = self.relPoint or self.point
+	local ax = pr.left + (ANCHOR_X[rp] or 0.5) * (pr.right - pr.left) + (self.x or 0)
+	local ay = pr.bottom + (ANCHOR_Y[rp] or 0.5) * (pr.top - pr.bottom) + (self.y or 0)
+	local w, h = self:GetWidth(), self:GetHeight()
+	local left = ax - (ANCHOR_X[self.point] or 0.5) * w
+	local bottom = ay - (ANCHOR_Y[self.point] or 0.5) * h
+	return { left = left, right = left + w, top = bottom + h, bottom = bottom }
+end
+function Methods.GetLeft(self) local r = STUB.Rect(self) return r and r.left end
+function Methods.GetRight(self) local r = STUB.Rect(self) return r and r.right end
+function Methods.GetTop(self) local r = STUB.Rect(self) return r and r.top end
+function Methods.GetBottom(self) local r = STUB.Rect(self) return r and r.bottom end
+function Methods.SetScale(self, k) self.scale = k end
+function Methods.GetScale(self) return self.scale or 1 end
+function Methods.GetEffectiveScale(self) return self.scale or 1 end
+function Methods.SetAlpha(self, a) self.alpha = a end
+function Methods.GetAlpha(self) return self.alpha or 1 end
+function Methods.IsMouseOver(self) return STUB.mouseOver == self end
+function Methods.EnableMouse(self, v) self.mouseEnabled = v and true or false end
+function Methods.StartMoving(self) self.moving = true end
+function Methods.StopMovingOrSizing(self) self.moving = nil end
 function Methods.GetVerticalScrollRange(self) return 0 end
 function Methods.CreateTexture(self, name, layer)
 	local t = NewObject("Texture", name, self)
@@ -93,6 +150,13 @@ function Methods.AddMessage(self, text, r, g, b)
 	self.messages = self.messages or {}
 	table.insert(self.messages, { text = tostring(text), r = r, g = g, b = b })
 end
+function STUB.RemoveMessagesByPredicate(self, predicate)
+	local keep = {}
+	for _, m in ipairs(self.messages or {}) do
+		if not predicate(m.text, m.r, m.g, m.b) then table.insert(keep, m) end
+	end
+	self.messages = keep
+end
 -- Tooltip scanning: SetHyperlink fills <name>TextLeft<i> / TextRight<i> from
 -- STUB.tooltips[link], a list of strings or { left, right } pairs.
 function Methods.ClearLines(self) self.lines = {} end
@@ -124,6 +188,20 @@ function STUB.FireEvent(ev, ...)
 	end
 end
 
+function STUB.RunFrames(dt)
+	local frames = {}
+	for i, f in ipairs(STUB.frames) do frames[i] = f end
+	for _, f in ipairs(frames) do
+		local fn = f.scripts.OnUpdate
+		local seen, g, visible = 0, f, true
+		while g and seen < 64 do
+			if g.shown == false then visible = false break end
+			g, seen = g.parent, seen + 1
+		end
+		if fn and visible then fn(f, dt or 0.05) end
+	end
+end
+
 -- Run every C_Timer.After callback that is due, then every ticker once.
 function STUB.RunTimers()
 	local due = STUB.timers
@@ -135,13 +213,14 @@ function STUB.Tick()
 end
 
 UIParent = CreateFrame("Frame", "UIParent")
+UIParent:SetSize(1920, 1080)
 GameTooltip = CreateFrame("Frame", "GameTooltip")
 UIErrorsFrame = CreateFrame("Frame", "UIErrorsFrame")
 ChatFontNormal = {}
 OKAY, CANCEL = "Okay", "Cancel"
 NUM_CHAT_WINDOWS = 1
 StaticPopupDialogs = {}
-function StaticPopup_Show(which, a, b, data) STUB.popup = { which = which, data = data } end
+function StaticPopup_Show(which, a, b, data) STUB.popup = { which = which, text = a, data = data } end
 SlashCmdList = {}
 UISpecialFrames = {}
 tinsert = table.insert
@@ -160,7 +239,24 @@ function hooksecurefunc(a, b, c)
 	end
 	STUB.secureHooks[wrapper] = true
 end
-function InCombatLockdown() return false end
+STUB.combat, STUB.blocked, STUB.panelCalls = false, {}, {}
+function InCombatLockdown() return STUB.combat == true end
+function UnitAffectingCombat(unit) return STUB.combat == true end
+function ShowUIPanel(frame)
+	table.insert(STUB.panelCalls, { name = "ShowUIPanel", frame = frame and frame.name, combat = STUB.combat, addon = STUB.AddonOnStack() })
+	if frame then frame:Show() end
+end
+function HideUIPanel(frame)
+	table.insert(STUB.panelCalls, { name = "HideUIPanel", frame = frame and frame.name, combat = STUB.combat, addon = STUB.AddonOnStack() })
+	if frame then frame:Hide() end
+end
+
+function STUB.Panel(name, left, top, width, height)
+	local f = CreateFrame("Frame", name, UIParent)
+	f.shown, f.protected = false, true
+	f.rect = { left = left, right = left + width, top = top, bottom = top - height }
+	return f
+end
 function ReloadUI() STUB.reloaded = true end
 function GetTime() return STUB.now end
 function time() return STUB.epoch + math.floor(STUB.now) end
@@ -441,4 +537,53 @@ function print(...)
 	local parts = {}
 	for i = 1, select("#", ...) do parts[i] = tostring((select(i, ...))) end
 	table.insert(STUB.prints, table.concat(parts, " "))
+end
+
+function STUB.ChatDock()
+	CHAT_FRAMES = { "ChatFrame1" }
+	ChatTypeInfo = { WHISPER = { r = 1, g = 0.5, b = 1 }, WHISPER_INFORM = { r = 1, g = 0.5, b = 1 }, SYSTEM = { r = 1, g = 1, b = 0 } }
+	CHAT_WHISPER_GET = "%s whispers: "
+	CHAT_WHISPER_INFORM_GET = "To %s: "
+	STUB.flashed, STUB.tempWindows, STUB.filters = {}, 0, {}
+	function ChatFrame_AddMessageEventFilter(ev, fn) STUB.filters[ev] = fn end
+	function FCF_StartAlertFlash(f) table.insert(STUB.flashed, f:GetName()) end
+	function FCF_SetWindowName(f, name) _G[f:GetName() .. "Tab"].text = name end
+	function FCF_Close(f) f.inUse = false; f.isDocked = false; f.shown = false end
+	ChatFrame1 = CreateFrame("Frame", "ChatFrame1", UIParent)
+	ChatFrame1.isDocked = true
+	ChatFrame1.editBox = STUB.ChatEditBox("ChatFrame1EditBox", ChatFrame1)
+	DEFAULT_CHAT_FRAME = ChatFrame1
+	function FCF_OpenTemporaryWindow(chatType, target, source, select)
+		STUB.tempWindows = STUB.tempWindows + 1
+		local n = 10 + STUB.tempWindows
+		local f = CreateFrame("Frame", "ChatFrame" .. n, UIParent)
+		f.isTemporary, f.inUse, f.isDocked, f.shown = true, true, true, select and true or false
+		f.chatType, f.chatTarget = chatType, target
+		f.RemoveMessagesByPredicate = (not STUB.noLineEdit) and STUB.RemoveMessagesByPredicate or false
+		local tab = CreateFrame("Button", "ChatFrame" .. n .. "Tab", f)
+		tab.text = target
+		tab.glow = CreateFrame("Frame", nil, tab)
+		f.editBox = STUB.ChatEditBox("ChatFrame" .. n .. "EditBox", f, "WHISPER", target)
+		table.insert(CHAT_FRAMES, f:GetName())
+		return f
+	end
+end
+
+function STUB.Lines(frame)
+	local t = {}
+	for _, m in ipairs(frame and frame.messages or {}) do t[#t + 1] = m.text .. " @" .. tostring(m.r) .. "," .. tostring(m.g) .. "," .. tostring(m.b) end
+	return table.concat(t, "\n")
+end
+
+function STUB.ClickLink(text, button)
+	local link = tostring(text):match("|H(.-)|h") or tostring(text)
+	SetItemRef(link, text, button or "LeftButton", DEFAULT_CHAT_FRAME)
+end
+
+function STUB.LinksIn(frame)
+	local out = {}
+	for _, m in ipairs(frame and frame.messages or {}) do
+		for link in m.text:gmatch("|H(.-)|h") do out[#out + 1] = link end
+	end
+	return out
 end

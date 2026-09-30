@@ -1,0 +1,5 @@
+<Bindings>
+	<Binding name="CLAUDEWOW_WORKSPACE" category="ADDONS">
+		if ClaudeWoW and ClaudeWoW.ToggleWorkspace then ClaudeWoW.ToggleWorkspace() end
+	</Binding>
+</Bindings>

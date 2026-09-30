@@ -34,7 +34,7 @@ local T = getmetatable(canvas).__index
 MINING, HERBALISM = "Mining", "Herbalism"
 `;
 
-function newVM() {
+function newVM(before) {
   const L = lauxlib.luaL_newstate();
   lualib.luaL_openlibs(L);
   const run = (code, arg) => {
@@ -65,6 +65,7 @@ function Methods.SetFrameLevel(self, l) self.level = l end
   stub = stub.replace('local function NewObject(', 'function NewObjectPublic(').replace(/NewObject\(/g, 'NewObjectPublic(');
   run(stub);
   run(MAP_STUB);
+  if (before) run(before);
   for (const f of ['Codec.lua', 'Inbox.lua', 'ClaudeWoW.lua', 'Map.lua']) run(fs.readFileSync(path.join(ADDON, f), 'utf8'), 'ClaudeWoW');
   run('STUB.FireEvent("ADDON_LOADED", "ClaudeWoW"); STUB.FireEvent("PLAYER_LOGIN")');
   return { run, evaluate, num };
@@ -214,4 +215,20 @@ test('/aimap hide, show, nav and stop', () => {
   assert.equal(vm.evaluate('ClaudeWoWMapDB.nav'), null);
   assert.equal(vm.evaluate('ClaudeWoWNavigator.shown'), 'false');
   vm.run('SlashCmdList.CLAUDEWOWMAP("")'); // status never errors
+});
+
+test('a route from the agent is a link in its chat tab that opens the map at the first stop, and waits for the end of combat', () => {
+  const vm = newVM('STUB.ChatDock(); function OpenWorldMap(id) STUB.openedMap = id; WorldMapFrame:Show() end; WorldMapFrame.shown = false');
+  vm.run(`ClaudeWoWMap.Sync(${LAYER})`);
+  const lines = vm.evaluate('STUB.Lines(ChatFrame11)') || '';
+  assert.match(lines, /Copper loop: 3 point\(s\), route\. \|Haddon:claudewow:map:mining\|h\|cffffd100\[show route\]/, 'said in the chat tab with a link: ' + lines);
+  assert.ok(!vm.evaluate('table.concat(STUB.prints, "\\n")').includes('Copper loop'), 'not in General');
+  vm.run('SlashCmdList.CLAUDEWOWMAP("hide mining"); SlashCmdList.CLAUDEWOWMAP("stop")');
+  vm.run('STUB.combat = true; STUB.ClickLink("|Haddon:claudewow:map:mining|h[show route]|h")');
+  assert.equal(vm.evaluate('STUB.openedMap'), null, 'no map opened in combat');
+  assert.match(vm.evaluate('STUB.Lines(ChatFrame11)'), /Copper loop is on the map; it opens after combat, or press M\./);
+  vm.run('STUB.combat = false; STUB.ClickLink("|Haddon:claudewow:map:mining|h[show route]|h")');
+  assert.equal(vm.num('STUB.openedMap'), 1432, 'the map opens on the route\'s first stop');
+  assert.equal(vm.evaluate('ClaudeWoWMapDB.hidden.mining'), null, 'the layer is shown again');
+  assert.equal(vm.evaluate('ClaudeWoWMapDB.nav.layer'), 'mining', 'and the navigator follows it');
 });
