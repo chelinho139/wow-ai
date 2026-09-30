@@ -9,6 +9,7 @@ const { gather, parsePlist } = require('../dev/doctor/context');
 const C = require('../dev/doctor/checks');
 const Doctor = require('../dev/doctor');
 const Service = require('../bridge/service');
+const GameFs = require('../bridge/gamefs');
 
 const NOW = Date.parse('2026-09-29T18:40:00Z');
 const MINUTE = 60 * 1000;
@@ -74,6 +75,7 @@ function makeWorld(name, options = {}) {
   for (let i = 0; i < (options.leftovers || 0); i++) write(path.join(clientDir, 'Screenshots', `WoWScrnShot_092926_1000${String(i).padStart(2, '0')}.png`), 'x');
   if (options.sessionBytes) write(path.join(C.claudeProjectDir(home, project), 'sess-1.jsonl'), Buffer.alloc(options.sessionBytes));
   for (const legacy of options.legacy || []) write(path.join(checkout, 'bridge', legacy), '{}');
+  GameFs.repair(addonDir);
   return { root, home, checkout, nodeBin, addonDir, clientDir, project, dirs, clawHome };
 }
 
@@ -154,7 +156,7 @@ test('a healthy world: every check ok, exit code 0', () => {
   Doctor.main(['--json'], ctx.sys, l => json.push(l));
   const parsed = JSON.parse(json[0]);
   assert.equal(parsed.status, 'ok');
-  assert.equal(parsed.checks.length, 10);
+  assert.equal(parsed.checks.length, 11);
 });
 
 test('service: missing plist, missing node, unloaded job, dead child', () => {
@@ -270,6 +272,21 @@ test('interface: client build from .build.info, toc and slot mismatches', () => 
   fs.rmSync(path.join(path.dirname(wtfWorld.clientDir), '.build.info'));
   write(path.join(wtfWorld.clientDir, 'WTF', 'Config.wtf'), 'SET lastAddonVersion "16002"\n');
   assert.match(C.checkInterface(context(wtfWorld)).summary, /client 16002 \(Config\.wtf lastAddonVersion\)/);
+});
+
+test('permissions: a 0644 file under the addon folders warns with Battle.net error 2113', { skip: process.platform === 'win32' }, () => {
+  const world = makeWorld('perms');
+  assert.equal(C.checkPermissions(context(world)).status, 'ok');
+  const presence = path.join(world.addonDir, 'ClaudeWoW', 'presence', '0001.wav');
+  fs.chmodSync(presence, 0o644);
+  const r = C.checkPermissions(context(world));
+  assert.equal(r.status, 'warn');
+  assert.match(r.summary, /1 not world-writable/);
+  assert.match(r.problems[0].what, /1 of \d+ file\(s\) and folder\(s\).*presence[\\/]0001\.wav/);
+  assert.match(r.problems[0].why, /Battle\.net error 2113/);
+  assert.match(r.problems[0].fix, /claude-wow setup/);
+  const onWindows = C.checkPermissions({ ...context(world), sys: { ...context(world).sys, platform: 'win32' } });
+  assert.equal(onWindows.status, 'ok');
 });
 
 test('disk: leftover strips and a large session file warn', () => {

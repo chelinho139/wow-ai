@@ -27,6 +27,7 @@ const H = require('./bridge/home');     // CLAUDE_WOW_HOME: where config.json an
 const R = require('./bridge/runtime');  // node, bun, or the compiled binary
 const A = require('./bridge/agents');   // which agent CLIs this PC has
 const AS = require('./bridge/assets');  // the addon, the config template and the capture scripts, by path
+const G = require('./bridge/gamefs');
 const ADDON_SRC = AS.dir('addon/' + P.ADDON);
 const EXAMPLE = AS.file('bridge/config.example.json');
 let CONFIG = H.resolve().config; // settled in main(), after the legacy layout has been migrated
@@ -135,7 +136,7 @@ function findAccount(client) {
 function migrateSavedData(oldName, oldSaved, newSaved) {
   let src = fs.readFileSync(oldSaved, 'utf8');
   for (const g of ['DB', 'MapDB']) src = src.replace(new RegExp('^' + oldName + g + '(\\s*=)', 'm'), P.ADDON + g + '$1');
-  fs.writeFileSync(newSaved, src);
+  G.writeFile(newSaved, src);
 }
 
 function migrateOldInstall(client, account) {
@@ -161,12 +162,12 @@ function migrateOldInstall(client, account) {
 
 function copyAddon(client) {
   const dest = path.join(client, 'Interface', 'AddOns', P.ADDON);
-  fs.mkdirSync(dest, { recursive: true });
+  G.mkdir(dest);
   let copied = 0;
   for (const f of fs.readdirSync(ADDON_SRC)) {
     const target = path.join(dest, f);
     if (f === 'Inbox.lua' && fs.existsSync(target)) continue; // the bridge owns it once running
-    fs.copyFileSync(path.join(ADDON_SRC, f), target);
+    G.copyFile(path.join(ADDON_SRC, f), target);
     copied++;
   }
   return { dest, copied };

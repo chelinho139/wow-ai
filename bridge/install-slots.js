@@ -6,6 +6,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const G = require('./gamefs');
 
 const HOME = require('./home').resolve();
 const cfg = JSON.parse(fs.readFileSync(HOME.config, 'utf8'));
@@ -22,7 +23,7 @@ if (!fs.existsSync(path.join(addons, 'ClaudeWoW', 'ClaudeWoW.toc'))) {
 
 let made = 0, kept = 0, cleaned = 0, updated = 0;
 function ensureDir(dir) {
-  fs.mkdirSync(dir, { recursive: true });
+  G.mkdir(dir);
 }
 // Signal files are "on" by existing, so an off one must not be on disk at all.
 // Older installs pre-created them empty, which this client reads as playable;
@@ -34,12 +35,12 @@ function cleanEmpty(file) {
 }
 function ensure(file, content, { replaceWhenDifferent = false } = {}) {
   if (fs.existsSync(file)) {
-    if (replaceWhenDifferent && fs.readFileSync(file, 'utf8') !== content) { fs.writeFileSync(file, content); updated++; return; }
+    if (replaceWhenDifferent && fs.readFileSync(file, 'utf8') !== content) { G.writeFile(file, content); updated++; return; }
     kept++;
     return;
   }
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, content);
+  G.mkdir(path.dirname(file));
+  G.writeFile(file, content);
   made++;
 }
 
@@ -96,5 +97,8 @@ for (const gone of ['absent.wav', 'empty.wav']) {
 }
 ensure(path.join(addons, 'ClaudeWoW', 'ctl', 'valid.wav'), require('./protocol').SILENT_WAV);
 
+const perms = G.repair(addons);
+if (perms.fixed) console.log(`permissions: ${perms.fixed} of ${perms.checked} file(s) and folder(s) under the ClaudeWoW addon folders set to 0777 to match the game install (Battle.net error 2113)`);
+for (const f of perms.failed) console.log(`permissions: could not chmod ${f}`);
 console.log(`slots: ${N}  files created: ${made}  updated: ${updated}  already present: ${kept}  stale empty signal files removed: ${cleaned}`);
 if (made > 0 || updated > 0) console.log('Now fully quit and relaunch WoW so it sees the new files.');
