@@ -188,12 +188,60 @@ function Cli.ChatPlugin(c)
 	return ""
 end
 
-function Cli.ChatOptionTokens(c)
+function ClaudeWoW.FolderOf(rule)
+	if type(rule) ~= "string" then return nil end
+	return rule:match("^AddDir%((.+)%)$")
+end
+
+function ClaudeWoW.GrantLabel(rule)
+	local dir = ClaudeWoW.FolderOf(rule)
+	return dir and ("folder " .. dir) or tostring(rule)
+end
+
+function ClaudeWoW.GrantsLabel(rules)
+	local labels = {}
+	for i, rule in ipairs(rules or {}) do labels[i] = ClaudeWoW.GrantLabel(rule) end
+	return table.concat(labels, ", ")
+end
+
+function ClaudeWoW.SplitGrants(rules)
+	local commands, dirs = {}, {}
+	for _, rule in ipairs(rules or {}) do
+		local dir = ClaudeWoW.FolderOf(rule)
+		if dir then table.insert(dirs, dir) else table.insert(commands, rule) end
+	end
+	return commands, dirs
+end
+
+function Cli.ChatDirs(c, extra)
+	local dirs = {}
+	for _, list in ipairs({ type(c.addDirs) == "table" and c.addDirs or {}, type(extra) == "table" and extra or {} }) do
+		for _, dir in ipairs(list) do
+			if not Contains(dirs, dir) then table.insert(dirs, dir) end
+		end
+	end
+	return dirs
+end
+
+function Cli.AddChatDirs(c, dirs)
+	local left = {}
+	for _, dir in ipairs(dirs or {}) do
+		c.addDirs = c.addDirs or {}
+		if not Contains(c.addDirs, dir) then
+			if #c.addDirs < Cli.ADD_DIRS_MAX then table.insert(c.addDirs, dir) else table.insert(left, dir) end
+		end
+	end
+	if c.addDirs and #c.addDirs == 0 then c.addDirs = nil end
+	return left
+end
+
+function Cli.ChatOptionTokens(c, extraDirs)
 	local tokens = {}
 	if c.model and c.model ~= "" then table.insert(tokens, "model=" .. c.model) end
 	if c.effort and c.effort ~= "" then table.insert(tokens, "effort=" .. c.effort) end
 	if c.permissionMode and c.permissionMode ~= "" then table.insert(tokens, "pm=" .. c.permissionMode) end
-	if type(c.addDirs) == "table" and #c.addDirs > 0 then table.insert(tokens, "dirs=" .. ToHex(table.concat(c.addDirs, "\31"))) end
+	local dirs = Cli.ChatDirs(c, extraDirs)
+	if #dirs > 0 then table.insert(tokens, "dirs=" .. ToHex(table.concat(dirs, "\31"))) end
 	if c.resumeId and c.resumeId ~= "" then table.insert(tokens, "resume=" .. c.resumeId) end
 	if c.liveTarget and c.liveTarget ~= "" then table.insert(tokens, "live=" .. ToHex(c.liveTarget)) end
 	return tokens
@@ -1958,7 +2006,7 @@ function Whisper.Reply(chat, text, agent, role, denied)
 	end
 	if denied then
 		local howToAnswer = ClaudeWoW.LootRollEnabled() and "roll Need, Greed or Pass" or ("click " .. open .. " and press Allow")
-		WhisperWrite(frame, who .. " needs permission for " .. Display(table.concat(denied, ", ")) .. ": " .. howToAnswer, WhisperColor("SYSTEM", 1, 1, 0))
+		WhisperWrite(frame, who .. " needs permission for " .. Display(ClaudeWoW.GrantsLabel(denied)) .. ": " .. howToAnswer, WhisperColor("SYSTEM", 1, 1, 0))
 	end
 	if run.whisperProgress then run.whisperProgress[chat.id] = nil end
 	Whisper.Flash(frame)
@@ -2165,7 +2213,7 @@ function ClaudeWoW.Send(text, allow, opts)
 			allowHex = ToHex(table.concat(allow, US))
 		end
 	end
-	local optionTokens = Cli.ChatOptionTokens(c)
+	local optionTokens = Cli.ChatOptionTokens(c, opts and opts.onceDirs)
 	for _, t in ipairs(optionTokens) do table.insert(tokens, t) end
 	local flags = table.concat(tokens, ";")
 	local newSession = c.resetNext and true or nil
@@ -2320,8 +2368,13 @@ function ClaudeWoW.Allow(chatId, rules)
 	if not c or c.pendingId or not rules or #rules == 0 then return end
 	if db.activeChat ~= c.id then ClaudeWoW.SwitchChat(c.id) end
 	for _, m in ipairs(c.history) do m.denied = nil end
-	AddHistory(c, "system", "Allowed: " .. table.concat(rules, ", "))
-	ClaudeWoW.Send("Those actions are allowed now. Continue from where you left off.", rules)
+	local commands, dirs = ClaudeWoW.SplitGrants(rules)
+	local full = Cli.AddChatDirs(c, dirs)
+	local text = "Allowed: " .. ClaudeWoW.GrantsLabel(rules)
+	if #dirs > 0 then text = text .. ". Extra folders for this chat: " .. Cli.DirsLabel(c) end
+	if #full > 0 then text = text .. ". No room for " .. table.concat(full, ", ") .. " (at most " .. Cli.ADD_DIRS_MAX .. " folders), so it is added for this retry only" end
+	AddHistory(c, "system", text)
+	ClaudeWoW.Send("Those actions are allowed now. Continue from where you left off.", commands, { onceDirs = full })
 end
 
 function ClaudeWoW.AllowOnce(chatId, rules)
@@ -2329,15 +2382,16 @@ function ClaudeWoW.AllowOnce(chatId, rules)
 	if not c or c.pendingId or not rules or #rules == 0 then return end
 	if db.activeChat ~= c.id then ClaudeWoW.SwitchChat(c.id) end
 	for _, m in ipairs(c.history) do m.denied = nil end
-	AddHistory(c, "system", "Allowed for this retry only: " .. table.concat(rules, ", "))
-	ClaudeWoW.Send("Those actions are allowed for this run. Continue from where you left off.", rules, { allowForThisRunOnly = true })
+	local commands, dirs = ClaudeWoW.SplitGrants(rules)
+	AddHistory(c, "system", "Allowed for this retry only: " .. ClaudeWoW.GrantsLabel(rules))
+	ClaudeWoW.Send("Those actions are allowed for this run. Continue from where you left off.", commands, { allowForThisRunOnly = true, onceDirs = dirs })
 end
 
 function ClaudeWoW.PassOnDenial(chatId, rules, reason)
 	local c = FindChat(chatId)
 	if not c or not rules or #rules == 0 then return end
 	for _, m in ipairs(c.history) do m.denied = nil end
-	AddHistory(c, "system", "Passed on: " .. table.concat(rules, ", ") .. (reason and (" (" .. reason .. ")") or ""))
+	AddHistory(c, "system", "Passed on: " .. ClaudeWoW.GrantsLabel(rules) .. (reason and (" (" .. reason .. ")") or ""))
 	if c.plugin == LIVE_PLUGIN and not c.pendingId then
 		ClaudeWoW.Send(LIVE_PASS_TEXT, nil, { chat = c.id })
 		return
@@ -3075,7 +3129,7 @@ function ClaudeWoW.Render()
 				b.allow:Hide()
 				ClaudeWoWRoll.Offer(c.id)
 			elseif denied then
-				local label = "Allow " .. table.concat(denied, ", ") .. " & retry"
+				local label = "Allow " .. ClaudeWoW.GrantsLabel(denied) .. " & retry"
 				b.allow:SetText(label)
 				b.allow:SetWidth(math.min(width - 24, math.max(160, b.allow:GetFontString():GetStringWidth() + 30)))
 				b.allow.chatId = c.id

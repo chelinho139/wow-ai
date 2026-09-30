@@ -441,6 +441,126 @@ function ruleFor(d) {
   return name;
 }
 
+const FOLDER_RULE_RE = /^AddDir\(([\s\S]+)\)$/;
+const OUTSIDE_FOLDERS_RE = /working director/i;
+const QUOTED_PATH_RE = /\bin '([^']+)'/;
+const FILE_TOOL_PATH_KEYS = ['file_path', 'notebook_path', 'path'];
+
+function folderRule(dir) { return `AddDir(${dir})`; }
+
+function ruleFolder(rule) {
+  const m = FOLDER_RULE_RE.exec(String(rule || '').trim());
+  return m ? m[1] : '';
+}
+
+function splitGrants(rules) {
+  const out = { rules: [], dirs: [] };
+  for (const r of Array.isArray(rules) ? rules : []) {
+    if (!r) continue;
+    const dir = ruleFolder(r);
+    if (dir) out.dirs.push(dir); else out.rules.push(String(r));
+  }
+  return out;
+}
+
+function pathApi(...paths) {
+  return paths.some(isWindowsAbsolute) ? path.win32 : path;
+}
+
+function insideFolder(p, dir) {
+  if (!p || !dir) return false;
+  const api = pathApi(p, dir);
+  const fold = api === path.win32 ? s => s.toLowerCase() : s => s;
+  const rel = api.relative(fold(api.resolve(String(dir))), fold(api.resolve(String(p))));
+  return rel === '' || (!rel.startsWith('..') && !api.isAbsolute(rel));
+}
+
+function nearestFolder(p, isDir) {
+  const api = pathApi(p);
+  let dir = api.resolve(String(p));
+  if (typeof isDir !== 'function') return api.dirname(dir);
+  for (;;) {
+    if (isDir(dir)) return dir;
+    const up = api.dirname(dir);
+    if (up === dir) return dir;
+    dir = up;
+  }
+}
+
+function denialPath(d, message, cwd) {
+  const input = (d && d.tool_input) || {};
+  const quoted = QUOTED_PATH_RE.exec(String(message || ''));
+  let raw = quoted ? quoted[1] : '';
+  if (!raw && d && d.tool_name !== 'Bash') raw = FILE_TOOL_PATH_KEYS.map(k => input[k]).find(v => typeof v === 'string' && v) || '';
+  if (!raw) return '';
+  if (isWindowsAbsolute(raw) || path.isAbsolute(raw)) return raw;
+  return cwd ? resolveCwd(raw, cwd) : '';
+}
+
+function denialWhat(d) {
+  const input = (d && d.tool_input) || {};
+  const name = (d && d.tool_name) || 'Unknown';
+  const detail = input.command || input.file_path || input.notebook_path || input.path || '';
+  return name + (detail ? ': ' + String(detail).split('\n')[0].slice(0, 160) : '');
+}
+
+function firstSentence(text) {
+  const s = String(text || '').replace(/\s+/g, ' ').trim();
+  const m = /^[\s\S]*?[.!?](?=\s|$)/.exec(s);
+  return (m ? m[0] : s).slice(0, 200);
+}
+
+function classifyDenial(d, info = {}, opts = {}) {
+  const message = String(info.message || '');
+  const what = denialWhat(d);
+  const outside = info.reasonType === 'workingDir' || OUTSIDE_FOLDERS_RE.test(message);
+  if (outside) {
+    const p = denialPath(d, message, opts.cwd);
+    if (p) {
+      const folder = nearestFolder(p, opts.isDir);
+      return { kind: 'folder', rule: folderRule(folder), folder, path: p, what, message };
+    }
+  }
+  return { kind: 'rule', rule: ruleFor(d || {}), what, message };
+}
+
+function grantsFor(agentCfg, cwd) {
+  const rules = Array.isArray(agentCfg && agentCfg.allowedTools) ? agentCfg.allowedTools.filter(Boolean).map(String) : [];
+  const dirs = Array.isArray(agentCfg && agentCfg.addDirs) ? agentCfg.addDirs.filter(Boolean).map(String) : [];
+  return { rules, dirs: cwd ? [cwd, ...dirs] : dirs };
+}
+
+function deniedAgain(entry, granted) {
+  if (!entry || !granted) return false;
+  if (entry.kind === 'folder') {
+    const target = entry.path || entry.folder;
+    return (granted.dirs || []).some(dir => insideFolder(target, dir));
+  }
+  return (granted.rules || []).includes(entry.rule);
+}
+
+function denialNotes(agentName, fresh, again) {
+  const who = agentName || 'The agent';
+  const notes = [];
+  const rules = (fresh || []).filter(e => e.kind !== 'folder');
+  const folders = (fresh || []).filter(e => e.kind === 'folder');
+  if (rules.length) {
+    notes.push(`${who} needed ${rules.length} action(s) that aren't allowed yet:\n  ${rules.map(e => e.what).join('\n  ')}\nUse the Allow button below to permit them and let it continue.`);
+  }
+  if (folders.length) {
+    notes.push(`${who} was blocked outside this chat's folders:\n  ${folders.map(e => `${e.what} (folder ${e.folder})`).join('\n  ')}\nAn allowlist rule cannot open a folder. Allow it below to add the folder to this chat (like /claude --add-dir) and let it continue.`);
+  }
+  const seen = new Set();
+  for (const e of again || []) {
+    if (seen.has(e.rule)) continue;
+    seen.add(e.rule);
+    const why = firstSentence(e.message);
+    const granted = e.kind === 'folder' ? `${e.folder} is already one of this chat's folders` : `${e.rule} is already allowed`;
+    notes.push(`${who} was blocked again on ${e.what} although ${granted}, so allowing it again would not help${why ? ': ' + why : '.'}`);
+  }
+  return notes;
+}
+
 // One progress line per Claude tool call, as shown in the game's "working"
 // bubble (Codex and Grok have their own in agents.js).
 function describeToolUse(block) {
@@ -999,6 +1119,7 @@ module.exports = {
   resolveCwd, sameFolder, baseName,
   parseFlags, PERMISSION_MODES, permissionModeName, ADD_DIRS_MAX, jobsFromStrip, parseOutbox, withRunOnlyRules, systemPrompt, messagePrompt, visionHint, splitSummary,
   ruleFor, describeToolUse,
+  folderRule, ruleFolder, splitGrants, insideFolder, nearestFolder, denialPath, classifyDenial, grantsFor, deniedAgain, denialNotes,
   luaStr, luaTable, luaSession, SILENT_WAV, TRANSPORTS, DEFAULT_TRANSPORT, transportName, chooseTransport, FALLBACK_REASONS, transportFallback, transportNote, DEFAULT_LEVELS, screenshotLevels, STRIP_CODECS, DEFAULT_STRIP_CODEC, stripCodec, denseLevels,
   MAP_LIMITS, validateMapCommand, newMap, applyMapCommands, extractMapBlocks, parseMapFile, luaMap,
   MACRO_LIMITS, extractMacros, stripMacroBlocks, luaMacros,

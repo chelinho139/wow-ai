@@ -188,6 +188,77 @@ test('Claude stream: tool calls and text become progress, the result carries the
   assert.deepEqual(err.done, { text: 'boom', error: true });
 });
 
+const FIXTURE_CWD = '/Users/player/project';
+const fixtureDirs = new Set(['/', '/srv', '/tmp', '/usr', '/usr/share', '/usr/share/misc', '/Users', '/Users/player', FIXTURE_CWD]);
+const fixtureIsDir = p => fixtureDirs.has(p);
+
+function replayClaude(name, opts = {}) {
+  const p = A.claudeParser({ cwd: FIXTURE_CWD, isDir: fixtureIsDir, ...opts });
+  const lines = fs.readFileSync(path.join(__dirname, 'fixtures/agents', name), 'utf8').trim().split(/\r?\n/).map(l => JSON.parse(l));
+  const out = { denied: [], notes: [], deniedAgain: [] };
+  for (const ev of lines) {
+    const r = p.feed(ev);
+    out.denied.push(...r.denied);
+    out.notes.push(...r.notes);
+    if (r.deniedAgain) out.deniedAgain.push(...r.deniedAgain);
+    if (r.done) out.done = r.done;
+  }
+  return out;
+}
+
+test('Claude denials from real streams: a command without a rule is offered as a rule', () => {
+  const r = replayClaude('claude-denied-rule.jsonl');
+  assert.deepEqual(r.denied, ['Bash(curl:*)']);
+  assert.equal(r.notes.length, 1);
+  assert.match(r.notes[0], /^Claude needed 1 action\(s\) that aren't allowed yet:\n {2}Bash: curl -sI https:\/\/example\.com -o \/dev\/null\n/);
+});
+
+test('Claude denials from real streams: a path outside the working folders is offered as the folder, even when the rule is allowed', () => {
+  const r = replayClaude('claude-denied-outside.jsonl', { granted: { rules: ['Bash(touch:*)'], dirs: [FIXTURE_CWD] } });
+  assert.deepEqual(r.denied, ['AddDir(/tmp)']);
+  assert.equal(r.notes.length, 1);
+  assert.match(r.notes[0], /^Claude was blocked outside this chat's folders:\n {2}Bash: touch \/tmp\/cwow-s2\.txt \(folder \/tmp\)\n/);
+  assert.match(r.notes[0], /\/claude --add-dir/);
+});
+
+test('Claude denials from real streams: the "may only list files" wording and a Write outside the folders are folders too', () => {
+  assert.deepEqual(replayClaude('claude-denied-outside-list.jsonl').denied, ['AddDir(/usr/share/misc)']);
+  assert.deepEqual(replayClaude('claude-denied-outside-nested.jsonl').denied, ['AddDir(/tmp)'], 'the nearest folder that exists');
+  assert.deepEqual(replayClaude('claude-denied-write-outside.jsonl').denied, ['AddDir(/tmp)']);
+});
+
+test('Claude denials from real streams: a retry that is still denied for what it was granted is not offered again', () => {
+  const folder = replayClaude('claude-denied-outside.jsonl', { granted: { rules: ['Bash(touch:*)'], dirs: [FIXTURE_CWD, '/tmp'] } });
+  assert.deepEqual(folder.denied, []);
+  assert.deepEqual(folder.deniedAgain, ['AddDir(/tmp)']);
+  assert.equal(folder.notes.length, 1);
+  assert.equal(folder.notes[0], "Claude was blocked again on Bash: touch /tmp/cwow-s2.txt although /tmp is already one of this chat's folders, so allowing it again would not help: touch in '/tmp/cwow-s2.txt' needs approval.");
+  const rule = replayClaude('claude-denied-rule.jsonl', { granted: { rules: ['Bash(curl:*)'], dirs: [FIXTURE_CWD] } });
+  assert.deepEqual(rule.denied, []);
+  assert.deepEqual(rule.deniedAgain, ['Bash(curl:*)']);
+  assert.equal(rule.notes[0], 'Claude was blocked again on Bash: curl -sI https://example.com -o /dev/null although Bash(curl:*) is already allowed, so allowing it again would not help: This command requires approval');
+  const missing = replayClaude('claude-denied-adddir-missing.jsonl', { granted: { rules: ['Bash(mkdir:*)'], dirs: [FIXTURE_CWD, '/tmp/cwow-s10/a'] } });
+  assert.deepEqual(missing.denied, [], 'Claude Code drops an --add-dir that does not exist yet; the folder is not offered again');
+  assert.deepEqual(missing.deniedAgain, ['AddDir(/tmp)']);
+});
+
+test('Claude stream after --add-dir: the resumed retry runs, no denial', () => {
+  const r = replayClaude('claude-resume-adddir.jsonl', { granted: { rules: [], dirs: [FIXTURE_CWD, '/tmp'] } });
+  assert.deepEqual(r.denied, []);
+  assert.deepEqual(r.notes, []);
+  assert.deepEqual(r.done, { text: 'DONE', error: false });
+});
+
+test('Claude denials without a reason on record fall back to a rule, and a tool_result error stands in for the system event', () => {
+  const p = A.claudeParser({ cwd: FIXTURE_CWD, isDir: fixtureIsDir });
+  p.feed({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', is_error: true, content: [{ type: 'text', text: "cp in '/srv/x' needs approval. The path is outside the working directories for this session." }] }] } });
+  const r = p.feed({ type: 'result', result: 'x', permission_denials: [
+    { tool_name: 'Bash', tool_use_id: 't1', tool_input: { command: 'cp a /srv/x' } },
+    { tool_name: 'Bash', tool_use_id: 't2', tool_input: { command: 'rm -rf build' } },
+  ] });
+  assert.deepEqual(r.denied, ['AddDir(/srv)', 'Bash(rm:*)']);
+});
+
 test('Codex stream: thread id, one line per item, the last agent message is the reply, declined commands are noted', () => {
   const p = A.codexParser();
   const feed = ev => p.feed(ev);

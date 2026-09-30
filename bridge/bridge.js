@@ -365,6 +365,10 @@ function atomicWrite(file, content) {
   fs.renameSync(tmp, file);
 }
 
+function isDirectory(p) {
+  try { return fs.statSync(p).isDirectory(); } catch { return false; }
+}
+
 // Stop a run and whatever it spawned: an npm launcher runs the real binary as a
 // child of its own, an agent shells out to builds and test runs. procs.js: on
 // POSIX every child leads its own process group and the group gets SIGTERM,
@@ -949,7 +953,21 @@ function runAgent(job, opts = {}) {
   job.agent = agentId;
   const agent = A.AGENTS[agentId];
   const chosen = chatSettings(job);
-  const acfg = A.withChatSettings(P.withRunOnlyRules(A.agentConfig(cfg, agentId), job.allowOnce), agentId, chosen);
+  const grantForGood = P.splitGrants(job.allow);
+  const grantOnce = P.splitGrants(job.allowOnce);
+  if (grantForGood.rules.length) {
+    const added = allowRules(agentId, grantForGood.rules);
+    log(`${tag} allowed for ${agentId}: ${grantForGood.rules.join(', ')}${added.length ? '' : ' (already allowed)'}`);
+  }
+  if (grantOnce.rules.length) {
+    log(`${tag} allowed for this run only (${agentId}): ${grantOnce.rules.join(', ')}`);
+  }
+  const acfg = A.withChatSettings(P.withRunOnlyRules(A.agentConfig(cfg, agentId), grantOnce.rules), agentId, chosen);
+  const runDirs = [...grantForGood.dirs, ...grantOnce.dirs].map(d => P.resolveCwd(d, DEFAULT_CWD));
+  if (runDirs.length) {
+    acfg.addDirs = [...new Set([...A.addDirs(acfg), ...runDirs])];
+    log(`${tag} folders added for this run only (${agentId}): ${runDirs.join(', ')}`);
+  }
   const ignored = A.unsupportedSettings(agentId, chosen);
   const cmd = A.resolveCommand(agentId, acfg);
   if (!cmd.found) {
@@ -976,13 +994,6 @@ function runAgent(job, opts = {}) {
   if (prevPlugin !== plugin.id && state.sessions[skey]) {
     log(`${tag} plugin changed (${prevPlugin} -> ${plugin.id}): new session`);
     delete state.sessions[skey]; delete state.sessions[key];
-  }
-  if (Array.isArray(job.allow) && job.allow.length) {
-    const added = allowRules(agentId, job.allow);
-    log(`${tag} allowed for ${agentId}: ${job.allow.join(', ')}${added.length ? '' : ' (already allowed)'}`);
-  }
-  if (Array.isArray(job.allowOnce) && job.allowOnce.length) {
-    log(`${tag} allowed for this run only (${agentId}): ${job.allowOnce.join(', ')}`);
   }
   maybeOfferRestore(job);
   noteMessage(job, 'user', job.text);
@@ -1047,13 +1058,15 @@ function runAgent(job, opts = {}) {
   publish(key, { chat: job.chat, id: job.id, status: 'working', text: resume ? 'thinking...' : 'starting a new session...', cwd: job.cwd, session: resume, agent: agentId, plugin: plugin.id }, true);
   if (input.stdin !== undefined) { child.stdin.on('error', () => {}); child.stdin.end(input.stdin); }
 
-  const parser = agent.parser();
+  const granted = P.grantsFor(acfg, cwd);
+  const parser = agent.parser({ cwd, granted, isDir: isDirectory });
   job.activity = ACH.createRunLog(agentId);
   const progress = [];
   let sessionId = resume || '';
   let result = null;       // { text, error } once the agent has produced its reply
   let usage = null;        // the last { context, output, window? } the parser saw (agents.js)
   const denied = new Set(); // allowlist rules the run was refused (Claude syntax)
+  const deniedAgain = new Set();
   const notes = [];        // bridge remarks appended to the reply
   let stderr = '';
   let buffer = '';
@@ -1100,6 +1113,7 @@ function runAgent(job, opts = {}) {
     if (r.usage) usage = r.usage;
     for (const p of r.progress) pushProgress(p);
     for (const d of r.denied) denied.add(d);
+    if (Array.isArray(r.deniedAgain)) for (const d of r.deniedAgain) deniedAgain.add(d);
     notes.push(...r.notes);
     if (r.done) result = r.done;
   };
@@ -1170,6 +1184,13 @@ function runAgent(job, opts = {}) {
       if (result) result.text = widgeted.text;
       if (widgeted.note) notes.push(widgeted.note);
     }
+    for (const rule of [...denied]) {
+      if (!P.deniedAgain({ kind: 'rule', rule }, granted)) continue;
+      denied.delete(rule);
+      deniedAgain.add(rule);
+      notes.push(`${agent.name} was blocked again on ${rule} although it is already allowed, so allowing it again would not help.`);
+    }
+    if (deniedAgain.size) log(`${tag} blocked again on ${[...deniedAgain].join(', ')} although already allowed: not offered again`);
     const extra = notes.length ? `\n\n[bridge] ${notes.join('\n\n[bridge] ')}` : '';
     if (result && !result.error) {
       const body = String(result.text || '').trim() || (notes.length ? '' : `(${agent.name} finished without a reply)`);
