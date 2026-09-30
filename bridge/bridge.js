@@ -277,15 +277,11 @@ function noteMessage(job, role, text) {
   saveTranscripts();
 }
 
-// The newest RESTORE_HOT chats come back with their last RESTORE_MESSAGES
-// messages; older ones come back cold (listed, no messages) and the addon asks
-// for one ("w") when the player opens it.
 const RESTORE_HOT = 16;
 const RESTORE_MESSAGES = 40;
 const RESTORE_TEXT_MAX = 2000;
 
 function restoreEntry(c, cold) {
-  // A transcript from before plugins existed was a coding chat: it comes back bound to that.
   const entry = { id: c.id, name: c.name, cwd: c.cwd, plugin: c.plugin || 'claude-code', ...P.usageFields(state.sessionUsage && state.sessionUsage['chat:' + c.id]) };
   if (cold) return { ...entry, cold: true, messages: [] };
   return { ...entry, messages: c.messages.slice(-RESTORE_MESSAGES).map(m => ({ ...m, text: m.text.slice(0, RESTORE_TEXT_MAX) })) };

@@ -6,6 +6,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Fixed
 
+- No more 16-chat limit. At logout every chat past the 16 most recent keeps only its last 10 messages in saved data (cold); opening one fetches its last 40 messages from the bridge's transcript (a `w` record, answered by a one-chat restore marked `warm`). A fresh-install restore lists every chat, the 16 newest with messages. The fallback chat list pages 16 at a time.
 - Live sessions: a Claude Code session opened in this repo without the channel flag no longer shows up as live and swallows messages. The bridge reads the session's command line and marks it `listening` only with `--dangerously-load-development-channels server:claude-wow` (or `--channels` naming it); picking one that is not listening prints its exact `claude --resume <id> --dangerously-load-development-channels server:claude-wow` restart command and a `[resume headless]` link. A message that shows no sign of pickup in 45 s (`plugins.live.pickupMs`) fails with one line instead of "working..." forever, and a late reply still lands in the chat.
 - `/claude -r` is a short list of clickable rows instead of a wall of text: number, title (Claude Code title or first prompt), folder and git branch, age, and a `live` / `running, not listening` / `resume` badge. Live sessions first, no duplicates, 8 rows and a `[more]` link, `(this chat)` on the current one; links in the whisper tab, buttons in the workspace.
 

@@ -2717,9 +2717,6 @@ local function SendCancel(chat, id)
 	RefreshStrip()
 end
 
--- Cold chats keep only their last Q.COLD_KEEP messages in saved data; the
--- bridge's transcript has the rest. Opening one asks the bridge for it back
--- (flag "w"), and it answers with a one-chat restore addressed to our token.
 function Q.LastActive(c)
 	local last = c.history[#c.history]
 	return (last and last.t) or c.created or 0
