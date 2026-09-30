@@ -218,6 +218,7 @@ function parseFlags(flags) {
     else if (tok === 'h') out.hello = true;
     else if (tok === 'd') out.forget = true;
     else if (tok === 'c') out.context = true;
+    else if (tok === 't') out.title = true;
     else if (tok === 'v') out.vision = true; // attach the screenshot's game view to the run (screenshot transport only)
     else if (tok.startsWith('allow=')) out.allow.push(...tok.slice(6).split(',').map(s => s.trim()).filter(Boolean));
     else if (tok.startsWith('once=')) (out.allowOnce = out.allowOnce || []).push(...tok.slice(5).split(',').map(s => s.trim()).filter(Boolean));
@@ -752,6 +753,7 @@ function luaTable(globalName, records, opts = {}) {
     lines.push(`\t\t\tagent = ${luaStr(r.agent || '')},`);
     if (r.plugin) lines.push(`\t\t\tplugin = ${luaStr(r.plugin)},`);
     if (r.summary) lines.push(`\t\t\tsummary = ${luaStr(r.summary)},`);
+    if (r.title) lines.push(`\t\t\ttitle = ${luaStr(r.title)},`);
     // Context growth (noteUsage): only on a final record, and only what is known.
     if (Number(r.ctx) > 0) lines.push(`\t\t\tctx = ${Math.round(Number(r.ctx))},`);
     if (Number(r.turns) > 0) lines.push(`\t\t\tturns = ${Math.round(Number(r.turns))},`);

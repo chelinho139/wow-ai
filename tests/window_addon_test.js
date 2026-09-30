@@ -392,25 +392,25 @@ test('the window is built from Blizzard frame templates where the client has the
   assert.equal(vm.evaluate('ClaudeWoWMini.shown'), 'true');
 });
 
-test('the breadcrumb bar shows folder, agent and plugin, and its dropdowns change the chat', () => {
+test('the black bar shows the chat title across its whole width, with folder, agent and plugin in its tooltip', () => {
   const vm = nativeVM();
   vm.run('ClaudeWoW.SwitchChat(ClaudeWoWDB.chats[2].id)');
-  assert.equal(vm.evaluate('STUB.nav.home'), 'Claude');
-  assert.equal(vm.evaluate('STUB.nav.buttons[1].name'), 'wow-ai');
-  assert.equal(vm.evaluate('STUB.nav.buttons[2].name ~= nil'), 'true');
-  const resets = vm.num('STUB.nav.resets');
-  vm.run('ClaudeWoW.Render()');
-  assert.equal(vm.num('STUB.nav.resets'), resets, 'an unchanged chat does not rebuild the bar');
+  assert.equal(vm.evaluate('ClaudeWoW.UI.chatTitle:GetText()'), 'Fix the bridge');
+  assert.equal(vm.evaluate('ClaudeWoWFrame.TitleText:GetText()'), 'Claude WoW', 'the window title does not repeat the chat title');
+  assert.equal(vm.num('#STUB.nav.buttons'), 0, 'no folder, agent or plugin crumbs');
+  assert.equal(vm.evaluate('STUB.nav.home'), null);
 
-  vm.run('LIST = STUB.nav.buttons[1].listFunc()');
-  assert.equal(vm.evaluate('LIST[#LIST].text'), 'Other folder...');
-  vm.run('for _, e in ipairs(LIST) do if e.text == "every" then e.func() end end');
-  assert.equal(vm.evaluate('ClaudeWoWDB.chats[2].cwd'), '~/every-io/every', 'picking a folder from the crumb moves the chat');
-  assert.equal(vm.evaluate('STUB.nav.buttons[1].name'), 'every', 'and the crumb follows');
-  assert.equal(shownHeaders(vm), 'every');
+  vm.run('ClaudeWoWDB.chats[2].name = "Renamed"; ClaudeWoW.Render()');
+  assert.equal(vm.evaluate('ClaudeWoW.UI.chatTitle:GetText()'), 'Renamed', 'the bar follows a rename');
 
-  vm.run('LIST = STUB.nav.buttons[2].listFunc(); for _, e in ipairs(LIST) do if e.text == "Codex" then e.func() end end');
-  assert.equal(vm.evaluate('ClaudeWoWDB.chats[2].agent'), 'codex');
+  vm.run('LINES = {}; GameTooltip.AddDoubleLine = function(_, a, b) table.insert(LINES, a .. "=" .. b) end');
+  vm.run('ClaudeWoWTitleBar.scripts.OnEnter(ClaudeWoWTitleBar)');
+  assert.equal(vm.evaluate('table.concat(LINES, "|")'), 'Folder=wow-ai|Agent=AI|Plugin=default');
+
+  vm.run('CALLS = {}; ClaudeWoW.RenamePrompt = function(id) table.insert(CALLS, "rename:" .. id) end; ClaudeWoW.ShowChatMenu = function(id) table.insert(CALLS, "menu:" .. id) end');
+  vm.run('ClaudeWoWTitleBar.scripts.OnClick(ClaudeWoWTitleBar, "LeftButton"); ClaudeWoWTitleBar.scripts.OnClick(ClaudeWoWTitleBar, "RightButton")');
+  const id = vm.evaluate('ClaudeWoWDB.chats[2].id');
+  assert.equal(vm.evaluate('table.concat(CALLS, "|")'), `rename:${id}|menu:${id}`);
 });
 
 test('help lives in the gear menu, and Clear moves from the bottom bar into the chat menu', () => {

@@ -65,6 +65,7 @@ registry.register(require('./plugins/claude-code'));
 registry.register(require('./plugins/roast'));
 registry.register(require('./plugins/live'));
 const LP = require('./liveproto');
+const T = require('./titles');
 
 const HERE = __dirname;
 // Config, state, transcripts, log and scratch live in the home folder (home.js:
@@ -617,6 +618,7 @@ function publishNow(urgent = true, { refresh = false } = {}) {
 // Final results publish immediately; progress is throttled. `key` is the chat
 // (record.session is the agent's session id, a different thing).
 function publish(key, record, urgent) {
+  if (!record.title && titles.has(record.id)) record.title = titles.get(record.id);
   live.set(key, record);
   if (urgent) { if (publishTimer) { clearTimeout(publishTimer); publishTimer = null; } publishNow(); return; }
   const wait = (cfg.progressWriteMs || 3000) - (Date.now() - lastPublish);
@@ -1071,6 +1073,7 @@ function runAgent(job, opts = {}) {
   noteInflight(key, job, child, agent.name, path.basename(args.find(a => /\.[cm]?js$/.test(String(a))) || cmd.file));
   publish(key, { chat: job.chat, id: job.id, status: 'working', text: resume ? 'thinking...' : 'starting a new session...', cwd: job.cwd, session: resume, agent: agentId, plugin: plugin.id }, true);
   if (input.stdin !== undefined) { child.stdin.on('error', () => {}); child.stdin.end(input.stdin); }
+  if (job.title) nameChat(job, key);
 
   const granted = P.grantsFor(acfg, cwd);
   const parser = agent.parser({ cwd, granted, isDir: isDirectory });
@@ -1259,8 +1262,35 @@ function recoverInflight() {
   saveState();
 }
 
+const titles = new Map();
+const TITLES_KEPT = 60;
+
+const TITLE_WAIT_MS = 4000;
+
+function nameChat(job, key) {
+  const model = T.titleModel(cfg);
+  if (!model || !String(job.text || '').trim()) return;
+  const claude = A.resolveCommand('claude', A.agentConfig(cfg, 'claude'));
+  if (!claude.found) { log(`#${job.id} title: claude not found, the chat keeps its first words`); return; }
+  try { fs.mkdirSync(TMP_DIR, { recursive: true }); } catch {}
+  job.titlePending = T.generateTitle({ file: claude.file, args: claude.args, model, text: job.text, cwd: TMP_DIR, env: { ...process.env } }).then(title => {
+    if (!title) { log(`#${job.id} title: ${model} gave none`); return; }
+    titles.set(job.id, title);
+    while (titles.size > TITLES_KEPT) titles.delete(titles.keys().next().value);
+    log(`#${job.id} title (${model}): ${title}`);
+    const rec = live.get(key);
+    if (rec && rec.id === job.id) publish(key, { ...rec, title }, true);
+  });
+}
+
 function finish(job, status, text, session, denied) {
   if (job.finished) return; // spawn failures fire both 'error' and 'close'
+  if (job.titlePending && !job.titleWaited && !titles.has(job.id)) {
+    job.titleWaited = true;
+    const go = () => finish(job, status, text, session, denied);
+    Promise.race([job.titlePending, new Promise(r => setTimeout(r, TITLE_WAIT_MS))]).then(go, go);
+    return;
+  }
   job.finished = true;
   running.delete(chatKey(job));
   if (state.inflight) delete state.inflight[chatKey(job)];

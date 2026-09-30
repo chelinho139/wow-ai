@@ -262,6 +262,13 @@ function Cli.ChatOptionTokens(c, extraDirs)
 	return tokens
 end
 
+local function HasUserMessage(c)
+	for _, m in ipairs(c.history or {}) do
+		if m.role == "user" then return true end
+	end
+	return false
+end
+
 -- First few words of a message, as a chat title.
 local function AutoTitle(text)
 	local words = {}
@@ -1390,6 +1397,11 @@ local function ApplyReplies(replies)
 	local matched = false
 	for _, r in ipairs(replies or {}) do
 		local c = FindChat(r.chat)
+		if c and c.titleFor and r.id == c.titleFor and type(r.title) == "string" and r.title ~= "" then
+			c.name = r.title
+			c.titleFor = nil
+			Whisper.Retitle(c)
+		end
 		if c and c.pendingId and r.id == c.pendingId then
 			matched = true
 			MarkAcked(r.id)
@@ -2559,6 +2571,8 @@ function ClaudeWoW.Send(text, allow, opts)
 		end
 	end
 	local optionTokens = Cli.ChatOptionTokens(c, opts and opts.onceDirs)
+	local wantsTitle = c.name:match("^Chat %d+$") and not HasUserMessage(c)
+	if wantsTitle then table.insert(optionTokens, "t") end
 	for _, t in ipairs(optionTokens) do table.insert(tokens, t) end
 	local flags = table.concat(tokens, ";")
 	local newSession = c.resetNext and true or nil
@@ -2585,14 +2599,9 @@ function ClaudeWoW.Send(text, allow, opts)
 	c.draft = nil
 	c.progress = nil
 	AddHistory(c, "user", text, id)
-	-- A chat still carrying its default name takes its title from the first message
-	-- you send (system notes like "/claude-wow cd" before it don't count).
-	if c.name:match("^Chat %d+$") then
-		local first = true
-		for _, m in ipairs(c.history) do
-			if m.role == "user" and m.id ~= id then first = false break end
-		end
-		if first then c.name = AutoTitle(text) or c.name end
+	if wantsTitle then
+		c.name = AutoTitle(text) or c.name
+		c.titleFor = id
 	end
 	if not Whisper.Sent(c, text) then db.settings.shown = true end
 	if ClaudeWoWVoice then ClaudeWoWVoice.Event("sent") end
@@ -2694,6 +2703,7 @@ function ClaudeWoW.Resend()
 	if plugin ~= "" then table.insert(tokens, "plugin=" .. plugin) end
 	if db.settings.vision then table.insert(tokens, "v") end -- a resend is a fresh screenshot
 	for _, t in ipairs(Cli.ChatOptionTokens(c)) do table.insert(tokens, t) end
+	if c.titleFor == c.pendingId then table.insert(tokens, "t") end
 	run.outbound[c.pendingId] = { chat = c.id, cwd = c.cwd, flags = table.concat(tokens, ";"), name = c.name, text = text, sentAt = GetTime() }
 	NoteStaleSignals(c.pendingId)
 	run.sentAt = GetTime()
@@ -3088,6 +3098,7 @@ StaticPopupDialogs["CLAUDEWOW_RENAME"] = {
 		local name = box and Trim(box:GetText() or "") or ""
 		if chat and name ~= "" then
 			chat.name = name:sub(1, 24)
+			chat.titleFor = nil
 			Whisper.Retitle(chat)
 			ClaudeWoW.Render()
 		end
@@ -3378,14 +3389,16 @@ function ClaudeWoW.UpdateStatus()
 	ClaudeWoW.UpdateConnect()
 	if ui.title then
 		local t = c and Display(c.name) or "Claude WoW"
-		if not ui.nav then
+		if ui.chatTitle then
+			t = "Claude WoW"
+		else
 			local folder = FolderName(ChatFolder(c))
 			if folder ~= "" then t = t .. "  |cff888888" .. Display(folder) .. "|r" end
 			if c and c.agent and c.agent ~= "" then t = t .. "  |cff888888" .. AgentName(c.agent) .. "|r" end
 		end
 		ui.title:SetText(t)
 	end
-	if ui.nav then ClaudeWoW.RefreshNav() end
+	if ui.chatTitle then ClaudeWoW.RefreshTitleBar() end
 	local cwdText
 	if c and c.cwd ~= "" then
 		cwdText = Display(c.cwd)
@@ -4496,61 +4509,32 @@ function Q.ListSettingsMenu(anchor)
 	TogglePreviews()
 end
 
-function Q.NavChoices(items, chatId, apply)
-	local out = {}
-	for i, item in ipairs(items) do
-		table.insert(out, { text = item.text, id = i, func = function()
-			local c = FindChat(chatId)
-			if c then apply(item.value, c) end
-			ClaudeWoW.RefreshNav(true)
-		end })
-	end
-	return out
-end
-
-function Q.FolderChoices()
-	local items, seen = { { text = "Bridge default" .. (run.bridgeCwd and (" (" .. Display(FolderName(run.bridgeCwd)) .. ")") or ""), value = "-" } }, {}
-	for _, c in ipairs(db.chats) do
-		if c.cwd ~= "" and not seen[c.cwd] then
-			seen[c.cwd] = true
-			table.insert(items, { text = Display(FolderName(c.cwd)), value = c.cwd })
-		end
-	end
-	return items
-end
-
-function Q.IdChoices(ids, fallback, label)
-	local items = { { text = "Bridge default", value = "default" } }
-	for _, id in ipairs(ids or fallback) do table.insert(items, { text = label(id), value = id }) end
-	return items
-end
-
-function ClaudeWoW.RefreshNav(force)
-	local nav = ui.nav
-	if not nav then return end
-	local c = ActiveChat()
-	local chatId = c and c.id
-	local folder = Q.FolderKey(c)
+function Q.ChatDetails(c)
+	local folder = FolderName(ChatFolder(c))
 	local agent = AgentName((c and c.agent ~= "" and c.agent) or run.bridgeAgent)
 	local plugin = (c and (c.plugin or "") ~= "" and c.plugin) or run.bridgePlugin or "default"
-	local key = table.concat({ tostring(chatId), folder, agent, plugin }, "\1")
-	if key == ui.navKey and not force then return end
-	ui.navKey = key
-	local function Reopen() C_Timer.After(0, function() ClaudeWoW.RefreshNav(true) end) end
-	pcall(NavBar_Reset, nav)
-	pcall(NavBar_AddButton, nav, { name = Display(folder), id = 1,
-		OnClick = function() Reopen(); ClaudeWoW.FolderPrompt(chatId) end,
-		listFunc = function()
-			local out = Q.NavChoices(Q.FolderChoices(), chatId, ClaudeWoW.SetFolder)
-			table.insert(out, { text = "Other folder...", id = #out + 1, func = function() ClaudeWoW.FolderPrompt(chatId); Reopen() end })
-			return out
-		end })
-	pcall(NavBar_AddButton, nav, { name = agent, id = 2,
-		OnClick = function() Reopen(); ClaudeWoW.AgentPrompt(chatId) end,
-		listFunc = function() return Q.NavChoices(Q.IdChoices(run.bridgeAgents, { "claude", "codex", "grok" }, AgentName), chatId, ClaudeWoW.SetAgent) end })
-	pcall(NavBar_AddButton, nav, { name = Display(plugin), id = 3,
-		OnClick = function() Reopen(); ClaudeWoW.PluginPrompt(chatId) end,
-		listFunc = function() return Q.NavChoices(Q.IdChoices(run.bridgePlugins, { "ask", "claude-code" }, tostring), chatId, ClaudeWoW.SetPlugin) end })
+	return {
+		{ "Folder", folder ~= "" and Display(folder) or "none" },
+		{ "Agent", agent },
+		{ "Plugin", Display(plugin) },
+	}
+end
+
+function ClaudeWoW.RefreshTitleBar()
+	local label = ui.chatTitle
+	if not label then return end
+	local c = ActiveChat()
+	label:SetText(c and Display(c.name) or "Claude WoW")
+end
+
+function Q.TitleBarTooltip(bar)
+	local c = ActiveChat()
+	if not c then return end
+	GameTooltip:SetOwner(bar, "ANCHOR_BOTTOMLEFT", 0, 0)
+	GameTooltip:SetText(Display(c.name))
+	for _, row in ipairs(Q.ChatDetails(c)) do GameTooltip:AddDoubleLine(row[1], row[2], 1, 0.82, 0, 1, 1, 1) end
+	GameTooltip:AddLine("Click to rename. Right-click for chat options.", 0.6, 0.6, 0.6, true)
+	GameTooltip:Show()
 end
 
 function Q.BuildQuestFrames(f)
@@ -4656,22 +4640,30 @@ function Q.BuildQuestFrames(f)
 	ui.parchment = parchment
 	ui.transcriptPanel = parchment
 
-	if Q.TemplateExists("NavBarTemplate") and type(NavBar_Initialize) == "function" and type(NavBar_AddButton) == "function" and type(NavBar_Reset) == "function" then
-		local nav = CreateFrame("Frame", "ClaudeWoWNavBar", f, "NavBarTemplate")
-		nav:SetPoint("TOPLEFT", f, "TOPLEFT", 60, Q.NAV_TOP)
-		nav:SetPoint("RIGHT", list, "LEFT", -6, 0)
-		nav:SetHeight(Q.NAV_H)
-		if pcall(NavBar_Initialize, nav, "NavButtonTemplate", { name = "Claude", OnClick = function() ClaudeWoW.RefreshNav(true) end }, nav.home, nav.overflow) then
-			ui.nav = nav
-			local function Measure(self)
-				if type(NavBar_CheckLength) == "function" then pcall(NavBar_CheckLength, self) end
-			end
-			nav:HookScript("OnSizeChanged", Measure)
-			nav:HookScript("OnShow", Measure)
-		else
-			nav:Hide()
-		end
+	local bar = CreateFrame("Button", "ClaudeWoWTitleBar", f, Q.TemplateExists("NavBarTemplate") and "NavBarTemplate" or nil)
+	bar:SetPoint("TOPLEFT", f, "TOPLEFT", 60, Q.NAV_TOP)
+	bar:SetPoint("RIGHT", list, "LEFT", -6, 0)
+	bar:SetHeight(Q.NAV_H)
+	for _, key in ipairs({ "home", "overflow" }) do
+		if type(bar[key]) == "table" and bar[key].Hide then bar[key]:Hide() end
 	end
+	local label = bar:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+	label:SetPoint("LEFT", bar, "LEFT", 12, 0)
+	label:SetPoint("RIGHT", bar, "RIGHT", -12, 0)
+	label:SetJustifyH("LEFT")
+	label:SetWordWrap(false)
+	bar:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+	bar:SetScript("OnClick", function(self, button)
+		local c = ActiveChat()
+		if not c then return end
+		GameTooltip:Hide()
+		if button == "RightButton" then ClaudeWoW.ShowChatMenu(c.id, self) else ClaudeWoW.RenamePrompt(c.id) end
+	end)
+	bar:SetScript("OnEnter", Q.TitleBarTooltip)
+	bar:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	ui.titleBar = bar
+	ui.chatTitle = label
+	ClaudeWoW.RefreshTitleBar()
 end
 
 function Q.Panel(parent, native)
