@@ -500,6 +500,7 @@ test('the title flag and a generated title cross the protocol', () => {
   assert.equal(P.parseFlags('plugin=ask').title, undefined);
   assert.match(P.luaTable('X', [{ chat: 'c', id: 1, status: 'done', text: 'x', title: 'Hunter Pet "Pathing"' }]), /title = "Hunter Pet \\"Pathing\\"",/);
   assert.ok(!/title =/.test(P.luaTable('X', [{ chat: 'c', id: 1, status: 'done', text: 'x' }])));
+  assert.match(P.luaTable('X', [{ chat: 'c', id: 5, status: 'working', text: 'x', title: 'T', titleFor: 3 }]), /titleFor = 3,/);
 });
 
 test('titles: the model is configurable, and its answer is cut to one clean line', () => {
@@ -510,10 +511,10 @@ test('titles: the model is configurable, and its answer is cut to one clean line
   assert.equal(T.cleanTitle('"Hunter Pet Pathing."\nextra'), 'Hunter Pet Pathing');
   assert.equal(T.cleanTitle('Title: **Fishing Spots**'), 'Fishing Spots');
   assert.ok(T.cleanTitle('A very long title that keeps going well past the limit for sure').length <= T.TITLE_MAX);
-  const args = T.titleArgs('claude-haiku-4-5', 'hi');
+  const args = T.titleArgs('claude-haiku-4-5');
   assert.deepEqual(args.slice(0, 3), ['-p', '--model', 'claude-haiku-4-5']);
-  assert.equal(args[args.length - 1], 'hi');
   assert.ok(args.includes('--no-session-persistence'));
+  assert.equal(T.TITLE_MAX, 24, 'the addon caps chat names at 24 characters');
 });
 
 test('titles: generateTitle runs the command and cleans its output, and gives up on failure', async () => {
@@ -522,6 +523,10 @@ test('titles: generateTitle runs the command and cleans its output, and gives up
   assert.equal(ok, 'Pet Pathing');
   const bad = await T.generateTitle({ file: process.execPath, args: ['-e', 'process.exit(2)', '--'], model: 'm', text: 't' });
   assert.equal(bad, '');
+  const echo = 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(process.argv.includes("--version")?"leaked":"Got "+s))';
+  const viaStdin = await T.generateTitle({ file: process.execPath, args: ['-e', echo, '--'], model: 'm', text: '--version' });
+  assert.equal(viaStdin, 'Got --version', 'game text goes on stdin, never into the arguments');
+  assert.deepEqual(T.titleChildren(), [], 'a finished title run is not tracked');
 });
 
 test('a "w" record asks to warm a cold chat, and the restore bundle marks warm replies and cold chats', () => {

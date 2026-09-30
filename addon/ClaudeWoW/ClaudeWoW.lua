@@ -1398,7 +1398,7 @@ local function ApplyReplies(replies)
 	local matched = false
 	for _, r in ipairs(replies or {}) do
 		local c = FindChat(r.chat)
-		if c and c.titleFor and r.id == c.titleFor and type(r.title) == "string" and r.title ~= "" then
+		if c and c.titleFor and (tonumber(r.titleFor) or r.id) == c.titleFor and type(r.title) == "string" and r.title ~= "" then
 			c.name = r.title
 			c.titleFor = nil
 			Whisper.Retitle(c)

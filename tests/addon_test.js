@@ -171,7 +171,7 @@ test('the game context describes the character and rides on the hello, then only
   assert.equal(vm.evaluate('ClaudeWoW.IsConnected()'), 'true');
   vm.run('ClaudeWoW.Send("hello world")');
   let rec = stripRecords(vm).find(r => r.text === 'hello world');
-  assert.equal(rec.flags, 't', 'unchanged context is not repeated');
+  assert.equal(rec.flags, 't', 'unchanged context is not repeated; only the first-message title flag');
   assert.equal(rec.ctx, undefined);
   assert.equal(vm.evaluate('ClaudeWoWDB.outbox.ctx'), null);
   // Moving to another zone changes it, so the next message (from another chat,
@@ -1191,7 +1191,7 @@ test('vision: off by default; "vision on" flags every send and resend with v, "l
   };
   assert.equal(vm.evaluate('ClaudeWoWDB.settings.vision'), 'false', 'off by default');
   vm.run('ClaudeWoW.Send("plain")');
-  assert.equal(flagsOf('plain'), 't', 'no flag while off');
+  assert.equal(flagsOf('plain'), 't', 'no vision flag while off');
   reply('ok');
   // The footer says so, and so does diag.
   vm.run('STUB.texts = {}; ClaudeWoW.UpdateStatus()');
@@ -2640,11 +2640,29 @@ test('a new chat asks the bridge for a title with its first message and takes th
   vm.run('ClaudeWoW.Send("and in dungeons?")');
   assert.equal(stripRecords(vm).find(r => r.text === 'and in dungeons?').flags, '', 'only the first message asks for a title');
 
+  vm.run('ClaudeWoW.NewChat(); ClaudeWoW.Send("slow title")');
+  const late = vm.evaluate('ClaudeWoWDB.chats[#ClaudeWoWDB.chats].id');
+  const firstId = vm.num('ClaudeWoWDB.chats[#ClaudeWoWDB.chats].pendingId');
+  nextSlot(vm, `{ now = time(), cwd = "", replies = { { chat = "${late}", id = ${firstId}, status = "done", text = "ok", agent = "claude" } } }`);
+  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+  vm.run('ClaudeWoW.Send("next")');
+  const nextId = vm.num('ClaudeWoWDB.chats[#ClaudeWoWDB.chats].pendingId');
+  nextSlot(vm, `{ now = time(), cwd = "", replies = { { chat = "${late}", id = ${nextId}, status = "working", text = "...", agent = "claude", title = "Other Title", titleFor = ${nextId} } } }`);
+  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[#ClaudeWoWDB.chats].name'), 'Slow title', 'a title for another message does not rename the chat');
+  nextSlot(vm, `{ now = time(), cwd = "", replies = { { chat = "${late}", id = ${nextId}, status = "working", text = "...", agent = "claude", title = "Slow Title", titleFor = ${firstId} } } }`);
+  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[#ClaudeWoWDB.chats].name'), 'Slow Title', 'a title that missed its reply rides on the next one');
+
   vm.run('ClaudeWoW.NewChat(); ClaudeWoW.Send("best leveling zone")');
-  const second = vm.evaluate('ClaudeWoWDB.chats[2].id');
-  const id2 = vm.num('ClaudeWoWDB.chats[2].pendingId');
-  vm.run('ClaudeWoWDB.chats[2].name = "Mine"; ClaudeWoWDB.chats[2].titleFor = nil');
+  const second = vm.evaluate('ClaudeWoWDB.chats[#ClaudeWoWDB.chats].id');
+  const id2 = vm.num('ClaudeWoWDB.chats[#ClaudeWoWDB.chats].pendingId');
+  assert.equal(vm.num('ClaudeWoWDB.chats[#ClaudeWoWDB.chats].titleFor'), id2, 'the second chat asked for a title too');
+  vm.run(`ClaudeWoW.RenamePrompt("${second}")`);
+  vm.run(`
+    local dialog = { editBox = { GetText = function() return "Mine" end } }
+    StaticPopupDialogs.CLAUDEWOW_RENAME.OnAccept(dialog, STUB.popup.data)`);
   nextSlot(vm, `{ now = time(), cwd = "", replies = { { chat = "${second}", id = ${id2}, status = "done", text = "ok", agent = "claude", title = "Leveling Zones" } } }`);
   vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
-  assert.equal(vm.evaluate('ClaudeWoWDB.chats[2].name'), 'Mine', 'a name the player chose is kept');
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[#ClaudeWoWDB.chats].name'), 'Mine', 'a name the player chose is kept');
 });
