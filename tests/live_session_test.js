@@ -102,7 +102,7 @@ cfg.inboxFile = path.join(ADDONS, 'ClaudeWoW', 'Inbox.lua');
 cfg.savedVariablesFile = SAVED;
 cfg.defaultCwd = PROJ;
 cfg.capture = { ...cfg.capture, enabled: false, screenshotDir: path.join(S, 'wow', 'Screenshots') };
-cfg.plugins = { default: 'ask', ask: { cwd: path.join(S, 'scratch') }, roast: { cwd: path.join(S, 'roast') }, live: { waitMs: 1000 } };
+cfg.plugins = { default: 'ask', ask: { cwd: path.join(S, 'scratch') }, roast: { cwd: path.join(S, 'roast') }, live: { waitMs: 1000 }, stream: { ...require('../bridge/plugins/stream').INERT_OPTIONS } };
 cfg.slots = 5;
 cfg.pollMs = 300;
 for (const p of [cfg.addonDir, cfg.inboxFile, cfg.savedVariablesFile, cfg.defaultCwd, cfg.capture.screenshotDir]) {

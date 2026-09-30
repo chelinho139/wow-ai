@@ -94,3 +94,16 @@ test('the fake agent answers in stream-json, resumes its session, and reports cu
     fs.rmSync(state, { recursive: true, force: true });
   }
 });
+
+test('a sandbox never points the stream plugin at the real overlay service', () => {
+  const sb = SB.create('stream-inert', { root: ROOT, config: { plugins: { default: 'ask', stream: { url: 'http://127.0.0.1:4466' } } } });
+  try {
+    for (const cfg of [sb.cfg, SB.open('stream-inert', { root: ROOT }).cfg, SB.writeConfig(sb, { plugins: { stream: { url: 'http://127.0.0.1:4466/' } } })]) {
+      assert.equal(cfg.plugins.stream.enabled, false);
+      assert.doesNotMatch(String(cfg.plugins.stream.url), /:4466\b/);
+    }
+    assert.doesNotMatch(fs.readFileSync(sb.config, 'utf8'), /4466/);
+  } finally {
+    fs.rmSync(ROOT, { recursive: true, force: true });
+  }
+});

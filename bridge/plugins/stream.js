@@ -33,6 +33,14 @@ async function postControl(url, command, timeoutMs = TIMEOUT_MS) {
   return { ok, message, status: res.status };
 }
 
+function isEnabled(options) {
+  return !(options && options.enabled === false);
+}
+
+function disabledText() {
+  return 'Stream control is off on this bridge (plugins.stream.enabled is false).';
+}
+
 function notRunningText(url) {
   return `Stream service is not running (${url})`;
 }
@@ -52,11 +60,17 @@ const plugin = {
   match: job => !!job && job.kind === KIND,
   banner: options => `sends /stream scene, quest and pane commands to ${serviceUrl(options)}/control (plugins.stream.url)`,
   async handle(job, core) {
-    const url = serviceUrl(core.options('stream'));
+    const options = core.options('stream');
+    const url = serviceUrl(options);
     const command = parseCommand(job.text);
     if (!command) {
       core.log(`${core.tag(job)} stream: not a stream command`);
       core.reply(job, 'Stream: that was not a stream command.');
+      return;
+    }
+    if (!isEnabled(options)) {
+      core.log(`${core.tag(job)} stream: ${command.action} dropped, plugins.stream.enabled is false`);
+      core.reply(job, QUIET_ACTIONS.has(command.action) ? '' : disabledText());
       return;
     }
     let result;
@@ -79,3 +93,5 @@ module.exports.serviceUrl = serviceUrl;
 module.exports.parseCommand = parseCommand;
 module.exports.postControl = postControl;
 module.exports.notRunningText = notRunningText;
+module.exports.isEnabled = isEnabled;
+module.exports.INERT_OPTIONS = Object.freeze({ enabled: false, url: 'http://127.0.0.1:9' });

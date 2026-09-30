@@ -100,3 +100,18 @@ test('stream plugin: the default url, and text that is not a command is answered
   await stream.handle({ id: 11, kind: 'stream', text: 'not json' }, core);
   assert.deepEqual(calls, [{ reply: 'Stream: that was not a stream command.' }]);
 });
+
+test('stream plugin: enabled false sends nothing, answers commands with one line and tracks with an empty ack', async () => {
+  const svc = await controlServer(() => ({ ok: true, message: 'should not be reached' }));
+  try {
+    const { core, calls } = fakeCore({ enabled: false, url: svc.url });
+    await stream.handle({ id: 12, kind: 'stream', text: '{"action":"scene","scene":"Raid"}' }, core);
+    await stream.handle({ id: 13, kind: 'stream', text: '{"action":"track","quest":null,"chat":{"title":"Chat 1"}}' }, core);
+    assert.equal(svc.bodies.length, 0, 'no request reaches the service');
+    assert.deepEqual(calls, [{ reply: 'Stream control is off on this bridge (plugins.stream.enabled is false).' }, { reply: '' }]);
+    assert.equal(stream.isEnabled(stream.INERT_OPTIONS), false);
+    assert.doesNotMatch(stream.INERT_OPTIONS.url, /:4466\b/);
+  } finally {
+    svc.server.close();
+  }
+});

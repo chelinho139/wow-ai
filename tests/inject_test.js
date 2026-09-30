@@ -51,7 +51,7 @@ cfg.inboxFile = path.join(ADDONS, 'ClaudeWoW', 'Inbox.lua');
 cfg.savedVariablesFile = path.join(S, 'wow', 'WTF', 'nope.lua');
 cfg.defaultCwd = path.join(S, 'proj');
 cfg.capture = { ...cfg.capture, enabled: false, screenshotDir: path.join(S, 'wow', 'Screenshots') };
-cfg.plugins = { default: 'ask', ask: { cwd: path.join(S, 'scratch') }, roast: { cwd: path.join(S, 'roast') } };
+cfg.plugins = { default: 'ask', ask: { cwd: path.join(S, 'scratch') }, roast: { cwd: path.join(S, 'roast') }, stream: { ...require('../bridge/plugins/stream').INERT_OPTIONS } };
 cfg.slots = 5;
 const configPaths = [cfg.addonDir, cfg.inboxFile, cfg.savedVariablesFile, cfg.defaultCwd, cfg.capture.screenshotDir, cfg.plugins.ask.cwd, cfg.plugins.roast.cwd];
 for (const p of configPaths) {
