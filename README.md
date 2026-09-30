@@ -8,7 +8,7 @@ Chat with your local coding agents from inside **World of Warcraft: Forever**: [
 
 - Multiple chats, each its own persistent agent session (like separate terminals), running in parallel. Each chat picks its agent and its folder
 - Live progress while the agent works: action count, elapsed time, the files it's editing and commands it's running
-- Replies echoed into the game chat, or into the chat's own whisper tab
+- Replies echoed into the game chat, or into the chat's own whisper tab; `/r` replies to the chat that answered last
 - The agent knows your character, level, zone, talents, professions and quest log (optional), and you can shift-click items, spells and quests into a message
 - The agent can draw on your world map: numbered routes, quest stops and marks, with a navigator arrow that walks you from stop to stop
 - Herb and ore spawns on the world map, filtered by your gathering skill (`/claude config map ore`, `/claude config map herb`)
@@ -155,7 +155,8 @@ The client's own commands, with the same rule: a command word followed by someth
 | `/claude diag`, `/claude slots` | transport diagnostics |
 | `/claude hide`, `/claude mini` | hide the window, or collapse it to the small bar (the minimize button or Esc does the same; click the bar to expand) |
 | `/claude help` | the full list |
-| `/w <agent> <text>` | sends to that agent's chat when whisper tabs are on (`/r` stays the game's own reply to the last real whisper) |
+| `/r <text>` | replies to the chat that answered last, with the game's own `To Claude [chat]:` header; once a real player whispers you, `/r` answers them, until the next reply |
+| `/w <agent> <text>` | sends to that agent's chat when whisper tabs are on |
 
 Settings, with `/claude config <key> [value]`:
 

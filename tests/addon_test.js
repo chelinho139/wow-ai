@@ -1691,7 +1691,7 @@ test('/claude <text> at the chat limit says so and keeps the text in the window\
   assert.ok(!stripRecords(vm).find(r => r.text === 'one too many'), 'not sent anywhere');
 });
 
-test('opening chat, a chat type change, Esc and /r after an agent replied run the game\'s edit box with no addon hook on its methods', () => {
+test('opening chat, a chat type change, Esc and "/r " after an agent replied run the game\'s edit box with no addon hook on its methods', () => {
   const vm = whisperVM();
   const chatId = vm.evaluate('ClaudeWoWDB.chats[1].id');
   vm.run('SlashCmdList.CLAUDE("-c --agent claude")');
@@ -1705,17 +1705,161 @@ test('opening chat, a chat type change, Esc and /r after an agent replied run th
   typeIn(vm, 'ChatFrame1EditBox', '/s hello');
   assert.equal(vm.evaluate('STUB.chatSent[1].chatType .. ":" .. STUB.chatSent[1].text'), 'SAY:hello');
 
-  typeIn(vm, 'ChatFrame1EditBox', '/r thanks');
-  assert.equal(vm.num('STUB.serverSends'), 1, 'with no real whisper yet /r sends nothing');
-  assert.ok(!stripRecords(vm).find(r => r.text === 'thanks'), '/r is the game\'s: it does not go to the agent');
-
-  vm.run('STUB.lastTell = "Bob"');
-  vm.run('STUB.FireEvent("CHAT_MSG_WHISPER", "hey", "Bob")');
-  replyTo(vm, chatId, 'status = "done", text = "later answer", agent = "claude"');
-  typeIn(vm, 'ChatFrame1EditBox', '/r hi Bob');
-  assert.equal(vm.num('STUB.serverSends'), 2);
-  assert.equal(vm.evaluate('STUB.chatSent[2].target .. ":" .. STUB.chatSent[2].text'), 'Bob:hi Bob', 'an agent reply after the whisper does not take /r');
+  vm.run('ChatFrame1EditBox:SetText("/r "); ChatFrame1EditBox:ParseText(0)');
+  assert.equal(vm.evaluate('ChatFrame1EditBox:GetChatType()'), 'WHISPER');
+  vm.run('ChatFrame1EditBox:ClearChat()');
   assert.equal(vm.evaluate('table.concat(STUB.editBoxHooks, ", ")'), '');
+  assert.equal(replacedFunctions(vm), '');
+});
+
+const chatName = (vm, id) => vm.evaluate(`(function() for _, c in ipairs(ClaudeWoWDB.chats) do if c.id == "${id}" then return c.name end end end)()`);
+
+test('/r after an agent reply goes to that chat with the game\'s own "To <agent> [chat]:" header; a real whisper takes /r back; the next agent reply takes it again', () => {
+  const vm = whisperVM();
+  const chatId = vm.evaluate('ClaudeWoWDB.chats[1].id');
+  vm.run('SlashCmdList.CLAUDE("-c --agent claude")');
+  vm.run('ClaudeWoW.Send("question")');
+  replyTo(vm, chatId, 'status = "done", text = "answer", agent = "claude"');
+  const replyName = `Claude [${chatName(vm, chatId)}]`;
+  assert.equal(vm.evaluate('(ChatFrameUtil.GetLastTellTarget())'), replyName, 'the reply put the chat first in the game\'s own last-tell list');
+
+  vm.run('ChatFrame1EditBox:SetText("/r "); ChatFrame1EditBox:ParseText(0)');
+  assert.equal(vm.evaluate('ChatFrame1EditBoxHeader:GetText()'), `To ${replyName}: `, 'the game drew the header itself');
+  assert.equal(vm.evaluate('ChatFrame1EditBox:GetTellTarget()'), replyName);
+  vm.run('ChatFrame1EditBox:SetText("one more"); STUB.PressEnter(ChatFrame1EditBox)');
+  let rec = stripRecords(vm).find(r => r.text === 'one more');
+  assert.ok(rec, 'typed after "/r " it reached the agent');
+  assert.equal(rec.chat, chatId);
+  assert.equal(vm.num('STUB.serverSends'), 0, 'nothing went to the server');
+  replyTo(vm, chatId, 'status = "done", text = "sure", agent = "claude"');
+
+  typeIn(vm, 'ChatFrame1EditBox', '/r thanks');
+  assert.equal(stripRecords(vm).find(r => r.text === 'thanks').chat, chatId, '/r <text> in one line reached the agent');
+  assert.equal(vm.num('STUB.serverSends'), 0);
+  replyTo(vm, chatId, 'status = "done", text = "welcome", agent = "claude"');
+
+  vm.run('STUB.FireEvent("CHAT_MSG_WHISPER", "hey", "Bob")');
+  typeIn(vm, 'ChatFrame1EditBox', '/r hi Bob');
+  assert.equal(vm.num('STUB.serverSends'), 1, 'after a real whisper /r is the player\'s');
+  assert.equal(vm.evaluate('STUB.chatSent[1].target .. ":" .. STUB.chatSent[1].text'), 'Bob:hi Bob');
+  assert.ok(!stripRecords(vm).find(r => r.text === 'hi Bob'));
+
+  vm.run('ClaudeWoW.Send("another question")');
+  replyTo(vm, chatId, 'status = "done", text = "later answer", agent = "claude"');
+  typeIn(vm, 'ChatFrame1EditBox', '/r back to you');
+  assert.equal(stripRecords(vm).find(r => r.text === 'back to you').chat, chatId, 'the agent answered last, so /r is its again');
+  assert.equal(vm.num('STUB.serverSends'), 1);
+  assert.equal(vm.evaluate('table.concat(STUB.editBoxHooks, ", ")'), '');
+  assert.equal(replacedFunctions(vm), '');
+});
+
+test('/r with several chats on the same agent goes to the chat that replied last, not the active one', () => {
+  const vm = whisperVM();
+  const firstId = vm.evaluate('ClaudeWoWDB.chats[1].id');
+  vm.run('SlashCmdList.CLAUDE("-c --agent claude")');
+  vm.run('ClaudeWoW.Send("first question")');
+  typeIn(vm, 'ChatFrame1EditBox', '/claude second question');
+  const secondId = vm.evaluate('ClaudeWoWDB.chats[2].id');
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[2].agent'), 'claude');
+  assert.equal(vm.evaluate('ClaudeWoWDB.activeChat'), secondId);
+  assert.notEqual(chatName(vm, firstId), chatName(vm, secondId));
+
+  replyTo(vm, secondId, 'status = "done", text = "two", agent = "claude"');
+  replyTo(vm, firstId, 'status = "done", text = "one", agent = "claude"');
+  vm.run('ChatFrame1EditBox:SetText("/r "); ChatFrame1EditBox:ParseText(0)');
+  assert.equal(vm.evaluate('ChatFrame1EditBoxHeader:GetText()'), `To Claude [${chatName(vm, firstId)}]: `);
+  vm.run('ChatFrame1EditBox:ClearChat()');
+  typeIn(vm, 'ChatFrame1EditBox', '/r to the first');
+  assert.equal(stripRecords(vm).find(r => r.text === 'to the first').chat, firstId, 'the first chat replied last, though the second was active');
+
+  vm.run(`ClaudeWoW.SwitchChat("${secondId}")`);
+  vm.run('ClaudeWoW.Send("more for two")');
+  replyTo(vm, firstId, 'status = "done", text = "one again", agent = "claude"');
+  replyTo(vm, secondId, 'status = "done", text = "two again", agent = "claude"');
+  vm.run(`ClaudeWoW.SwitchChat("${firstId}")`);
+  typeIn(vm, 'ChatFrame1EditBox', '/r to the second');
+  assert.equal(stripRecords(vm).find(r => r.text === 'to the second').chat, secondId);
+  replyTo(vm, secondId, 'status = "done", text = "two once more", agent = "claude"');
+  typeIn(vm, 'ChatFrame1EditBox', '/w Claude plain whisper');
+  assert.equal(stripRecords(vm).find(r => r.text === 'plain whisper').chat, secondId, '/w <agent> keeps its own rule (the active chat)');
+  assert.equal(vm.num('STUB.serverSends'), 0);
+});
+
+test('/r to a chat renamed or deleted since its reply never reaches the server', () => {
+  const vm = whisperVM();
+  const firstId = vm.evaluate('ClaudeWoWDB.chats[1].id');
+  vm.run('SlashCmdList.CLAUDE("-c --agent claude")');
+  vm.run('ClaudeWoW.Send("question")');
+  replyTo(vm, firstId, 'status = "done", text = "answer", agent = "claude"');
+  vm.run('SlashCmdList.CLAUDE("rename Renamed")');
+  assert.equal(chatName(vm, firstId), 'Renamed');
+  typeIn(vm, 'ChatFrame1EditBox', '/r after the rename');
+  assert.equal(stripRecords(vm).find(r => r.text === 'after the rename').chat, firstId);
+  replyTo(vm, firstId, 'status = "done", text = "ok", agent = "claude"');
+
+  typeIn(vm, 'ChatFrame1EditBox', '/claude a second chat');
+  const secondId = vm.evaluate('ClaudeWoWDB.chats[2].id');
+  replyTo(vm, secondId, 'status = "done", text = "hello", agent = "claude"');
+  vm.run('SlashCmdList.CLAUDE("delete")');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 1);
+  typeIn(vm, 'ChatFrame1EditBox', '/r after the delete');
+  assert.ok(stripRecords(vm).find(r => r.text === 'after the delete'), 'taken by a chat that still exists');
+  assert.equal(vm.num('STUB.serverSends'), 0);
+});
+
+test('/r to an agent is swallowed before the send with whisper tabs off too, and a /r name that reaches the server is a LEAK', () => {
+  const vm = whisperVM();
+  const chatId = vm.evaluate('ClaudeWoWDB.chats[1].id');
+  vm.run('SlashCmdList.CLAUDE("-c --agent claude")');
+  vm.run('SlashCmdList.CLAUDE("config ui whisper off")');
+  vm.run('ClaudeWoW.Send("question")');
+  replyTo(vm, chatId, 'status = "done", text = "answer", agent = "claude"');
+  typeIn(vm, 'ChatFrame1EditBox', '/r tabs are off');
+  assert.equal(stripRecords(vm).find(r => r.text === 'tabs are off').chat, chatId);
+  assert.equal(vm.num('STUB.serverSends'), 0, 'the pre-send callback emptied the box');
+  assert.equal(vm.evaluate('ChatFrame1EditBox:GetText()'), '');
+
+  const name = `Claude [${chatName(vm, chatId)}]`;
+  const leak = vm.evaluate(`(function() local hide, msg = STUB.filters.CHAT_MSG_SYSTEM(nil, "CHAT_MSG_SYSTEM", "No player named '${name}' is currently playing.") return tostring(hide) .. "|" .. tostring(msg) end)()`);
+  assert.match(leak, /^false\|.*WHISPER LEAK: No player named 'Claude \[/, leak);
+  const other = vm.evaluate(`(function() local hide, msg = STUB.filters.CHAT_MSG_SYSTEM(nil, "CHAT_MSG_SYSTEM", "No player named 'Bob' is currently playing.") return tostring(hide) .. "|" .. tostring(msg) end)()`);
+  assert.equal(other, 'false|nil', 'a real name is the game\'s message');
+});
+
+test('taint: /r to an agent taints only the last-tell list; /cast and /gquit typed afterwards run untainted, and /r to a real player still sends through the game', () => {
+  const clean = whisperVM();
+  clean.run('STUB.FireEvent("CHAT_MSG_WHISPER", "hey", "Bob")');
+  typeIn(clean, 'ChatFrame1EditBox', '/r hi Bob');
+  assert.equal(clean.evaluate('STUB.chatSent[1].target .. ":" .. tostring(STUB.chatSent[1].tainted)'), 'Bob:false', 'control: with no agent reply the list is secure');
+
+  const vm = whisperVM();
+  const chatId = vm.evaluate('ClaudeWoWDB.chats[1].id');
+  vm.run('SlashCmdList.CLAUDE("-c --agent claude")');
+  vm.run('ClaudeWoW.Send("question")');
+  replyTo(vm, chatId, 'status = "done", text = "answer", agent = "claude"');
+  assert.equal(vm.evaluate('STUB.lastTellTaint[1]'), 'true', 'the addon\'s write taints the entry it wrote');
+  assert.equal(vm.evaluate('STUB.lastTellTaint[2]'), 'true', 'and every slot it shifted');
+
+  typeIn(vm, 'ChatFrame1EditBox', '/r thanks');
+  assert.equal(vm.evaluate('tostring(ChatFrame1EditBox.attrTaint.tellTarget)'), 'true', 'the /r line read the list, so the box it set up is tainted');
+
+  const tab = vm.evaluate(`(function() for _, name in ipairs(CHAT_FRAMES) do if _G[name].claudewowChatId == "${chatId}" then return name .. "EditBox" end end end)()`);
+  assert.ok(tab);
+  vm.run('STUB.FireEvent("CHAT_MSG_WHISPER", "hey", "Bob")');
+  assert.equal(vm.evaluate('STUB.lastTell[1] .. "|" .. STUB.lastTell[2]'), `Bob|Claude [${chatName(vm, chatId)}]`);
+  typeIn(vm, 'ChatFrame1EditBox', '/r hi Bob');
+  assert.equal(vm.num('STUB.serverSends'), 1);
+  assert.equal(vm.evaluate('STUB.chatSent[1].chatType .. ":" .. STUB.chatSent[1].target .. ":" .. STUB.chatSent[1].text'), 'WHISPER:Bob:hi Bob', 'the game sent it, the addon did not touch it');
+  assert.equal(vm.evaluate('tostring(STUB.chatSent[1].tainted)'), 'true', 'it ran tainted after reading the list, which SendChatMessage allows');
+
+  for (const box of ['ChatFrame1EditBox', tab]) {
+    vm.run('STUB.protectedCalls = {}');
+    typeIn(vm, box, '/cast Fireball');
+    typeIn(vm, box, '/gquit');
+    assert.equal(vm.num('#STUB.protectedCalls'), 2, box);
+    assert.equal(vm.evaluate('STUB.protectedCalls[1].name .. ":" .. tostring(STUB.protectedCalls[1].tainted)'), 'CastSpellByName:false', box);
+    assert.equal(vm.evaluate('STUB.protectedCalls[2].name .. ":" .. tostring(STUB.protectedCalls[2].tainted)'), 'GuildLeave:false', box);
+  }
   assert.equal(replacedFunctions(vm), '');
 });
 

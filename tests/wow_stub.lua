@@ -212,6 +212,7 @@ end
 -- Fire an event on every frame that registered for it.
 function STUB.FireEvent(ev, ...)
 	local unit = ...
+	if ev == "CHAT_MSG_WHISPER" and STUB.ReceiveWhisper then STUB.ReceiveWhisper(...) end
 	for _, f in ipairs(STUB.frames) do
 		local reg = f.events[ev]
 		local wanted = reg == true or (type(reg) == "table" and reg[unit])
@@ -380,6 +381,48 @@ function STUB.Tainted()
 	return STUB.tainted == true or STUB.AddonOnStack()
 end
 
+function STUB.ReadValue(tainted)
+	if tainted and STUB.tainted ~= nil then STUB.tainted = true end
+end
+
+function STUB.RunSecure(fn, ...)
+	local saved = STUB.tainted
+	STUB.tainted = false
+	local ok, err = pcall(fn, ...)
+	STUB.tainted = saved
+	if not ok then error(err, 0) end
+end
+
+STUB.lastTell, STUB.lastTellType, STUB.lastTellTaint = {}, {}, {}
+for i = 1, 10 do STUB.lastTell[i], STUB.lastTellType[i], STUB.lastTellTaint[i] = "", "", false end
+
+function ChatFrameUtil.GetLastTellTarget()
+	for i = 1, #STUB.lastTell do
+		STUB.ReadValue(STUB.lastTellTaint[i])
+		if STUB.lastTell[i] ~= "" then return STUB.lastTell[i], STUB.lastTellType[i] end
+	end
+	return nil
+end
+
+function ChatFrameUtil.SetLastTellTarget(target, chatType)
+	local found = #STUB.lastTell
+	for i = 1, #STUB.lastTell do
+		STUB.ReadValue(STUB.lastTellTaint[i])
+		if target:upper() == STUB.lastTell[i]:upper() and chatType:upper() == STUB.lastTellType[i]:upper() then
+			found = i
+			break
+		end
+	end
+	for i = found, 2, -1 do
+		STUB.lastTell[i], STUB.lastTellType[i], STUB.lastTellTaint[i] = STUB.lastTell[i - 1], STUB.lastTellType[i - 1], STUB.Tainted()
+	end
+	STUB.lastTell[1], STUB.lastTellType[1], STUB.lastTellTaint[1] = target, chatType, STUB.Tainted()
+end
+
+function STUB.ReceiveWhisper(text, sender)
+	STUB.RunSecure(ChatFrameUtil.SetLastTellTarget, sender, "WHISPER")
+end
+
 function STUB.Protected(name, arg)
 	table.insert(STUB.protectedCalls, { name = name, arg = arg, tainted = STUB.Tainted() })
 end
@@ -444,7 +487,15 @@ function M:SetStickyType(t) self:SetAttribute("stickyType", t) end
 function M:GetTellTarget() return self:GetAttribute("tellTarget") end
 function M:SetTellTarget(t) self:SetAttribute("tellTarget", t) end
 function M:AddHistoryLine(text) self.historyLines = self.historyLines or {}; table.insert(self.historyLines, text) end
-function M:UpdateHeader() self.headerUpdates = (self.headerUpdates or 0) + 1 end
+function M:UpdateHeader()
+	self.headerUpdates = (self.headerUpdates or 0) + 1
+	local chatType = self:GetChatType()
+	if chatType == "WHISPER" then
+		self.header:SetText(string.format(CHAT_WHISPER_SEND or "To %s: ", tostring(self:GetTellTarget())))
+	else
+		self.header:SetText(chatType)
+	end
+end
 function M:ClearChat()
 	self:SetChatType(self:GetStickyType())
 	self:SetText("")
@@ -463,9 +514,10 @@ function M:ProcessChatType(msg, index, send)
 			self:ClearChat()
 		end
 	elseif index == "REPLY" then
-		if STUB.lastTell then
-			self:SetChatType("WHISPER")
-			self:SetTellTarget(STUB.lastTell)
+		local lastTell, lastTellType = ChatFrameUtil.GetLastTellTarget()
+		if lastTell then
+			self:SetChatType(lastTellType)
+			self:SetTellTarget(lastTell)
 			self:SetText(msg)
 			self:UpdateHeader()
 		elseif send == 1 then
@@ -557,6 +609,9 @@ function STUB.ChatEditBox(name, frame, chatType, tellTarget)
 	STUB.chatEditBoxes[eb] = true
 	eb.chatFrame = frame
 	eb.attrs = { chatType = chatType or "SAY", stickyType = chatType or "SAY", tellTarget = tellTarget }
+	eb.attrTaint = {}
+	eb.SetAttribute = function(self, k, v) self.attrs[k] = v; self.attrTaint[k] = STUB.Tainted() end
+	eb.GetAttribute = function(self, k) STUB.ReadValue(self.attrTaint[k]); return self.attrs[k] end
 	eb.header = eb:CreateFontString(name .. "Header")
 	eb:CreateFontString(name .. "HeaderSuffix")
 	eb:SetScript("OnEnterPressed", EnterScript)
@@ -622,6 +677,7 @@ function STUB.ChatDock()
 	ChatTypeInfo = { WHISPER = { r = 1, g = 0.5, b = 1 }, WHISPER_INFORM = { r = 1, g = 0.5, b = 1 }, SYSTEM = { r = 1, g = 1, b = 0 } }
 	CHAT_WHISPER_GET = "%s whispers: "
 	CHAT_WHISPER_INFORM_GET = "To %s: "
+	CHAT_WHISPER_SEND = "To %s: "
 	STUB.flashed, STUB.tempWindows, STUB.filters = {}, 0, {}
 	function ChatFrame_AddMessageEventFilter(ev, fn) STUB.filters[ev] = fn end
 	function FCF_StartAlertFlash(f) table.insert(STUB.flashed, f:GetName()) end
