@@ -1068,6 +1068,7 @@ function runAgent(job, opts = {}) {
       fs.rmSync(mapFileFor(job), { force: true });
       env.CLAUDE_WOW_MAP_FILE = mapFileFor(job);
     } catch (e) { log(`${tag} map file unavailable: ${e.message}`); }
+    if (SAVED_VARS) env.CLAUDE_WOW_SAVED_VARIABLES = SAVED_VARS;
   }
   if (surfaces.has('ui')) {
     try {

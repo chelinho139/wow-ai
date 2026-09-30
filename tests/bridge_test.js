@@ -184,6 +184,8 @@ test('systemPrompt always asks for the TL;DR block, and adds the game rules and 
   assert.ok(s.includes('"TL;DR:"'));
   assert.ok(s.includes('CLAUDE_WOW_MAP_FILE') && s.includes('wowmap') && s.includes('"op":"set"'), 'explains how to mark the map');
   assert.ok(!P.systemPrompt('').includes('CLAUDE_WOW_MAP_FILE'), 'map hint only with the game context');
+  assert.ok(s.includes('CLAUDE_WOW_SAVED_VARIABLES') && s.includes('World of Warcraft: Forever'), 'a game chat is told where to find NPCs in this client, before the web');
+  assert.ok(!P.systemPrompt('').includes('CLAUDE_WOW_SAVED_VARIABLES'), 'and only a game chat');
   assert.ok(s.includes('in-game situation') && s.includes('Linked from the game'), 'says what the situation block and the links are');
   assert.ok(!s.includes('Testchar') && !s.includes('51.5'), 'the context\'s text is not in the system prompt: it changes with every step (messagePrompt carries it)');
   assert.ok(!s.includes('Reference for writing addons'), 'no primer section without a primer');

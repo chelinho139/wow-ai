@@ -10,6 +10,7 @@ import addonToc from '../addon/ClaudeWoW/ClaudeWoW.toc' with { type: 'file' };
 import addonCodec from '../addon/ClaudeWoW/Codec.lua' with { type: 'file' };
 import addonInbox from '../addon/ClaudeWoW/Inbox.lua' with { type: 'file' };
 import addonMap from '../addon/ClaudeWoW/Map.lua' with { type: 'file' };
+import addonSightings from '../addon/ClaudeWoW/Sightings.lua' with { type: 'file' };
 import addonRoast from '../addon/ClaudeWoW/Roast.lua' with { type: 'file' };
 import addonVoice from '../addon/ClaudeWoW/Voice.lua' with { type: 'file' };
 import addonLootRoll from '../addon/ClaudeWoW/LootRoll.lua' with { type: 'file' };
@@ -29,6 +30,7 @@ require('../bridge/assets').embed({
   'addon/ClaudeWoW/Codec.lua': addonCodec,
   'addon/ClaudeWoW/Inbox.lua': addonInbox,
   'addon/ClaudeWoW/Map.lua': addonMap,
+  'addon/ClaudeWoW/Sightings.lua': addonSightings,
   'addon/ClaudeWoW/Roast.lua': addonRoast,
   'addon/ClaudeWoW/Voice.lua': addonVoice,
   'addon/ClaudeWoW/LootRoll.lua': addonLootRoll,

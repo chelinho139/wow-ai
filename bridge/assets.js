@@ -30,6 +30,7 @@ const FILES = [
   'addon/ClaudeWoW/Codec.lua',
   'addon/ClaudeWoW/Inbox.lua',
   'addon/ClaudeWoW/Map.lua',
+  'addon/ClaudeWoW/Sightings.lua',
   'addon/ClaudeWoW/Roast.lua',
   'addon/ClaudeWoW/Voice.lua',
   'addon/ClaudeWoW/LootRoll.lua',
