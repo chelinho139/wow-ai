@@ -61,7 +61,7 @@ test('the workspace window steps aside when a Blizzard panel opens, and goes hom
   const vm = newVM();
   open(vm);
   const home = rect(vm);
-  assert.deepEqual(home, { left: 570, top: 790, right: 1350, bottom: 290 }, 'a new character starts centred at the default size');
+  assert.deepEqual(home, { left: 16, top: 964, right: 796, bottom: 464 }, 'it opens in the Blizzard left panel slot at the default size');
 
   vm.run('ShowUIPanel(CharacterFrame)');
   settle(vm);
@@ -78,9 +78,13 @@ test('the workspace window steps aside when a Blizzard panel opens, and goes hom
 
   vm.run('ToggleAllBags()');
   settle(vm);
+  assert.deepEqual(rect(vm), home, 'bags on the right leave the left slot alone');
+  vm.run('UIParent:SetAttribute("LEFT_OFFSET", 1100)');
+  vm.run('ClaudeWoWWindow.Relayout()');
   r = rect(vm);
-  assert.equal(r.right, 1200 - 8, 'bags on the right push it left');
+  assert.equal(r.right, 1200 - 8, 'a home the bags cover moves left of them');
   assert.ok(!overlaps(r, panelRect(vm, 'ContainerFrameCombinedBags')));
+  vm.run('UIParent:SetAttribute("LEFT_OFFSET", nil); ClaudeWoWWindow.Relayout()');
   vm.run('ToggleAllBags()');
   settle(vm);
   assert.deepEqual(rect(vm), home);
@@ -216,23 +220,28 @@ test('in combat the window still steps aside and dims, touches no protected fram
   assert.ok(vm.evaluate('table.concat(STUB.prints, "\\n")').includes("macros can't be changed in combat"));
 });
 
-test('size and place are remembered per character, snap to the screen edges and respect the UI scale', () => {
+test('the window cannot be dragged, the compact bar can, and the size is remembered per character and respects the UI scale', () => {
   const vm = newVM();
   open(vm);
-  vm.run('ClaudeWoWFrame:ClearAllPoints(); ClaudeWoWFrame:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", 9, 1071)');
-  vm.run('ClaudeWoWFrame.scripts.OnDragStop(ClaudeWoWFrame)');
-  assert.deepEqual(rect(vm), { left: 0, top: 1080, right: 780, bottom: 580 }, 'dropped within 16 px of the corner: snapped to it');
-  assert.equal(vm.evaluate('ClaudeWoWDB.layouts["Testchar-Test Realm"].left'), '0');
+  const home = rect(vm);
+  assert.equal(vm.evaluate('ClaudeWoWFrame.scripts.OnDragStart'), null, 'no drag on the window');
+  assert.equal(vm.evaluate('ClaudeWoWFrame.scripts.OnDragStop'), null);
+  assert.notEqual(vm.evaluate('ClaudeWoWMini.scripts.OnDragStart'), null, 'the compact bar still drags');
+
   vm.run('ClaudeWoWFrame:SetSize(900, 600); for _, c in ipairs(ClaudeWoWFrame.children) do if c.scripts.OnMouseUp and c.kind == "Button" and not c.name then c.scripts.OnMouseUp(c) end end');
   assert.equal(vm.num('ClaudeWoWDB.layouts["Testchar-Test Realm"].w'), 900, 'the resize grip saves the size');
+  settle(vm);
+  assert.deepEqual(rect(vm), { left: home.left, top: home.top, right: home.left + 900, bottom: home.top - 600 }, 'resizing keeps the top-left corner in the slot');
 
   vm.run('local real = UnitName; UnitName = function() return "Alt" end; ALT = ClaudeWoWWindow.Layout(); UnitName = real');
-  assert.equal(vm.num('ALT.left'), (1920 - 900) / 2, 'another character gets a place of its own, centred at the account\'s last size');
-  assert.equal(vm.num('ClaudeWoWWindow.Layout().left'), 0, 'this one keeps its own');
+  assert.equal(vm.num('ALT.w'), 900, 'another character starts at the account\'s last size');
 
+  vm.run('ClaudeWoWFrame:SetSize(780, 500); for _, c in ipairs(ClaudeWoWFrame.children) do if c.scripts.OnMouseUp and c.kind == "Button" and not c.name then c.scripts.OnMouseUp(c) end end');
+  settle(vm);
   vm.run('CharacterFrame:SetScale(0.5); ShowUIPanel(CharacterFrame)');
   settle(vm);
-  assert.equal(rect(vm).left, 8 + 358, 'a scaled panel is measured in UIParent units');
+  assert.ok(!overlaps(rect(vm), { left: 8, right: 358, top: 500, bottom: 200 }), 'a scaled panel is measured in UIParent units');
+  assert.equal(vm.evaluate('ClaudeWoWWindow.state.dodged'), 'true');
   vm.run('HideUIPanel(CharacterFrame); CharacterFrame:SetScale(1)');
   settle(vm);
 
@@ -241,14 +250,15 @@ test('size and place are remembered per character, snap to the screen edges and 
   const r = rect(vm);
   assert.ok(r.left >= 0 && r.right <= 1280 && r.bottom >= 0 && r.top <= 720, 'kept on a smaller screen: ' + JSON.stringify(r));
 
+  vm.run('ClaudeWoWDB.layouts["Testchar-Test Realm"].w = 1000');
   vm.run('SlashCmdList.CLAUDE("config ui reset")');
   assert.equal(vm.evaluate('ClaudeWoWDB.layouts["Testchar-Test Realm"].w'), '780', 'reset goes back to the default size');
 });
 
-test('an install from before per-character layouts starts where its saved window was', () => {
+test('an install with a dragged window from before opens in the panel slot at its saved size', () => {
   const vm = newVM({ saved: 'ClaudeWoWDB = { settings = { point = "TOPLEFT", relPoint = "TOPLEFT", x = 40, y = -60, width = 700, height = 400, whisperV2 = true, whisper = true } }' });
   open(vm);
-  assert.deepEqual(rect(vm), { left: 40, top: 1020, right: 740, bottom: 620 });
+  assert.deepEqual(rect(vm), { left: 16, top: 964, right: 716, bottom: 564 });
 });
 
 test('the window replaces nothing of Blizzard\'s: panel hooks are secure post-hooks and no Blizzard frame script is touched', () => {

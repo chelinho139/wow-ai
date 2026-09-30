@@ -3910,24 +3910,12 @@ local function BuildUI()
 	local f = CreateFrame("Frame", "ClaudeWoWFrame", UIParent, "BackdropTemplate")
 	ui.frame = f
 	f:SetSize(s.width, s.height)
-	if s.point then
-		f:SetPoint(s.point, UIParent, s.relPoint or s.point, s.x or 0, s.y or 0)
-	else
-		f:SetPoint("CENTER")
-	end
+	f:SetPoint("CENTER")
 	f:SetFrameStrata("DIALOG")
-	f:SetMovable(true)
 	f:SetResizable(true)
 	f:SetClampedToScreen(true)
 	f:SetResizeBounds(560, 300)
 	f:EnableMouse(true)
-	f:RegisterForDrag("LeftButton")
-	f:SetScript("OnDragStart", f.StartMoving)
-	f:SetScript("OnDragStop", function(self)
-		self:StopMovingOrSizing()
-		local point, _, relPoint, x, y = self:GetPoint()
-		s.point, s.relPoint, s.x, s.y = point, relPoint, x, y
-	end)
 	f:SetBackdrop(BACKDROP)
 	f:SetBackdropColor(0.05, 0.05, 0.07, 0.95)
 	f:SetBackdropBorderColor(0.6, 0.6, 0.6, 1)
@@ -4785,7 +4773,7 @@ function Cli.Ui(c, rest)
 		Cli.SetWhisper(c, arg)
 	elseif word == "dodge" then
 		if arg == "on" then s.dodge = true elseif arg == "off" then s.dodge = false end
-		Cli.Out(c, "Dodge is " .. (s.dodge and "on: the window moves aside when bags, the character sheet, the spellbook, a vendor or another panel opens, and goes back when it closes." or "off: the window stays where you put it."))
+		Cli.Out(c, "Dodge is " .. (s.dodge and "on: the window moves aside when bags, the character sheet, the spellbook, a vendor or another panel opens, and goes back when it closes." or "off: the window stays in the left panel slot."))
 	elseif word == "autohide" then
 		if arg == "on" then s.autohide = true elseif arg == "off" then s.autohide = false end
 		Cli.Out(c, "Auto-hide is " .. (s.autohide and "on: the window steps away while the maximized world map, the game menu or the settings are open, and comes back after." or "off: the window stays up over full-screen panels."))
@@ -4795,7 +4783,7 @@ function Cli.Ui(c, rest)
 		Cli.Out(c, dim < 1 and ("The window dims to " .. Cli.Percent(dim) .. " while you move or fight, and comes back when you stop or point at it.") or "Dimming is off: the window stays fully opaque.")
 	elseif word == "reset" then
 		if ClaudeWoWWindow then ClaudeWoWWindow.Reset() end
-		Cli.Out(c, "The window's size and place are back to the defaults for this character.")
+		Cli.Out(c, "The window's size is back to the default for this character.")
 	elseif word == "" then
 		Cli.Out(c, "Window and tabs: " .. Cli.UiStatus() .. ".\n/claude config ui whisper on|off, dim <10-100>|off, dodge on|off, autohide on|off, reset.\nLive widgets: /claude config ui list, remove <name>, run <name>.")
 		if ClaudeWoWWidgets then ClaudeWoWWidgets.Command("") end
