@@ -181,9 +181,8 @@ function signalFile(sb, kind, slot) {
   return path.join(sb.addons, 'ClaudeWoW', kind, String(slot).padStart(3, '0') + '.wav');
 }
 
-function seedStaleSignals(sb, kinds, slots) {
-  const { SILENT_WAV } = require(path.join(REPO, 'bridge', 'protocol.js'));
-  for (const kind of kinds) for (const s of slots) fs.writeFileSync(assertSafe(signalFile(sb, kind, s)), SILENT_WAV);
+function spendSignals(sb, kinds, slots) {
+  for (const kind of kinds) for (const s of slots) fs.rmSync(assertSafe(signalFile(sb, kind, s)), { force: true });
 }
 
-module.exports = { REPO, DEFAULT_ROOT, ACCOUNT, CLIENT_INTERFACE, assertSafe, sandboxDir, liveCheckouts, isWithin, forbiddenRoots, layout, buildConfig, create, open, writeConfig, envFor, signalFile, seedStaleSignals };
+module.exports = { REPO, DEFAULT_ROOT, ACCOUNT, CLIENT_INTERFACE, assertSafe, sandboxDir, liveCheckouts, isWithin, forbiddenRoots, layout, buildConfig, create, open, writeConfig, envFor, signalFile, spendSignals };

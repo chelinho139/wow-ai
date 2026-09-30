@@ -99,9 +99,9 @@ These sizes are baked into the files `install-slots.js` creates, and the addon h
 | Key | Default | Meaning |
 |---|---|---|
 | `slots` | `200` | Reply-slot addons `ClaudeWoW_S001` … `ClaudeWoW_S200`. Each slot can be loaded once per UI session; `/reload` frees them all. |
-| `actMax` | `60` | Heartbeat files per message (`act/NNN/01..60.wav`). One flips per agent action. |
-| `presenceMax` | `2000` | Presence files (`presence/0001..2000.wav`). One flips per `presenceIntervalMs`. |
-| `presenceIntervalMs` | `30000` | How often the bridge flips a presence file so the in-game light stays green. |
+| `actMax` | `60` | Heartbeat files per message (`act/NNN/01..60.wav`). The bridge deletes one per agent action. |
+| `presenceMax` | `2000` | Presence files per ring (`presence/a/0001..2000.wav` and `presence/b/...`). The bridge deletes one per `presenceIntervalMs`. |
+| `presenceIntervalMs` | `30000` | How often the bridge deletes a presence file so the in-game light stays green. |
 | `tocInterface` | `"16001"` | `## Interface:` version written into every slot addon's `.toc`. Bump it when the client's TOC version changes. |
 
 ## Command line
@@ -167,7 +167,7 @@ The bridge's banner prints the folder it chose (`home :`). The one-line installe
 | File | Contents |
 |---|---|
 | `~/.claude-wow/config.json` | Your configuration. |
-| `~/.claude-wow/state.json` | Agent session ids per chat, the folder and the agent each session ran with, each session's context growth (`sessionUsage`: the tokens the next message carries, turns, the model's window, when it started, its runs at API list prices), handled message ids per addon session token, the presence counter, and the latest game context the addon sent (`context`). Delete it to forget all sessions. |
+| `~/.claude-wow/state.json` | Agent session ids per chat, the folder and the agent each session ran with, each session's context growth (`sessionUsage`: the tokens the next message carries, turns, the model's window, when it started, its runs at API list prices), handled message ids per addon session token, the presence ring and position (`presence`), the last signal self-test result the addon reported (`presenceTest`), and the latest game context the addon sent (`context`). Delete it to forget all sessions. |
 | `~/.claude-wow/transcripts.json` | The last 200 messages of every chat, with the agent that wrote each reply, so the addon can recover its chats after the client wipes saved data. |
 | `~/.claude-wow/uijobs/` | One widget command file per running job (`CLAUDE_WOW_UI_FILE`), read and deleted when the job ends. The widgets themselves live in `state.json` (`widgets`). |
 | `~/.claude-wow/mapjobs/` | One map command file per running job (`CLAUDE_WOW_MAP_FILE`), read and deleted when the job ends. Map layers themselves live in `state.json` (`map`). |

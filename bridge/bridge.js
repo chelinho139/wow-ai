@@ -52,6 +52,7 @@ const AS = require('./assets');  // the capture scripts and the primer, by path,
 const ACH = require('./achievements');
 const SS = require('./sessions');
 const G = require('./gamefs');
+const SIG = require('./signals');
 
 // The plugins this bridge has (docs/PLATFORM.md). Registration order is the
 // order match() is asked in, and the first one is the default unless
@@ -354,7 +355,7 @@ function log(...parts) {
   try { fs.appendFileSync(LOG_FILE, line + '\n'); } catch {}
 }
 
-const { pad3, chatKey, sessKey, SILENT_WAV, jobsFromStrip } = P;
+const { pad3, chatKey, sessKey, jobsFromStrip } = P;
 const slotNumber = id => P.slotNumber(id, SLOTS);
 const alreadyHandled = job => P.alreadyHandled(state, job);
 const markHandled = job => P.markHandled(state, job);
@@ -489,7 +490,7 @@ function slotFile(globalName, records, urgent = true) {
   const achievementsLua = ACHIEVEMENTS_ON ? ACH.luaAchievements(state) : '';
   const lp = livePlugin();
   const liveInfo = lp ? { sessions: lp.status(), start: liveStartCommand() } : null;
-  return P.luaTable(globalName, records, { live: liveInfo, sessions: sessionList(), cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), plugin: DEFAULT_PLUGIN, plugins: registry.ids(), map, widgets, transport: TRANSPORT, levels: LEVELS, codec: STRIP_CODEC, transportNote, achievementsLua });
+  return P.luaTable(globalName, records, { live: liveInfo, sessions: sessionList(), cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), plugin: DEFAULT_PLUGIN, plugins: registry.ids(), map, widgets, transport: TRANSPORT, levels: LEVELS, codec: STRIP_CODEC, transportNote, achievementsLua, presence: presenceInfo() });
 }
 
 function recentClaudeSessions() {
@@ -587,7 +588,7 @@ function slotsInstalled() {
 // take the bridge down: capture and agent runs keep working, and the game just
 // won't see replies until `node setup.js` has run and WoW was restarted.
 let warnedNoAddon = false;
-function publishNow(urgent = true) {
+function publishNow(urgent = true, { refresh = false } = {}) {
   lastPublish = Date.now();
   const records = [...live.values()].slice(-30);
   try {
@@ -606,7 +607,7 @@ function publishNow(urgent = true) {
   }
   // The restore bundle is large; it rides along once and is then dropped.
   // (The game keeps loading fresh slots until it has read one carrying it.)
-  if (pendingRestore) { pendingRestore.published = (pendingRestore.published || 0) + 1; if (pendingRestore.published >= 3) pendingRestore = null; }
+  if (pendingRestore && !refresh) { pendingRestore.published = (pendingRestore.published || 0) + 1; if (pendingRestore.published >= 3) pendingRestore = null; }
 }
 
 // Final results publish immediately; progress is throttled. `key` is the chat
@@ -619,19 +620,13 @@ function publish(key, record, urgent) {
   else if (!publishTimer) publishTimer = setTimeout(() => { publishTimer = null; publishNow(false); }, wait);
 }
 
-// "On" is a valid .wav, "off" is NO FILE. An empty file used to mean off, but
-// this client reports a 0-byte file as playable (verified in game: missing ->
-// willPlay=nil, empty/garbage/truncated/valid -> true), so presence/absence is
-// the only discriminator that actually works. It holds on every platform.
 function setSignalFile(file, on) {
-  try {
-    if (on) G.atomicWrite(file, SILENT_WAV);
-    else fs.rmSync(file, { force: true });
-  } catch {}
+  if (on) SIG.fire(file);
+  else SIG.arm(file);
 }
 
 function signal(kind, id, on) {
-  setSignalFile(path.join(cfg.addonDir, 'ClaudeWoW', kind, pad3(slotNumber(id)) + '.wav'), on);
+  setSignalFile(SIG.signalFile(cfg.addonDir, kind, slotNumber(id)), on);
 }
 
 function pendingIds() {
@@ -642,17 +637,12 @@ function pendingIds() {
 
 function clearSignalsAhead(id) {
   if (!Number.isFinite(id)) return;
-  for (const slot of P.slotsToClearAhead(id, SLOTS, pendingIds())) {
-    for (const kind of ['ack', 'sig']) setSignalFile(path.join(cfg.addonDir, 'ClaudeWoW', kind, pad3(slot) + '.wav'), false);
-  }
+  for (const slot of P.slotsToClearAhead(id, SLOTS, pendingIds())) SIG.armSlot(cfg.addonDir, slot, ACT_MAX);
 }
 
-// Heartbeat: act/NNN/kk.wav flips valid for the k-th action of message NNN. The
-// game polls the next one for free, so it can show "12 actions, last one 5 s ago"
-// without spending a reply slot.
-const ACT_MAX = cfg.actMax || 60;
+const ACT_MAX = cfg.actMax || SIG.DEFAULT_ACT_MAX;
 function actFile(id, k) {
-  return path.join(cfg.addonDir, 'ClaudeWoW', 'act', pad3(slotNumber(id)), String(k).padStart(2, '0') + '.wav');
+  return SIG.actFile(cfg.addonDir, slotNumber(id), k);
 }
 function resetBeats(id) {
   for (let k = 1; k <= ACT_MAX; k++) setSignalFile(actFile(id, k), false);
@@ -660,27 +650,48 @@ function resetBeats(id) {
 function beat(job) {
   job.beats = (job.beats || 0) + 1;
   if (job.beats > ACT_MAX) return;
-  try { G.atomicWrite(actFile(job.id, job.beats), SILENT_WAV); } catch {}
+  setSignalFile(actFile(job.id, job.beats), true);
 }
 
-// Presence: every 30 s flip the next presence/NNNN.wav valid so the game can tell
-// the bridge is alive without spending a slot. The counter persists across
-// restarts so a filename is never reused while the game is still running; the
-// files just ahead of the counter are kept empty so the game can't run ahead.
-const PRESENCE_MAX = cfg.presenceMax || 2000;
-function presenceFile(k) {
-  return path.join(cfg.addonDir, 'ClaudeWoW', 'presence', String(k).padStart(4, '0') + '.wav');
+const PRESENCE_MAX = cfg.presenceMax || SIG.DEFAULT_PRESENCE_MAX;
+const PRESENCE_INTERVAL_MS = cfg.presenceIntervalMs || 30000;
+function presenceReady() {
+  return fs.existsSync(SIG.presenceDir(cfg.addonDir));
+}
+function preparePresence() {
+  if (!presenceReady()) return;
+  const r = SIG.preparePresence(cfg.addonDir, state.presence, PRESENCE_MAX);
+  state.presence = r.state;
+  saveState();
+  log(`presence: ring ${r.state.ring} at ${r.state.at} of ${PRESENCE_MAX}${r.made ? `, armed ${r.made} file(s)` : ''}${r.removed ? `, removed ${r.removed} stale file(s)` : ''}`);
 }
 function presenceBeat() {
-  if (!fs.existsSync(path.join(cfg.addonDir, 'ClaudeWoW', 'presence'))) return;
-  state.presence = ((state.presence || 0) % PRESENCE_MAX) + 1;
-  const k = state.presence;
-  setSignalFile(presenceFile(k), true);
-  for (let j = 1; j <= 50; j++) {
-    const n = ((k - 1 + j) % PRESENCE_MAX) + 1;
-    setSignalFile(presenceFile(n), false);
-  }
+  if (!presenceReady()) return;
+  state.presence = SIG.presenceState(state.presence);
+  const r = SIG.beat(cfg.addonDir, state.presence, PRESENCE_MAX);
+  if (r.switched) log(`presence: ring ${r.switched} spent and armed again for the next game launch; beating on ring ${r.ring}`);
   saveState();
+  if (Date.now() - lastPublish >= PRESENCE_INTERVAL_MS) publishNow(false, { refresh: true });
+}
+function presenceInfo() {
+  if (!presenceReady()) return null;
+  const p = SIG.presenceState(state.presence);
+  return { scheme: SIG.SCHEME, ring: p.ring, at: p.at, n: PRESENCE_MAX, probe: p.probe };
+}
+function noteSignalReport(job) {
+  if (!job.presenceTest && !job.lateCreate) return;
+  const prev = state.presenceTest || {};
+  const next = { result: job.presenceTest || prev.result || '', late: job.lateCreate || prev.late || '' };
+  if (next.result === prev.result && next.late === prev.late) return;
+  state.presenceTest = { ...next, at: new Date().toISOString(), session: job.session || '' };
+  saveState();
+  log(`${tagOf(job)} signal self-test from the game: deleting a launch-time file ${next.result === 'passed' ? 'reads as missing (presence beats work)' : next.result === 'failed' ? 'does NOT read as missing (the addon uses slot polls only)' : 'not decided yet'}; a file created after launch is ${next.late || 'not checked yet'}`);
+}
+function placeProbe(job) {
+  if (!job.probe || !presenceReady()) return;
+  SIG.placeProbe(cfg.addonDir, job.probe);
+  if (!fs.existsSync(SIG.probeFile(cfg.addonDir, job.probe))) return;
+  state.presence = { ...SIG.presenceState(state.presence), probe: job.probe };
 }
 
 // ---------------------------------------------------------------------------
@@ -759,6 +770,7 @@ function allowRules(agentId, rules) {
 
 function submit(job) {
   if (job.shot) fallbackToPixel(job.shot, job); // even for a message already handled: the report stands
+  noteSignalReport(job);
   if (alreadyHandled(job)) return;
   clearSignalsAhead(job.id);
   if (job.ctx !== undefined) setContext(job);
@@ -781,6 +793,8 @@ function submit(job) {
     // The addon announcing itself: ack, offer a restore if its data is fresh,
     // and refresh the slots so it can read our clock. No agent run.
     markHandled(job);
+    placeProbe(job);
+    presenceBeat();
     saveState();
     signal('ack', job.id, true);
     maybeOfferRestore(job);
@@ -1487,8 +1501,9 @@ if (inject !== null) {
   } else {
     setInterval(pollSavedVariables, cfg.pollMs || 750);
     if (Number.isFinite(state.lastId)) clearSignalsAhead(state.lastId);
+    preparePresence();
     presenceBeat();
-    setInterval(presenceBeat, cfg.presenceIntervalMs || 30000);
+    setInterval(presenceBeat, PRESENCE_INTERVAL_MS);
     // Fresh slot files right away, so the addon's first slot read tells it which
     // transport this bridge listens on (its hello can't reach a screenshot-mode
     // bridge until it knows to take a screenshot).

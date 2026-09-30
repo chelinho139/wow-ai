@@ -18,7 +18,7 @@ Two processes that can't talk to each other directly, and how they do anyway.
    │                          │                    │        │                    │
    │  LoadAddOn(ClaudeWoW_S…)     │  files on disk     │        ▼                    │
    │  ◀───────────────────────┼────────────────────┤  writes 200 slot Inbox.lua  │
-   │  PlaySoundFile(sig/…)    │                    │  flips signal/heartbeat wav │
+   │  PlaySoundFile(sig/…)    │                    │  deletes armed signal wavs  │
    └──────────────────────────┘                    └─────────────────────────────┘
 ```
 
@@ -95,19 +95,38 @@ The addon loads a fresh slot on a schedule after each send (5, 10, 16, 24, 34, 4
 
 The same content is written to `ClaudeWoW/Inbox.lua`, which the game reads on `/reload` — the fallback path and the only path in `mode reload`.
 
-## Signals: the empty-wav trick
+## Signals: armed files, deleted to signal
 
-`PlaySoundFile(path)` returns whether the file will play. An empty file won't; a valid one will; a file that has never been loaded is read fresh. So a pre-made empty `.wav` is a one-shot flag the bridge can raise at any time and the addon can poll for free:
+`PlaySoundFile(path)` returns whether the file will play. On the Forever client (1.60.1, macOS) a missing file returns `nil`, and an empty, garbage, truncated or valid file all return `true`, so content cannot carry a signal; only existence can. And existence has a second rule: the client only sees files that existed when it launched (fact 2 above). A file created mid-session reads as missing for the rest of the process.
 
-| Files | Raised when |
-|---|---|
-| `sig/NNN.wav` | reply NNN is ready → load a slot now instead of waiting for the schedule |
-| `ack/NNN.wav` | the bridge received message NNN → take it off the strip |
-| `act/NNN/kk.wav` | the agent's k-th action on message NNN → live "14 actions, last 6 s ago" without spending a slot |
-| `presence/kkkk.wav` | every 30 s while the bridge runs → the status light; the bridge keeps the 50 files ahead of its counter empty so the addon can't run ahead |
-| `ctl/empty.wav`, `ctl/valid.wav` | never change; at login the addon checks that empty reads as unplayable and valid as playable, and disables the whole mechanism if not |
+Measured on 2026-09-29, before this scheme: the bridge created `presence/NNNN.wav` every 30 s (the files reached 1981 on disk), the game had launched at about file 1962-1965, and `/claude diag` said `presence: head at 1965, beats seen: 0` and `sound checks: 469, valid hits: 9`. No file created after launch was ever seen, so the light went red 5 minutes after every reply. Every ack, readiness signal and heartbeat the bridge created mid-session was invisible the same way; the addon only got replies from its scheduled slot polls. The headless client now models this (`dev/wow/client.js` snapshots the AddOns tree at launch), and `tests/e2e/presence_test.js` reproduces the old behaviour: 20 presence files created after launch, 0 seen.
 
-`NNN = ((id − 1) mod 200) + 1`. A raised file stays playable for the rest of the client process even if the bridge empties it again, so every consumer treats an unexpected "already valid" as unreliable and falls back to slot polling. With the sound channel off, the addon still works: replies come from the scheduled slot polls, and while idle it spends one slot every 10 minutes to keep the status light honest. The light's timing follows the mode: with beats the bridge is heard from every 30 s, so 90 s of silence is "stale" and 5 minutes is "down"; without them the only evidence is that 10-minute idle poll, so the windows are 12 and 22 minutes instead (`/claude diag` shows which mode is active). Some clients report an empty file as playable — the self-test catches that and the addon runs in this slot-only mode for the whole session.
+So every signal is a file that exists before the game starts ("armed"), and "on" is the bridge **deleting** it (present -> missing). Nothing is ever created mid-session for the game to see.
+
+| Files | Armed by | Deleted (fired) when |
+|---|---|---|
+| `sig/NNN.wav` | setup; the bridge for the 50 slots ahead of each message and when a run starts | reply NNN is ready -> load a slot now instead of waiting for the schedule |
+| `ack/NNN.wav` | setup; the 50 slots ahead of each message | the bridge received message NNN -> take it off the strip |
+| `act/NNN/kk.wav` | setup; the 50 slots ahead, and when a run starts | the agent's k-th action on message NNN -> live "14 actions, last 6 s ago" |
+| `presence/a/kkkk.wav`, `presence/b/kkkk.wav` | setup, then the bridge (below) | one every 30 s, and one at every hello -> the status light |
+| `ctl/valid.wav` | setup, never deleted | never; at login the addon checks that it reads as playable and that `ctl/absent.wav` (never created) does not, and disables the whole mechanism if not |
+| `ctl/probe-<token>.wav` | the bridge, when a hello asks for it | never; a diagnostic, see below |
+
+`NNN = ((id − 1) mod 200) + 1` (`bridge/signals.js` has the paths). A slot's files can fire once per game process: re-arming one mid-session is a file created after launch, which the game may not see. So before it sends, the addon checks that the message's `ack`, `sig` and `act/01` still read as present; one that is already missing is "spent" and is not trusted for that message (it falls back to the slot schedule). The bridge re-arms the 50 slots ahead of every message, so after a restart of the game every slot it will use next is armed.
+
+**Presence rings.** The bridge keeps two rings of `presenceMax` (2000) files. It beats on one (`state.presence = { ring, at }`: files `1..at` deleted, the rest armed) and keeps the other fully armed. When the current ring is spent (2000 beats, about 16.7 hours) it switches to the other one and arms the spent ring again for the next game launch. A game process therefore always has the rest of the current ring plus a full second ring, at least 2000 beats, whenever it started. The addon finds each ring's head at login with a binary search ("first file that reads present"; the missing prefix is what the bridge already deleted), then probes each head every tick: a head that reads missing is a beat. `bridge.js` never re-creates the current ring's deleted files while it runs; `preparePresence` at startup only arms what is ahead. Each slot file names the ring and position: `signals = "armed"`, `presence = { ring = "a", at = 37, n = 2000, probe = "..." }`. The bridge republishes the slot files with a beat when nothing else published for 30 s, so any slot read carries a fresh clock and position.
+
+**The self-test.** Whether a launch-time file that the bridge deletes then reads as missing was not measured when this scheme was written, and a client could cache a file it already played. So presence only drives the light once the addon has seen it work in this process:
+
+- *pending*: after login, until decided. The light uses the no-presence windows (below).
+- *passed*: a head the addon had probed as present read missing after the bridge deleted it. The bridge beats at every hello, so this is decided within one beat of connecting.
+- *failed*: a slot said the bridge's position is at or past a head that still reads present. The addon stays on the no-presence windows for the session.
+
+A passed session can still lose presence: a ring the bridge armed after this game started, or a bridge that is up (a fresh slot clock) while no beat arrived for 150 s, marks that ring stale for the session. While presence works and no beat arrives for 150 s the addon spends one slot (at most every 10 minutes) to check.
+
+The result rides on every strip record after it is decided (`pt=passed` or `pt=failed`). The hello also asks for a diagnostic (`probe=<token>`): the bridge creates `ctl/probe-<token>.wav` mid-session, and the addon probes it once, after a slot says it exists, and reports `lc=seen` or `lc=unseen`. `unseen` confirms the launch-time index; `seen` would mean a file is visible when it is never probed before it exists. The bridge logs both (`signal self-test from the game: ...`) and keeps them in `state.json` as `presenceTest`; `npm run doctor` shows them. `/claude diag` shows the scheme, the ring the bridge is on, both heads, the beats seen and the two results.
+
+**Timing.** With beats the bridge is heard from every 30 s, so 90 s of silence is "stale" and 5 minutes is "down". Without them (self-test pending or failed, sound channel off, no ring left) the only evidence is a slot read, and while idle the addon spends one slot every 10 minutes, so the windows are 12 and 22 minutes. With the sound channel off the addon still works: replies come from the scheduled slot polls.
 
 ## Bridge
 
@@ -144,7 +163,7 @@ The bridge runs on Node or on Bun, and ships as one self-contained binary per pl
 
 - The client's saved-data wipe (observed on the beta) is outside the addon's control; recovery depends on the bridge having been running.
 - 200 slots per UI session. Each reply costs one slot when the readiness signal works, about four otherwise; `/claude reload` resets the pool.
-- A raised signal file stays "valid" in the client until a full restart, so slot numbers that wrap around (every 200 messages) lose the cheap signals until then. Self-detected.
+- A signal file fires once per game process. Slot numbers that wrap around within one session (every 200 messages) lose the cheap signals until the game restarts; self-detected, and replies still arrive through the slot schedule. The presence rings last at least 2000 beats (16.7 hours) per game process; after that the light uses the slower windows.
 - Message capacity ≈ 3.2 KB per send; longer text is refused with a hint.
 - Replies are published in full (a ~3 KB message can produce a 60 KB reply; that is fine for a slot file). The bridge-side transcript keeps the first 4000 characters of each message, and a restore sends back the last 40 messages per chat at 2000 characters each.
 - Windows, Linux with the game under Wine on X11 (see [INSTALL-LINUX.md](INSTALL-LINUX.md)), or macOS with a native client (README, "macOS (native client)"; contributed and tested live by its author).

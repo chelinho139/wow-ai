@@ -179,7 +179,35 @@ C_AddOns = {
 }
 C_Texture = { GetAtlasExists = function() return true end }
 function PlaySound() end
-function PlaySoundFile(path) if STUB.sounds[path] then return true, 1 end return false end
+function STUB.SignalFile(path)
+	if type(path) ~= "string" then return false end
+	local rel = path:match("\\ClaudeWoW\\(.+)$")
+	if not rel then return false end
+	return (rel:match("^ack\\%d%d%d%.wav$") or rel:match("^sig\\%d%d%d%.wav$") or rel:match("^act\\%d%d%d\\%d%d%.wav$") or rel:match("^presence\\[ab]\\%d%d%d%d%.wav$")) and true or false
+end
+function STUB.FileExists(path)
+	local v = STUB.sounds[path]
+	if v ~= nil then return v and true or false end
+	return STUB.armed and STUB.SignalFile(path) or false
+end
+function STUB.Launch()
+	STUB.index = { armed = STUB.armed, files = {}, gone = {} }
+	for p, v in pairs(STUB.sounds) do
+		if v then STUB.index.files[p] = true else STUB.index.gone[p] = true end
+	end
+end
+function STUB.Indexed(path)
+	local idx = STUB.index
+	if not idx then return true end
+	if idx.files[path] then return true end
+	if idx.gone[path] then return false end
+	return idx.armed and STUB.SignalFile(path) or false
+end
+function PlaySoundFile(path)
+	if not STUB.Indexed(path) then return nil end
+	if STUB.FileExists(path) or STUB.deletionVisible == false then return true, 1 end
+	return nil
+end
 function StopSound() end
 function GetPhysicalScreenSize() return 1920, 1080 end
 -- CVars and screenshots, for the screenshot transport. STUB.screenshots counts

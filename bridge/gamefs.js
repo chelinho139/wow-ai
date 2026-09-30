@@ -44,6 +44,22 @@ function atomicWrite(file, content) {
   openUp(file);
 }
 
+function ensureFile(file, content) {
+  if (fs.existsSync(file)) return false;
+  mkdir(path.dirname(file));
+  writeFile(file, content);
+  return true;
+}
+
+function remove(file) {
+  try {
+    fs.rmSync(file, { force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function copyFile(from, to) {
   fs.copyFileSync(from, to);
   openUp(to);
@@ -83,4 +99,4 @@ function repair(addonDir) {
   return result;
 }
 
-module.exports = { GAME_MODE, PERMISSION_BITS, WORLD_WRITABLE, ADDON_FOLDER, matchesGame, mkdir, writeFile, atomicWrite, copyFile, addonFolders, repair };
+module.exports = { GAME_MODE, PERMISSION_BITS, WORLD_WRITABLE, ADDON_FOLDER, matchesGame, mkdir, writeFile, atomicWrite, ensureFile, remove, copyFile, addonFolders, repair };

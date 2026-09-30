@@ -24,8 +24,8 @@ test('every file the bridge writes into the game folder is 0777 like the rest of
   await withGame({}, async h => {
     await h.client.say('permissions');
     const addon = path.join(h.sb.addons, 'ClaudeWoW');
-    const presence = fs.readdirSync(path.join(addon, 'presence')).filter(n => n.endsWith('.wav'));
-    assert.ok(presence.length >= 1, 'a presence beat was written');
+    const presence = fs.readdirSync(path.join(addon, 'presence', 'b')).filter(n => n.endsWith('.wav'));
+    assert.equal(presence.length, 2000, 'the presence rings are armed');
     const slotInboxes = fs.readdirSync(h.sb.addons).filter(n => /^ClaudeWoW_S\d{3}$/.test(n)).map(n => path.join(h.sb.addons, n, 'Inbox.lua'));
     assert.ok(slotInboxes.some(f => /echo/.test(fs.readFileSync(f, 'utf8'))), 'a slot carries the reply');
     const locked = [];
@@ -85,7 +85,7 @@ test('message ids past the slot count still get acked and answered without marki
     speed: 8,
     beforeLaunch: sb => {
       fs.writeFileSync(sb.saved, '\r\nClaudeWoWDB = {\r\n["lastSeq"] = 200,\r\n}\r\n');
-      SB.seedStaleSignals(sb, ['ack', 'sig'], slots);
+      SB.spendSignals(sb, ['ack', 'sig'], slots);
     },
   }, async h => {
     const r = await h.client.say('after the wrap [[sleep 20]]', { timeoutMs: 60000 });

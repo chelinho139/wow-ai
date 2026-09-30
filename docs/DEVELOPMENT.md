@@ -50,7 +50,13 @@ AddOns/ClaudeWoW_S###/Inbox.lua ◄── bridge/bridge.js (a real process) ◄�
     `INTERFACE_VERSION` like the client. Addon folders are indexed at launch,
     not at `/reload`.
   - Alt+Z (`:hide`) hides `UIParent`, so the strip and its `OnUpdate` stop.
-  - `PlaySoundFile` is true only when the `.wav` file exists.
+  - `PlaySoundFile` is true only when the `.wav` file exists now and existed
+    when the client launched: the client snapshots every file under
+    `Interface/AddOns` at launch (not at `/reload`), so a file created later
+    reads as missing, as it does in the real client. Client option
+    `deletionVisible: false` makes a deleted launch-time file still read as
+    present (the case the addon's presence self-test must catch);
+    `fileIndex: 'live'` turns the snapshot off.
   - `/reload` and logout write SavedVariables in the client's format. A crash
     does not.
 - **Fake agent** (`dev/fake-claude.js`): speaks Claude Code's stream-json. Its
@@ -81,7 +87,7 @@ await h.close();
 ```
 
 `beforeLaunch(sb)` prepares disk state before the bridge and the game start:
-seed SavedVariables, stale signal files (`SB.seedStaleSignals`), a corrupt
+seed SavedVariables, spent signal files (`SB.spendSignals`), a corrupt
 `state.json`. A known gap is a test with `{ todo: 'why' }`: it runs, it
 reports, and it does not fail the suite. When the gap is fixed, remove `todo`.
 
