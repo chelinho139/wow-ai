@@ -22,8 +22,18 @@ local DENIED_NAMES = {
 	"SetCVar", "ConsoleExec", "ReloadUI", "Logout", "Quit", "ForceQuit",
 	"LoadAddOn", "EnableAddOn", "DisableAddOn", "SlashCmdList", "hooksecurefunc",
 	"loadstring", "load", "getfenv", "setfenv", "getglobal", "setglobal", "rawget", "rawset", "debug",
+	"CombatLogGetCurrentEventInfo",
 }
 W.DENIED_NAMES = DENIED_NAMES
+
+local RESTRICTED_EVENTS = {
+	"COMBAT_LOG_EVENT", "COMBAT_LOG_EVENT_UNFILTERED", "COMBAT_LOG_APPLY_FILTER_SETTINGS", "COMBAT_LOG_REFILTER_ENTRIES",
+	"MINIMAP_PING", "UNIT_PING_PIN_ADDED", "UNIT_PING_PIN_REMOVED",
+}
+W.RESTRICTED_EVENTS = RESTRICTED_EVENTS
+
+local RESTRICTED = {}
+for _, name in ipairs(RESTRICTED_EVENTS) do RESTRICTED[name] = true end
 
 local DENIED = {}
 for _, name in ipairs(DENIED_NAMES) do DENIED[name] = true end
@@ -100,7 +110,20 @@ local function Guarded(widget, fn)
 	end
 end
 
+local function GuardEvents(frame)
+	for _, method in ipairs({ "RegisterEvent", "RegisterUnitEvent" }) do
+		local register = frame[method]
+		if type(register) == "function" then
+			frame[method] = function(self, event, ...)
+				if RESTRICTED[event] then error(tostring(event) .. " is not allowed in a widget: this client lets only the Blizzard UI register it", 2) end
+				return register(self, event, ...)
+			end
+		end
+	end
+end
+
 local function GuardScripts(widget, frame)
+	GuardEvents(frame)
 	local setScript, hookScript = frame.SetScript, frame.HookScript
 	if type(setScript) == "function" then
 		frame.SetScript = function(self, handler, fn)

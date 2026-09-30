@@ -11,8 +11,8 @@ const DPS_METER = [
   'local f = CreateFrame("Frame", nil, ui.frame, "BackdropTemplate")',
   'f:SetSize(160, 40); f:SetPoint("CENTER", 0, -200)',
   'local text = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")',
-  'f:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")',
-  'f:SetScript("OnEvent", function() local _, sub = CombatLogGetCurrentEventInfo(); text:SetText(sub .. " " .. UnitHealth("player")) end)',
+  'f:RegisterUnitEvent("UNIT_COMBAT", "player")',
+  'f:SetScript("OnEvent", function(_, _, unit, action, flag, amount) text:SetText(action .. " " .. amount .. " " .. UnitHealth("player")) end)',
   'local MyCastSpellByNameHelper = "fine"',
   'print("say \\"hi\\" \\\\ ]] done")',
 ].join('\n');
@@ -47,6 +47,9 @@ test('validateWidgetCommand refuses protected calls, secure templates and the ad
   assert.match(refused('CreateFrame("Button", nil, nil, "SecureActionButtonTemplate")'), /secure templates/);
   assert.match(refused('ClaudeWoWDB.chats = nil'), /ClaudeWoWDB/);
   assert.match(refused('SlashCmdList.CLAUDEWOW("hello")'), /SlashCmdList/);
+  assert.match(refused('f:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")'), /COMBAT_LOG_EVENT_UNFILTERED \(an event only the Blizzard UI may register\)/);
+  assert.match(refused('local a, b = CombatLogGetCurrentEventInfo()'), /CombatLogGetCurrentEventInfo/);
+  assert.match(refused('f:RegisterEvent("MINIMAP_PING")'), /MINIMAP_PING/);
 });
 
 test('validateWidgetCommand checks names, size and ops', () => {
@@ -137,4 +140,10 @@ test('the addon blocks the same names the bridge refuses', () => {
   const block = src.match(/local DENIED_NAMES = \{([\s\S]*?)\n\}/)[1];
   const luaNames = [...block.matchAll(/"([^"]+)"/g)].map(m => m[1]);
   assert.deepEqual([...luaNames].sort(), [...P.WIDGET_DENIED_NAMES].sort());
+  const events = src.match(/local RESTRICTED_EVENTS = \{([\s\S]*?)\n\}/)[1];
+  const luaEvents = [...events.matchAll(/"([^"]+)"/g)].map(m => m[1]);
+  assert.deepEqual([...luaEvents].sort(), [...P.WIDGET_RESTRICTED_EVENTS].sort());
+  const stub = fs.readFileSync(path.join(__dirname, 'wow_stub.lua'), 'utf8');
+  const stubEvents = [...stub.match(/STUB\.RESTRICTED_EVENTS = \{([\s\S]*?)\n\}/)[1].matchAll(/(\w+) = true/g)].map(m => m[1]);
+  assert.deepEqual(stubEvents.sort(), [...P.WIDGET_RESTRICTED_EVENTS].sort(), 'the test stub blocks the same events');
 });

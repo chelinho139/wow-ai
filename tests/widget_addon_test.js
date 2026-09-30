@@ -95,12 +95,17 @@ test('compile errors and blocked calls fail cleanly', () => {
     ['sneaky', 'local ui = ...\nlocal name = "Cast" .. "Spell" .. "ByName"\n_G[name]("Fireball")'],
     ['secure', 'local ui = ...\nlocal kind = "Sec" .. "ure"\nCreateFrame("Button", nil, nil, kind .. "ActionButtonTemplate")'],
     ['nosy', 'local ui = ...\nlocal key = "Clau" .. "deWoWDB"\nassert(_G[key] == nil, "leak")\nassert(getmetatable(_G) == false)'],
+    ['logger', 'local ui = ...\nlocal f = CreateFrame("Frame")\nf:RegisterEvent("COMBAT" .. "_LOG_EVENT_UNFILTERED")'],
+    ['pinger', 'local ui = ...\nlocal f = CreateFrame("Frame")\nf:RegisterUnitEvent("UNIT_PING" .. "_PIN_ADDED", "player")'],
   ]));
   assert.equal(vm.evaluate('ClaudeWoWWidgets.Status("broken")'), 'failed');
   assert.equal(vm.evaluate('ClaudeWoWWidgets.Status("sneaky")'), 'failed');
   assert.match(vm.evaluate('select(2, ClaudeWoWWidgets.Status("sneaky"))'), /CastSpellByName is not allowed/);
   assert.match(vm.evaluate('select(2, ClaudeWoWWidgets.Status("secure"))'), /secure templates are not allowed/);
   assert.equal(vm.evaluate('ClaudeWoWWidgets.Status("nosy")'), 'running');
+  assert.match(vm.evaluate('select(2, ClaudeWoWWidgets.Status("logger"))'), /COMBAT_LOG_EVENT_UNFILTERED is not allowed in a widget/);
+  assert.match(vm.evaluate('select(2, ClaudeWoWWidgets.Status("pinger"))'), /UNIT_PING_PIN_ADDED is not allowed in a widget/);
+  assert.equal(vm.evaluate('#STUB.actionBlocked'), '0', 'the refused registration never reached the client');
 });
 
 test('/claude config ui remove keeps a widget off until the agent sends a new version', () => {

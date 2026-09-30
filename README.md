@@ -199,10 +199,12 @@ On the screenshot transport (`capture.mode: "screenshot"`) the game already take
 
 ### Death roast
 
-`/claude config roast on` (off by default) turns your deaths into content. When you die, the addon takes the last 10 seconds of the combat log that hit you (who, with what, how much, crits, overkill, the killing blow), adds your level, zone and the attackers' levels when it can see them, and sends that recap to the agent in a **Death roasts** chat of its own. The reply is a two or three sentence roast, affectionate and aimed at the play, never the person, and it lands in the window and the game chat like any other reply. With vision on, the agent also sees your screen at the moment of death.
+`/claude config roast on` (off by default) turns your deaths into content. When you die, the addon reads the game's own death recap (the list behind the **Death Recap** button: who hit you, with what, how much, overkill, absorbs, the killing blow), adds your level, zone and the attackers' levels when it can see them, and sends that recap to the agent in a **Death roasts** chat of its own. The reply is a two or three sentence roast, affectionate and aimed at the play, never the person, and it lands in the window and the game chat like any other reply. With vision on, the agent also sees your screen at the moment of death.
 
 - At most one roast every 2 minutes, so a wipe does not spam the agent. A death while the last roast is still being written, or while the bridge is not connected, is skipped.
 - The recap stays under 900 bytes, so it fits the strip with the game context next to it.
+- Addons may not read the combat log in this client (registering it pops "blocked from an action only available to the Blizzard UI"), so the roast never touches it. When the game has no death recap to share, the addon falls back to the hits you took in the last 10 seconds as `UNIT_COMBAT` reports them: amount, school and crit, but not who dealt them. It then names your target and mouseover at death instead. The death recap itself holds only the last few hits, not the whole fight.
+- The roast listens for deaths and hits only while it is on: `on` registers `PLAYER_DEAD` and the player's `UNIT_COMBAT`, `off` unregisters them.
 - The chat is bound to the bridge's `roast` plugin and runs in the same scratch folder as `ask` (`plugins.roast.cwd` to change it). Type in that chat to talk back.
 - `/claude config roast` shows the state, the cooldown, and why the last death was not roasted.
 
