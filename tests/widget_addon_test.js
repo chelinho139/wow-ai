@@ -84,7 +84,7 @@ test('a runtime error stops the widget and is reported in the chat window', () =
   assert.match(vm.evaluate(lastSystemNote), /meter failed and was stopped: .*boom/);
   assert.equal(vm.evaluate('STUB.lastTicker.cancelled'), 'true');
   assert.equal(vm.evaluate(`${meterFrame}`), null);
-  vm.run('WIDGET_TEST_BOOM = false; SlashCmdList.CLAUDEWOW("ui run meter")');
+  vm.run('WIDGET_TEST_BOOM = false; SlashCmdList.CLAUDE("config ui run meter")');
   assert.equal(vm.evaluate('ClaudeWoWWidgets.Status("meter")'), 'running');
 });
 
@@ -103,10 +103,10 @@ test('compile errors and blocked calls fail cleanly', () => {
   assert.equal(vm.evaluate('ClaudeWoWWidgets.Status("nosy")'), 'running');
 });
 
-test('/claude-wow ui remove keeps a widget off until the agent sends a new version', () => {
+test('/claude config ui remove keeps a widget off until the agent sends a new version', () => {
   const vm = newVM();
   vm.run(widgetSet([['meter', TARGET_METER]]));
-  vm.run('SlashCmdList.CLAUDEWOW("ui remove meter")');
+  vm.run('SlashCmdList.CLAUDE("config ui remove meter")');
   assert.equal(vm.evaluate('ClaudeWoWWidgets.Status("meter")'), 'removed');
   assert.equal(vm.evaluate('STUB.lastTicker.cancelled'), 'true');
   vm.run(widgetSet([['meter', TARGET_METER]], 2));
@@ -118,12 +118,12 @@ test('/claude-wow ui remove keeps a widget off until the agent sends a new versi
   assert.match(vm.evaluate(lastSystemNote), /meter was removed by the agent/);
 });
 
-test('/claude-wow ui lists widgets, and free text starting with "ui" is still a message', () => {
+test('/claude config ui lists widgets, and free text starting with "ui" is still a message', () => {
   const vm = newVM();
   vm.run(widgetSet([['meter', TARGET_METER]]));
-  vm.run('STUB.prints = {}; SlashCmdList.CLAUDEWOW("ui")');
+  vm.run('STUB.prints = {}; SlashCmdList.CLAUDE("config ui")');
   assert.match(vm.evaluate('table.concat(STUB.prints, "\\n")'), /meter {2}meter title {2}\(running, \d+ bytes\)/);
-  vm.run('STUB.prints = {}; ClaudeWoW.Send = function(text) SENT_TEXT = text end; SlashCmdList.CLAUDEWOW("ui for my bags would be nice")');
+  vm.run('STUB.prints = {}; ClaudeWoW.Send = function(text) SENT_TEXT = text end; SlashCmdList.CLAUDE("ui for my bags would be nice")');
   assert.doesNotMatch(vm.evaluate('table.concat(STUB.prints, "\\n")'), /\[Claude WoW ui\]/);
   assert.equal(vm.evaluate('SENT_TEXT'), 'ui for my bags would be nice');
 });

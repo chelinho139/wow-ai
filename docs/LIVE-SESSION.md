@@ -29,7 +29,7 @@ Claude Code shows two prompts the first time:
 
 A dim line under the banner confirms it: `Channels (experimental) messages from server:claude-wow inject directly in this session`.
 
-If the bridge uses a home folder other than `~/.claude-wow`, start Claude Code with the same `CLAUDE_WOW_HOME`, or the channel server cannot find the bridge. The bridge prints the exact command, and so does `/claude-wow live` in game.
+If the bridge uses a home folder other than `~/.claude-wow`, start Claude Code with the same `CLAUDE_WOW_HOME`, or the channel server cannot find the bridge. The bridge prints the exact command, and so does `/claude -r` in game.
 
 ### From another folder
 
@@ -46,11 +46,15 @@ and start Claude Code there with the same flag. The name must be `claude-wow`.
 ## In game
 
 ```
-/claude-wow plugin live     bind the current chat to the live session
-/claude-wow live            the connected sessions, or the command that starts one
+/claude -r                     the running and recent sessions; running ones are marked [running]
+/claude -r wow-ai [text]       attach a chat to the running session named wow-ai (or give its id, a prefix of it, or its number in the list)
 ```
 
-With whisper tabs on (`/claude-wow whisper on`), each chat is a tab: type there and the text goes to the session. The session sees:
+`/claude -r` picks the kind of attachment for you. A session that is running with the channel gets the chat live: the text goes into that terminal, as below. Any other session is resumed headless with `claude -p --resume <id>` in its own folder, like any other chat. You never name the plugin; `/claude config plugin live` is still there for a chat you want pinned to whichever session connected last.
+
+The bridge matches a running session by the Claude Code session id (the channel server tells it the pid of the Claude Code process that started it, and Claude Code's `sessions/<pid>.json` names the session), by the session's name in Claude Code, or by the name the channel server gives it (`CLAUDE_WOW_LIVE_NAME`, else the folder's name). If that session is gone when a message is sent, the chat says so; `/claude -r <id>` then resumes it headless.
+
+With whisper tabs on (`/claude config whisper on`), each chat is a tab: type there and the text goes to the session. The session sees:
 
 ```
 <channel source="claude-wow" chat_id="..." message_id="12" chat_name="Live" character="Thrall, level 12 Orc Shaman" zone="Durotar (Razor Hill) 52.1, 43.0">
@@ -91,7 +95,7 @@ session -> wow_reply tool -> channel.js -> socket -> bridge -> slot files -> add
 - `bridge/channel.js` is a small MCP server written by hand (no npm dependency): `initialize`, `tools/list`, `tools/call`, `ping`, and the channel notifications. It declares `claude/channel` and `claude/channel/permission`.
 - The bridge listens on the socket while it runs (`bridge/plugins/live.js`). When the home path is too long for a Unix socket, the socket goes to `/tmp/claude-wow-<uid>-<hash>.sock`.
 - Only the local bridge can talk to the channel server. The socket is created with mode `0600`, and the channel server refuses a socket that other users can reach. The bridge writes a fresh random token to `<CLAUDE_WOW_HOME>/live.token` (mode `0600`) on every start. Both sides prove they hold it (HMAC over a nonce) before any message is accepted; the channel server drops every frame from a peer that has not.
-- A chat sticks to the session it first talked to while that session stays connected; otherwise it goes to the most recently connected session.
+- A chat attached with `/claude -r` goes only to that session. A chat pinned with `/claude config plugin live` sticks to the session it first talked to while that session stays connected; otherwise it goes to the most recently connected session.
 
 ## Configuration
 

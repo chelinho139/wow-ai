@@ -2,7 +2,7 @@
 
 The install itself is in [INSTALL.md](INSTALL.md): the one-line installer, or by hand with git. This page keeps what is specific to Linux: the session requirements, where the client lives, the background service under systemd, and how to check the screen capture.
 
-The addon is the same as on Windows, and the default screenshot transport needs no capture at all: the addon calls `Screenshot()` and the bridge reads the file from the client's `Screenshots` folder inside the Wine prefix, where it also writes the slot files. `Screenshot()` under Wine is not yet confirmed by a live run, which is why the deprecated pixel transport is still here: `"mode": "pixel"` under `capture` in `~/.claude-wow/config.json` runs `bridge/capture_x11.py` (python3 + libX11 through ctypes, no packages to install) instead of `capture.ps1`. If the addon reports that it cannot shoot, the bridge falls back to it on its own and says so (`TRANSPORT FALLBACK` in the log, `/claude-wow diag` in game). Please report either outcome.
+The addon is the same as on Windows, and the default screenshot transport needs no capture at all: the addon calls `Screenshot()` and the bridge reads the file from the client's `Screenshots` folder inside the Wine prefix, where it also writes the slot files. `Screenshot()` under Wine is not yet confirmed by a live run, which is why the deprecated pixel transport is still here: `"mode": "pixel"` under `capture` in `~/.claude-wow/config.json` runs `bridge/capture_x11.py` (python3 + libX11 through ctypes, no packages to install) instead of `capture.ps1`. If the addon reports that it cannot shoot, the bridge falls back to it on its own and says so (`TRANSPORT FALLBACK` in the log, `/claude diag` in game). Please report either outcome.
 
 ## Requirements
 
@@ -38,6 +38,6 @@ It finds the game window, saves what the capture sees to `bridge/probe.png`, and
 2. Plain windowed mode in the game settings.
 3. `nvidia-settings -a AllowFlipping=0` (NVIDIA).
 4. `"mode": "screenshot"` under `capture`: no capture at all, the addon screenshots the strip.
-5. As a last resort `/claude-wow mode reload` in game: one UI reload per message.
+5. As a last resort `/claude config mode reload` in game: one UI reload per message.
 
 The log shows `capture: attached to window 0x...` once the window is found. If it keeps saying `waiting for WowB window`, set `capture.processName` to your executable's name, or `capture.windowName` to part of the window title. `capture.python` picks the interpreter if `python3` is not the one on your `PATH`.

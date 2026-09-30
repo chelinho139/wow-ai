@@ -478,10 +478,17 @@ function attachedNote(images) {
 // the fuller vision paragraph is in the prompt (protocol.messagePrompt).
 const IMAGE_CAPTION = '[The image above is a screenshot of the player\'s screen, taken the moment they sent this message.]';
 
+const READ_ONLY_MODES = new Set(['default', 'manual', 'plan']);
+
+function addDirs(cfg) {
+  return (Array.isArray(cfg && cfg.addDirs) ? cfg.addDirs : []).map(String).filter(d => d && !d.startsWith('-'));
+}
+
 const AGENTS = {
   claude: {
     name: 'Claude',
     command: 'claude',
+    settings: ['model', 'effort', 'permissionMode', 'addDirs'],
     install: 'https://claude.com/claude-code, then run `claude` once and log in',
     windowsPaths: () => [path.join(os.homedir(), '.local', 'bin', 'claude.exe')],
     posixPaths: () => [path.join(os.homedir(), '.local', 'bin', 'claude')],
@@ -494,6 +501,8 @@ const AGENTS = {
       const denied = Array.isArray(cfg.deniedTools) ? cfg.deniedTools.filter(Boolean) : [];
       if (denied.length) a.push('--disallowedTools', ...denied);
       if (cfg.model) a.push('--model', cfg.model);
+      if (cfg.effort) a.push('--effort', cfg.effort);
+      for (const dir of addDirs(cfg)) a.push('--add-dir', dir);
       if (resume) a.push('--resume', resume);
       if (system) a.push('--append-system-prompt', system);
       return a.concat(Array.isArray(cfg.extraArgs) ? cfg.extraArgs : []);
@@ -511,6 +520,7 @@ const AGENTS = {
   codex: {
     name: 'Codex',
     command: 'codex',
+    settings: ['model', 'effort', 'permissionMode', 'addDirs'],
     install: 'npm install -g @openai/codex, then run `codex` once and log in',
     windowsPaths: () => [],
     posixPaths: () => [],
@@ -522,8 +532,10 @@ const AGENTS = {
       a.push('exec', '--json', '--skip-git-repo-check', '-C', cwd);
       const mode = cfg.permissionMode || 'acceptEdits';
       if (mode === 'bypassPermissions') a.push('--dangerously-bypass-approvals-and-sandbox');
-      else a.push('--sandbox', mode === 'default' ? 'read-only' : 'workspace-write');
+      else a.push('--sandbox', READ_ONLY_MODES.has(mode) ? 'read-only' : 'workspace-write');
       if (cfg.model) a.push('-m', cfg.model);
+      if (cfg.effort) a.push('-c', `model_reasoning_effort=${cfg.effort}`);
+      for (const dir of addDirs(cfg)) a.push('--add-dir', dir);
       a.push(...(Array.isArray(cfg.extraArgs) ? cfg.extraArgs : []));
       if (resume) a.push('resume', resume);
       for (const image of imagePaths(images)) if (!String(image).startsWith('-')) a.push('-i', image);
@@ -540,6 +552,7 @@ const AGENTS = {
   grok: {
     name: 'Grok',
     command: 'grok',
+    settings: ['model', 'permissionMode'],
     install: 'https://docs.x.ai/build (irm https://x.ai/cli/install.ps1 | iex), then `grok login`',
     windowsPaths: () => [
       path.join(process.env.GROK_HOME || path.join(os.homedir(), '.grok'), 'bin', 'grok.exe'),
@@ -573,6 +586,7 @@ const AGENTS = {
   },
   agy: {
     name: 'Antigravity', command: 'agy',
+    settings: ['model', 'permissionMode', 'addDirs'],
     install: 'Install Google Antigravity CLI (agy) and run `agy` once to log in.',
     windowsPaths: () => [path.join(process.env.LOCALAPPDATA || '', 'agy', 'bin', 'agy.exe')],
     posixPaths: () => [],
@@ -586,8 +600,9 @@ const AGENTS = {
         '--print-timeout', `${Math.max(1, Math.ceil((timeoutMs || 1800000) / 1000))}s`];
       const mode = cfg.permissionMode || 'acceptEdits';
       if (mode === 'acceptEdits') a.push('--mode', 'accept-edits', '--disable-slash-commands');
-      else if (mode === 'default') a.push('--mode', 'plan');
+      else if (READ_ONLY_MODES.has(mode)) a.push('--mode', 'plan');
       else a.push('--dangerously-skip-permissions', '--disable-slash-commands');
+      for (const dir of addDirs(cfg)) a.push('--add-dir', dir);
       if (resume) a.push('--conversation', resume);
       if (cfg.model) a.push('--model', cfg.model);
       return a.concat(Array.isArray(cfg.extraArgs) ? cfg.extraArgs : []);
@@ -596,6 +611,7 @@ const AGENTS = {
   },
   hermes: {
     name: 'Hermes', command: 'hermes',
+    settings: ['model'],
     install: 'Install Hermes Agent and run `hermes setup` once.',
     windowsPaths: () => [], posixPaths: () => [],
     stream: 'text',
@@ -621,6 +637,31 @@ const AGENTS = {
 };
 
 const DEFAULT_AGENT = 'claude';
+
+const SETTING_FLAGS = { model: '--model', effort: '--effort', permissionMode: '--permission-mode', addDirs: '--add-dir' };
+
+function unsupportedSettings(id, chosen) {
+  const agent = AGENTS[id];
+  if (!agent || !chosen) return [];
+  const out = [];
+  for (const key of Object.keys(SETTING_FLAGS)) {
+    const v = chosen[key];
+    const set = Array.isArray(v) ? v.length > 0 : !!v;
+    if (set && !agent.settings.includes(key)) out.push(`${SETTING_FLAGS[key]} ${Array.isArray(v) ? v.join(' ') : v}`);
+  }
+  return out;
+}
+
+function withChatSettings(agentCfg, id, chosen) {
+  const agent = AGENTS[id];
+  if (!agent || !chosen) return agentCfg;
+  const out = { ...agentCfg };
+  for (const key of agent.settings) {
+    const v = chosen[key];
+    if (Array.isArray(v) ? v.length : v) out[key] = v;
+  }
+  return out;
+}
 
 function agentIds() { return Object.keys(AGENTS); }
 
@@ -750,7 +791,7 @@ function resolveCommand(id, cfg = {}) {
 }
 
 module.exports = {
-  AGENTS, DEFAULT_AGENT, agentIds, normalizeAgent, displayName, agentConfig,
+  AGENTS, DEFAULT_AGENT, SETTING_FLAGS, READ_ONLY_MODES, unsupportedSettings, withChatSettings, addDirs, agentIds, normalizeAgent, displayName, agentConfig,
   grokRules, snippet, contextBlock, imagePaths, IMAGE_CAPTION,
   claudeParser, codexParser, grokParser, agyParser, hermesParser, codexItemLine, grokCall, grokRefusal, shellInner, claudeUsage, claudeWindow, claudeCost, claudeRate, CLAUDE_RATES,
   resolveCommand, unwrapShim, nativeNextTo,

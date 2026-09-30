@@ -28,6 +28,33 @@ test('parseFlags reads new-session, hello, forget, context, agent and allow list
   assert.equal(P.parseFlags('allow=WebSearch').allowOnce, undefined, 'no allowOnce key at all without the flag');
 });
 
+test('parseFlags reads the per-chat settings and the resume and live targets /claude sends, and drops values that do not fit', () => {
+  const hex = s => Buffer.from(s).toString('hex');
+  const f = P.parseFlags(`agent=claude;model=claude-opus-5[1m];effort=HIGH;pm=PLAN;dirs=${hex('realms\x1F~/notes')};resume=f02436b8-8a5f;live=${hex('wow-ai main')}`);
+  assert.equal(f.model, 'claude-opus-5[1m]');
+  assert.equal(f.effort, 'high');
+  assert.equal(f.permissionMode, 'plan', 'the mode is spelled the way the CLI wants it');
+  assert.deepEqual(f.addDirs, ['realms', '~/notes']);
+  assert.equal(f.resume, 'f02436b8-8a5f');
+  assert.equal(f.liveTarget, 'wow-ai main');
+  const bad = P.parseFlags('model=two words;effort=;pm=yolo;resume=a b;live=zz;dirs=');
+  for (const k of ['model', 'effort', 'permissionMode', 'resume', 'liveTarget', 'addDirs']) assert.equal(bad[k], undefined, k);
+  const many = P.parseFlags(`dirs=${hex(Array.from({ length: 12 }, (_, i) => 'd' + i).join('\x1F'))}`);
+  assert.equal(many.addDirs.length, P.ADD_DIRS_MAX);
+  assert.equal(P.parseFlags('plugin=live').liveTarget, undefined, 'plugin=live is a binding, not a target');
+});
+
+test('parseOutbox reads the same settings from the opts field of the reload outbox', () => {
+  const hex = s => Buffer.from(s).toString('hex');
+  const src = `ClaudeWoWDB = { ["outbox"] = { ["id"] = 9, ["text"] = "${hex('go on')}", ["cwd"] = "${hex('/proj')}", ["session"] = "s1", ["chat"] = "c1", ["plugin"] = "claude-code", ["opts"] = "${hex('model=opus;resume=f02436b8-8a5f-4c05-823e-bef25f88ff7b')}", }, }`;
+  const job = P.parseOutbox(src);
+  assert.equal(job.text, 'go on');
+  assert.equal(job.model, 'opus');
+  assert.equal(job.resume, 'f02436b8-8a5f-4c05-823e-bef25f88ff7b');
+  assert.equal(job.plugin, 'claude-code');
+  assert.equal(P.parseOutbox(src.replace(/\["opts"\][^,]*,/, '')).model, undefined);
+});
+
 test('withRunOnlyRules adds greed rules to one run without touching the saved agent config', () => {
   const saved = { permissionMode: 'acceptEdits', allowedTools: ['WebSearch'] };
   const run = P.withRunOnlyRules(saved, ['Bash(rm:*)', 'WebSearch', '']);

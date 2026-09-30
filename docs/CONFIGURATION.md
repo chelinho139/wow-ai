@@ -11,13 +11,15 @@ The bridge reads `config.json` once at start. Restart it after editing, except f
 | `addonDir` | `…\World of Warcraft\_classic_beta_\Interface\AddOns` | The game's AddOns folder. The bridge writes the slot addons, `Inbox.lua` and every signal file under it. `setup.js` fills this in from the client it finds. |
 | `inboxFile` | `<addonDir>\ClaudeWoW\Inbox.lua` | The file the game reads on `/reload` (fallback path). Normally derived from `addonDir`; only change it if you moved the addon. A value still naming an old addon (`WoWAI`, `WoWClaude`) is ignored in favour of the derived one. |
 | `savedVariablesFile` | `…\WTF\Account\<account>\SavedVariables\ClaudeWoW.lua` | The addon's saved data. The bridge polls it for the reload-path outbox. `setup.js` picks the first account under `WTF\Account`; pass `--account <name>` to choose another. |
-| `defaultCwd` | `C:\path\to\your\project` | Folder for chats that have not chosen one with `/claude-wow cd`, when the bridge is started from inside this repo (`npm start`). See [Which folder the agent works in](#which-folder-the-agent-works-in). |
+| `defaultCwd` | `C:\path\to\your\project` | Folder for chats that have not chosen one with `/claude cd`, when the bridge is started from inside this repo (`npm start`). See [Which folder the agent works in](#which-folder-the-agent-works-in). |
+| `claudeDir` | `$CLAUDE_CONFIG_DIR`, else `~/.claude` | Claude Code's own folder. `/claude -r` lists the recent sessions from its `history.jsonl` (names from the session files' titles) and looks up an id it was given in `projects/`; a running session's id comes from `sessions/<pid>.json`. The bridge only reads here. |
+| `claudeSessions` | `true` | `false` keeps Claude Code's sessions out of `/claude -r`: only the bridge's own chats and the running sessions are listed and resumable. |
 
 ## Agents
 
 | Key | Default | Meaning |
 |---|---|---|
-| `agent` | `"claude"` | The agent for chats that have not picked one with `/claude-wow agent`. One of `claude`, `codex`, `grok`, `agy`, `hermes`; the bridge refuses to start on anything else. |
+| `agent` | `"claude"` | The agent for chats that have not picked one with `/claude -c --agent`. One of `claude`, `codex`, `grok`, `agy`, `hermes`; the bridge refuses to start on anything else. |
 | `agents.<id>` | one block per agent | That agent's settings, below. A missing block means the defaults. |
 
 Keys under `agents.claude`, `agents.codex`, `agents.grok`, `agents.agy` and `agents.hermes` (what each one means per agent is spelled out in [AGENTS.md](AGENTS.md)):
@@ -52,7 +54,7 @@ A `config.json` without a `plugins` block keeps working: the default applies. Ch
 
 | Key | Default | Meaning |
 |---|---|---|
-| `gameContext` | `true` | Put the character/zone context the addon sends at the top of every message as a marked situation block (and the rules for reading it, the map and macro instructions and the primer into the agent's system prompt). `false` ignores it, for a bridge only ever used on unrelated projects. The addon has its own switch, `/claude-wow context off`, which also clears what the bridge holds. |
+| `gameContext` | `true` | Put the character/zone context the addon sends at the top of every message as a marked situation block (and the rules for reading it, the map and macro instructions and the primer into the agent's system prompt). `false` ignores it, for a bridge only ever used on unrelated projects. The addon has its own switch, `/claude config context off`, which also clears what the bridge holds. |
 | `primerFile` | `"docs/WOW-ADDON-PRIMER.md"` | A markdown file appended to the system prompt while the addon sends a game context, whatever folder the chat works in: how to write addons and macros for this client. Relative to the claude-wow folder (from the binary: to `~/.claude-wow/assets`, where the binary writes its copy, so an edit there lasts until a new binary replaces it), or absolute. Re-read on every run, so edits count at once for new chats (Claude Code records a chat's system prompt at its first message and keeps it for the chat's life). `""` sends none. Off whenever the context is off. |
 | `achievements` | `true` | Award achievement toasts for dev milestones the bridge sees in the agent's tool calls (see README, "Achievement toasts"). `false` stops the detection and ships no toasts. The earned list is kept in `state.json` under `achievements`. |
 | `maxParallel` | `3` | How many chats may run an agent at the same time. Further messages queue per chat. |
@@ -67,8 +69,8 @@ Keys under `capture`:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `enabled` | `true` | Run the outbound transport below. With `false` only the reload path works (`/claude-wow mode reload` in game). |
-| `mode` | `"screenshot"` | Outbound transport. `screenshot` (the default; a config from before this key existed gets it too): no screen capture; the addon calls `Screenshot()` with the strip up for two frames and the bridge decodes the PNG/TGA the client writes to its `Screenshots` folder, then deletes it (files without a strip, i.e. your own screenshots, are left alone; strip-bearing leftovers from a bridge that was down are swept at startup and every 5 minutes). `pixel` (**deprecated**, kept only until `Screenshot()` is confirmed on Windows and on Linux under Wine): `capture.ps1` (Windows), `capture_mac.py` (macOS) or `capture_x11.py` (Linux) screen-captures the strip four times a second. The bridge names the mode in every slot file and the addon follows it; while the screenshot mode is on, the addon sets `screenshotFormat` to `png` and restores your value when it leaves the mode, when you log out, and at the next load if a crash skipped that. When the addon reports that it cannot shoot (`shot=missing`: no `Screenshot()`; `shot=failed`: every shot failed), the bridge falls back to `pixel` on its own, logs `TRANSPORT FALLBACK`, records `transportFallback` (`reason`, `at`, `session`) in `state.json` so the next start goes straight to pixels when `mode` is unset, and ships the reason as `transportNote` in the slot files for `/claude-wow diag`. An explicit `mode` always wins over that memory. |
+| `enabled` | `true` | Run the outbound transport below. With `false` only the reload path works (`/claude config mode reload` in game). |
+| `mode` | `"screenshot"` | Outbound transport. `screenshot` (the default; a config from before this key existed gets it too): no screen capture; the addon calls `Screenshot()` with the strip up for two frames and the bridge decodes the PNG/TGA the client writes to its `Screenshots` folder, then deletes it (files without a strip, i.e. your own screenshots, are left alone; strip-bearing leftovers from a bridge that was down are swept at startup and every 5 minutes). `pixel` (**deprecated**, kept only until `Screenshot()` is confirmed on Windows and on Linux under Wine): `capture.ps1` (Windows), `capture_mac.py` (macOS) or `capture_x11.py` (Linux) screen-captures the strip four times a second. The bridge names the mode in every slot file and the addon follows it; while the screenshot mode is on, the addon sets `screenshotFormat` to `png` and restores your value when it leaves the mode, when you log out, and at the next load if a crash skipped that. When the addon reports that it cannot shoot (`shot=missing`: no `Screenshot()`; `shot=failed`: every shot failed), the bridge falls back to `pixel` on its own, logs `TRANSPORT FALLBACK`, records `transportFallback` (`reason`, `at`, `session`) in `state.json` so the next start goes straight to pixels when `mode` is unset, and ships the reason as `transportNote` in the slot files for `/claude diag`. An explicit `mode` always wins over that memory. |
 | `screenshotLevels` | `{ "off": 0, "on": 60 }` | `screenshot` mode only: the two levels (0-255) the strip's colour channels span. A screenshot is bit-exact, so dark levels read as well as bright ones and the strip is nearly invisible for the two frames it is up. Codec 2 spreads four levels evenly between them (0/20/40/60 by default) and the bridge reads the actual levels off each strip's ramp; codec 1 draws the two and the bridge decodes at the threshold halfway between them. `on - off` must be at least 8 or the default is used. The pixel transport ignores this and always draws full primaries. |
 | `screenshotCodec` | `2` | `screenshot` mode only: which strip the addon draws. `2`: 2 px cells, four levels per channel, 400 cells a row (six bits a cell, eight times the payload per screen area: a typical message is one 800×2 px line, a 1 KB message 8 px tall). `1`: the pixel transport's 4 px cells with one bit per channel (a 1 KB message is 56 px tall), for a client whose screenshots turn out not to be exact at 2 px. The bridge decodes both whatever this says, so an addon from before the setting (which draws codec 1) keeps working. |
 | `screenshotDir` | *(derived)* | `screenshot` mode: the client's `Screenshots` folder. Derived from `addonDir` (`<client>/Interface/AddOns` -> `<client>/Screenshots`) unless set. |
@@ -87,7 +89,7 @@ The capture region is `cellsPerRow × cellPx` by `maxRows × cellPx` pixels (800
 
 | Key | Default | Meaning |
 |---|---|---|
-| `vision.maxWidth` | `1280` | `screenshot` mode only. When a chat has `/claude-wow vision on` (or sends `/claude-wow look ...`), the bridge cuts the strip's rows off the screenshot it decoded, scales the rest down to at most this many pixels wide (area averaging, so UI text stays readable) and attaches it to the run as a PNG. A 1080p frame becomes 1280x712, 1.5-2 MB; the Anthropic API takes images up to 5 MB and itself downscales anything past 1568 pixels on the long edge, so higher values buy little. |
+| `vision.maxWidth` | `1280` | `screenshot` mode only. When a chat has `/claude config vision on` (or sends `/claude look ...`), the bridge cuts the strip's rows off the screenshot it decoded, scales the rest down to at most this many pixels wide (area averaging, so UI text stays readable) and attaches it to the run as a PNG. A 1080p frame becomes 1280x712, 1.5-2 MB; the Anthropic API takes images up to 5 MB and itself downscales anything past 1568 pixels on the long edge, so higher values buy little. |
 | `vision.keep` | `6` | How many of those PNGs may sit in `~/.claude-wow/tmp` at once: one per message that asked, deleted when its run ends, so only runs that never started (a bridge killed mid-queue) leave one. The oldest beyond this are removed, and all of them when the bridge starts. |
 
 ## Slot pool and signal files
@@ -141,7 +143,7 @@ Exit codes: `0` normal, `1` the injected or one-shot job failed, `2` config miss
 
 ## Which folder the agent works in
 
-Each chat can pick its own folder with `/claude-wow cd` or **Folder...** in the menu that opens when you right-click the chat in the left panel. Chats that have not are given the bridge's default folder, chosen in this order:
+Each chat can pick its own folder with `/claude cd` or **Folder...** in the menu that opens when you right-click the chat in the left panel. Chats that have not are given the bridge's default folder, chosen in this order:
 
 1. `--project <dir>`
 2. `CLAUDE_WOW_PROJECT`
@@ -149,7 +151,7 @@ Each chat can pick its own folder with `/claude-wow cd` or **Folder...** in the 
 4. `defaultCwd` in `config.json`
 5. The current folder
 
-A relative `/claude-wow cd` path is resolved against that default. `~` expands to your home folder. The agents keep sessions per folder, so a chat that changes folder starts a fresh session there; the same happens when a chat changes agent.
+A relative `/claude cd` path is resolved against that default. `~` expands to your home folder. The agents keep sessions per folder, so a chat that changes folder starts a fresh session there; the same happens when a chat changes agent.
 
 ## Where the bridge keeps its files
 

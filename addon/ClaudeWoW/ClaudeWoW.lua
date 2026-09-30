@@ -54,6 +54,7 @@ local run = { outbound = {} }
 -- Whisper tabs (the section after the game context). Declared up here because
 -- Send, ApplyReplies and Finish use it and come first in the file.
 local Whisper = {}
+local Cli = {}
 
 -- Shared window backdrop. Declared up here because ShowCopy (rendering section)
 -- uses it too: a later `local` would be invisible there and resolve to a nil global.
@@ -177,6 +178,25 @@ local function Contains(list, v)
 		if x == v then return true end
 	end
 	return false
+end
+
+function Cli.ChatPlugin(c)
+	if not c then return "" end
+	if c.liveTarget and c.liveTarget ~= "" then return LIVE_PLUGIN end
+	if c.plugin and c.plugin ~= "" then return c.plugin end
+	if c.cwd and c.cwd ~= "" then return "claude-code" end
+	return ""
+end
+
+function Cli.ChatOptionTokens(c)
+	local tokens = {}
+	if c.model and c.model ~= "" then table.insert(tokens, "model=" .. c.model) end
+	if c.effort and c.effort ~= "" then table.insert(tokens, "effort=" .. c.effort) end
+	if c.permissionMode and c.permissionMode ~= "" then table.insert(tokens, "pm=" .. c.permissionMode) end
+	if type(c.addDirs) == "table" and #c.addDirs > 0 then table.insert(tokens, "dirs=" .. ToHex(table.concat(c.addDirs, "\31"))) end
+	if c.resumeId and c.resumeId ~= "" then table.insert(tokens, "resume=" .. c.resumeId) end
+	if c.liveTarget and c.liveTarget ~= "" then table.insert(tokens, "live=" .. ToHex(c.liveTarget)) end
+	return tokens
 end
 
 -- First few words of a message, as a chat title.
@@ -1046,7 +1066,7 @@ local function ActivityLine(chat)
 		if a.last then
 			local quiet = now - a.last
 			s = s .. ", last " .. FmtDur(quiet) .. " ago"
-			if quiet > 120 then s = s .. " (quiet for a while - stuck? /claude-wow cancel)" end
+			if quiet > 120 then s = s .. " (quiet for a while - stuck? /claude cancel)" end
 		elseif now - started > 60 then
 			s = s .. ", no activity seen yet"
 		end
@@ -1125,8 +1145,8 @@ end
 
 local function ContextThresholdLabel()
 	local limit = tonumber(db.settings.contextWarn) or 0
-	if limit > 0 then return "warning at " .. FmtTokens(limit) .. " tokens (/claude-wow context <n> to change, 0 = off)" end
-	return "warning off (/claude-wow context <n> turns it on)"
+	if limit > 0 then return "warning at " .. FmtTokens(limit) .. " tokens (/claude config context <n> to change, 0 = off)" end
+	return "warning off (/claude config context <n> turns it on)"
 end
 
 -- What /claude-wow context prints for the current chat.
@@ -1161,7 +1181,7 @@ local function ContextWarning(c)
 		.. "Every message you send here re-reads all " .. size .. " before it starts on your question, so each reply costs more than the last and is slower to start, and it only grows.\n"
 		.. (c.cost and string.format("At API list prices this session comes to %s$%.2f so far (a comparison, not a bill). ", SEG_APPROX, c.cost) or "")
 		.. "Start a new chat to reset it: the New chat button below, or /claude. You lose " .. ChatAgentName(c) .. "'s memory of this conversation; this transcript stays here.\n"
-		.. "Said once per crossing. /claude-wow context <n> moves the mark, /claude-wow context 0 turns it off."
+		.. "Said once per crossing. /claude config context <n> moves the mark, /claude config context 0 turns it off."
 	AddHistory(c, "system", text)
 	c.history[#c.history].newChat = true
 	-- Where the reply itself went: the whisper tab if the chat has one, else the game chat.
@@ -1195,7 +1215,12 @@ local function ApplyReplies(replies)
 			matched = true
 			MarkAcked(r.id)
 			local denied = type(r.denied) == "table" and #r.denied > 0 and r.denied or nil
-			if r.status == "done" or r.status == "error" then NoteUsage(c, r) end
+			if r.status == "done" or r.status == "error" then
+				NoteUsage(c, r)
+				if c.adoptCwd and type(r.cwd) == "string" and r.cwd ~= "" then c.cwd = r.cwd end
+				if type(r.session) == "string" and r.session ~= "" then c.session = r.session end
+				c.adoptCwd, c.resumeId = nil, nil
+			end
 			if r.status == "done" then
 				Finish(c, "assistant", r.text or "", denied, r.agent, r.summary, ClaudeWoW.CleanMacros(r.macros))
 			elseif r.status == "error" then
@@ -1297,6 +1322,7 @@ local function TryLoadSlot(why)
 		if type(data.plugin) == "string" and data.plugin ~= "" then run.bridgePlugin = data.plugin end
 		if type(data.plugins) == "table" and #data.plugins > 0 then run.bridgePlugins = data.plugins end
 		ClaudeWoW.ApplyLive(data.live)
+		ClaudeWoW.ApplySessions(data.sessions, data.now)
 		ApplyTransport(data)
 	end
 	local matched = ApplyReplies(type(data) == "table" and data.replies or nil)
@@ -1427,6 +1453,7 @@ local function ProcessInbox()
 	if type(inbox.plugin) == "string" and inbox.plugin ~= "" then run.bridgePlugin = inbox.plugin end
 	if type(inbox.plugins) == "table" and #inbox.plugins > 0 then run.bridgePlugins = inbox.plugins end
 	ClaudeWoW.ApplyLive(inbox.live)
+	ClaudeWoW.ApplySessions(inbox.sessions, inbox.now)
 	ApplyTransport(inbox)
 	ApplyReplies(inbox.replies)
 	if inbox.restore then ImportRestore(inbox.restore) end
@@ -2022,7 +2049,7 @@ function Whisper.Intercept(eb, layer)
 	end
 	if db.activeChat ~= chat.id then ClaudeWoW.SwitchChat(chat.id) end
 	if chat.pendingId then
-		Whisper.System(chat, ChatAgentName(chat) .. " is still working on your last message; this one is kept as a draft in the window (/claude-wow cancel gives up on the last one)")
+		Whisper.System(chat, ChatAgentName(chat) .. " is still working on your last message; this one is kept as a draft in the window (/claude cancel gives up on the last one)")
 	elseif not ClaudeWoW.IsConnected() then
 		Whisper.System(chat, "Not connected to the bridge yet, connecting; the message waits in the window")
 	end
@@ -2122,9 +2149,10 @@ function ClaudeWoW.Send(text, allow, opts)
 	db.lastSeq = db.lastSeq + 1
 	local id = db.lastSeq
 	local tokens = {}
+	local plugin = Cli.ChatPlugin(c)
 	if c.resetNext then table.insert(tokens, "n") end
 	if c.agent and c.agent ~= "" then table.insert(tokens, "agent=" .. c.agent) end
-	if c.plugin and c.plugin ~= "" then table.insert(tokens, "plugin=" .. c.plugin) end
+	if plugin ~= "" then table.insert(tokens, "plugin=" .. plugin) end
 	if db.settings.vision or (opts and opts.vision) then table.insert(tokens, "v") end
 	if opts and opts.kind then table.insert(tokens, "kind=" .. opts.kind) end
 	local allowHex, allowOnceHex
@@ -2137,6 +2165,8 @@ function ClaudeWoW.Send(text, allow, opts)
 			allowHex = ToHex(table.concat(allow, US))
 		end
 	end
+	local optionTokens = Cli.ChatOptionTokens(c)
+	for _, t in ipairs(optionTokens) do table.insert(tokens, t) end
 	local flags = table.concat(tokens, ";")
 	local newSession = c.resetNext and true or nil
 	c.resetNext = nil
@@ -2148,7 +2178,8 @@ function ClaudeWoW.Send(text, allow, opts)
 		cwd = ToHex(c.cwd),
 		ctx = ctx and ToHex(ctx) or nil,
 		agent = (c.agent and c.agent ~= "") and c.agent or nil,
-		plugin = (c.plugin and c.plugin ~= "") and c.plugin or nil,
+		plugin = plugin ~= "" and plugin or nil,
+		opts = #optionTokens > 0 and ToHex(table.concat(optionTokens, ";")) or nil,
 		allow = allowHex,
 		allowOnce = allowOnceHex,
 		newSession = newSession,
@@ -2261,9 +2292,11 @@ function ClaudeWoW.Resend()
 	end
 	if not text then return end
 	local tokens = {}
+	local plugin = Cli.ChatPlugin(c)
 	if c.agent and c.agent ~= "" then table.insert(tokens, "agent=" .. c.agent) end
-	if c.plugin and c.plugin ~= "" then table.insert(tokens, "plugin=" .. c.plugin) end
+	if plugin ~= "" then table.insert(tokens, "plugin=" .. plugin) end
 	if db.settings.vision then table.insert(tokens, "v") end -- a resend is a fresh screenshot
+	for _, t in ipairs(Cli.ChatOptionTokens(c)) do table.insert(tokens, t) end
 	run.outbound[c.pendingId] = { chat = c.id, cwd = c.cwd, flags = table.concat(tokens, ";"), name = c.name, text = text, sentAt = GetTime() }
 	NoteStaleSignals(c.pendingId)
 	run.sentAt = GetTime()
@@ -2323,18 +2356,39 @@ end
 function ClaudeWoW.LiveStatus()
 	local live = run.bridgeLive
 	if not live then
-		return { "Live sessions: unknown until the bridge is heard from (it needs the live plugin)." }
+		return { "Running Claude Code sessions: unknown until the bridge is heard from." }
 	end
 	if #live.sessions == 0 then
-		local lines = { "No live Claude Code session connected. Start one with:" }
+		local lines = { "No Claude Code session is running with the claude-wow channel. Start one in a terminal with:" }
 		if live.start ~= "" then table.insert(lines, live.start) end
-		table.insert(lines, "Then bind a chat to it: /claude-wow plugin live")
+		table.insert(lines, "Then attach a chat to it: /claude -r <name>")
 		return lines
 	end
-	local lines = { "Live Claude Code sessions (" .. #live.sessions .. "):" }
+	local lines = { "Running Claude Code sessions (" .. #live.sessions .. "):" }
 	for i, name in ipairs(live.sessions) do table.insert(lines, i .. ". " .. tostring(name)) end
-	table.insert(lines, "Bind a chat to them: /claude-wow plugin live")
+	table.insert(lines, "Attach a chat to one: /claude -r <name>")
 	return lines
+end
+
+function ClaudeWoW.ApplySessions(list, now)
+	if type(list) ~= "table" then return end
+	local clean = {}
+	for _, e in ipairs(list) do
+		if type(e) == "table" and (type(e.id) == "string" or type(e.name) == "string") then
+			table.insert(clean, {
+				id = type(e.id) == "string" and e.id or "",
+				name = type(e.name) == "string" and e.name or "",
+				cwd = type(e.cwd) == "string" and e.cwd or "",
+				agent = type(e.agent) == "string" and e.agent or "",
+				plugin = type(e.plugin) == "string" and e.plugin or "",
+				chat = type(e.chat) == "string" and e.chat or "",
+				at = tonumber(e.at) or 0,
+				live = e.live == true,
+			})
+		end
+	end
+	run.bridgeSessions = clean
+	if type(now) == "number" then run.bridgeNow = now end
 end
 
 function ClaudeWoW.OpenDenial(chatId)
@@ -2385,7 +2439,7 @@ function ClaudeWoW.NewChat(name)
 	local c = AddChat(name and name ~= "" and name or nil)
 	if not c then
 		local a = ActiveChat()
-		AddHistory(a, "system", "Chat limit reached (" .. MAX_CHATS .. "). Delete one first with /claude-wow delete.")
+		AddHistory(a, "system", "Chat limit reached (" .. MAX_CHATS .. "). Delete one first with /claude delete.")
 		ClaudeWoW.Render()
 		return nil
 	end
@@ -2412,7 +2466,7 @@ function ClaudeWoW.SetFolder(rest, c)
 		c.cwd = ""
 		AddHistory(c, "system", "cwd reset to the bridge's default: " .. base)
 	else
-		AddHistory(c, "system", "cwd is the bridge's default: " .. base .. " (/claude-wow cd <folder>, or right-click the chat and pick Folder, to change)")
+		AddHistory(c, "system", "cwd is the bridge's default: " .. base .. " (/claude cd <folder>, or right-click the chat and pick Folder, to change)")
 	end
 	ClaudeWoW.Render()
 end
@@ -2468,6 +2522,11 @@ function ClaudeWoW.SetAgent(rest, c)
 	c = c or ActiveChat()
 	if not c then return end
 	rest = Trim(rest or ""):lower()
+	if rest == "" then
+		AddHistory(c, "system", (c.agent ~= "" and ("agent is " .. AgentName(c.agent)) or ("agent is the bridge's default: " .. (run.bridgeAgent and AgentName(run.bridgeAgent) or "unknown until connected"))) .. " (/claude -c --agent <name>, or right-click the chat and pick Agent, to change; agents: " .. AgentList() .. ")")
+		ClaudeWoW.Render()
+		return
+	end
 	if rest == "-" or rest == "default" then rest = "" end
 	if rest ~= "" and run.bridgeAgents and not Contains(run.bridgeAgents, rest) then
 		AddHistory(c, "system", "Unknown agent \"" .. rest .. "\". The bridge knows: " .. AgentList())
@@ -2481,7 +2540,7 @@ function ClaudeWoW.SetAgent(rest, c)
 	elseif changed then
 		AddHistory(c, "system", "agent reset to the bridge's default: " .. (run.bridgeAgent and AgentName(run.bridgeAgent) or "unknown until connected"))
 	else
-		AddHistory(c, "system", "agent is the bridge's default: " .. (run.bridgeAgent and AgentName(run.bridgeAgent) or "unknown until connected") .. " (/claude-wow agent <name>, or right-click the chat and pick Agent, to change; agents: " .. AgentList() .. ")")
+		AddHistory(c, "system", "agent is the bridge's default: " .. (run.bridgeAgent and AgentName(run.bridgeAgent) or "unknown until connected") .. " (/claude -c --agent <name>, or right-click the chat and pick Agent, to change; agents: " .. AgentList() .. ")")
 	end
 	ClaudeWoW.Render()
 end
@@ -2507,7 +2566,7 @@ StaticPopupDialogs["CLAUDEWOW_AGENT"] = {
 	OnAccept = function(dialog, data)
 		local box = dialog.GetEditBox and dialog:GetEditBox() or dialog.editBox
 		local chat = data and FindChat(data.id)
-		if chat and box then ClaudeWoW.SetAgent(box:GetText(), chat) end
+		if chat and box then ClaudeWoW.SetAgent(Trim(box:GetText() or "") == "" and "default" or box:GetText(), chat) end
 	end,
 	EditBoxOnEnterPressed = function(box)
 		local dialog = box:GetParent()
@@ -2542,6 +2601,11 @@ function ClaudeWoW.SetPlugin(rest, c)
 	c = c or ActiveChat()
 	if not c then return end
 	rest = Trim(rest or ""):lower()
+	if rest == "" then
+		AddHistory(c, "system", ((c.plugin or "") ~= "" and ("plugin is " .. c.plugin) or ("plugin is the bridge's default: " .. BridgePluginName())) .. " (/claude config plugin <name>, or right-click the chat and pick Plugin, to change; plugins: " .. PluginList() .. "). This is an advanced setting: a chat with a folder (/claude cd) is a coding session and one without is general chat, and /claude -r attaches running sessions.")
+		ClaudeWoW.Render()
+		return
+	end
 	if rest == "-" or rest == "default" then rest = "" end
 	if rest ~= "" and run.bridgePlugins and not Contains(run.bridgePlugins, rest) then
 		AddHistory(c, "system", "Unknown plugin \"" .. rest .. "\". The bridge has: " .. PluginList())
@@ -2555,7 +2619,7 @@ function ClaudeWoW.SetPlugin(rest, c)
 	elseif changed then
 		AddHistory(c, "system", "plugin reset to the bridge's default: " .. BridgePluginName())
 	else
-		AddHistory(c, "system", "plugin is the bridge's default: " .. BridgePluginName() .. " (/claude-wow plugin <name>, or right-click the chat and pick Plugin, to change; plugins: " .. PluginList() .. ")")
+		AddHistory(c, "system", "plugin is the bridge's default: " .. BridgePluginName() .. " (/claude config plugin <name>, or right-click the chat and pick Plugin, to change; plugins: " .. PluginList() .. ")")
 	end
 	ClaudeWoW.Render()
 end
@@ -2581,7 +2645,7 @@ StaticPopupDialogs["CLAUDEWOW_PLUGIN"] = {
 	OnAccept = function(dialog, data)
 		local box = dialog.GetEditBox and dialog:GetEditBox() or dialog.editBox
 		local chat = data and FindChat(data.id)
-		if chat and box then ClaudeWoW.SetPlugin(box:GetText(), chat) end
+		if chat and box then ClaudeWoW.SetPlugin(Trim(box:GetText() or "") == "" and "default" or box:GetText(), chat) end
 	end,
 	EditBoxOnEnterPressed = function(box)
 		local dialog = box:GetParent()
@@ -2772,7 +2836,7 @@ function ClaudeWoW.InstallMacro(m, confirmed)
 	if not confirmed then
 		local why = {}
 		if m.risky then table.insert(why, "This macro runs code or clicks buttons (/run, /script, /click). Only keep it if you trust what it does.") end
-		if index and oldBody ~= m.body then table.insert(why, "It replaces your existing macro \"" .. m.name .. "\" (/claude-wow macro undo brings the old one back).") end
+		if index and oldBody ~= m.body then table.insert(why, "It replaces your existing macro \"" .. m.name .. "\" (/claude config macro undo brings the old one back).") end
 		if #why > 0 then
 			StaticPopup_Show("CLAUDEWOW_MACRO", table.concat(why, "\n\n") .. "\n\n" .. Display(m.body), nil, m)
 			return
@@ -2855,7 +2919,7 @@ function ClaudeWoW.UpdateStatus()
 			elseif run.slotsExhausted then
 				s = "Slot pool used up this session - next keypress reloads to free it"
 			elseif run.pixelFailed then
-				s = "Bridge didn't see #" .. id .. " after " .. STRIP_TRIES .. " tries - next keypress switches to the reload path (or /claude-wow reload)"
+				s = "Bridge didn't see #" .. id .. " after " .. STRIP_TRIES .. " tries - next keypress switches to the reload path (or /claude reload)"
 			elseif c.progress or (run.act and run.act[c.id] and run.act[c.id].count > 0) then
 				s = ChatAgentName(c) .. " is working on #" .. id .. " - " .. ActivityLine(c)
 			elseif rec and not rec.acked then
@@ -2865,7 +2929,7 @@ function ClaudeWoW.UpdateStatus()
 			else
 				s = "Waiting for #" .. id .. " (checked " .. (run.polls or 0) .. "x)"
 				if elapsed > 45 then
-					s = s .. " - no sign of the bridge. Is the bridge running? /claude-wow resend"
+					s = s .. " - no sign of the bridge. Is the bridge running? /claude resend"
 				end
 			end
 		else
@@ -3081,7 +3145,7 @@ function ClaudeWoW.Render()
 			elseif not ClaudeWoW.IsConnected() then
 				Place("system", "Not connected to the bridge. Start it (npm start in the claude-wow folder, or claude-wow in your project), then click Connect below.", "", true)
 			else
-				Place("system", "Click the box below and type to start. Shift-click an item, spell or quest to link it into your message. /claude-wow help lists the commands. From the game chat, /claude <text> starts a new chat with that message, /claude-wow <text> and /r continue the current one.", "", true)
+				Place("system", "Click the box below and type to start. Shift-click an item, spell or quest to link it into your message. /claude help lists the commands. From the game chat, /claude <text> starts a new chat with that message, /claude -c <text> and /r continue the current one.", "", true)
 			end
 		end
 		for i = n + 1, #ui.bubbles do
@@ -3378,6 +3442,10 @@ end
 hooksecurefunc("SetItemRef", function(link)
 	local action, chatId = tostring(link):match("^claudewow:(%a+):(%w+)")
 	if not action or not db then return end
+	if action == "resume" then
+		ClaudeWoW.ResumePick(tonumber(chatId))
+		return
+	end
 	if FindChat(chatId) then ClaudeWoW.SwitchChat(chatId) end
 	ClaudeWoW.Toggle(true)
 	if action == "reply" and ui.input then ui.input:SetFocus() end
@@ -3866,7 +3934,7 @@ local function BuildUI()
 	mclose:SetScript("OnClick", function() ClaudeWoW.Toggle(false) end)
 	mclose:SetScript("OnEnter", function(self)
 		GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-		GameTooltip:SetText("Quit: hide completely (/claude-wow brings it back)")
+		GameTooltip:SetText("Quit: hide completely (/claude -c brings it back)")
 		GameTooltip:Show()
 	end)
 	mclose:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -3913,53 +3981,35 @@ end
 ---------------------------------------------------------------------------
 
 local HELP = table.concat({
-	"/claude-wow                        toggle the window (bare /claude starts a new chat)",
-	"/claude-wow mini                   collapse to the small bar (click the bar to expand)",
-	"/claude-wow hide                   hide the window completely",
-	"/claude <text>                     start a new chat and send <text> there, straight from the game chat box (at the chat limit the text waits in the window's input box). A command word that fits, like /claude diag, runs that command instead",
-	"/claude-wow <text>                 send <text> to the current chat from the game chat box. A message that starts with a command word is still sent when the rest of the line doesn't fit that command",
-	"/r <text>                          replies to the agent when it was the last to message you (else normal whisper reply)",
-	"/claude-wow whisper on|off        each chat as a native whisper tab: replies flash it like a player's whisper, typing in it goes to the agent (off by default)",
-	"/claude-wow echo summary|full|short|off|<chars>   how much of each reply to print in the game chat (summary = the agent's closing TL;DR lines)",
-	"/claude-wow longchat on|off        let the game chat box take 4000 characters (for long /claude messages)",
-	"/claude-wow roll on|off            a denied command pops a Need/Greed/Pass roll frame (on), or an Allow & retry button in the reply (off)",
-	"/claude-wow new [name]             start a new chat (its own agent session, like a new terminal)",
-	"/claude-wow chat <n|name>          switch chats (or click one in the left panel)",
-	"/claude-wow rename [name]          rename the current chat (no name = dialog; right-clicking the chat in the left panel offers it too)",
-	"/claude-wow delete                 delete the current chat",
-	"/claude-wow cd <folder>            folder this chat's agent works in (relative to the bridge's folder; no folder = back to default). Right-clicking the chat in the left panel and picking Folder does the same",
-	"/claude-wow agent [name]           which agent this chat talks to (no name = show; default = the bridge's). Right-clicking the chat and picking Agent does the same",
-	"/claude-wow plugin [name]          what this chat is for: ask (general in-game chat, the default) or claude-code (an agent session in a folder). No name = show; default = the bridge's. Right-clicking the chat and picking Plugin does the same",
-	"/claude-wow live                   the running Claude Code sessions a chat bound to the live plugin talks to (/claude-wow plugin live), or the command that starts one",
-	"/claude-wow reset                  next message in this chat starts a fresh agent session",
-	"/claude-wow context [on|off]       what the agent is told about your character and where you are (no argument = show it, with this chat's context size and turns)",
-	"/claude-wow context <n>            warn once, with a New chat button, when a chat's context passes n tokens (100k by default; 0 = never). The footer shows ctx and turns per chat",
-	"/claude-wow vision [on|off]        send a picture of your screen with each message, so the agent can see what you see (screenshot transport; off by default)",
-	"/claude-wow look <question>        send this one message with a picture of your screen, whatever the vision setting",
-	"/claude-wow roast [on|off]         when you die, the agent gets a recap of the hits that killed you and writes a short roast in the \"Death roasts\" chat (off by default; at most one every 2 minutes)",
-	"/claude-wow map [...]              map layers the agent drew, the route navigator and herb/ore nodes (no argument = status and subcommands; /aimap is the same)",
-	"/claude-wow voice [race|peasant|peon|off]   voice lines at agent events: your character's race and gender (default), a peasant, a peon, or none. set <event> <line>, reset, test <event|line>, lines [pack]",
-	"/claude-wow achievements [on|off|test]   list the achievements your agents earned; on|off turns the toasts on or off, test shows a sample",
-	"/claude-wow ui [list|remove <name>|run <name>]   live UI widgets the agent wrote: list them, remove one for good, or start one again",
-	"/claude-wow mode pixel             no-reload transport (default)",
-	"/claude-wow mode reload            fallback transport: a /reload per step",
-	"/claude-wow resend                 show the strip again if the bridge missed it",
-	"/claude-wow reload                 reload now (also frees the slot pool)",
-	"/claude-wow cancel                 stop waiting on this chat's reply",
-	"/claude-wow copy                   open the last reply in a selectable box for Ctrl+C",
-	"/claude-wow macro undo             undo the last macro the agent's button created or changed",
-	"/claude-wow bind <key>             hotkey: checks for a reply while waiting, else toggles the window",
-	"/claude-wow auto on|off            reload-mode only: auto-reload on your next keypress after the interval",
-	"/claude-wow signal on|off          the cheap sound-file readiness check (off if it spams errors)",
-	"/claude-wow slots                  how many reply slots are still free this session",
-	"/claude-wow diag                   transport diagnostics (is the cheap sound-file channel working?)",
-	"/claude-wow clear                  clear this chat's transcript",
+	"/claude <text>                     start a new chat with that message, like claude \"<text>\" in a terminal (bare /claude opens an empty one)",
+	"/claude -c [text]                  continue the current chat (--continue); alone it opens the window on it",
+	"/claude -r [id|name|n] [text]      resume a session (--resume). A Claude Code session running in a terminal gets the chat live; any other session is resumed headless in its folder. Bare -r lists the running and recent sessions: click one or give its number",
+	"/claude -n <name> [text]           name the new chat (--name); with -c it renames the current one",
+	"/claude --model <model> [text]     the model for the chat (opus, sonnet, a full model name)",
+	"/claude --effort <level> [text]    low, medium, high, xhigh or max",
+	"/claude --permission-mode <mode>   acceptEdits, auto, plan, manual, dontAsk or bypassPermissions",
+	"/claude --add-dir <path> [text]    one more folder the agent may use (repeat the flag for more)",
+	"/claude --agent <name> [text]      which CLI runs the chat: claude, codex, grok, agy or hermes",
+	"    Flags come before the text and combine: /claude --model opus fix the build starts a new chat on opus. With -c they change the current chat. --flag=value and \"quoted values\" work, a value of - clears a setting, and a flag with no value shows it. The bridge tells you when an agent has no such option",
+	"/claude config [key] [value]       settings: voice, roast, whisper, echo, vision, roll, achievements, ui, map, macro, context, signal, mode, longchat, auto, bind, diag. Alone it lists them with their values",
+	"/claude cd <folder>                folder this chat's agent works in (relative to the bridge's folder; alone = the default). A chat with a folder is a coding session there, one without is general in-game chat",
+	"/claude look <question>            send one message to the current chat with a picture of your screen",
+	"/claude rename [name]              rename the current chat (alone: a dialog)",
+	"/claude delete                     delete the current chat",
+	"/claude clear                      clear this chat's transcript",
+	"/claude copy                       open the last reply in a selectable box for Ctrl+C",
+	"/claude reset                      the next message in this chat starts a fresh session",
+	"/claude cancel                     stop waiting on this chat's reply",
+	"/claude resend                     show the strip again if the bridge missed it",
+	"/claude reload                     reload now (also frees the slot pool)",
+	"/claude slots                      how many reply slots are still free this session",
+	"/claude diag                       transport diagnostics",
+	"/claude hide | mini                hide the window, or collapse it to the small bar",
+	"/claude help                       this list",
+	"/r <text>                          reply to the agent when it was the last to message you (else a normal whisper reply)",
+	"A command word followed by something it does not take is a message: /claude delete the unused imports starts a new chat with that text.",
 }, "\n")
 
--- What each subcommand accepts, so that free text which happens to start with
--- one of these words ("delete the unused imports", "help me with this macro")
--- is sent as a message instead of run as a command. 0 = no arguments, 1 = at
--- most one word, a table = one of those words, a function decides, true = anything.
 local function OnOffOrNumber(rest)
 	return rest == "" or rest == "on" or rest == "off" or tonumber(rest) ~= nil
 end
@@ -3987,20 +4037,32 @@ local COMMAND_ARGS = {
 	roll = { [""] = true, on = true, off = true },
 	whisper = { [""] = true, on = true, off = true },
 	vision = { [""] = true, on = true, off = true },
-	look = true, -- /claude-wow look <question>: one message with a picture of the screen
+	look = true,
 	roast = { [""] = true, on = true, off = true },
 	auto = OnOffOrNumber,
 	echo = function(rest) return rest == "" or rest == "summary" or rest == "full" or rest == "short" or rest == "off" or tonumber(rest) ~= nil end,
 	bind = 1, agent = 1, plugin = 1, live = 0,
 	chat = ChatArgument, chats = ChatArgument,
 	cd = true, new = true, rename = true,
-	map = true, -- /claude-wow map ...: Map.lua (layers, navigator, herb/ore nodes)
-	macro = { undo = true }, -- /claude-wow macro undo; "/claude macro for my warrior" still goes to the agent
+	map = true,
+	macro = { undo = true },
 	voice = function(rest) return ClaudeWoWVoice ~= nil and ClaudeWoWVoice.IsCommand(rest) end,
 	achievements = { [""] = true, on = true, off = true, test = true, list = true },
 	toasts = { [""] = true, on = true, off = true, test = true },
 	ui = WidgetArgument,
 }
+
+Cli.CLAUDE_VERBS = {
+	help = true, diag = true, cancel = true, copy = true, clear = true, rename = true, delete = true,
+	cd = true, hide = true, quit = true, mini = true, min = true, reload = true, refresh = true,
+	resend = true, slots = true, look = true, reset = true,
+}
+
+Cli.CONFIG_KEYS = {
+	"voice", "roast", "whisper", "echo", "vision", "roll", "achievements", "context", "signal",
+	"mode", "longchat", "auto", "plugin", "ui", "map", "macro", "bind", "diag",
+}
+Cli.CONFIG_ALIASES = { toasts = "achievements", ctx = "context" }
 
 local function IsCommand(cmd, rest)
 	local spec = COMMAND_ARGS[cmd]
@@ -4010,6 +4072,21 @@ local function IsCommand(cmd, rest)
 	if spec == 1 then return not rest:find("%s") end
 	if type(spec) == "table" then return spec[rest:lower()] == true end
 	return spec(rest) == true
+end
+
+function Cli.ConfigKey(word)
+	word = tostring(word or ""):lower()
+	word = Cli.CONFIG_ALIASES[word] or word
+	return Contains(Cli.CONFIG_KEYS, word) and word or nil
+end
+
+function Cli.IsConfig(rest)
+	if rest == "" then return true end
+	local word, args = rest:match("^(%S+)%s*(.-)$")
+	local key = Cli.ConfigKey(word)
+	if not key then return false end
+	if key == "macro" and args == "" then return true end
+	return IsCommand(key, args)
 end
 
 local function ApplyLongChat()
@@ -4023,16 +4100,475 @@ local function FollowTab(editBox)
 	if tabChat and db.activeChat ~= tabChat.id then ClaudeWoW.SwitchChat(tabChat.id) end
 end
 
+function Cli.LimitReachedWith(text)
+	local a = ActiveChat()
+	if ui.input then ui.input:SetText(text) end
+	ClaudeWoW.Toggle(true)
+	print("|cff66ccff[Claude WoW]|r Chat limit reached (" .. MAX_CHATS .. "), so no new chat was started. Your message is in the window's input box: delete a chat with /claude delete and send it with /claude again, or press Enter there to send it to " .. Display(a and a.name or "the current chat") .. ".")
+end
+
 function ClaudeWoW.NewChatWith(text)
 	if ClaudeWoW.NewChat() then
 		ClaudeWoW.Send(text)
 		return true
 	end
-	local a = ActiveChat()
-	if ui.input then ui.input:SetText(text) end
-	ClaudeWoW.Toggle(true)
-	print("|cff66ccff[Claude WoW]|r Chat limit reached (" .. MAX_CHATS .. "), so no new chat was started. Your message is in the window's input box: delete a chat with /claude-wow delete and send it with /claude again, or press Enter there to send it to " .. Display(a and a.name or "the current chat") .. ".")
+	Cli.LimitReachedWith(text)
 	return false
+end
+
+function Cli.Say(c, text)
+	AddHistory(c, "system", text)
+	ClaudeWoW.Render()
+	ClaudeWoW.Toggle(true)
+end
+
+function Cli.ConfigValue(key)
+	local s = db.settings
+	local c = ActiveChat()
+	if key == "voice" then return (type(ClaudeWoWDB.voice) == "table" and ClaudeWoWDB.voice.pack) or "race" end
+	if key == "roast" then return (type(ClaudeWoWDB.roast) == "table" and ClaudeWoWDB.roast.on) and "on" or "off" end
+	if key == "whisper" then return s.whisper and "on" or "off" end
+	if key == "echo" then return tostring(s.echo) end
+	if key == "vision" then return s.vision and "on" or "off" end
+	if key == "roll" then return s.lootRoll == false and "off" or "on" end
+	if key == "achievements" then return s.toasts == false and "toasts off" or "toasts on" end
+	if key == "context" then return (s.context and "on" or "off") .. ", " .. ContextThresholdLabel() end
+	if key == "signal" then return s.signal and "on" or "off" end
+	if key == "mode" then return tostring(s.mode) end
+	if key == "longchat" then return s.longchat and "on" or "off" end
+	if key == "auto" then return (s.autoRefresh and "on" or "off") .. ", every " .. tostring(s.interval) .. " s" end
+	if key == "plugin" then return (c and (c.plugin or "") ~= "") and c.plugin or ("chat default: " .. (Cli.ChatPlugin(c) ~= "" and Cli.ChatPlugin(c) or BridgePluginName())) end
+	return ""
+end
+
+Cli.CONFIG_HELP = {
+	voice = "race|peasant|peon|off, set <event> <line>, reset, test <event|line>, lines [pack]: voice lines at agent events",
+	roast = "on|off: when you die, a short roast of it in the \"Death roasts\" chat",
+	whisper = "on|off: each chat as a native whisper tab",
+	echo = "summary|full|short|off|<chars>: how much of a reply the game chat prints",
+	vision = "on|off: a picture of your screen with each message (screenshot transport)",
+	roll = "on|off: a denied command pops a Need/Greed/Pass roll, or an Allow & retry button",
+	achievements = "on|off|test: achievement toasts; alone it lists what you earned",
+	context = "on|off|<tokens>: the game context the agent gets, and the context-size warning (0 = never)",
+	signal = "on|off: the cheap sound-file readiness check",
+	mode = "pixel|reload: the transport",
+	longchat = "on|off: let the game chat box take 4000 characters",
+	auto = "on|off|<seconds>: reload mode only, auto-reload after the interval",
+	plugin = "<name>|default: advanced, what this chat is bound to",
+	ui = "list|remove <name>|run <name>: live UI widgets the agent wrote",
+	map = "map layers, the route navigator and herb/ore nodes (/aimap is the same)",
+	macro = "undo: undo the last macro the agent's button created or changed",
+	bind = "<key>: hotkey that checks for a reply while waiting, else toggles the window",
+	diag = "transport diagnostics",
+}
+
+function Cli.ConfigList()
+	local lines = { "Settings. /claude config <key> <value> changes one, /claude config <key> shows it:" }
+	for _, key in ipairs(Cli.CONFIG_KEYS) do
+		local value = Cli.ConfigValue(key)
+		table.insert(lines, key .. (value ~= "" and (" = " .. value) or "") .. "  -  " .. Cli.CONFIG_HELP[key])
+	end
+	return table.concat(lines, "\n")
+end
+
+local RunCommand
+
+function ClaudeWoW.Config(rest)
+	rest = Trim(rest or "")
+	if rest == "" then
+		Cli.Say(ActiveChat(), Cli.ConfigList())
+		return
+	end
+	local word, args = rest:match("^(%S+)%s*(.-)$")
+	local key = Cli.ConfigKey(word)
+	if not key then
+		Cli.Say(ActiveChat(), "No setting \"" .. word .. "\". " .. Cli.ConfigList())
+		return
+	end
+	if key == "macro" and args == "" then
+		Cli.Say(ActiveChat(), "macro: " .. Cli.CONFIG_HELP.macro)
+		return
+	end
+	if not IsCommand(key, args) then
+		Cli.Say(ActiveChat(), key .. " does not take \"" .. args .. "\". " .. key .. ": " .. Cli.CONFIG_HELP[key])
+		return
+	end
+	RunCommand(key, args)
+end
+
+Cli.CLI_FLAGS = {
+	["-c"] = "continue", ["--continue"] = "continue",
+	["-r"] = "resume", ["--resume"] = "resume",
+	["-n"] = "name", ["--name"] = "name",
+	["-h"] = "help", ["--help"] = "help",
+	["--model"] = "model", ["--effort"] = "effort", ["--permission-mode"] = "permissionMode",
+	["--add-dir"] = "addDir", ["--agent"] = "agent",
+}
+Cli.CLI_VALUE = { name = "required", model = "required", effort = "required", permissionMode = "required", addDir = "required", agent = "required", resume = "optional" }
+Cli.EFFORTS = { "low", "medium", "high", "xhigh", "max", "minimal" }
+Cli.PERMISSION_MODES = { "acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan" }
+Cli.ADD_DIRS_MAX = 8
+
+function Cli.ReadToken(s, pos)
+	local start = s:find("%S", pos)
+	if not start then return nil end
+	local q = s:sub(start, start)
+	if q == "\"" or q == "'" then
+		local close = s:find(q, start + 1, true)
+		if close and (close == #s or s:sub(close + 1, close + 1):match("%s")) then
+			return s:sub(start + 1, close - 1), start, close + 1, true
+		end
+	end
+	local stop = s:find("%s", start) or (#s + 1)
+	return s:sub(start, stop - 1), start, stop, false
+end
+
+function Cli.TextFrom(msg, start)
+	local rest = Trim(msg:sub(start))
+	local q = rest:sub(1, 1)
+	if (q == "\"" or q == "'") and #rest >= 2 and rest:sub(-1) == q and not rest:sub(2, -2):find(q, 1, true) then
+		return rest:sub(2, -2)
+	end
+	return rest
+end
+
+function Cli.FlagKey(tok)
+	if not tok then return nil end
+	local name = tok:match("^(%-%-[%w%-]+)=") or tok
+	return Cli.CLI_FLAGS[name:lower()]
+end
+
+function ClaudeWoW.ParseCli(msg)
+	msg = msg or ""
+	local o = { flags = 0, text = "", addDir = {} }
+	local pos = 1
+	while true do
+		local tok, start, after, quoted = Cli.ReadToken(msg, pos)
+		if not tok then return o end
+		if quoted then
+			o.text = Cli.TextFrom(msg, start)
+			return o
+		end
+		if tok == "--" then
+			o.text = Cli.TextFrom(msg, after)
+			return o
+		end
+		local name, inline = tok:match("^(%-%-[%w%-]+)=(.*)$")
+		local key = Cli.CLI_FLAGS[(name or tok):lower()]
+		if not key then
+			o.text = Cli.TextFrom(msg, start)
+			return o
+		end
+		o.flags = o.flags + 1
+		pos = after
+		local value
+		if name then
+			if inline ~= "" then
+				local v, _, vAfter = Cli.ReadToken(msg, start + #name + 1)
+				value, pos = v, vAfter
+			end
+		elseif Cli.CLI_VALUE[key] then
+			local nxt, _, nAfter, nQuoted = Cli.ReadToken(msg, pos)
+			if nxt and nxt ~= "--" and (nQuoted or not Cli.FlagKey(nxt)) then
+				value, pos = nxt, nAfter
+			end
+		end
+		if key == "addDir" then
+			if value then table.insert(o.addDir, value) else o.addDirShow = true end
+		elseif Cli.CLI_VALUE[key] then
+			o[key] = value or true
+		else
+			o[key] = true
+		end
+	end
+end
+
+function Cli.Cleared(v)
+	v = tostring(v or ""):lower()
+	return v == "-" or v == "default"
+end
+
+function Cli.Canonical(list, v)
+	v = tostring(v or ""):lower()
+	for _, x in ipairs(list) do
+		if x:lower() == v then return x end
+	end
+	return nil
+end
+
+function Cli.HasSetters(o)
+	for _, key in ipairs({ "name", "model", "effort", "permissionMode", "agent" }) do
+		if type(o[key]) == "string" then return true end
+	end
+	return #o.addDir > 0
+end
+
+function Cli.CheckFlags(o)
+	local errors = {}
+	if type(o.model) == "string" and not Cli.Cleared(o.model) and not o.model:match("^[%w%._:%[%]%-]+$") then
+		table.insert(errors, "\"" .. o.model .. "\" is not a model name.")
+	end
+	if type(o.effort) == "string" and not Cli.Cleared(o.effort) and not Cli.Canonical(Cli.EFFORTS, o.effort) then
+		table.insert(errors, "Unknown effort \"" .. o.effort .. "\": low, medium, high, xhigh or max.")
+	end
+	if type(o.permissionMode) == "string" and not Cli.Cleared(o.permissionMode) and not Cli.Canonical(Cli.PERMISSION_MODES, o.permissionMode) then
+		table.insert(errors, "Unknown permission mode \"" .. o.permissionMode .. "\": " .. table.concat(Cli.PERMISSION_MODES, ", ") .. ".")
+	end
+	if type(o.agent) == "string" and not Cli.Cleared(o.agent) and run.bridgeAgents and not Contains(run.bridgeAgents, o.agent:lower()) then
+		table.insert(errors, "Unknown agent \"" .. o.agent .. "\". The bridge knows: " .. AgentList() .. ".")
+	end
+	if #o.addDir > Cli.ADD_DIRS_MAX then table.insert(errors, "At most " .. Cli.ADD_DIRS_MAX .. " --add-dir folders.") end
+	return errors
+end
+
+function Cli.DirsLabel(c)
+	if type(c.addDirs) ~= "table" or #c.addDirs == 0 then return "none" end
+	return table.concat(c.addDirs, ", ")
+end
+
+function Cli.ApplyChatFlags(c, o)
+	local notes = {}
+	if o.agent ~= nil then ClaudeWoW.SetAgent(o.agent == true and "" or o.agent, c) end
+	local function Setting(key, label, canonical)
+		if o[key] == nil then return end
+		if o[key] ~= true then
+			if Cli.Cleared(o[key]) then
+				c[key] = nil
+			else
+				c[key] = canonical and canonical(o[key]) or o[key]
+			end
+		end
+		table.insert(notes, label .. ": " .. ((c[key] or "") ~= "" and c[key] or "the agent's default"))
+	end
+	Setting("model", "model")
+	Setting("effort", "effort", function(v) return Cli.Canonical(Cli.EFFORTS, v) end)
+	Setting("permissionMode", "permission mode", function(v) return Cli.Canonical(Cli.PERMISSION_MODES, v) end)
+	if #o.addDir > 0 or o.addDirShow then
+		for _, dir in ipairs(o.addDir) do
+			if Cli.Cleared(dir) then
+				c.addDirs = nil
+			else
+				c.addDirs = c.addDirs or {}
+				if not Contains(c.addDirs, dir) and #c.addDirs < Cli.ADD_DIRS_MAX then table.insert(c.addDirs, dir) end
+			end
+		end
+		table.insert(notes, "extra folders: " .. Cli.DirsLabel(c))
+	end
+	return notes
+end
+
+function Cli.Age(at)
+	local now = run.bridgeNow or time()
+	local sec = math.max(0, now - (tonumber(at) or now))
+	if sec < 60 then return "now" end
+	if sec < 3600 then return math.floor(sec / 60) .. "m ago" end
+	if sec < 86400 then return math.floor(sec / 3600) .. "h ago" end
+	return math.floor(sec / 86400) .. "d ago"
+end
+
+function Cli.LastActivity(ch)
+	local last = ch.history and ch.history[#ch.history]
+	return (last and last.t) or ch.created or 0
+end
+
+function Cli.SessionEntries()
+	local list, seen = {}, {}
+	for _, e in ipairs(run.bridgeSessions or {}) do
+		local chat = e.chat ~= "" and FindChat(e.chat) or nil
+		for _, ch in ipairs(db.chats) do
+			if not chat and e.id ~= "" and (ch.session == e.id or ch.resumeId == e.id) and not e.live then chat = ch end
+			if not chat and e.live and ch.liveTarget and (ch.liveTarget == e.id or ch.liveTarget:lower() == e.name:lower()) then chat = ch end
+		end
+		if not (chat and seen[chat.id]) then
+			table.insert(list, {
+				kind = e.live and "live" or (chat and "chat" or "headless"),
+				id = e.id, name = chat and chat.name or e.name, cwd = e.cwd, agent = e.agent, plugin = e.plugin,
+				at = e.at, live = e.live, chat = chat and chat.id or nil,
+			})
+			if chat then seen[chat.id] = true end
+		end
+	end
+	for _, ch in ipairs(db.chats) do
+		if not seen[ch.id] then
+			table.insert(list, { kind = "chat", id = ch.session or "", name = ch.name, cwd = ch.cwd or "", agent = ch.agent or "", at = Cli.LastActivity(ch), chat = ch.id })
+		end
+	end
+	return list
+end
+
+function Cli.EntryLine(i, e)
+	local parts = {}
+	if e.live then table.insert(parts, "[running]") end
+	table.insert(parts, Display(e.name ~= "" and e.name or (e.id ~= "" and e.id:sub(1, 8) or "?")))
+	if e.cwd and e.cwd ~= "" then table.insert(parts, Display(e.cwd)) end
+	if e.id and e.id ~= "" then table.insert(parts, e.id:sub(1, 8)) end
+	if e.at and e.at > 0 then table.insert(parts, Cli.Age(e.at)) end
+	if e.chat and e.chat == db.activeChat then table.insert(parts, "(this chat)") end
+	return i .. ". " .. table.concat(parts, "  ")
+end
+
+function ClaudeWoW.ShowResumePicker(entries, header)
+	entries = entries or Cli.SessionEntries()
+	run.resumeList = entries
+	local c = ActiveChat()
+	local lines = { header or "Sessions (/claude -r <n> [text] picks one; a [running] one gets the chat live, any other is resumed in its folder):" }
+	for i, e in ipairs(entries) do table.insert(lines, Cli.EntryLine(i, e)) end
+	if #entries == 0 then table.insert(lines, "none yet") end
+	local live = run.bridgeLive
+	if live and #live.sessions == 0 and live.start ~= "" then
+		table.insert(lines, "To run a terminal session the game can attach to, start Claude Code with: " .. live.start)
+	end
+	Cli.Say(c, table.concat(lines, "\n"))
+	print("|cff66ccff[Claude WoW]|r " .. (header or "Sessions, click one to attach:"))
+	for i, e in ipairs(entries) do
+		print("|cff66ccff[Claude WoW]|r |Hclaudewow:resume:" .. i .. "|h|cff7ec8ff[" .. i .. "]|r|h " .. Cli.EntryLine(i, e):gsub("^%d+%.%s+", ""))
+	end
+end
+
+function Cli.MatchEntries(entries, ref)
+	local want = tostring(ref or ""):lower()
+	local rules = {
+		function(e) return e.id ~= "" and e.id:lower() == want end,
+		function(e) return e.name:lower() == want end,
+		function(e) return #want >= 4 and e.id ~= "" and e.id:lower():sub(1, #want) == want end,
+		function(e) return e.name:lower():sub(1, #want) == want end,
+	}
+	for _, rule in ipairs(rules) do
+		local hits = {}
+		for _, e in ipairs(entries) do
+			if rule(e) then table.insert(hits, e) end
+		end
+		if #hits > 0 then return hits end
+	end
+	return {}
+end
+
+function Cli.AttachTo(e)
+	local c = e.chat and FindChat(e.chat) or nil
+	if c then
+		ClaudeWoW.SwitchChat(c.id)
+		return c, false
+	end
+	if e.chat and (e.id or "") == "" then
+		Cli.Say(ActiveChat(), "That chat is gone. /claude -r lists what is left.")
+		return nil
+	end
+	local name = (e.name ~= "" and e.name or e.id:sub(1, 8)):sub(1, 24)
+	c = AddChat(name, "")
+	if not c then
+		Cli.Say(ActiveChat(), "Chat limit reached (" .. MAX_CHATS .. "). Delete one first with /claude delete, then /claude -r again.")
+		return nil
+	end
+	c.plugin = ""
+	c.agent = ""
+	if e.live then
+		c.liveTarget = e.id ~= "" and e.id or e.name
+		c.agent = "claude"
+		c.cwd = e.cwd or ""
+		AddHistory(c, "system", "Attached to the running Claude Code session " .. Display(e.name) .. (e.cwd ~= "" and (" in " .. Display(e.cwd)) or "") .. ". Messages here go to that terminal session, and its answers come back here.")
+	else
+		c.resumeId = e.id
+		if e.agent and e.agent ~= "" then c.agent = e.agent end
+		if e.plugin and e.plugin ~= "" and e.plugin ~= "claude-code" and e.plugin ~= LIVE_PLUGIN then
+			c.plugin = e.plugin
+		else
+			c.cwd = e.cwd or ""
+			c.adoptCwd = (e.cwd or "") == "" or nil
+		end
+		AddHistory(c, "system", "Attached to session " .. e.id .. ((e.cwd or "") ~= "" and (" in " .. Display(e.cwd)) or "") .. ". Your next message resumes it" .. (e.unverified and " (the bridge looks the id up then)" or "") .. ".")
+	end
+	ClaudeWoW.SwitchChat(c.id)
+	ClaudeWoW.RenderChatList()
+	return c, true
+end
+
+function Cli.ResolveResume(ref)
+	local n = tonumber(ref)
+	if n and n == math.floor(n) and n >= 1 then
+		local list = run.resumeList or Cli.SessionEntries()
+		if list[n] then return { list[n] } end
+	end
+	local hits = Cli.MatchEntries(Cli.SessionEntries(), ref)
+	if #hits == 0 and ref:match("^[%x%-]+$") and #ref >= 8 then
+		return { { kind = "headless", id = ref, name = ref:sub(1, 8), cwd = "", agent = "", at = 0, unverified = true } }
+	end
+	return hits
+end
+
+function Cli.RunResume(o)
+	if o.resume == true then
+		ClaudeWoW.ShowResumePicker()
+		return
+	end
+	local hits = Cli.ResolveResume(o.resume)
+	if #hits == 0 then
+		Cli.Say(ActiveChat(), "No chat or session matches \"" .. Display(o.resume) .. "\". /claude -r lists them.")
+		return
+	end
+	if #hits > 1 then
+		ClaudeWoW.ShowResumePicker(hits, "\"" .. Display(o.resume) .. "\" matches " .. #hits .. " sessions; pick one with /claude -r <n> or a click:")
+		return
+	end
+	local c = Cli.AttachTo(hits[1])
+	if not c then return end
+	if type(o.name) == "string" then
+		c.name = o.name:sub(1, 24)
+		Whisper.Retitle(c)
+	end
+	local notes = Cli.ApplyChatFlags(c, o)
+	if #notes > 0 then AddHistory(c, "system", table.concat(notes, "\n")) end
+	if o.text ~= "" then
+		ClaudeWoW.Send(o.text, nil, { chat = c.id })
+	else
+		ClaudeWoW.Render()
+		ClaudeWoW.Toggle(true)
+	end
+end
+
+function ClaudeWoW.ResumePick(n)
+	if not n or not db then return end
+	local e = (run.resumeList or Cli.SessionEntries())[n]
+	if not e then return end
+	Cli.RunResume({ resume = tostring(n), text = "", addDir = {}, flags = 1 })
+	ClaudeWoW.Toggle(true)
+end
+
+function ClaudeWoW.RunCli(o)
+	if o.help then
+		Cli.Say(ActiveChat(), HELP)
+		return
+	end
+	local errors = Cli.CheckFlags(o)
+	if #errors > 0 then
+		Cli.Say(ActiveChat(), table.concat(errors, "\n"))
+		return
+	end
+	if o.resume ~= nil then
+		Cli.RunResume(o)
+		return
+	end
+	local c
+	if o.continue or (o.flags > 0 and o.text == "" and not Cli.HasSetters(o)) then
+		c = ActiveChat()
+		if o.continue and type(o.name) == "string" then
+			c.name = o.name:sub(1, 24)
+			Whisper.Retitle(c)
+		end
+	else
+		c = ClaudeWoW.NewChat(type(o.name) == "string" and o.name:sub(1, 24) or nil)
+		if not c then
+			if o.text ~= "" then Cli.LimitReachedWith(o.text) end
+			return
+		end
+	end
+	local notes = Cli.ApplyChatFlags(c, o)
+	if #notes > 0 then AddHistory(c, "system", table.concat(notes, "\n")) end
+	if o.text ~= "" then
+		ClaudeWoW.Send(o.text, nil, { chat = c.id })
+	else
+		ClaudeWoW.Render()
+		ClaudeWoW.Toggle(true)
+	end
 end
 
 SLASH_CLAUDEWOW1 = "/claude-wow"
@@ -4045,10 +4581,16 @@ SlashCmdList["CLAUDE"] = function(msg, editBox)
 		return
 	end
 	local cmd, rest = msg:match("^(%S+)%s*(.-)$")
-	if IsCommand(cmd:lower(), rest) then
-		return SlashCmdList["CLAUDEWOW"](msg, editBox)
+	local verb = cmd:lower()
+	if verb == "config" and Cli.IsConfig(rest) then
+		ClaudeWoW.Config(rest)
+		return
 	end
-	ClaudeWoW.NewChatWith(msg)
+	if Cli.CLAUDE_VERBS[verb] and IsCommand(verb, rest) then
+		RunCommand(verb, rest)
+		return
+	end
+	ClaudeWoW.RunCli(ClaudeWoW.ParseCli(msg))
 end
 
 SlashCmdList["CLAUDEWOW"] = function(msg, editBox)
@@ -4056,15 +4598,16 @@ SlashCmdList["CLAUDEWOW"] = function(msg, editBox)
 	msg = Trim(msg or "")
 	local cmd, rest = msg:match("^(%S+)%s*(.-)$")
 	cmd = cmd and cmd:lower() or ""
-	local s = db.settings
-	local c = ActiveChat()
-
-	-- Anything that isn't a command, or a command word followed by something it
-	-- doesn't take, is a message for the agent.
 	if cmd ~= "" and not IsCommand(cmd, rest) then
 		ClaudeWoW.Send(msg)
 		return
 	end
+	RunCommand(cmd, rest)
+end
+
+RunCommand = function(cmd, rest)
+	local s = db.settings
+	local c = ActiveChat()
 	if cmd == "" then
 		ClaudeWoW.Toggle()
 	elseif cmd == "mini" or cmd == "min" then
@@ -4121,9 +4664,7 @@ SlashCmdList["CLAUDEWOW"] = function(msg, editBox)
 		ClaudeWoW.SetPlugin(rest, c)
 		ClaudeWoW.Toggle(true)
 	elseif cmd == "live" then
-		AddHistory(c, "system", table.concat(ClaudeWoW.LiveStatus(), "\n"))
-		ClaudeWoW.Render()
-		ClaudeWoW.Toggle(true)
+		ClaudeWoW.ShowResumePicker()
 	elseif cmd == "reset" then
 		c.resetNext = true
 		local where = ChatFolder(c)
@@ -4156,8 +4697,8 @@ SlashCmdList["CLAUDEWOW"] = function(msg, editBox)
 		end
 		local ctx = ClaudeWoW.GameContext()
 		AddHistory(c, "system", (rest == "" and (ContextReport(c) .. "\n\n") or "") .. (s.context
-			and "Game context is ON: the agent is told this with each message (it goes into its system prompt, so unrelated projects are unaffected by anything but a few lines). /claude-wow context off to stop.\n\n"
-			or "Game context is OFF: the agent is told nothing about the game. /claude-wow context on to send this:\n\n") .. ctx
+			and "Game context is ON: the agent is told this with each message (it goes into its system prompt, so unrelated projects are unaffected by anything but a few lines). /claude config context off to stop.\n\n"
+			or "Game context is OFF: the agent is told nothing about the game. /claude config context on to send this:\n\n") .. ctx
 			.. "\n\nTip: click the input box, then shift-click an item, spell or quest to link it into your message; the agent gets its tooltip.")
 		ClaudeWoW.Render()
 		ClaudeWoW.Toggle(true)
@@ -4224,19 +4765,19 @@ SlashCmdList["CLAUDEWOW"] = function(msg, editBox)
 			Whisper.Install()
 			local frame = Whisper.FrameFor(c, true, true)
 			AddHistory(c, "system", frame
-				and ("Whisper tabs are ON: this chat is the \"" .. Display(c.name) .. "\" tab in the chat dock. Type there and press Enter to talk to " .. ChatAgentName(c) .. "; replies flash the tab. Other chats get a tab with their first message. /claude-wow whisper off closes them.")
+				and ("Whisper tabs are ON: this chat is the \"" .. Display(c.name) .. "\" tab in the chat dock. Type there and press Enter to talk to " .. ChatAgentName(c) .. "; replies flash the tab. Other chats get a tab with their first message. /claude config whisper off closes them.")
 				or ("Whisper tabs are ON, but this client could not open a chat tab" .. (run.whisperError and (": " .. run.whisperError) or " (no FCF_OpenTemporaryWindow)") .. ". Replies keep going to the game chat as before."))
 		elseif rest == "off" then
 			s.whisper = false
 			Whisper.CloseAll()
 			AddHistory(c, "system", "Whisper tabs are off; replies go to the game chat as before")
 		else
-			AddHistory(c, "system", Whisper.Status() .. " (/claude-wow whisper on|off: each chat as a native whisper tab)")
+			AddHistory(c, "system", Whisper.Status() .. " (/claude config whisper on|off: each chat as a native whisper tab)")
 		end
 		ClaudeWoW.Render()
 	elseif cmd == "vision" then
 		if rest == "on" then s.vision = true elseif rest == "off" then s.vision = false end
-		AddHistory(c, "system", VisionStatus() .. ". /claude-wow vision on|off; /claude-wow look <question> sends one message with a picture whatever the setting.")
+		AddHistory(c, "system", VisionStatus() .. ". /claude config vision on|off; /claude look <question> sends one message with a picture whatever the setting.")
 		ClaudeWoW.UpdateStatus()
 		ClaudeWoW.Render()
 		ClaudeWoW.Toggle(true)

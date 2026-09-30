@@ -181,14 +181,14 @@ test('the game context describes the character and rides on the hello, then only
   assert.ok(rec.ctx.includes('Position: 10.0, 67.8 on Duskwood (map 1431)'), 'the map name shows when it differs from the zone');
   assert.equal(Buffer.from(vm.evaluate('ClaudeWoWDB.outbox.ctx'), 'hex').toString('utf8'), rec.ctx, 'the reload path carries it too');
   // Turning it off sends an empty context at once (a hello), so the bridge drops what it had.
-  vm.run('SlashCmdList.CLAUDEWOW("context off")');
+  vm.run('SlashCmdList.CLAUDE("config context off")');
   assert.equal(vm.evaluate('ClaudeWoWDB.settings.context'), 'false');
   const off = stripRecords(vm).filter(r => r.flags === 'h;c');
   assert.equal(off.length, 1);
   assert.equal(off[0].ctx, '');
   assert.ok(vm.evaluate('ClaudeWoWDB.chats[2].history[#ClaudeWoWDB.chats[2].history].text').includes('Game context is OFF'));
   // Back on: another hello, with the context again.
-  vm.run('SlashCmdList.CLAUDEWOW("context on")');
+  vm.run('SlashCmdList.CLAUDE("config context on")');
   const on = stripRecords(vm).filter(r => r.flags === 'h;c');
   assert.ok(on.some(r => r.ctx.includes('Character: Testchar')));
   assert.ok(vm.evaluate('ClaudeWoWDB.chats[2].history[#ClaudeWoWDB.chats[2].history].text').includes('Game context is ON'));
@@ -359,11 +359,11 @@ test('the Folder... menu item (right-click a chat) opens a prompt that sets the 
   assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].cwd'), '');
 });
 
-test('a sent message is encoded on the strip with the chat folder, then a slot reply finishes it', () => {
+test('a sent message is encoded on the strip with the chat folder and goes to the coding plugin, then a slot reply finishes it', () => {
   const vm = newVM();
   login(vm);
   connect(vm);
-  vm.run('SlashCmdList.CLAUDEWOW("cd realms")');
+  vm.run('SlashCmdList.CLAUDE("cd realms")');
   assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].cwd'), 'realms');
   vm.run('ClaudeWoW.Send("hello world")');
   const chatId = vm.evaluate('ClaudeWoWDB.chats[1].id');
@@ -374,7 +374,8 @@ test('a sent message is encoded on the strip with the chat folder, then a slot r
   assert.equal(rec.chat, chatId);
   assert.equal(rec.id, id);
   assert.equal(rec.cwd, 'realms');
-  assert.equal(rec.flags, '');
+  assert.equal(rec.flags, 'plugin=claude-code', 'a chat with a folder is a coding session there');
+  assert.equal(vm.evaluate('ClaudeWoWDB.outbox.plugin'), 'claude-code');
   // The chat took its title from the first message.
   assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].name'), 'Hello world');
 
@@ -387,7 +388,7 @@ test('a sent message is encoded on the strip with the chat folder, then a slot r
   assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'false', 'strip cleared once nothing is pending');
 
   // The bridge's default folder arrived with the slot and is what "/claude-wow cd" reports.
-  vm.run('SlashCmdList.CLAUDEWOW("cd")');
+  vm.run('SlashCmdList.CLAUDE("cd")');
   assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].cwd'), '');
   assert.ok(vm.evaluate('ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].text').includes('C:\\proj'));
 });
@@ -433,7 +434,7 @@ test('a chat can pick its agent: the strip says so, replies are labelled by thei
   assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].agent'), 'claude');
   assert.ok(vm.evaluate('table.concat(STUB.prints, "\\n")').includes('[Claude · '), 'the game chat echo names the agent');
   // Switch this chat to Codex: the next message carries agent=codex, on both transports.
-  vm.run('SlashCmdList.CLAUDEWOW("agent Codex")');
+  vm.run('SlashCmdList.CLAUDE("-c --agent Codex")');
   assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].agent'), 'codex');
   assert.ok(vm.evaluate('ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].text').includes('agent set to Codex'));
   vm.run('ClaudeWoW.Send("now with codex")');
@@ -450,12 +451,12 @@ test('a chat can pick its agent: the strip says so, replies are labelled by thei
   vm.run('ClaudeWoW.Send("again")');
   vm.run('ClaudeWoW.Resend()');
   assert.equal(stripRecords(vm).find(r => r.text === 'again').flags, 'agent=codex');
-  vm.run('SlashCmdList.CLAUDEWOW("cancel")');
+  vm.run('SlashCmdList.CLAUDE("cancel")');
   // A name the bridge did not list is refused; "default" goes back to the bridge's.
-  vm.run('SlashCmdList.CLAUDEWOW("agent gemini")');
+  vm.run('SlashCmdList.CLAUDE("-c --agent gemini")');
   assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].agent'), 'codex');
   assert.ok(vm.evaluate('ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].text').includes('Unknown agent "gemini"'));
-  vm.run('SlashCmdList.CLAUDEWOW("agent default")');
+  vm.run('SlashCmdList.CLAUDE("-c --agent default")');
   assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].agent'), '');
   assert.ok(vm.evaluate('ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].text').includes('agent reset to the bridge\'s default: Claude'));
   // The Agent... menu item opens a prompt prefilled with the chat's agent.
@@ -483,64 +484,55 @@ test('replies saved under the old "claude" role are read as assistant replies fr
   assert.ok(vm.evaluate('table.concat(STUB.texts, "|")').includes('|Claude|'), 'the old reply is labelled Claude');
 });
 
-test('free text that starts with a command word is sent as a message; exact commands still run', () => {
+test('free text that starts with a command word is a message for a new chat; exact commands and config keys still run', () => {
   const vm = newVM();
   login(vm);
   connect(vm);
-  const sent = text => !!stripRecords(vm).find(r => r.text === text);
-  const last = () => vm.evaluate('ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].text');
-  // "delete the unused imports" is a message, not /claude-wow delete; "cancel" alone is the command.
-  vm.run('SlashCmdList.CLAUDEWOW("delete the unused imports")');
-  assert.equal(vm.num('#ClaudeWoWDB.chats'), 1, 'no chat deleted');
-  assert.ok(sent('delete the unused imports'));
-  vm.run('SlashCmdList.CLAUDEWOW("cancel")');
-  assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].pendingId'), null, 'cancel ran as a command');
-  // "help me with this macro" is a message; "help" alone prints the help.
-  vm.run('SlashCmdList.CLAUDEWOW("help me with this macro")');
-  assert.ok(sent('help me with this macro'));
-  vm.run('SlashCmdList.CLAUDEWOW("cancel")');
-  vm.run('SlashCmdList.CLAUDEWOW("help")');
-  assert.ok(last().includes('/claude-wow cd'));
-  // One-word arguments keep their command; more words make it a message.
-  vm.run('SlashCmdList.CLAUDEWOW("agent codex")');
-  assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].agent'), 'codex');
-  vm.run('SlashCmdList.CLAUDEWOW("agent smith says hi")');
-  assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].agent'), 'codex');
-  assert.ok(sent('agent smith says hi'));
-  vm.run('SlashCmdList.CLAUDEWOW("cancel")');
-  // Enumerated arguments: "context off" is the command, "context matters here" a message.
-  vm.run('SlashCmdList.CLAUDEWOW("context off")');
+  const sentIn = text => { const r = stripRecords(vm).find(x => x.text === text); return r && r.chat; };
+  const active = () => vm.evaluate('ClaudeWoWDB.activeChat');
+  const count = () => vm.num('#ClaudeWoWDB.chats');
+  const last = () => vm.evaluate('(function() local c = ClaudeWoW_Active() return c.history[#c.history].text end)()');
+  vm.run('function ClaudeWoW_Active() for _, c in ipairs(ClaudeWoWDB.chats) do if c.id == ClaudeWoWDB.activeChat then return c end end end');
+  vm.run('SlashCmdList.CLAUDE("delete the unused imports")');
+  assert.equal(count(), 2, 'no chat deleted, a new one started');
+  assert.equal(sentIn('delete the unused imports'), active());
+  vm.run('SlashCmdList.CLAUDE("cancel")');
+  assert.equal(vm.evaluate('ClaudeWoW_Active().pendingId'), null, 'cancel ran as a command');
+  vm.run('SlashCmdList.CLAUDE("help me with this macro")');
+  assert.equal(count(), 3);
+  assert.equal(sentIn('help me with this macro'), active());
+  vm.run('SlashCmdList.CLAUDE("cancel")');
+  vm.run('SlashCmdList.CLAUDE("help")');
+  assert.ok(last().includes('/claude -r [id|name|n] [text]'), last());
+  vm.run('SlashCmdList.CLAUDE("config context off")');
   assert.equal(vm.evaluate('ClaudeWoWDB.settings.context'), 'false');
-  vm.run('SlashCmdList.CLAUDEWOW("context matters here")');
-  assert.ok(sent('context matters here'));
-  vm.run('SlashCmdList.CLAUDEWOW("cancel")');
-  // "reset the counter" and "clear the cache" are messages; the transcript survives.
-  vm.run('SlashCmdList.CLAUDEWOW("clear the cache")');
-  assert.ok(sent('clear the cache'));
-  assert.ok(vm.num('#ClaudeWoWDB.chats[1].history') > 1, 'clear did not run');
-  vm.run('SlashCmdList.CLAUDEWOW("cancel")');
-  vm.run('SlashCmdList.CLAUDEWOW("reset the counter")');
-  assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].resetNext'), null);
-  assert.ok(sent('reset the counter'));
-  vm.run('SlashCmdList.CLAUDEWOW("cancel")');
-  // A chat can still be picked by number or name; "chat with me about it" is a message.
-  vm.run('SlashCmdList.CLAUDEWOW("new Realms")');
-  vm.run('SlashCmdList.CLAUDEWOW("chat 1")');
-  assert.equal(vm.evaluate('ClaudeWoWDB.activeChat'), vm.evaluate('ClaudeWoWDB.chats[1].id'));
-  vm.run('SlashCmdList.CLAUDEWOW("chat realms")');
-  assert.equal(vm.evaluate('ClaudeWoWDB.activeChat'), vm.evaluate('ClaudeWoWDB.chats[2].id'));
-  vm.run('SlashCmdList.CLAUDEWOW("chat with me about it")');
-  assert.ok(sent('chat with me about it'));
-  // /claude alone toggles the window.
-  vm.run('ClaudeWoW.Toggle(false); SlashCmdList.CLAUDEWOW("")');
-  assert.equal(vm.evaluate('ClaudeWoWFrame.shown'), 'true');
+  vm.run('SlashCmdList.CLAUDE("config context matters here")');
+  assert.equal(count(), 4, 'a config line whose value does not fit is a message');
+  assert.equal(sentIn('config context matters here'), active());
+  vm.run('SlashCmdList.CLAUDE("cancel")');
+  vm.run('SlashCmdList.CLAUDE("voice off")');
+  assert.equal(count(), 5, 'settings live under config now: "voice off" is a message');
+  assert.equal(sentIn('voice off'), active());
+  vm.run('SlashCmdList.CLAUDE("cancel")');
+  vm.run('SlashCmdList.CLAUDE("clear the cache")');
+  assert.equal(sentIn('clear the cache'), active());
+  vm.run('SlashCmdList.CLAUDE("cancel")');
+  vm.run('SlashCmdList.CLAUDE("reset the counter")');
+  assert.equal(vm.evaluate('ClaudeWoW_Active().resetNext'), null);
+  assert.equal(sentIn('reset the counter'), active());
+  vm.run('SlashCmdList.CLAUDE("cancel")');
+  const before = count();
+  const here = active();
+  vm.run('SlashCmdList.CLAUDE("-c delete it anyway")');
+  assert.equal(count(), before, '-c never starts a chat');
+  assert.equal(sentIn('delete it anyway'), here);
 });
 
 test('/claude-wow reset marks the next message as a new session', () => {
   const vm = newVM();
   login(vm);
   connect(vm);
-  vm.run('SlashCmdList.CLAUDEWOW("reset")');
+  vm.run('SlashCmdList.CLAUDE("reset")');
   vm.run('ClaudeWoW.Send("start over")');
   const rec = stripRecords(vm).find(r => r.text === 'start over');
   assert.equal(rec.flags, 'n');
@@ -585,14 +577,14 @@ test('game chat echo: the summary by default, the first lines without one, the w
   assert.ok(out.includes('Just this') && !out.includes('click [open] to read'), out);
 
   // "echo full" prints everything, as before.
-  vm.run('SlashCmdList.CLAUDEWOW("echo full")');
+  vm.run('SlashCmdList.CLAUDE("config echo full")');
   assert.equal(vm.evaluate('ClaudeWoWDB.settings.echo'), 'full');
   reply('Line one\\nLine two\\nLine three\\n\\nTL;DR: Short.', 'Short.');
   out = prints();
   assert.ok(out.includes('Line one') && out.includes('Line three') && out.includes('TL;DR: Short.'), out);
-  vm.run('SlashCmdList.CLAUDEWOW("echo summary")');
+  vm.run('SlashCmdList.CLAUDE("config echo summary")');
   assert.equal(vm.evaluate('ClaudeWoWDB.settings.echo'), 'summary');
-  vm.run('SlashCmdList.CLAUDEWOW("echo bogus")');
+  vm.run('SlashCmdList.CLAUDE("config echo bogus")');
   assert.equal(vm.evaluate('ClaudeWoWDB.settings.echo'), 'summary', 'an unknown mode is ignored');
 
   // An install that still had the old default saved moves to summary once; a mode picked on purpose stays.
@@ -636,22 +628,24 @@ test('a restore bundle addressed to this session adds the missing chats once', (
   assert.equal(vm.num('#ClaudeWoWDB.chats'), 2);
 });
 
-test('chat management commands: new, chat, rename, delete, clear, copy', () => {
+test('chat management commands: -n, -r, rename, delete, clear, copy', () => {
   const vm = newVM();
   login(vm);
-  vm.run('SlashCmdList.CLAUDEWOW("new Realms")');
+  vm.run('SlashCmdList.CLAUDE("-n Realms")');
   assert.equal(vm.num('#ClaudeWoWDB.chats'), 2);
   assert.equal(vm.evaluate('ClaudeWoWDB.chats[2].name'), 'Realms');
   assert.equal(vm.evaluate('ClaudeWoWDB.activeChat'), vm.evaluate('ClaudeWoWDB.chats[2].id'));
-  vm.run('SlashCmdList.CLAUDEWOW("chat 1")');
+  vm.run('SlashCmdList.CLAUDE("-r 1")');
   assert.equal(vm.evaluate('ClaudeWoWDB.activeChat'), vm.evaluate('ClaudeWoWDB.chats[1].id'));
-  vm.run('SlashCmdList.CLAUDEWOW("rename Stuff")');
+  vm.run('SlashCmdList.CLAUDE("rename Stuff")');
   assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].name'), 'Stuff');
-  vm.run('SlashCmdList.CLAUDEWOW("help")');
-  assert.ok(vm.evaluate('ClaudeWoWDB.chats[1].history[1].text').includes('/claude-wow cd'));
-  vm.run('SlashCmdList.CLAUDEWOW("clear")');
+  vm.run('SlashCmdList.CLAUDE("help")');
+  const help = vm.evaluate('ClaudeWoWDB.chats[1].history[1].text');
+  assert.ok(help.includes('/claude cd'), help);
+  assert.ok(!help.includes('/claude-wow'), 'help never mentions the old command');
+  vm.run('SlashCmdList.CLAUDE("clear")');
   assert.equal(vm.num('#ClaudeWoWDB.chats[1].history'), 0);
-  vm.run('SlashCmdList.CLAUDEWOW("delete")');
+  vm.run('SlashCmdList.CLAUDE("delete")');
   assert.equal(vm.num('#ClaudeWoWDB.chats'), 1);
   assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].name'), 'Realms');
   // The copy box builds with a proper backdrop (the stub fails on SetBackdrop(nil)).
@@ -663,7 +657,7 @@ test('chat management commands: new, chat, rename, delete, clear, copy', () => {
 test('chat rows: right-click opens a menu that renames or sets the folder of that chat, the trash can asks before deleting', () => {
   const vm = newVM();
   login(vm);
-  vm.run('SlashCmdList.CLAUDEWOW("new Realms")');
+  vm.run('SlashCmdList.CLAUDE("-n Realms")');
   const first = vm.evaluate('ClaudeWoWDB.chats[1].id');
   const second = vm.evaluate('ClaudeWoWDB.chats[2].id');
   assert.equal(vm.evaluate('ClaudeWoWDB.activeChat'), second);
@@ -722,8 +716,8 @@ test('minimize collapses to the mini bar and back; the mini bar X hides everythi
 test('reload mode writes the outbox for the bridge instead of drawing the strip', () => {
   const vm = newVM();
   login(vm);
-  vm.run('SlashCmdList.CLAUDEWOW("mode reload")');
-  vm.run('SlashCmdList.CLAUDEWOW("reset")');
+  vm.run('SlashCmdList.CLAUDE("config mode reload")');
+  vm.run('SlashCmdList.CLAUDE("reset")');
   vm.run('ClaudeWoW.Send("via reload", { "WebSearch", "Bash(git:*)" })');
   assert.equal(vm.evaluate('STUB.reloaded'), 'true');
   assert.equal(vm.evaluate('ClaudeWoWDB.outbox.newSession'), 'true');
@@ -801,7 +795,7 @@ test('screenshot transport: the strip is shot once per message, hidden on the ev
   // The status line says which transport is in use; diag counts the shots.
   vm.run('STUB.texts = {}; ClaudeWoW.UpdateStatus()');
   assert.ok(vm.evaluate('table.concat(STUB.texts, "|")').includes('mode: pixel (screenshot)'));
-  vm.run('SlashCmdList.CLAUDEWOW("diag")');
+  vm.run('SlashCmdList.CLAUDE("diag")');
   const diag = vm.evaluate('ClaudeWoWDB.chats[2].history[#ClaudeWoWDB.chats[2].history].text');
   assert.ok(diag.includes('transport: screenshot, screenshots: 4 taken, 4 confirmed, 0 failed, 0 without event'), diag);
   // Back to a pixel-mode bridge: the CVar goes back and the strip stays up pixel-style.
@@ -925,7 +919,7 @@ test('screenshot transport: a failed shot is retried a few times, a missing even
   assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'true');
   vm.run('STUB.RunTimers()'); // the SHOT_TIMEOUT timer
   assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'false');
-  vm.run('SlashCmdList.CLAUDEWOW("diag")');
+  vm.run('SlashCmdList.CLAUDE("diag")');
   const diag = vm.evaluate('ClaudeWoWDB.chats[2].history[#ClaudeWoWDB.chats[2].history].text');
   assert.ok(diag.includes('6 taken, 1 confirmed, 4 failed, 1 without event'), diag);
   // Logging out restores the format; the mode itself is remembered.
@@ -971,7 +965,7 @@ test('screenshot transport without Screenshot(): the strip stays up carrying sho
   vm.run('ClaudeWoW.NewChat("Two"); ClaudeWoW.Send("second")'); // the first chat still has its message pending
   assert.equal(vm.evaluate('ClaudeWoWDB.outbox.text'), Buffer.from('second').toString('hex'));
   assert.equal(vm.evaluate('ClaudeWoWDB.outbox.shot'), null);
-  vm.run('SlashCmdList.CLAUDEWOW("diag")');
+  vm.run('SlashCmdList.CLAUDE("diag")');
   const diag = vm.evaluate('ClaudeWoWDB.chats[2].history[#ClaudeWoWDB.chats[2].history].text');
   assert.ok(diag.includes('transport: pixel (bridge: pixel transport, fallen back to since 2026-09-28 12:00 UTC because the game client has no Screenshot() function'), diag);
   // A bridge back on the screenshot transport drops the note.
@@ -994,10 +988,10 @@ test('screenshot transport: a remembered mode shoots the login hello, and a /rel
   vm.run('STUB.FireEvent("SCREENSHOT_SUCCEEDED")');
   assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'false');
   // Switching to the reload transport in game gives the CVar back too.
-  vm.run('SlashCmdList.CLAUDEWOW("mode reload")');
+  vm.run('SlashCmdList.CLAUDE("config mode reload")');
   assert.equal(vm.evaluate('STUB.cvars.screenshotFormat'), 'tga');
   assert.equal(vm.evaluate('ClaudeWoWDB.settings.shotFormatSaved'), null);
-  vm.run('SlashCmdList.CLAUDEWOW("mode pixel")');
+  vm.run('SlashCmdList.CLAUDE("config mode pixel")');
   assert.equal(vm.evaluate('STUB.cvars.screenshotFormat'), 'png');
   assert.equal(vm.evaluate('ClaudeWoWDB.settings.shotFormatSaved'), 'tga');
 });
@@ -1040,7 +1034,7 @@ test('screenshotFormat: a crash that skipped the logout restore is repaired at t
   vm.run('STUB.FireEvent("PLAYER_LOGIN")');
   assert.equal(vm.evaluate('ClaudeWoWDB.settings.shotFormatSaved'), 'jpeg');
   // Leaving the mode in game gives the real original back, not png.
-  vm.run('SlashCmdList.CLAUDEWOW("mode reload")');
+  vm.run('SlashCmdList.CLAUDE("config mode reload")');
   assert.equal(vm.evaluate('STUB.cvars.screenshotFormat'), 'jpeg');
   assert.equal(vm.evaluate('ClaudeWoWDB.settings.shotFormatSaved'), null);
   // Remembered mode, but the player changed the format by hand after the crash:
@@ -1107,7 +1101,7 @@ test('screenshot transport: shots stop once the bridge has been dark for a while
   frames(vm, 3);
   assert.equal(vm.num('STUB.screenshots'), 3, 'a message typed at a dead bridge leaves no file behind');
   assert.ok(!prints().includes('screenshots paused'), 'said once, not per message');
-  vm.run('SlashCmdList.CLAUDEWOW("diag")');
+  vm.run('SlashCmdList.CLAUDE("diag")');
   assert.ok(vm.evaluate('ClaudeWoWDB.chats[2].history[#ClaudeWoWDB.chats[2].history].text').includes('screenshots PAUSED (bridge not seen for'), 'diag says so');
   // The Connect button is a deliberate act: it buys exactly one shot.
   vm.run('STUB.now = STUB.now + 20; STUB.Tick()'); // the automatic connect attempt gives up
@@ -1205,42 +1199,42 @@ test('vision: off by default; "vision on" flags every send and resend with v, "l
   // The footer says so, and so does diag.
   vm.run('STUB.texts = {}; ClaudeWoW.UpdateStatus()');
   assert.ok(vm.evaluate('table.concat(STUB.texts, "|")').includes('mode: pixel   vision: off'));
-  vm.run('SlashCmdList.CLAUDEWOW("diag")');
+  vm.run('SlashCmdList.CLAUDE("diag")');
   assert.ok(vm.evaluate('ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].text').includes('\nvision: off'));
 
   // "look" sends that one message with the flag; the setting stays off.
-  vm.run('SlashCmdList.CLAUDEWOW("look what is this item?")');
+  vm.run('SlashCmdList.CLAUDE("look what is this item?")');
   assert.equal(flagsOf('what is this item?'), 'v');
   assert.equal(vm.evaluate('ClaudeWoWDB.settings.vision'), 'false');
   reply('a sword');
-  vm.run('SlashCmdList.CLAUDEWOW("look")');
+  vm.run('SlashCmdList.CLAUDE("look")');
   assert.equal(flagsOf('What do you see on my screen?'), 'v', 'a bare look asks the obvious question');
   reply('grass');
   // "look at my gear" is the command too (the whole line is the question).
-  vm.run('SlashCmdList.CLAUDEWOW("look at my gear")');
+  vm.run('SlashCmdList.CLAUDE("look at my gear")');
   assert.equal(flagsOf('at my gear'), 'v');
   reply('fine');
 
   // On: every send carries it, next to the other flags, and a resend keeps it.
-  vm.run('SlashCmdList.CLAUDEWOW("vision on")');
+  vm.run('SlashCmdList.CLAUDE("config vision on")');
   assert.equal(vm.evaluate('ClaudeWoWDB.settings.vision'), 'true');
   let note = vm.evaluate('ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].text');
   assert.ok(note.includes('Vision is ON, but the bridge listens on the pixel transport'), 'told it needs the screenshot transport: ' + note);
   vm.run('STUB.texts = {}; ClaudeWoW.UpdateStatus()');
   assert.ok(vm.evaluate('table.concat(STUB.texts, "|")').includes('mode: pixel   vision: on'));
-  vm.run('SlashCmdList.CLAUDEWOW("agent codex")');
+  vm.run('SlashCmdList.CLAUDE("-c --agent codex")');
   vm.run('ClaudeWoW.Send("with the picture")');
   assert.equal(flagsOf('with the picture'), 'agent=codex;v');
   vm.run('ClaudeWoW.Resend()');
   assert.equal(flagsOf('with the picture'), 'agent=codex;v', 'a resend asks again (it is a fresh screenshot)');
   reply('seen');
-  vm.run('SlashCmdList.CLAUDEWOW("agent default")');
-  vm.run('SlashCmdList.CLAUDEWOW("diag")');
+  vm.run('SlashCmdList.CLAUDE("-c --agent default")');
+  vm.run('SlashCmdList.CLAUDE("diag")');
   assert.ok(vm.evaluate('ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].text').includes('\nvision: on (needs the screenshot transport'));
   // On a screenshot-mode bridge the status is the happy one.
   nextSlot(vm, '{ now = time(), cwd = "", transport = "screenshot", replies = {} }');
   vm.run('ClaudeWoW.Connect(); STUB.now = STUB.now + 6; STUB.Tick()');
-  vm.run('SlashCmdList.CLAUDEWOW("vision")');
+  vm.run('SlashCmdList.CLAUDE("config vision")');
   note = vm.evaluate('ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].text');
   assert.ok(note.startsWith('Vision is ON: each message goes out with a picture of your screen'), note);
   vm.run('ClaudeWoW.Send("dark one")');
@@ -1248,7 +1242,7 @@ test('vision: off by default; "vision on" flags every send and resend with v, "l
   vm.run('STUB.FireEvent("SCREENSHOT_SUCCEEDED")');
   reply('yes');
   // Off again: no flag, and the setting survives a reload (it is in the saved data).
-  vm.run('SlashCmdList.CLAUDEWOW("vision off")');
+  vm.run('SlashCmdList.CLAUDE("config vision off")');
   assert.equal(vm.evaluate('ClaudeWoWDB.settings.vision'), 'false');
   vm.run('ClaudeWoW.Send("no picture")');
   assert.equal(flagsOf('no picture'), '');
@@ -1304,14 +1298,14 @@ test('whisper tabs: off by default; on, each chat is a tab, Enter there goes to 
 
   // Off: replies go to the game chat as before, no tab opens.
   assert.equal(vm.evaluate('ClaudeWoWDB.settings.whisper'), 'false', 'off by default');
-  vm.run('SlashCmdList.CLAUDEWOW("agent claude")');
+  vm.run('SlashCmdList.CLAUDE("-c --agent claude")');
   vm.run('ClaudeWoW.Send("hello there")');
   reply(chatId, 'status = "done", text = "plain echo", agent = "claude"');
   assert.equal(vm.num('STUB.tempWindows'), 0);
   assert.ok(vm.evaluate('table.concat(STUB.prints, "\\n")').includes('plain echo'));
 
   // On: the active chat's tab opens, selected, named after the chat.
-  vm.run('SlashCmdList.CLAUDEWOW("whisper on")');
+  vm.run('SlashCmdList.CLAUDE("config whisper on")');
   assert.equal(vm.evaluate('ClaudeWoWDB.settings.whisper'), 'true');
   assert.equal(vm.num('STUB.tempWindows'), 1);
   assert.equal(vm.evaluate('ChatFrame11Tab.text'), 'Hello there', 'the tab carries the chat name');
@@ -1360,7 +1354,7 @@ test('whisper tabs: off by default; on, each chat is a tab, Enter there goes to 
   assert.equal(vm.num('STUB.serverSends'), 2, 'another slash command in the tab is the game\'s');
 
   // A second chat gets a tab of its own; a reply to the first still lands in the first.
-  vm.run('SlashCmdList.CLAUDEWOW("new Second")');
+  vm.run('SlashCmdList.CLAUDE("-n Second")');
   const secondId = vm.evaluate('ClaudeWoWDB.chats[2].id');
   vm.run('ClaudeWoW.Send("second hello")');
   assert.equal(vm.num('STUB.tempWindows'), 2);
@@ -1379,15 +1373,15 @@ test('whisper tabs: off by default; on, each chat is a tab, Enter there goes to 
   // The leak filter: the server's answer to a whisper that got out becomes a loud line.
   assert.ok(vm.evaluate(`select(2, STUB.filters.CHAT_MSG_SYSTEM(nil, "CHAT_MSG_SYSTEM", "No player named 'Claude' is currently playing."))`).includes('WHISPER LEAK'));
   assert.equal(vm.evaluate(`select(2, STUB.filters.CHAT_MSG_SYSTEM(nil, "CHAT_MSG_SYSTEM", "No player named 'Bob' is currently playing."))`), null, 'other names are left alone');
-  vm.run('SlashCmdList.CLAUDEWOW("whisper")');
+  vm.run('SlashCmdList.CLAUDE("config whisper")');
   assert.ok(vm.evaluate('ClaudeWoWDB.chats[2].history[#ClaudeWoWDB.chats[2].history].text').includes('LEAKS: 1'));
 
   // Rename retitles the tab, delete closes it, off closes them all and the hooks go quiet.
-  vm.run('SlashCmdList.CLAUDEWOW("rename Renamed")');
+  vm.run('SlashCmdList.CLAUDE("rename Renamed")');
   assert.equal(vm.evaluate('ChatFrame12Tab.text'), 'Renamed');
-  vm.run('SlashCmdList.CLAUDEWOW("delete")');
+  vm.run('SlashCmdList.CLAUDE("delete")');
   assert.equal(vm.evaluate('ChatFrame12.inUse'), 'false', 'the deleted chat\'s tab is closed');
-  vm.run('SlashCmdList.CLAUDEWOW("whisper off")');
+  vm.run('SlashCmdList.CLAUDE("config whisper off")');
   assert.equal(vm.evaluate('ClaudeWoWDB.settings.whisper'), 'false');
   assert.equal(vm.evaluate('ChatFrame11.inUse'), 'false');
   enter('ChatFrame1EditBox', '/w Claude ping');
@@ -1443,22 +1437,22 @@ function replacedFunctions(vm) {
 
 test('whisper tabs replace nothing of the game\'s: no global, ChatFrameUtil entry, edit-box method or script is swapped for addon code', () => {
   const vm = whisperVM();
-  vm.run('SlashCmdList.CLAUDEWOW("agent claude")');
-  vm.run('SlashCmdList.CLAUDEWOW("whisper on")');
+  vm.run('SlashCmdList.CLAUDE("-c --agent claude")');
+  vm.run('SlashCmdList.CLAUDE("config whisper on")');
   assert.equal(vm.num('STUB.tempWindows'), 1);
-  vm.run('SlashCmdList.CLAUDEWOW("new Second")');
+  vm.run('SlashCmdList.CLAUDE("-n Second")');
   vm.run('ClaudeWoW.Send("open a second tab")');
   assert.equal(vm.num('STUB.tempWindows'), 2);
   assert.equal(replacedFunctions(vm), '');
   assert.ok(vm.evaluate('ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].text').includes('Whisper tabs are ON'));
-  vm.run('SlashCmdList.CLAUDEWOW("diag")');
+  vm.run('SlashCmdList.CLAUDE("diag")');
   assert.ok(vm.evaluate('ClaudeWoWDB.chats[2].history[#ClaudeWoWDB.chats[2].history].text').includes('send hook: pre-send'));
 });
 
 test('protected slash commands typed in the game\'s box or a whisper tab reach the game\'s handler with no addon function on the stack', () => {
   const vm = whisperVM();
-  vm.run('SlashCmdList.CLAUDEWOW("agent claude")');
-  vm.run('SlashCmdList.CLAUDEWOW("whisper on")');
+  vm.run('SlashCmdList.CLAUDE("-c --agent claude")');
+  vm.run('SlashCmdList.CLAUDE("config whisper on")');
   for (const box of ['ChatFrame1EditBox', 'ChatFrame11EditBox']) {
     vm.run('STUB.protectedCalls = {}');
     typeIn(vm, box, '/cast Fireball');
@@ -1481,7 +1475,7 @@ test('protected slash commands typed in the game\'s box or a whisper tab reach t
   assert.equal(replacedFunctions(vm), '');
 });
 
-test('/claude <text> starts a new chat and sends there; /claude <command> runs it; /claude-wow <text> and a whisper tab continue the current chat', () => {
+test('/claude <text> starts a new chat and sends there; /claude <command> runs it; /claude -c <text> and a whisper tab continue the current chat', () => {
   const vm = whisperVM();
   const firstId = vm.evaluate('ClaudeWoWDB.chats[1].id');
   typeIn(vm, 'ChatFrame1EditBox', '/claude hi');
@@ -1504,21 +1498,23 @@ test('/claude <text> starts a new chat and sends there; /claude <command> runs i
   replyTo(vm, thirdId, 'status = "done", text = "ok", agent = "claude"');
 
   vm.run(`ClaudeWoW.SwitchChat("${firstId}")`);
-  typeIn(vm, 'ChatFrame1EditBox', '/claude-wow continue here');
-  assert.equal(vm.num('#ClaudeWoWDB.chats'), 3, '/claude-wow is not a new chat');
+  typeIn(vm, 'ChatFrame1EditBox', '/claude -c continue here');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 3, '/claude -c is not a new chat');
   assert.equal(stripRecords(vm).find(r => r.text === 'continue here').chat, firstId);
   replyTo(vm, firstId, 'status = "done", text = "continued", agent = "claude"');
 
-  vm.run('SlashCmdList.CLAUDEWOW("agent claude")');
-  vm.run('SlashCmdList.CLAUDEWOW("whisper on")');
+  vm.run('SlashCmdList.CLAUDE("-c --agent claude")');
+  vm.run('SlashCmdList.CLAUDE("config whisper on")');
   const tab = vm.evaluate(`(function() for _, name in ipairs(CHAT_FRAMES) do if _G[name].claudewowChatId == "${firstId}" then return name .. "EditBox" end end end)()`);
   assert.ok(tab, 'the first chat has a tab');
   typeIn(vm, tab, 'plain text in the tab');
   assert.equal(stripRecords(vm).find(r => r.text === 'plain text in the tab').chat, firstId, 'the tab continues its chat');
   replyTo(vm, firstId, 'status = "done", text = "tab reply", agent = "claude"');
   vm.run(`ClaudeWoW.SwitchChat("${secondId}")`);
-  typeIn(vm, tab, '/claude-wow from the tab');
-  assert.equal(stripRecords(vm).find(r => r.text === 'from the tab').chat, firstId, '/claude-wow in a tab goes to that tab\'s chat');
+  typeIn(vm, tab, '/claude -c --model opus from the tab');
+  rec = stripRecords(vm).find(r => r.text === 'from the tab');
+  assert.equal(rec.chat, firstId, '/claude -c in a tab goes to that tab\'s chat');
+  assert.ok(rec.flags.split(';').includes('model=opus'), rec.flags);
   replyTo(vm, firstId, 'status = "done", text = "tab reply 2", agent = "claude"');
   typeIn(vm, tab, '/claude fresh thread from the tab');
   assert.equal(vm.num('#ClaudeWoWDB.chats'), 4, '/claude in a tab starts a new chat');
@@ -1545,7 +1541,7 @@ test('/claude <text> at the chat limit says so and keeps the text in the window\
 test('/r goes to the agent that replied last through the pre-send hook, typed at once or after "/r ", and to the player again after a real whisper', () => {
   const vm = whisperVM();
   const chatId = vm.evaluate('ClaudeWoWDB.chats[1].id');
-  vm.run('SlashCmdList.CLAUDEWOW("agent claude")');
+  vm.run('SlashCmdList.CLAUDE("-c --agent claude")');
   vm.run('ClaudeWoW.Send("question")');
   replyTo(vm, chatId, 'status = "done", text = "answer", agent = "claude"');
   typeIn(vm, 'ChatFrame1EditBox', '/r thanks');
@@ -1617,7 +1613,7 @@ test('plugins: a fresh install follows the bridge\'s default and sends no flag; 
   assert.equal(old.evaluate('ClaudeWoWDB.chats[2].plugin'), '');
 });
 
-test('plugins: /claude-wow plugin binds the chat like /claude-wow agent, the Plugin... menu item opens a prefilled prompt, the footer and diag show the binding', () => {
+test('plugins: /claude config plugin binds the chat like --agent, the Plugin... menu item opens a prefilled prompt, the footer and diag show the binding', () => {
   const vm = newVM();
   login(vm);
   vm.run('STUB.RunTimers()');
@@ -1629,10 +1625,10 @@ test('plugins: /claude-wow plugin binds the chat like /claude-wow agent, the Plu
   assert.ok(vm.evaluate('ClaudeWoWChatMenu ~= nil') === 'true' && texts().includes('Plugin...'), 'the chat menu has a Plugin... item');
   // Bound to nothing: the footer names the bridge's default, and so does the command.
   assert.ok(texts().includes('vision: off   plugin: ask (bridge default)'), texts());
-  vm.run('SlashCmdList.CLAUDEWOW("plugin")');
+  vm.run('SlashCmdList.CLAUDE("config plugin")');
   assert.ok(last().startsWith('plugin is the bridge\'s default: ask'), last());
   // Bind to the coding plugin: the flag goes out with the next message, on both transports.
-  vm.run('SlashCmdList.CLAUDEWOW("plugin Claude-Code")');
+  vm.run('SlashCmdList.CLAUDE("config plugin Claude-Code")');
   assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].plugin'), 'claude-code');
   assert.ok(last().includes('plugin set to claude-code'), last());
   vm.run('ClaudeWoW.Send("fix the build")');
@@ -1640,20 +1636,22 @@ test('plugins: /claude-wow plugin binds the chat like /claude-wow agent, the Plu
   assert.equal(vm.evaluate('ClaudeWoWDB.outbox.plugin'), 'claude-code');
   vm.run('STUB.texts = {}; ClaudeWoW.UpdateStatus()');
   assert.ok(texts().includes('vision: off   plugin: claude-code'), texts());
-  vm.run('SlashCmdList.CLAUDEWOW("diag")');
+  vm.run('SlashCmdList.CLAUDE("diag")');
   assert.ok(last().includes('\nplugin: claude-code (bridge has: ask, claude-code)'), last());
   // An unknown plugin is refused; "default" unbinds; a message that merely starts with the word is sent.
-  vm.run('SlashCmdList.CLAUDEWOW("plugin factory")');
+  vm.run('SlashCmdList.CLAUDE("config plugin factory")');
   assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].plugin'), 'claude-code');
   assert.ok(last().includes('Unknown plugin "factory"'), last());
-  vm.run('SlashCmdList.CLAUDEWOW("plugin default")');
+  vm.run('SlashCmdList.CLAUDE("config plugin default")');
   assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].plugin'), '');
   assert.ok(last().includes('plugin reset to the bridge\'s default: ask'), last());
-  vm.run('SlashCmdList.CLAUDEWOW("diag")');
+  vm.run('SlashCmdList.CLAUDE("diag")');
   assert.ok(last().includes('\nplugin: bridge default, ask (bridge has: ask, claude-code)'), last());
-  vm.run('SlashCmdList.CLAUDEWOW("plugin for my warrior please")');
+  vm.run('SlashCmdList.CLAUDE("config plugin for my warrior please")');
   assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].plugin'), '');
-  assert.ok(vm.evaluate('ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].role') === 'user' || vm.evaluate('ClaudeWoWDB.chats[1].draft') !== null, 'free text starting with the word is a message');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 2, 'free text after config plugin is a message for a new chat');
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[2].history[#ClaudeWoWDB.chats[2].history].text'), 'config plugin for my warrior please');
+  vm.run('SlashCmdList.CLAUDE("cancel"); ClaudeWoW.SwitchChat(ClaudeWoWDB.chats[1].id)');
   // The Plugin... menu item opens a prompt prefilled with the chat's binding; OK applies it.
   vm.run('ClaudeWoW.SetPlugin("ask"); ClaudeWoW.PluginPrompt()');
   assert.equal(vm.evaluate('STUB.popup.which'), 'CLAUDEWOW_PLUGIN');
@@ -1662,42 +1660,318 @@ test('plugins: /claude-wow plugin binds the chat like /claude-wow agent, the Plu
     StaticPopupDialogs.CLAUDEWOW_PLUGIN.OnAccept(dialog, STUB.popup.data)`);
   assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].plugin'), 'claude-code');
   // Help lists the command.
-  vm.run('SlashCmdList.CLAUDEWOW("help")');
-  assert.ok(last().includes('/claude-wow plugin [name]'));
+  vm.run('SlashCmdList.CLAUDE("config")');
+  assert.ok(last().includes('\nplugin = claude-code  -  <name>|default: advanced'), last());
+  vm.run('SlashCmdList.CLAUDE("help")');
+  assert.ok(!/\bplugin\b/.test(last()), 'help does not need the word plugin');
 });
 
-test('live plugin: /claude-wow live lists the sessions or the start command, and Pass on a live chat sends the denial', () => {
+function parsed(vm, msg) {
+  vm.run(`local o = ClaudeWoW.ParseCli(${JSON.stringify(msg)})
+    local keys = {}
+    for k, v in pairs(o) do
+      if k == "addDir" then
+        keys[#keys + 1] = "addDir=" .. table.concat(v, "|")
+      else
+        keys[#keys + 1] = k .. "=" .. tostring(v)
+      end
+    end
+    table.sort(keys)
+    RESULT = table.concat(keys, ";")`);
+  return Object.fromEntries(vm.evaluate('RESULT').split(';').map(kv => { const i = kv.indexOf('='); return [kv.slice(0, i), kv.slice(i + 1)]; }));
+}
+
+test('the /claude parser: short and long flags, --flag=value, quotes, flags before text, and text that only looks like a flag', () => {
+  const vm = newVM();
+  login(vm);
+  let o = parsed(vm, 'fix the build');
+  assert.equal(o.flags, '0');
+  assert.equal(o.text, 'fix the build');
+  o = parsed(vm, '-c keep going');
+  assert.equal(o.continue, 'true');
+  assert.equal(o.text, 'keep going');
+  o = parsed(vm, '--continue');
+  assert.equal(o.continue, 'true');
+  assert.equal(o.text, '');
+  o = parsed(vm, '--model opus --effort=high fix the build');
+  assert.equal(o.model, 'opus');
+  assert.equal(o.effort, 'high');
+  assert.equal(o.text, 'fix the build');
+  o = parsed(vm, '--model="claude-opus-5[1m]" --permission-mode plan  "quoted  text"');
+  assert.equal(o.model, 'claude-opus-5[1m]');
+  assert.equal(o.permissionMode, 'plan');
+  assert.equal(o.text, 'quoted  text');
+  o = parsed(vm, '--add-dir "My Addons" --add-dir=~/notes -c look here');
+  assert.equal(o.addDir, 'My Addons|~/notes');
+  assert.equal(o.continue, 'true');
+  assert.equal(o.text, 'look here');
+  o = parsed(vm, '-r abc123 go on');
+  assert.equal(o.resume, 'abc123');
+  assert.equal(o.text, 'go on');
+  o = parsed(vm, '-r');
+  assert.equal(o.resume, 'true');
+  o = parsed(vm, '--resume "Old work" --agent codex');
+  assert.equal(o.resume, 'Old work');
+  assert.equal(o.agent, 'codex');
+  o = parsed(vm, '--model');
+  assert.equal(o.model, 'true', 'a flag with no value asks for the current one');
+  o = parsed(vm, '-n Raid prep -c');
+  assert.equal(o.name, 'Raid');
+  assert.equal(o.text, 'prep -c', 'a flag after the text is text');
+  o = parsed(vm, '--verbose output is too long, why?');
+  assert.equal(o.flags, '0');
+  assert.equal(o.text, '--verbose output is too long, why?');
+  o = parsed(vm, '-5 degrees outside, what should I wear');
+  assert.equal(o.flags, '0');
+  assert.equal(o.text, '-5 degrees outside, what should I wear');
+  o = parsed(vm, '--model sonnet -- -c is not a flag here');
+  assert.equal(o.model, 'sonnet');
+  assert.equal(o.text, '-c is not a flag here');
+  o = parsed(vm, '"-c" in quotes is text');
+  assert.equal(o.flags, '0');
+  assert.equal(o.text, '"-c" in quotes is text');
+});
+
+test('/claude flags set per-chat settings: with text on a new chat, with -c on the current one; they travel on the strip and in the outbox', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  const firstId = vm.evaluate('ClaudeWoWDB.chats[1].id');
+  vm.run('SlashCmdList.CLAUDE("--model opus --effort HIGH --permission-mode PLAN --add-dir realms fix the build")');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 2, 'flags with text start a new chat, like claude --model opus "..."');
+  const chat = 'ClaudeWoWDB.chats[2]';
+  assert.equal(vm.evaluate(`${chat}.model`), 'opus');
+  assert.equal(vm.evaluate(`${chat}.effort`), 'high');
+  assert.equal(vm.evaluate(`${chat}.permissionMode`), 'plan');
+  assert.equal(vm.evaluate(`${chat}.addDirs[1]`), 'realms');
+  let rec = stripRecords(vm).find(r => r.text === 'fix the build');
+  assert.equal(rec.chat, vm.evaluate(`${chat}.id`));
+  const flags = rec.flags.split(';');
+  assert.ok(flags.includes('model=opus') && flags.includes('effort=high') && flags.includes('pm=plan'), rec.flags);
+  assert.ok(flags.includes('dirs=' + Buffer.from('realms').toString('hex')), rec.flags);
+  const opts = Buffer.from(vm.evaluate('ClaudeWoWDB.outbox.opts'), 'hex').toString('utf8');
+  assert.ok(opts.includes('model=opus') && opts.includes('pm=plan'), opts);
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].model'), null, 'the first chat is untouched');
+  vm.run('SlashCmdList.CLAUDE("cancel")');
+  vm.run('SlashCmdList.CLAUDE("-c --model sonnet --effort -")');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 2, '-c changes the current chat');
+  assert.equal(vm.evaluate(`${chat}.model`), 'sonnet');
+  assert.equal(vm.evaluate(`${chat}.effort`), null, 'a value of - clears it');
+  const last = () => vm.evaluate(`${chat}.history[#${chat}.history].text`);
+  assert.ok(last().includes('model: sonnet') && last().includes("effort: the agent's default"), last());
+  vm.run('SlashCmdList.CLAUDE("--permission-mode")');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 2, 'a bare flag only shows the setting');
+  assert.equal(last(), 'permission mode: plan');
+  vm.run('SlashCmdList.CLAUDE("--effort extreme do it")');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 2, 'a bad value starts nothing');
+  assert.ok(last().includes('Unknown effort "extreme"'), last());
+  vm.run('SlashCmdList.CLAUDE("--permission-mode yolo")');
+  assert.ok(last().includes('Unknown permission mode "yolo"'), last());
+  vm.run('ClaudeWoW.Send("again")');
+  vm.run('ClaudeWoW.Resend()');
+  assert.ok(stripRecords(vm).find(r => r.text === 'again').flags.split(';').includes('model=sonnet'), 'a resend keeps the settings');
+  vm.run('SlashCmdList.CLAUDE("cancel")');
+  vm.run(`ClaudeWoW.SwitchChat("${firstId}")`);
+  vm.run('SlashCmdList.CLAUDE("-n Raid --agent codex plan the raid")');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 3);
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[3].name'), 'Raid');
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[3].agent'), 'codex');
+  assert.ok(stripRecords(vm).find(r => r.text === 'plan the raid').flags.split(';').includes('agent=codex'));
+  vm.run('SlashCmdList.CLAUDE("cancel")');
+  vm.run('SlashCmdList.CLAUDE("-c -n Raid night")');
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[3].name'), 'Raid', '-n takes one word; quote a longer name');
+  vm.run('SlashCmdList.CLAUDE("-c -n \\"Raid night\\"")');
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[3].name'), 'Raid night');
+  vm.run('SlashCmdList.CLAUDE("-h")');
+  assert.ok(vm.evaluate('ClaudeWoWDB.chats[3].history[#ClaudeWoWDB.chats[3].history].text').startsWith('/claude <text>'));
+});
+
+test('/claude -r: bare lists running and recent sessions; a number, a name or an id picks one; a running session attaches live, another resumes headless, an ambiguous prefix lists the matches', () => {
   const vm = newVM();
   login(vm);
   vm.run('STUB.RunTimers()');
-  const last = () => vm.evaluate('ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].text');
-  vm.run('SlashCmdList.CLAUDEWOW("live")');
-  assert.ok(last().startsWith('Live sessions: unknown'), last());
-  nextSlot(vm, '{ now = time(), cwd = "", plugin = "ask", plugins = { "ask", "claude-code", "live" }, live = { sessions = {}, start = "cd /repo && claude --dangerously-load-development-channels server:claude-wow" }, replies = {} }');
+  const now = 'time()';
+  nextSlot(vm, `{ now = ${now}, cwd = "/home/me", plugins = { "ask", "claude-code", "live" }, live = { sessions = { "wow-ai (/Users/me/wow-ai)" }, start = "x" }, sessions = {
+    { id = "6624f327-7126-423e-a653-d7cf7a4e492b", name = "wow-ai", cwd = "/Users/me/wow-ai", agent = "claude", at = ${now} - 30, live = true },
+    { id = "f02436b8-8a5f-4c05-823e-bef25f88ff7b", name = "Claude version check", cwd = "/Users/me/proj", agent = "claude", at = ${now} - 7200 },
+    { id = "abcd1111-0000-4000-8000-000000000001", name = "First abcd", cwd = "/a", agent = "claude", at = ${now} - 90000 },
+    { id = "abcd2222-0000-4000-8000-000000000002", name = "Second abcd", cwd = "/b", agent = "codex", at = ${now} - 100000 },
+  }, replies = {} }`);
   vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
-  vm.run('SlashCmdList.CLAUDEWOW("live")');
-  assert.equal(last(), 'No live Claude Code session connected. Start one with:\ncd /repo && claude --dangerously-load-development-channels server:claude-wow\nThen bind a chat to it: /claude-wow plugin live');
-  vm.run('ClaudeWoW.ApplyLive({ sessions = { "wow-ai (/Users/me/wow-ai)" }, start = "x" })');
-  vm.run('SlashCmdList.CLAUDEWOW("live")');
-  assert.equal(last(), 'Live Claude Code sessions (1):\n1. wow-ai (/Users/me/wow-ai)\nBind a chat to them: /claude-wow plugin live');
-  vm.run('SlashCmdList.CLAUDEWOW("live now please")');
-  assert.notEqual(last(), 'Live Claude Code sessions (1):\n1. wow-ai (/Users/me/wow-ai)\nBind a chat to them: /claude-wow plugin live', 'text after the word is a message');
-  vm.run('SlashCmdList.CLAUDEWOW("cancel")');
-  vm.run('SlashCmdList.CLAUDEWOW("plugin live")');
-  assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].plugin'), 'live');
+  assert.equal(vm.evaluate('ClaudeWoW.IsConnected()'), 'true');
+  const firstId = vm.evaluate('ClaudeWoWDB.chats[1].id');
+  const active = () => vm.evaluate('(function() for _, c in ipairs(ClaudeWoWDB.chats) do if c.id == ClaudeWoWDB.activeChat then return c end end end)()');
+  const field = f => vm.evaluate(`(function() for _, c in ipairs(ClaudeWoWDB.chats) do if c.id == ClaudeWoWDB.activeChat then return c.${f} end end end)()`);
+  const lastText = () => field('history[#c.history].text');
+  vm.run('STUB.prints = {}');
+  vm.run('SlashCmdList.CLAUDE("-r")');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 1, 'the list starts nothing');
+  const list = vm.evaluate('ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].text');
+  assert.match(list, /\n1\. \[running\]  wow-ai  \/Users\/me\/wow-ai  6624f327  now/);
+  assert.match(list, /\n2\. Claude version check  \/Users\/me\/proj  f02436b8  2h ago/);
+  assert.match(list, /\n5\. Chat 1 .*\(this chat\)/);
+  const prints = vm.evaluate('table.concat(STUB.prints, "\\n")');
+  assert.ok(prints.includes('|Hclaudewow:resume:2|h'), 'each line in the game chat is a link that picks it');
+
+  vm.run('SlashCmdList.CLAUDE("-r 1 where is the flight master?")');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 2, 'attaching a running session opens a chat for it');
+  assert.equal(field('liveTarget'), '6624f327-7126-423e-a653-d7cf7a4e492b');
+  assert.equal(field('name'), 'wow-ai');
+  let rec = stripRecords(vm).find(r => r.text === 'where is the flight master?');
+  const liveFlags = rec.flags.split(';');
+  assert.ok(liveFlags.includes('plugin=live'), rec.flags);
+  assert.ok(liveFlags.includes('live=' + Buffer.from('6624f327-7126-423e-a653-d7cf7a4e492b').toString('hex')), rec.flags);
+  assert.ok(!liveFlags.some(f => f.startsWith('resume=')), 'live, not headless');
+  const liveChat = field('id');
+  vm.run('SlashCmdList.CLAUDE("cancel")');
+  vm.run(`ClaudeWoW.SwitchChat("${firstId}")`);
+  vm.run('SlashCmdList.CLAUDE("-r wow-ai")');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 2, 'the same session again goes back to its chat');
+  assert.equal(field('id'), liveChat);
+
+  vm.run('SlashCmdList.CLAUDE("-r f024 --model opus carry on")');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 3, 'a session that is not running resumes headless in a chat of its own');
+  assert.equal(field('cwd'), '/Users/me/proj');
+  assert.equal(field('model'), 'opus');
+  rec = stripRecords(vm).find(r => r.text === 'carry on');
+  assert.equal(rec.cwd, '/Users/me/proj');
+  const headless = rec.flags.split(';');
+  assert.ok(headless.includes('resume=f02436b8-8a5f-4c05-823e-bef25f88ff7b'), rec.flags);
+  assert.ok(headless.includes('plugin=claude-code') && headless.includes('agent=claude') && headless.includes('model=opus'), rec.flags);
+  const headlessChat = field('id');
+  replyTo(vm, headlessChat, 'status = "done", text = "resumed", agent = "claude", session = "f02436b8-8a5f-4c05-823e-bef25f88ff7b", cwd = "/Users/me/proj"');
+  assert.equal(field('resumeId'), null, 'the resume goes out once');
+  vm.run('ClaudeWoW.Send("next turn")');
+  assert.ok(!stripRecords(vm).find(r => r.text === 'next turn').flags.includes('resume='), 'later turns continue the adopted session');
+  vm.run('SlashCmdList.CLAUDE("cancel")');
+
+  vm.run('SlashCmdList.CLAUDE("-r abcd")');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 3, 'an ambiguous prefix attaches nothing');
+  assert.match(lastText(), /^"abcd" matches 2 sessions/);
+  assert.match(lastText(), /\n2\. Second abcd  \/b  abcd2222/);
+  vm.run('SlashCmdList.CLAUDE("-r 2")');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 4, 'a number picks from the list just shown');
+  assert.equal(field('resumeId'), 'abcd2222-0000-4000-8000-000000000002');
+  assert.equal(field('agent'), 'codex', 'the session keeps the agent that made it');
+
+  vm.run('SlashCmdList.CLAUDE("-r nothing-like-this")');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 4);
+  assert.match(lastText(), /No chat or session matches "nothing-like-this"/);
+
+  vm.run('SlashCmdList.CLAUDE("-r 0123456789abcdef hello")');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 5, 'an id the list does not have is handed to the bridge to look up');
+  assert.equal(field('adoptCwd'), 'true');
+  const lookedUp = field('id');
+  assert.ok(stripRecords(vm).find(r => r.text === 'hello').flags.split(';').includes('resume=0123456789abcdef'));
+  replyTo(vm, lookedUp, 'status = "done", text = "found it", agent = "claude", session = "0123456789abcdef-full", cwd = "/srv/found"');
+  assert.equal(field('cwd'), '/srv/found', 'the folder the bridge found sticks to the chat');
+
+  vm.run('SlashCmdList.CLAUDE("-r")');
+  vm.run('SetItemRef("claudewow:resume:1")');
+  assert.equal(field('id'), liveChat, 'clicking a line picks it');
+  vm.run('SlashCmdList.CLAUDE("-r claude")');
+  assert.equal(field('id'), headlessChat, 'a name prefix picks the one session it fits');
+  vm.run('SlashCmdList.CLAUDE("-r \\"chat 1\\"")');
+  assert.equal(field('id'), firstId, 'a chat name in quotes picks that chat');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 5);
+});
+
+test('/claude -r with no running session names the command that starts one, and Pass on a live chat sends the denial to that session', () => {
+  const vm = newVM();
+  login(vm);
+  vm.run('STUB.RunTimers()');
+  nextSlot(vm, '{ now = time(), cwd = "", plugin = "ask", plugins = { "ask", "claude-code", "live" }, live = { sessions = {}, start = "cd /repo && claude --dangerously-load-development-channels server:claude-wow" }, sessions = {}, replies = {} }');
+  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+  const last = () => vm.evaluate('ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].text');
+  vm.run('SlashCmdList.CLAUDE("-r")');
+  assert.ok(last().endsWith('start Claude Code with: cd /repo && claude --dangerously-load-development-channels server:claude-wow'), last());
+  vm.run('ClaudeWoW.ApplySessions({ { id = "", name = "wow-ai", cwd = "/Users/me/wow-ai", agent = "claude", at = time(), live = true } }, time())');
+  vm.run('SlashCmdList.CLAUDE("-r wow-ai")');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 2);
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[2].liveTarget'), 'wow-ai', 'without a session id the name is the target');
   vm.run('ClaudeWoW.Send("touch a file")');
-  const chatId = vm.evaluate('ClaudeWoWDB.chats[1].id');
-  const id = vm.num('ClaudeWoWDB.chats[1].pendingId');
+  const chatId = vm.evaluate('ClaudeWoWDB.chats[2].id');
+  const id = vm.num('ClaudeWoWDB.chats[2].pendingId');
   assert.ok(id >= 1);
   nextSlot(vm, `{ now = time(), cwd = "", plugins = { "ask", "claude-code", "live" }, replies = { { chat = "${chatId}", id = ${id}, status = "done", text = "Claude Code (wow-ai) wants to use Bash.\\nRoll Need or Greed to allow it once, Pass to deny it.", agent = "claude", plugin = "live", denied = { "Bash(touch:*)" } } } }`);
   vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
-  assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].pendingId'), null, 'the roll prompt finished the message');
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[2].pendingId'), null, 'the roll prompt finished the message');
+  vm.run('ClaudeWoWDB.chats[2].plugin = "live"');
   vm.run(`ClaudeWoW.PassOnDenial("${chatId}", { "Bash(touch:*)" })`);
   const denial = stripRecords(vm).find(r => r.text === 'Denied.');
   assert.ok(denial, 'Pass sends the denial on a live chat');
-  assert.equal(denial.flags, 'plugin=live');
-  vm.run('SlashCmdList.CLAUDEWOW("help")');
-  assert.ok(last().includes('/claude-wow live '));
+  assert.equal(denial.flags, 'agent=claude;plugin=live;live=' + Buffer.from('wow-ai').toString('hex'));
+});
+
+test('/claude config lists every setting with its value, gets one, sets one, and refuses keys it does not know', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  const last = () => vm.evaluate('ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].text');
+  vm.run('SlashCmdList.CLAUDE("config")');
+  const list = last();
+  for (const key of ['voice', 'roast', 'whisper', 'echo', 'vision', 'roll', 'achievements', 'context', 'signal', 'mode', 'longchat', 'auto', 'plugin', 'ui', 'map', 'macro', 'bind', 'diag']) {
+    assert.match(list, new RegExp(`\\n${key}( = [^\\n]*)?  -  `), `${key} is listed`);
+  }
+  assert.match(list, /\nvision = off  -  /);
+  assert.match(list, /\necho = summary  -  /);
+  vm.run('SlashCmdList.CLAUDE("config vision on")');
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.vision'), 'true');
+  vm.run('SlashCmdList.CLAUDE("config vision")');
+  assert.ok(last().startsWith('Vision is ON'), last());
+  vm.run('SlashCmdList.CLAUDE("config echo 900")');
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.echo'), '900');
+  vm.run('SlashCmdList.CLAUDE("config mode reload")');
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.mode'), 'reload');
+  vm.run('SlashCmdList.CLAUDE("config mode pixel")');
+  vm.run('SlashCmdList.CLAUDE("config ctx 50k")');
+  assert.equal(vm.num('ClaudeWoWDB.settings.contextWarn'), 50000, 'an old spelling of a key still works');
+  vm.run('SlashCmdList.CLAUDE("config diag")');
+  assert.ok(last().startsWith('Diagnostics:'));
+  vm.run('SlashCmdList.CLAUDE("config macro")');
+  assert.ok(last().startsWith('macro: undo'), last());
+  vm.run('SlashCmdList.CLAUDE("config")');
+  assert.match(last(), /\nvision = on  -  /);
+  const chats = vm.num('#ClaudeWoWDB.chats');
+  vm.run('SlashCmdList.CLAUDE("config")');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), chats, 'config never starts a chat');
+});
+
+test('/claude-wow is a hidden alias for one release: the old verbs still work, text continues the current chat, and nothing tells the player about it', () => {
+  const vm = whisperVM();
+  const firstId = vm.evaluate('ClaudeWoWDB.chats[1].id');
+  const last = () => vm.evaluate('(function() for _, c in ipairs(ClaudeWoWDB.chats) do if c.id == ClaudeWoWDB.activeChat then return c.history[#c.history].text end end end)()');
+  vm.run('SlashCmdList.CLAUDEWOW("vision on")');
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.vision'), 'true');
+  vm.run('SlashCmdList.CLAUDEWOW("vision off")');
+  vm.run('SlashCmdList.CLAUDEWOW("agent codex")');
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].agent'), 'codex');
+  vm.run('SlashCmdList.CLAUDEWOW("context 80k")');
+  assert.equal(vm.num('ClaudeWoWDB.settings.contextWarn'), 80000);
+  vm.run('SlashCmdList.CLAUDEWOW("new Realms")');
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[2].name'), 'Realms');
+  vm.run('SlashCmdList.CLAUDEWOW("chat 1")');
+  assert.equal(vm.evaluate('ClaudeWoWDB.activeChat'), firstId);
+  vm.run('SlashCmdList.CLAUDEWOW("live")');
+  assert.ok(last().startsWith('Sessions ('), last());
+  typeIn(vm, 'ChatFrame1EditBox', '/claude-wow continue here');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 2, 'old text continues the current chat');
+  assert.equal(stripRecords(vm).find(r => r.text === 'continue here').chat, firstId);
+  vm.run('SlashCmdList.CLAUDE("cancel")');
+  vm.run('SlashCmdList.CLAUDE("config whisper on")');
+  const tab = vm.evaluate(`(function() for _, name in ipairs(CHAT_FRAMES) do if _G[name].claudewowChatId == "${firstId}" then return name .. "EditBox" end end end)()`);
+  vm.run(`ClaudeWoW.SwitchChat(ClaudeWoWDB.chats[2].id)`);
+  typeIn(vm, tab, '/claude-wow from the tab');
+  assert.equal(stripRecords(vm).find(r => r.text === 'from the tab').chat, firstId, 'old text in a tab goes to that tab\'s chat');
+  vm.run('SlashCmdList.CLAUDE("cancel")');
+  vm.run('ClaudeWoW.Toggle(false); SlashCmdList.CLAUDEWOW("")');
+  assert.equal(vm.evaluate('ClaudeWoWFrame.shown'), 'true', 'bare /claude-wow still toggles the window');
+  vm.run('SlashCmdList.CLAUDE("help")');
+  assert.ok(!last().includes('/claude-wow'), 'help does not mention it');
+  vm.run('SlashCmdList.CLAUDE("config")');
+  assert.ok(!last().includes('/claude-wow'), 'config does not mention it');
+  vm.run('ClaudeWoW.SwitchChat(ClaudeWoWDB.chats[1].id); SlashCmdList.CLAUDE("clear"); ClaudeWoW.Render()');
+  assert.equal(vm.num('STUB.serverSends'), 0);
 });
 
 // Context growth: the bridge reports, on every final reply, what the chat's next
@@ -1733,11 +2007,11 @@ test('context growth: the footer, /claude-wow context and diag show ctx and turn
   // It ticks while the window is open and nothing is pending.
   vm.run('STUB.now = STUB.now + 62; STUB.Tick()');
   assert.ok(footerText(vm).includes('13m 00s · ↓'), footerText(vm));
-  vm.run('SlashCmdList.CLAUDEWOW("diag")');
+  vm.run('SlashCmdList.CLAUDE("diag")');
   assert.ok(last().includes('context: warning at 100.0k tokens'), last());
   assert.ok(last().includes('Msg: 13m 00s · ↓ 106.9k tokens of 200.0k · ≈$2.41 API, 8 turns (warned)'), last());
   // Bare /claude-wow context: this chat's size and turns, the session, the threshold, then the game context as before.
-  vm.run('SlashCmdList.CLAUDEWOW("context")');
+  vm.run('SlashCmdList.CLAUDE("config context")');
   assert.ok(last().startsWith('Context: 106.9k tokens of 200.0k after 8 turns'), last());
   assert.ok(last().includes('Session: 13m 00s since it started; ≈$2.41 at API list prices so far (a comparison, not a bill'), last());
   assert.ok(last().includes('Warning at 100.0k tokens'), last());
@@ -1748,14 +2022,14 @@ test('context growth: the footer, /claude-wow context and diag show ctx and turn
   nextSlot(vm, `{ now = time(), cwd = "", replies = { { chat = "${vm.evaluate('ClaudeWoWDB.activeChat')}", id = ${id}, status = "working", text = "thinking" } } }`);
   vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
   assert.equal(vm.num('ClaudeWoWDB.chats[1].ctx'), 106863);
-  vm.run('SlashCmdList.CLAUDEWOW("cancel")');
+  vm.run('SlashCmdList.CLAUDE("cancel")');
   // A fresh session with an agent that reports nothing (turns = 1, no ctx): the clock only, and no stale cost.
   replyWith(vm, 'turns = 1, since = time() - 5');
   assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].ctx'), null);
   assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].cost'), null);
   assert.ok(footerText(vm).endsWith('   5s'), footerText(vm));
   assert.ok(!footerText(vm).includes('tokens'), footerText(vm));
-  vm.run('SlashCmdList.CLAUDEWOW("context")');
+  vm.run('SlashCmdList.CLAUDE("config context")');
   assert.ok(last().includes('Context: 1 turn in this session; AI does not report its context size.'), last());
   // A restore bundle (read with the next reply) brings the numbers back with the chat.
   vm.run('ClaudeWoWDB.restored = nil');
@@ -1765,7 +2039,7 @@ test('context growth: the footer, /claude-wow context and diag show ctx and turn
   nextSlot(vm, `{ now = time(), cwd = "", replies = { { chat = "${vm.evaluate('ClaudeWoWDB.activeChat')}", id = ${id}, status = "done", text = "ok", turns = 2 } }, restore = { token = "${token}", chats = { { id = "r1", name = "Old", cwd = "", plugin = "ask", ctx = 312458, turns = 213, since = time() - 3725, cost = 7.5, messages = { { role = "user", id = 1, t = 1, agent = "", text = "hey" } } } } } }`);
   vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
   assert.equal(vm.evaluate('ClaudeWoWDB.restored'), 'true', 'the bundle was read');
-  vm.run('SlashCmdList.CLAUDEWOW("chat Old")');
+  vm.run('SlashCmdList.CLAUDE("-r Old")');
   assert.equal(vm.num('(function() for _, ch in ipairs(ClaudeWoWDB.chats) do if ch.id == "r1" then return ch.ctx end end end)()'), 312458);
   assert.ok(footerText(vm).endsWith('   1h 02m · ↓ 312.5k tokens · ≈$7.50 API'), footerText(vm));
 });
@@ -1777,7 +2051,7 @@ test('context growth: past the threshold the chat is warned once per crossing, w
   const last = () => vm.evaluate('ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].text');
   const warnings = () => vm.num('(function() local n = 0; for _, m in ipairs(ClaudeWoWDB.chats[1].history) do if m.newChat then n = n + 1 end end; return n end)()');
   assert.equal(vm.num('ClaudeWoWDB.settings.contextWarn'), 100000, 'the default threshold');
-  vm.run('SlashCmdList.CLAUDEWOW("context 50k")');
+  vm.run('SlashCmdList.CLAUDE("config context 50k")');
   assert.equal(vm.num('ClaudeWoWDB.settings.contextWarn'), 50000, 'persisted in the saved settings');
   assert.ok(last().startsWith('Context warning at 50.0k tokens'), last());
   replyWith(vm, 'ctx = 40000, turns = 3, window = 200000');
@@ -1785,7 +2059,7 @@ test('context growth: past the threshold the chat is warned once per crossing, w
   replyWith(vm, 'ctx = 60000, turns = 4, window = 200000, cost = 1.2');
   assert.equal(warnings(), 1, 'the crossing warns');
   const warning = last();
-  for (const must of ['60.0k tokens of 200.0k after 4 turns, past the 50.0k mark', 're-reads all 60.0k tokens', 'costs more than the last', '≈$1.20 so far (a comparison, not a bill)', 'New chat', "AI's memory of this conversation", 'this transcript stays here', '/claude-wow context 0']) {
+  for (const must of ['60.0k tokens of 200.0k after 4 turns, past the 50.0k mark', 're-reads all 60.0k tokens', 'costs more than the last', '≈$1.20 so far (a comparison, not a bill)', 'New chat', "AI's memory of this conversation", 'this transcript stays here', '/claude config context 0']) {
     assert.ok(warning.includes(must), `warning says "${must}": ${warning}`);
   }
   assert.ok(vm.evaluate('table.concat(STUB.prints, "\\n")').includes('past the 50.0k mark'), 'the warning reached the game chat, where the reply went');
@@ -1810,15 +2084,15 @@ test('context growth: past the threshold the chat is warned once per crossing, w
   assert.ok(!footerText(vm).includes('tokens') && !footerText(vm).includes('·'), 'the new chat starts from nothing: ' + footerText(vm));
   assert.equal(vm.num('#ClaudeWoWDB.chats[1].history'), vm.num('#ClaudeWoWDB.chats[1].history'), 'the old transcript is untouched');
   // 0 turns the warning off; a plain number works too.
-  vm.run('SlashCmdList.CLAUDEWOW("chat 1")');
-  vm.run('SlashCmdList.CLAUDEWOW("context 0")');
+  vm.run('SlashCmdList.CLAUDE("-r 1")');
+  vm.run('SlashCmdList.CLAUDE("config context 0")');
   assert.equal(vm.num('ClaudeWoWDB.settings.contextWarn'), 0);
   assert.ok(last().startsWith('Context warning off'), last());
   assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].ctxWarned'), null, 'turning it off re-arms');
   replyWith(vm, 'ctx = 312458, turns = 213, window = 200000');
   assert.equal(warnings(), 2, 'off means off');
-  vm.run('SlashCmdList.CLAUDEWOW("context 100000")');
+  vm.run('SlashCmdList.CLAUDE("config context 100000")');
   assert.equal(vm.num('ClaudeWoWDB.settings.contextWarn'), 100000);
-  vm.run('SlashCmdList.CLAUDEWOW("diag")');
+  vm.run('SlashCmdList.CLAUDE("diag")');
   assert.ok(last().includes('context: warning at 100.0k tokens'), last());
 });

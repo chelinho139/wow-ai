@@ -9,7 +9,7 @@ addon/ClaudeWoW/     the in-game addon (Lua 5.1, WoW API)
   ClaudeWoW.lua        everything: strip, slots, chats, UI, slash commands
   Codec.lua             pixel-strip encoder, pure Lua, no WoW calls
   Inbox.lua             placeholder the bridge overwrites at runtime
-  Widgets.lua           live UI widgets from the agent, sandboxed, /claude-wow ui
+  Widgets.lua           live UI widgets from the agent, sandboxed, /claude config ui
   ClaudeWoW.toc
 bridge/               the companion process (Node.js, no runtime dependencies)
   bridge.js             I/O, processes, publishing
@@ -18,6 +18,7 @@ bridge/               the companion process (Node.js, no runtime dependencies)
   capture.ps1           screen capture and strip decoder (PowerShell)
   install-slots.js      creates the slot addons and signal files
   channel.js            the live-session channel server Claude Code spawns (MCP over stdio, by hand); liveproto.js holds what it shares with plugins/live.js
+  sessions.js           the sessions /claude -r lists and resumes: the bridge's own, Claude Code's history and project folders, running ones by pid
   supervisor.js         restarts bridge.js on crash; the `claude-wow` command (and `claude-wow setup` / `claude-wow service` / `claude-wow bridge`)
   service.js            `claude-wow service`: LaunchAgent / systemd unit / Startup launcher, log rotation, pid file
   runtime.js            node, bun or the compiled binary: how the bridge runs its own scripts on each
@@ -51,13 +52,13 @@ To try changes in the game, run `node setup.js` (it re-copies the addon into `In
 | Command | What it checks |
 |---|---|
 | `node tests/order_check.js` | The addon parses as Lua 5.1 and no top-level `local` is used before it is declared. |
-| `node --test tests/addon_test.js` | The real addon in a Lua VM with a stub client (`tests/wow_stub.lua`): login, hello, a message decoded off the strip, a slot reply, Allow, `/claude-wow reset`, restore, chat commands, minimize, reload mode, the screenshot transport (shots per message, retries, the timeout, CVar save/restore, the dark palette), and `/claude`, `/r` and whisper tabs typed into a model of the game's chat edit box (`STUB.ChatEditBox`), where a protected call made after addon code ran in the same Enter counts as tainted and no game function may be replaced. |
+| `node --test tests/addon_test.js` | The real addon in a Lua VM with a stub client (`tests/wow_stub.lua`): login, hello, a message decoded off the strip, a slot reply, Allow, `/claude reset`, restore, chat commands, minimize, reload mode, the screenshot transport (shots per message, retries, the timeout, CVar save/restore, the dark palette), and `/claude`, `/r` and whisper tabs typed into a model of the game's chat edit box (`STUB.ChatEditBox`), where a protected call made after addon code ran in the same Enter counts as tainted and no game function may be replaced; and the `/claude` surface: the flag parser (short and long flags, `--flag=value`, quotes, text that only looks like a flag), per-chat settings on the strip and in the outbox, `-r` against running, recent and unknown sessions with the picker and ambiguity, `/claude config`, and the hidden `/claude-wow` alias. |
 | `node --test tests/bridge_test.js` | `bridge/protocol.js`: strip records, flags (including `agent=`), the SavedVariables outbox, folder resolution, permission rules, dedup and pruning. |
 | `node --test tests/agents_test.js` | `bridge/agents.js`: the command line built for each agent and permission mode, the prompt delivery (stdin, prompt file, context block), a sample of each CLI's real stream (Claude stream-json, Codex `exec --json`, Grok streaming-json, agy stream-json, Hermes plain text) read back into progress lines, session id, denials and reply, and the unwrapping of npm's Windows launchers. |
 | `node --test tests/restore_test.js` | Slot files are valid Lua and read back field by field, including a restore bundle. |
 | `node --test tests/map_test.js` | The map protocol in `protocol.js`: command validation and sanitizing, versioned application and budgets, ```` ```wowmap ```` blocks and map files, and the `map` table in slot files read back in a Lua VM. |
-| `node --test tests/map_addon_test.js` | The real `Map.lua` (with `ClaudeWoW.lua`) in a Lua VM: sync and versions, pin projection on zone and continent maps, the navigator's yards, bearing and auto-advance, herb/ore nodes filtered by skill, and `/claude-wow map`. |
-| `node --test tests/voice_test.js` | The real `Voice.lua` (with `ClaudeWoW.lua`) in a Lua VM: every classic race and gender has every line, each pack covers every event, the lines played on send, pick-up, reply, error and permission, the throttle, and `/claude-wow voice`. |
+| `node --test tests/map_addon_test.js` | The real `Map.lua` (with `ClaudeWoW.lua`) in a Lua VM: sync and versions, pin projection on zone and continent maps, the navigator's yards, bearing and auto-advance, herb/ore nodes filtered by skill, and `/claude config map`. |
+| `node --test tests/voice_test.js` | The real `Voice.lua` (with `ClaudeWoW.lua`) in a Lua VM: every classic race and gender has every line, each pack covers every event, the lines played on send, pick-up, reply, error and permission, the throttle, and `/claude config voice`. |
 | `node --test tests/decode_test.js` | `bridge/decode.js`, the screenshot transport's reader: `Codec.lua` in a Lua VM, rendered inside a 1920x1080 frame as PNG (every filter type, RGB and RGBA) and TGA (raw and RLE, 24 and 32 bit, both row orders), bright and dark palettes, offsets, bad checksum, truncation and an oversized length field. |
 | `node --test tests/screenshots_test.js` | `bridge/screenshots.js`: the client's `Screenshots` folder derived from `addonDir`, the file-name filter, and the watcher reporting a new file once its size settles while ignoring files from before it started. |
 | `node --test tests/service_test.js` | `bridge/service.js`: the LaunchAgent plist (and `plutil -lint` on macOS), the systemd unit and the Windows launcher it writes, `claude-wow service` argument parsing, log rotation and the self-rotating writer, the pid file, the launchctl output parser, and `status` on a clean machine. |
@@ -65,8 +66,9 @@ To try changes in the game, run `node setup.js` (it re-copies the addon into `In
 | `node --test tests/runtime_test.js` | `bridge/runtime.js`: the command that runs each of the bridge's own scripts from a checkout (this node and the script) and from the compiled binary (the binary and a subcommand), and where a JavaScript launcher finds a node in each case. |
 | `node --test tests/assets_test.js` | `bridge/assets.js`: every embedded file exists and the addon folder is covered in full, `build/entry.js` embeds exactly that list, an embedded set is written out once and rewritten only where it differs, and `build.js` names one binary per target. |
 | `node --test tests/widget_test.js` | The widget protocol in `protocol.js`: validation and the display-only deny-list, versioned application and budgets, ```` ```wowui ```` blocks and widget files, the hint only for a plugin with the `ui` surface, the `widgets` table in slot files read back in a Lua VM, and that the addon blocks the same names. |
-| `node --test tests/widget_addon_test.js` | The real `Widgets.lua` (with `ClaudeWoW.lua`) in a Lua VM: a widget running live from slot data, errors surfaced to the chat window, blocked calls in the sandbox, `/claude-wow ui` list, remove and run, restart at login, and the reload path. |
+| `node --test tests/widget_addon_test.js` | The real `Widgets.lua` (with `ClaudeWoW.lua`) in a Lua VM: a widget running live from slot data, errors surfaced to the chat window, blocked calls in the sandbox, `/claude config ui` list, remove and run, restart at login, and the reload path. |
 | `node --test tests/live_test.js` | The live-session link: the socket endpoint, the newline-delimited JSON framing, the token handshake both ways, owner-only socket permissions, the channel server's MCP surface (`initialize`, `tools/list`, `tools/call`), the channel notification's shape, reply routing through `wow_reply`, the no-session message, and the permission relay as a Need/Greed roll, against `bridge/plugins/live.js` with a fake core. |
+| `node --test tests/sessions_test.js` | `bridge/sessions.js`: Claude Code's folder, recent sessions from a fake `history.jsonl` named by their titles, an id or prefix found in `projects/` with its folder, a running session from its pid file, the bridge's own sessions, the merged list, and resolving a reference (exact id, name, id prefix, name prefix, ambiguity). |
 | `npm run test:live-session` | Not part of `npm test`. A sandbox bridge (its own `CLAUDE_WOW_HOME`) and a real interactive `claude --dangerously-load-development-channels server:claude-wow` in a detached tmux session (Haiku, `--permission-mode manual`): the no-session message, a reply, a Greed and a Pass, read back from the slot files. Needs tmux and a logged-in Claude Code. |
 | `node tests/codec_test.js` | `Codec.lua` in a Lua VM, rendered to PNG with noise and gamma, decoded by `capture.ps1` (Windows) or `capture_x11.py` (elsewhere). Writes scratch images to `tests/tmp/` (gitignored). |
 | `npm run test:live` | Not part of `npm test`. Builds a temporary sandbox (its own `CLAUDE_WOW_HOME`, removed on exit; it aborts if the home would be `~/.claude-wow`) with a 5-slot pool and runs the bridge with `--inject` against a real agent CLI: Claude by default, `-- --agent codex` or `-- --agent grok` for the others. Needs that CLI installed and logged in. |
@@ -105,4 +107,4 @@ Two things are different inside the binary, and `bridge/runtime.js` is the one p
 
 ## Reporting bugs
 
-Use the bug-report template. The useful details are the client build (shown on the login screen), the last lines of `~/.claude-wow/bridge.log`, and the output of `/claude-wow diag` in game.
+Use the bug-report template. The useful details are the client build (shown on the login screen), the last lines of `~/.claude-wow/bridge.log`, and the output of `/claude diag` in game.

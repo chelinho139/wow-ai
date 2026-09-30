@@ -31,7 +31,7 @@ test('a run that passes timeoutMs is stopped and the player is told the limit', 
   });
 });
 
-test('/claude-wow cancel stops the agent run in the bridge', async () => {
+test('/claude cancel stops the agent run in the bridge', async () => {
   await withGame({}, async h => {
     await h.client.connect();
     const id = h.client.lastSeq() + 1;
@@ -39,7 +39,7 @@ test('/claude-wow cancel stops the agent run in the bridge', async () => {
     await h.bridge.waitForLine(new RegExp(`#${id}@\\S+ \\(screenshot\\)`));
     await h.client.waitFor(() => h.agentCalls().length === 1, { label: 'the agent to start' });
     const pid = h.agentCalls()[0].pid;
-    h.client.slash('/claude-wow cancel');
+    h.client.slash('/claude cancel');
     await h.client.waitFor(() => !isAlive(pid), { timeoutMs: 15000, label: 'the agent process to end' });
     await h.bridge.waitForLine(new RegExp(`#${id}@\\S+ cancelled from the game`));
   });

@@ -45,7 +45,7 @@ For example:
 curl -fsSL https://raw.githubusercontent.com/rdimascio/claude-wow/main/install.sh | sh -s -- --project ~/code/my-game --service
 ```
 
-When it finishes: fully quit and relaunch WoW, enable *Claude WoW* on the AddOns screen, and type `/claude-wow` in game.
+When it finishes: fully quit and relaunch WoW, enable *Claude WoW* on the AddOns screen, and type `/claude hello` in game.
 
 ## Route 2: Homebrew (macOS)
 
@@ -82,7 +82,7 @@ Two ways, not both at once (two bridges fight over the slot files):
 - **In a terminal:** `claude-wow` from the project folder you want the agents to work in (that folder becomes the default for chats), or `npm start` inside the repo. Leave the window open; Ctrl+C stops it; it restarts itself after a crash.
 - **As a background service:** `claude-wow service install`. It starts now and at every login, comes back after a crash, and needs no window. `claude-wow service status` says whether it is running, with its pid, uptime and the last log lines; `claude-wow service logs` (or `logs -f`) shows the log; `stop`, `start`, `restart` do what they say; `uninstall` removes it.
 
-Under the service the bridge's default project folder is `defaultCwd` from `~/.claude-wow/config.json` (`claude-wow setup --project <folder>` sets it); chats still pick their own with `/claude-wow cd`.
+Under the service the bridge's default project folder is `defaultCwd` from `~/.claude-wow/config.json` (`claude-wow setup --project <folder>` sets it); chats still pick their own with `/claude cd`.
 
 ### What the service is, per platform
 
@@ -99,7 +99,7 @@ Things worth knowing:
 - **The service sees the PATH you had when you installed it.** launchd and systemd hand services an almost empty environment, so `claude-wow service install` bakes your PATH into the definition; the bridge finds `claude`, `codex` and the rest through it. After installing a new agent CLI, or a new Node, run `claude-wow service install` again.
 - **macOS and screen capture.** A background process cannot ask for Screen Recording or Automation permission. The default screenshot transport needs neither (the addon takes a screenshot with the strip up; the bridge reads the file), so the service just works; `install` says so if `config.json` still names the deprecated pixel transport (`"mode": "pixel"` under `capture`), which exists only until `Screenshot()` is confirmed on Windows and Linux/Wine. On the pixel transport, run the bridge from a terminal that has the permissions instead.
 - **Linux and X11 capture.** The deprecated pixel transport needs `DISPLAY`; the unit carries the one you had at install time. The default screenshot transport needs nothing.
-- **If the screenshot transport cannot work on your client** (no `Screenshot()` function, or every shot fails), the bridge falls back to the pixel capture on its own, logs `TRANSPORT FALLBACK` with the reason, remembers it in `state.json`, and `/claude-wow diag` in game shows it; see the README's *Transports* section.
+- **If the screenshot transport cannot work on your client** (no `Screenshot()` function, or every shot fails), the bridge falls back to the pixel capture on its own, logs `TRANSPORT FALLBACK` with the reason, remembers it in `state.json`, and `/claude diag` in game shows it; see the README's *Transports* section.
 - **Windows without a restart-on-crash guarantee for the supervisor itself:** the Startup-folder route restarts the bridge when it crashes (that is what the supervisor does) but not the supervisor. If you want that too, create a Task Scheduler task (*Create Basic Task*, trigger *When I log on*, action `node "C:\...\claude-wow\bridge\supervisor.js"` with *Start in* set to the claude-wow folder, and under *Settings* tick *If the task fails, restart every 1 minute*) and delete the Startup-folder launcher with `claude-wow service uninstall`.
 - `claude-wow service install` refuses to run without a `config.json` in the home folder (the service would only loop), warns when a bridge is already running in a terminal, and removes a service installed by the project's old name (`io.wowai.bridge`, `wow-ai-bridge`, *WoW AI bridge.vbs*) so two bridges never start at login; `uninstall` removes that one too.
 
@@ -119,10 +119,10 @@ Then delete the code (the `claude-wow` binary in `~/.local/bin`, Windows `%Local
 
 ## Coming from wow-ai
 
-The project was called wow-ai (and wow-claude before that). Run the installer again, or `claude-wow setup` (any route): it copies your chats and settings from the old addon's saved data (`WoWAI.lua` or `WoWClaude.lua`) to `ClaudeWoW.lua`, removes the old addon and its slot folders, and rewrites the addon paths in `config.json`. The installer also carries `config.json`, `state.json` and `transcripts.json` over from `~/.wow-ai/bridge` to `~/.claude-wow`, uninstalls the old service and removes the old `wow-ai` command; `claude-wow service install` removes the old service on its own too. The old slash commands (`/wow-ai`, `/ai`, `/ask`, `/wowai`, `/wow-claude`) are gone: it is `/claude` or `/claude-wow`. Details in [INSTALL-WINDOWS.md](INSTALL-WINDOWS.md#upgrading-from-wow-ai-or-wow-claude) and the README.
+The project was called wow-ai (and wow-claude before that). Run the installer again, or `claude-wow setup` (any route): it copies your chats and settings from the old addon's saved data (`WoWAI.lua` or `WoWClaude.lua`) to `ClaudeWoW.lua`, removes the old addon and its slot folders, and rewrites the addon paths in `config.json`. The installer also carries `config.json`, `state.json` and `transcripts.json` over from `~/.wow-ai/bridge` to `~/.claude-wow`, uninstalls the old service and removes the old `wow-ai` command; `claude-wow service install` removes the old service on its own too. The old slash commands (`/wow-ai`, `/ai`, `/ask`, `/wowai`, `/wow-claude`) are gone: it is `/claude`. Details in [INSTALL-WINDOWS.md](INSTALL-WINDOWS.md#upgrading-from-wow-ai-or-wow-claude) and the README.
 
 ## If something goes wrong
 
 - The installer stops with `install failed: ...` and a `->` line: do what the arrow says and run it again. Nothing is left half-done: the code and the command go in before setup runs, so `claude-wow setup --wow "<client folder>"` is always the way to finish.
 - `claude-wow service status` says `running : no`: `claude-wow service logs` shows why. `Cannot read config.json` means setup has not run; `NOT INSTALLED` in the banner means setup could not write into the game folder (check `addonDir` in `config.json`; the banner's `home :` line says where that is).
-- The light in the game window stays red: the bridge is not running, or cannot see the game. Platform specifics are in [INSTALL-WINDOWS.md](INSTALL-WINDOWS.md#troubleshooting), [INSTALL-LINUX.md](INSTALL-LINUX.md) and the README's Troubleshooting section; `/claude-wow diag` in game reports what the addon sees.
+- The light in the game window stays red: the bridge is not running, or cannot see the game. Platform specifics are in [INSTALL-WINDOWS.md](INSTALL-WINDOWS.md#troubleshooting), [INSTALL-LINUX.md](INSTALL-LINUX.md) and the README's Troubleshooting section; `/claude diag` in game reports what the addon sees.

@@ -187,17 +187,17 @@ test('a roll whose denial went stale closes without acting, and the next queued 
   assert.equal(vm.num('ClaudeWoWRoll.Waiting()'), 0);
 });
 
-test('/claude-wow roll off brings back the Allow & retry button; without the module the button is the fallback', () => {
+test('/claude config roll off brings back the Allow & retry button; without the module the button is the fallback', () => {
   const vm = newVM();
   deliverDenial(vm, ['WebSearch']);
   const visibleAllowButton = 'RESULT = "none"; for _, f in ipairs(STUB.frames) do if f.template == "UIPanelButtonTemplate" and f.rules and f.shown then RESULT = f.text end end';
-  vm.run('SlashCmdList.CLAUDEWOW("roll off")');
+  vm.run('SlashCmdList.CLAUDE("config roll off")');
   assert.equal(vm.evaluate('ClaudeWoWDB.settings.lootRoll'), 'false');
   assert.equal(vm.evaluate('ClaudeWoWRollFrame.shown'), 'false');
   assert.equal(vm.evaluate('ClaudeWoW.LootRollEnabled()'), 'false');
   vm.run(visibleAllowButton);
   assert.equal(vm.evaluate('RESULT'), 'Allow WebSearch & retry', 'the same denial is still open, now as the button');
-  vm.run('SlashCmdList.CLAUDEWOW("roll on")');
+  vm.run('SlashCmdList.CLAUDE("config roll on")');
   assert.equal(vm.evaluate('ClaudeWoW.LootRollEnabled()'), 'true');
   assert.equal(vm.evaluate('ClaudeWoWRollFrame.shown'), 'true', 'turning it back on rolls the open denial again');
   vm.run(visibleAllowButton);

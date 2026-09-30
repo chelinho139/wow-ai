@@ -38,6 +38,14 @@ before the split stay bound to the coding plugin. The agent CLIs (`agents.js`)
 are the core's model runner, shared by every plugin: `ask` runs the same CLI as
 `claude-code`, in a scratch folder instead of a project.
 
+Players never have to name a plugin. The addon picks one from the chat: a chat
+attached to a running session with `/claude -r` is `live`, a chat with a folder
+(`/claude cd`) is `claude-code`, and any other chat goes to the bridge's default
+(`ask`). `/claude -r` also decides between `live` and a headless resume: a session
+that is connected over the channel gets the chat live, any other one is resumed
+with `--resume` in its folder by `claude-code`. `/claude config plugin <name>`
+stays as an advanced setting that pins a chat by hand.
+
 ## The plugins
 
 | Plugin | What it is | Comes from |

@@ -276,7 +276,7 @@ function R.Status()
 		.. ": when you die, the last " .. R.WINDOW_SECONDS .. " s of hits go to the agent in the \"" .. R.CHAT_NAME .. "\" chat for a short roast (at most one every " .. math.floor(R.COOLDOWN_SECONDS / 60) .. " min"
 		.. (wait > 0 and (", next in " .. wait .. " s") or "") .. ")."
 		.. (R.lastSkip and R.lastSkip ~= "off" and (" Last death was not roasted: " .. R.lastSkip .. ".") or "")
-		.. " /claude-wow roast on|off"
+		.. " /claude config roast on|off"
 end
 
 function R.Command(rest)

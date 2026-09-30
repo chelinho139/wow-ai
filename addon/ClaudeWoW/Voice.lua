@@ -433,7 +433,7 @@ local function Status()
 		local ref, custom = EventLineRef(event)
 		table.insert(out, string.format("  %s -> %s%s  (%s)", event, ref, custom and " [set]" or "", EVENT_MEANING[event]))
 	end
-	table.insert(out, "/claude-wow voice race|peasant|peon|off, set <event> <line>, reset, test <event|line>, lines [pack]")
+	table.insert(out, "/claude config voice race|peasant|peon|off, set <event> <line>, reset, test <event|line>, lines [pack]")
 	Print(table.concat(out, "\n"))
 end
 
@@ -466,7 +466,7 @@ local function SetLine(event, ref)
 	end
 	local ids, canonical = ResolveLine(ref)
 	if not ids then
-		Print("no line " .. ref .. ". /claude-wow voice lines [race|peasant|peon] lists them")
+		Print("no line " .. ref .. ". /claude config voice lines [race|peasant|peon] lists them")
 		return
 	end
 	db.lines[event] = canonical
@@ -477,7 +477,7 @@ local function TestLine(arg)
 	local ids, label
 	if EVENT_PRIORITY[arg] then
 		if DB().pack == "off" then
-			Print("voice is off: /claude-wow voice race|peasant|peon turns it on")
+			Print("voice is off: /claude config voice race|peasant|peon turns it on")
 			return
 		end
 		ids, label = V.LineFor(arg), EventLineRef(arg)

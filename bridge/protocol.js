@@ -198,6 +198,16 @@ function sameFolder(a, b) {
 // "plugin=ask" = the chat is bound to that plugin instead of the bridge's
 // default (see plugins.js; only set when the flag is there, so a record from
 // an addon that predates plugins parses exactly as before).
+const SETTING_RE = /^[A-Za-z0-9._:\[\]-]{1,80}$/;
+const RESUME_REF_RE = /^[A-Za-z0-9._-]{1,80}$/;
+const ADD_DIRS_MAX = 8;
+const PERMISSION_MODES = ['acceptEdits', 'auto', 'bypassPermissions', 'manual', 'default', 'dontAsk', 'plan'];
+
+function permissionModeName(raw) {
+  const want = String(raw || '').trim().toLowerCase();
+  return PERMISSION_MODES.find(m => m.toLowerCase() === want) || '';
+}
+
 function parseFlags(flags) {
   const out = { newSession: false, hello: false, forget: false, context: false, vision: false, allow: [], agent: '' };
   for (const tok of String(flags || '').split(';')) {
@@ -212,6 +222,12 @@ function parseFlags(flags) {
     else if (tok.startsWith('cancel=')) { const n = Number(tok.slice(7)); if (Number.isInteger(n) && n > 0) out.cancel = n; }
     else if (tok.startsWith('plugin=')) { const p = tok.slice(7).trim().toLowerCase(); if (p) out.plugin = p; }
     else if (tok.startsWith('kind=')) { const k = tok.slice(5).trim().toLowerCase(); if (/^[a-z][a-z0-9-]*$/.test(k)) out.kind = k; }
+    else if (tok.startsWith('model=')) { const v = tok.slice(6).trim(); if (SETTING_RE.test(v)) out.model = v; }
+    else if (tok.startsWith('effort=')) { const v = tok.slice(7).trim().toLowerCase(); if (SETTING_RE.test(v)) out.effort = v; }
+    else if (tok.startsWith('pm=')) { const v = permissionModeName(tok.slice(3)); if (v) out.permissionMode = v; }
+    else if (tok.startsWith('dirs=')) { const dirs = fromHex(tok.slice(5).trim()).split('\x1F').map(s => s.trim()).filter(Boolean).slice(0, ADD_DIRS_MAX); if (dirs.length) out.addDirs = dirs; }
+    else if (tok.startsWith('resume=')) { const v = tok.slice(7).trim(); if (RESUME_REF_RE.test(v)) out.resume = v; }
+    else if (tok.startsWith('live=')) { const v = fromHex(tok.slice(5).trim()).trim().slice(0, 80); if (v) out.liveTarget = v; }
     // "shot=missing" / "shot=failed": the addon is on the screenshot transport but
     // cannot take the shot (no Screenshot() in this client, or SCREENSHOT_FAILED on
     // every try). The bridge falls back to the pixel transport on it (transportFallback).
@@ -270,6 +286,11 @@ function parseOutbox(src) {
   if (allowOnce && allowOnce[1]) job.allowOnce = fromHex(allowOnce[1]).split('\x1F').filter(Boolean);
   const shot = b.match(/\["shot"\]\s*=\s*"([a-z]*)"/);
   if (shot && FALLBACK_REASONS[shot[1]]) job.shot = shot[1];
+  const opts = b.match(/\["opts"\]\s*=\s*"([0-9a-fA-F]*)"/);
+  if (opts && opts[1]) {
+    const f = parseFlags(fromHex(opts[1]));
+    for (const k of ['model', 'effort', 'permissionMode', 'addDirs', 'resume', 'liveTarget']) if (f[k] !== undefined) job[k] = f[k];
+  }
   return job;
 }
 
@@ -546,6 +567,14 @@ function denseLevels(raw) {
   return [0, 1, 2, 3].map(k => Math.floor(lv.off + k * (lv.on - lv.off) / 3 + 0.5));
 }
 
+function luaSession(s) {
+  const f = [`id = ${luaStr(s.id || '')}`, `name = ${luaStr(s.name || '')}`, `cwd = ${luaStr(s.cwd || '')}`, `agent = ${luaStr(s.agent || '')}`, `at = ${Math.max(0, Math.floor(Number(s.at) || 0))}`];
+  if (s.plugin) f.push(`plugin = ${luaStr(s.plugin)}`);
+  if (s.chat) f.push(`chat = ${luaStr(s.chat)}`);
+  if (s.live) f.push('live = true');
+  return `\t\t{ ${f.join(', ')} },`;
+}
+
 function luaTable(globalName, records, opts = {}) {
   const now = opts.now || Date.now();
   const agents = Array.isArray(opts.agents) ? opts.agents : [];
@@ -575,6 +604,9 @@ function luaTable(globalName, records, opts = {}) {
   if (opts.live && typeof opts.live === 'object') {
     const sessions = Array.isArray(opts.live.sessions) ? opts.live.sessions : [];
     lines.splice(lines.length - 1, 0, `\tlive = { sessions = { ${sessions.map(luaStr).join(', ')} }, start = ${luaStr(opts.live.start || '')} },`);
+  }
+  if (Array.isArray(opts.sessions)) {
+    lines.splice(lines.length - 1, 0, '\tsessions = {', ...opts.sessions.map(luaSession), '\t},');
   }
   for (const r of records) {
     lines.push('\t\t{');
@@ -853,7 +885,7 @@ const WIDGET_DENIED_PATTERNS = [
 const WIDGET_HINT = [
   'When the player asks for a small UI element (a DPS meter, a timer bar for their buffs, a tracker), hand it over as a live widget: the addon loads it at once, without /reload, and keeps it across logins. End the reply with a fenced block whose language tag is wowui followed by the widget name (letters, digits, _ . -, at most 32) and optionally title="<shown title>"; the block holds the widget\'s Lua 5.1 source. Or append {"op":"set","name":"<name>","title":"<title>","source":"<lua>"} as one JSON line to the file named by the CLAUDE_WOW_UI_FILE environment variable.',
   `The source runs once as a function body: "local ui = ..." gives ui.name, ui.frame (a container frame: parent your frames to it, or pass no parent), ui.db (a table saved between sessions, e.g. for a position), and ui.print(text). Use documented addon APIs only: CreateFrame (no Secure templates), events, OnUpdate, C_Timer, Unit* functions, C_UnitAuras, CombatLogGetCurrentEventInfo. Widgets are display-only: no casting, targeting, movement, items, chat or addon messages, macros, bindings, CVars, loadstring/setfenv/debug, and no ClaudeWoW* globals; a widget that names any of these is refused. At most ${WIDGET_LIMITS.sourceBytes} bytes.`,
-  'The same name replaces the widget. To remove one, write a wowui block with the name followed by the word remove and an empty body, or append {"op":"remove","name":"<name>"}. Explain outside the block what it shows; the player lists and removes widgets with /claude-wow ui.',
+  'The same name replaces the widget. To remove one, write a wowui block with the name followed by the word remove and an empty body, or append {"op":"remove","name":"<name>"}. Explain outside the block what it shows; the player lists and removes widgets with /claude config ui.',
 ];
 
 function widgetRevision(source) {
@@ -965,9 +997,9 @@ module.exports = {
   alreadyHandled, markHandled, pruneStale, MONTH_MS,
   noteUsage, usageFields, tokensLabel,
   resolveCwd, sameFolder, baseName,
-  parseFlags, jobsFromStrip, parseOutbox, withRunOnlyRules, systemPrompt, messagePrompt, visionHint, splitSummary,
+  parseFlags, PERMISSION_MODES, permissionModeName, ADD_DIRS_MAX, jobsFromStrip, parseOutbox, withRunOnlyRules, systemPrompt, messagePrompt, visionHint, splitSummary,
   ruleFor, describeToolUse,
-  luaStr, luaTable, SILENT_WAV, TRANSPORTS, DEFAULT_TRANSPORT, transportName, chooseTransport, FALLBACK_REASONS, transportFallback, transportNote, DEFAULT_LEVELS, screenshotLevels, STRIP_CODECS, DEFAULT_STRIP_CODEC, stripCodec, denseLevels,
+  luaStr, luaTable, luaSession, SILENT_WAV, TRANSPORTS, DEFAULT_TRANSPORT, transportName, chooseTransport, FALLBACK_REASONS, transportFallback, transportNote, DEFAULT_LEVELS, screenshotLevels, STRIP_CODECS, DEFAULT_STRIP_CODEC, stripCodec, denseLevels,
   MAP_LIMITS, validateMapCommand, newMap, applyMapCommands, extractMapBlocks, parseMapFile, luaMap,
   MACRO_LIMITS, extractMacros, stripMacroBlocks, luaMacros,
   WIDGET_LIMITS, WIDGET_DENIED_NAMES, deniedWidgetCalls, validateWidgetCommand, newWidgetSet, applyWidgetCommands,
