@@ -4,6 +4,10 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+### Removed
+
+- NPC sightings. The addon no longer records NPC or flight-master spots (`ClaudeWoWNpcDB`) or adds an "NPCs seen on this map" line to the situation block, and the agent no longer gets `CLAUDE_WOW_SAVED_VARIABLES`. The saved table drops out of the SavedVariables file at the next logout.
+
 ### Fixed
 
 - No more 16-chat limit. At logout every chat past the 16 most recent keeps only its last 10 messages in saved data (cold); opening one fetches its last 40 messages from the bridge's transcript (a `w` record, answered by a one-chat restore marked `warm`). A fresh-install restore lists every chat, the 16 newest with messages. The fallback chat list pages 16 at a time.

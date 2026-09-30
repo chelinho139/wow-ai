@@ -1898,8 +1898,6 @@ function ClaudeWoW.GameContext()
 	if x and y and (x > 0 or y > 0) then
 		local where = (mapName and mapName ~= zone) and (" on " .. mapName) or ""
 		table.insert(lines, string.format("Position: %.1f, %.1f%s%s", x * 100, y * 100, where, mapId and (" (map " .. mapId .. ")") or ""))
-		local seen = ClaudeWoWSightings and Try(ClaudeWoWSightings.ContextLine, mapId, x * 100, y * 100)
-		if seen then table.insert(lines, seen) end
 	end
 
 	local progress = {}
