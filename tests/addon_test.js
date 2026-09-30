@@ -1685,30 +1685,22 @@ test('there is no chat limit: /claude <text> starts a 17th chat and sends there'
   assert.ok(stripRecords(vm).find(r => r.text === 'one more'), 'sent from the new chat');
 });
 
-test('chats past the 16 most recent go cold: saved data keeps their last 10 messages, and opening one asks the bridge for the rest', () => {
+test('the fallback chat list pages 16 at a time and opens on the active chat\'s page', () => {
   const vm = whisperVM();
   vm.run('for i = 2, 20 do ClaudeWoW.NewChat("c" .. i) end');
-  vm.run(`local old = ClaudeWoWDB.chats[2]
-    for k = 1, 30 do table.insert(old.history, { role = k % 2 == 0 and "assistant" or "user", text = "m" .. k, t = 1000 + k }) end
-    for i = 3, 20 do table.insert(ClaudeWoWDB.chats[i].history, { role = "user", text = "new", t = 5000 + i }) end
-    ClaudeWoW.CoolChats()`);
-  assert.equal(vm.evaluate('ClaudeWoWDB.chats[2].cold'), 'true');
-  assert.equal(vm.num('#ClaudeWoWDB.chats[2].history'), 10);
-  assert.equal(vm.evaluate('ClaudeWoWDB.chats[2].history[10].text'), 'm30', 'the newest messages are the ones kept');
-  assert.equal(vm.evaluate('ClaudeWoWDB.chats[20].cold'), null, 'recent chats stay hot');
-
-  const id = vm.evaluate('ClaudeWoWDB.chats[2].id');
-  vm.run(`ClaudeWoW.SwitchChat("${id}")`);
-  const warm = stripRecords(vm).find(r => r.chat === id && /(^|;)w(;|$)/.test(r.flags));
-  assert.ok(warm, 'a warm request goes out: ' + JSON.stringify(stripRecords(vm).map(r => r.flags)));
-  assert.equal(vm.evaluate('ClaudeWoWDB.chats[2].warming'), 'true');
-
-  const token = vm.evaluate('ClaudeWoWDB.session');
-  const messages = Array.from({ length: 30 }, (_, k) => `{ role = "user", text = "m${k + 1}", id = ${k + 1}, t = ${1001 + k} }`).join(', ');
-  nextSlot(vm, `{ now = time(), cwd = "", replies = {}, restore = { token = "${token}", warm = true, chats = { { id = "${id}", name = "c2", cwd = "", messages = { ${messages} } } } } }`);
-  vm.run('ClaudeWoW.Connect(); STUB.now = STUB.now + 6; STUB.Tick()');
-  assert.equal(vm.num('#ClaudeWoWDB.chats[2].history'), 30, 'the bridge refills it');
-  assert.equal(vm.evaluate('ClaudeWoWDB.chats[2].cold'), null);
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 20);
+  const shown = () => vm.evaluate('(function() local t = {} for _, b in ipairs(ClaudeWoW.UI.chatButtons) do if b.shown then t[#t + 1] = b.chatId end end return #t end)()');
+  const selected = () => vm.evaluate('(function() for _, b in ipairs(ClaudeWoW.UI.chatButtons) do if b.shown and b.selected.shown then return b.chatId end end end)()');
+  assert.equal(vm.evaluate('ClaudeWoW.UI.pageLabel:GetText()'), '2 / 2', 'the new 20th chat is active, so page 2 shows');
+  assert.equal(Number(shown()), 4);
+  assert.equal(selected(), vm.evaluate('ClaudeWoWDB.activeChat'), 'and its row is highlighted');
+  vm.run('ClaudeWoW.UI.pagePrev.scripts.OnClick(ClaudeWoW.UI.pagePrev)');
+  assert.equal(vm.evaluate('ClaudeWoW.UI.pageLabel:GetText()'), '1 / 2');
+  assert.equal(Number(shown()), 16);
+  vm.run('ClaudeWoW.UI.pagePrev.scripts.OnClick(ClaudeWoW.UI.pagePrev)');
+  assert.equal(vm.evaluate('ClaudeWoW.UI.pageLabel:GetText()'), '1 / 2', 'it does not go below the first page');
+  vm.run('ClaudeWoW.SwitchChat(ClaudeWoWDB.chats[18].id)');
+  assert.equal(vm.evaluate('ClaudeWoW.UI.pageLabel:GetText()'), '2 / 2', 'switching chats follows the active chat');
 });
 
 test('opening chat, a chat type change, Esc and "/r " after an agent replied run the game\'s edit box with no addon hook on its methods', () => {
