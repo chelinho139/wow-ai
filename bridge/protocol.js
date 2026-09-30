@@ -208,6 +208,9 @@ function permissionModeName(raw) {
   return PERMISSION_MODES.find(m => m.toLowerCase() === want) || '';
 }
 
+const PRESENCE_TEST_RESULTS = ['passed', 'failed'];
+const LATE_CREATE_RESULTS = ['seen', 'unseen'];
+
 function parseFlags(flags) {
   const out = { newSession: false, hello: false, forget: false, context: false, vision: false, allow: [], agent: '' };
   for (const tok of String(flags || '').split(';')) {
@@ -232,6 +235,9 @@ function parseFlags(flags) {
     // cannot take the shot (no Screenshot() in this client, or SCREENSHOT_FAILED on
     // every try). The bridge falls back to the pixel transport on it (transportFallback).
     else if (tok.startsWith('shot=')) { const s = tok.slice(5).trim().toLowerCase(); if (FALLBACK_REASONS[s]) out.shot = s; }
+    else if (tok.startsWith('pt=')) { const v = tok.slice(3).trim().toLowerCase(); if (PRESENCE_TEST_RESULTS.includes(v)) out.presenceTest = v; }
+    else if (tok.startsWith('lc=')) { const v = tok.slice(3).trim().toLowerCase(); if (LATE_CREATE_RESULTS.includes(v)) out.lateCreate = v; }
+    else if (tok.startsWith('probe=')) { const v = tok.slice(6).trim().toLowerCase(); if (/^[0-9a-z]{4,16}$/.test(v)) out.probe = v; }
   }
   return out;
 }
@@ -730,6 +736,11 @@ function luaTable(globalName, records, opts = {}) {
   if (Array.isArray(opts.sessions)) {
     lines.splice(lines.length - 1, 0, '\tsessions = {', ...opts.sessions.map(luaSession), '\t},');
   }
+  if (opts.presence && typeof opts.presence === 'object') {
+    const pr = opts.presence;
+    lines.splice(lines.length - 1, 0, `\tsignals = ${luaStr(pr.scheme || 'armed')},`,
+      `\tpresence = { ring = ${luaStr(pr.ring || '')}, at = ${Math.max(0, Math.floor(Number(pr.at) || 0))}, n = ${Math.max(0, Math.floor(Number(pr.n) || 0))}, probe = ${luaStr(pr.probe || '')} },`);
+  }
   for (const r of records) {
     lines.push('\t\t{');
     lines.push(`\t\t\tchat = ${luaStr(r.chat || '')},`);
@@ -1115,7 +1126,7 @@ function luaWidgets(set) {
 
 module.exports = {
   ADDON, OLD_ADDONS, OLD_ADDON_PATH, OLD_SAVED_FILE,
-  fromHex, pad3, slotNumber, SIGNAL_CLEAR_AHEAD, slotsToClearAhead, chatKey, sessKey,
+  fromHex, pad3, slotNumber, SIGNAL_CLEAR_AHEAD, slotsToClearAhead, PRESENCE_TEST_RESULTS, LATE_CREATE_RESULTS, chatKey, sessKey,
   alreadyHandled, markHandled, pruneStale, MONTH_MS,
   noteUsage, usageFields, tokensLabel,
   resolveCwd, sameFolder, baseName,

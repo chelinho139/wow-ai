@@ -50,6 +50,40 @@ reload fallback, about two minutes after the first message. An explicit `capture
 always wins over the memory: `"pixel"` ends the note, `"screenshot"` tries again at
 every start (and falls back again, that run, if the addon still cannot shoot).
 
+## Signal files: the game only sees what existed at launch
+
+**Evidence (WoW Forever 1.60.1, macOS, 2026-09-29).** `/claude diag` in game said
+`sound channel: usable (self-test: passed)`, `sound checks: 469, valid hits: 9`,
+`presence: head at 1965, beats seen: 0`, and `Bridge: connected (seen 24s ago)` just
+after a reply. On disk the bridge had written presence files up to 1981, one every
+30 s, all `0777`. The game had launched at about file 1962-1965. Not one file created
+after launch was seen, so the light went red 5 minutes after every reply. An earlier
+probe had already shown that content cannot signal: a missing file gives
+`PlaySoundFile` = `nil`, and an empty, garbage, truncated or valid file gives `true`.
+
+**The scheme since then.** Setup arms every signal file before the game starts
+(about 16,400 files: `ack`, `sig`, `act` for 200 slots, and two presence rings of
+2000). The bridge signals by deleting a file, never by creating one. Details are in
+[ARCHITECTURE.md](ARCHITECTURE.md#signals-armed-files-deleted-to-signal).
+
+**Still unverified in the real client.** Nobody has yet seen a launch-time file read
+as missing after the bridge deleted it. The addon tests this itself at every login
+and uses the beats only if it passes. If it fails, the light uses the slow windows
+(stale at 12 minutes, down at 22), and nothing else breaks. To check after an update:
+
+1. Run `claude-wow setup` (or `npm run slots`), restart the bridge, then quit WoW
+   fully and start it again.
+2. Log in, wait a minute, and run `/claude diag`.
+3. Look for `presence self-test: passed` and a rising `beats seen`. The line
+   `late-created file: unseen` confirms the launch-time index; `seen` means files
+   made mid-session can be seen after all, which is worth reporting.
+4. `npm run doctor` warns when signal files were created after the running game
+   started, and shows the result the addon reported.
+
+**Restart the game after setup.** Any signal file created while the game runs is
+invisible to it until the next launch. That includes a fresh install, a re-run of
+setup, and the first bridge start on this version.
+
 ## Edge cases
 
 **Screenshots pile up when the bridge is down.** The addon shoots on every send; the

@@ -83,6 +83,8 @@ class WowClient {
       failShots: false,
       seed: 7,
       disabled: [],
+      fileIndex: 'launch',
+      deletionVisible: true,
       chatDock: false,
     }, opts);
     this.clientRoot = assertSafe(sb.client);
@@ -112,8 +114,34 @@ class WowClient {
     return names;
   }
 
+  indexFiles() {
+    const files = new Set();
+    const pending = [path.join(this.clientRoot, 'Interface', 'AddOns')];
+    while (pending.length) {
+      const dir = pending.pop();
+      let entries;
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+      for (const e of entries) {
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) pending.push(full);
+        else if (e.isFile()) files.add(full);
+      }
+    }
+    this.fileIndex = this.opts.fileIndex === 'launch' ? files : null;
+    return files;
+  }
+
+  visible(file) {
+    let onDisk = false;
+    try { onDisk = !!file && fs.statSync(file).isFile(); } catch { onDisk = false; }
+    if (!this.fileIndex || !file) return onDisk;
+    if (!this.fileIndex.has(file)) return false;
+    return onDisk || this.opts.deletionVisible === false;
+  }
+
   launch() {
     this.indexAddons();
+    this.indexFiles();
     this.launchedAt = Date.now();
     this.boot();
     return this;
@@ -131,9 +159,7 @@ class WowClient {
     });
     lua.lua_register(L, to_luastring('HOST_exists'), S => {
       const file = this.resolveGamePath(to_jsstring(lauxlib.luaL_checkstring(S, 1)));
-      let ok = false;
-      try { ok = !!file && fs.statSync(file).isFile(); } catch { ok = false; }
-      lua.lua_pushboolean(S, ok);
+      lua.lua_pushboolean(S, this.visible(file));
       return 1;
     });
     return L;

@@ -4,11 +4,13 @@ const Service = require('../../bridge/service');
 const Screens = require('../../bridge/screenshots');
 const { slotNumber, pad3 } = require('../../bridge/protocol');
 const GameFs = require('../../bridge/gamefs');
+const SIG = require('../../bridge/signals');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const QUIET_LIMIT_MS = 10 * 60 * 1000;
 const LOG_TAIL_BYTES = 2 * 1024 * 1024;
 const WRAP_WINDOW = 50;
+const LAUNCH_SLACK_MS = 2000;
 const MB = 1024 * 1024;
 const LIMITS = { sessionBytes: 20 * MB, homeBytes: 200 * MB, logsBytes: 50 * MB, screenshotLeftovers: 20 };
 const TROUBLE_PATTERN = /error|rejected|cannot|unreadable|TRANSPORT FALLBACK|exited with code|bridge exited/i;
@@ -82,11 +84,23 @@ function launchdJob(ctx) {
   });
 }
 
-function wowRunning(ctx) {
+function wowProcessLines(ctx) {
   return cached(ctx, 'wow', () => {
     const r = ctx.sys.run('pgrep', ['-lf', 'World of Warcraft']);
-    return r.ok && r.out.split('\n').some(line => /\.app\/Contents\/MacOS\//.test(line));
+    return r.ok ? r.out.split('\n').filter(line => /\.app\/Contents\/MacOS\//.test(line)) : [];
   });
+}
+
+function wowRunning(ctx) {
+  return wowProcessLines(ctx).length > 0;
+}
+
+function wowProcess(ctx) {
+  const line = wowProcessLines(ctx)[0];
+  const pid = line ? Number(line.trim().split(/\s+/)[0]) : null;
+  if (!pid) return null;
+  const info = processInfo(ctx, pid);
+  return info ? { pid, startedAt: info.startedAt } : { pid, startedAt: null };
 }
 
 function gitRaw(ctx, dir, args) {
@@ -325,23 +339,73 @@ function checkSignals(ctx) {
   const sig = wavSlots(ctx, path.join(addonDir, 'ClaudeWoW', 'sig'));
   const lastSeq = parseLastSeq(ctx.sys.readText(ctx.config.savedVariablesFile || ''));
   const issues = [];
+  const armed = `ack ${ack ? ack.length : 'missing'} armed .wav, sig ${sig ? sig.length : 'missing'} armed .wav`;
   if (lastSeq === null) {
-    issues.push(warn(`Cannot read db.lastSeq from ${ctx.config.savedVariablesFile || '(no savedVariablesFile)'}.`, 'Without it the wrap hazard below cannot be judged.', 'Log in once and /reload so WoW writes the SavedVariables file.'));
-    return finish('signals', 'Signal files', `ack ${ack ? ack.length : 'missing'}, sig ${sig ? sig.length : 'missing'}, lastSeq unknown`, issues);
+    issues.push(warn(`Cannot read db.lastSeq from ${ctx.config.savedVariablesFile || '(no savedVariablesFile)'}.`, 'Without it the slots ahead of the next message cannot be judged.', 'Log in once and /reload so WoW writes the SavedVariables file.'));
+    return finish('signals', 'Signal files', `${armed}, lastSeq unknown`, issues);
   }
   const lastSlot = slotNumber(Math.max(lastSeq, 1), slots);
   const toWrap = slots - (lastSeq % slots);
-  const distanceToMultiple = Math.min(lastSeq % slots, toWrap);
-  const nearWrap = lastSeq >= slots - WRAP_WINDOW && distanceToMultiple <= WRAP_WINDOW;
   const ackSet = new Set(ack || []);
-  const staleAhead = slotsAhead(lastSlot, slots, WRAP_WINDOW).filter(s => ackSet.has(s));
-  if (nearWrap && staleAhead.length) {
-    issues.push(warn(`lastSeq ${lastSeq} is ${distanceToMultiple} from a multiple of ${slots} slots, and ${staleAhead.length} ack file(s) from the last lap sit ahead of it (${staleAhead.slice(0, 5).map(pad3).join(', ')}${staleAhead.length > 5 ? ', ...' : ''}).`,
-      'Ack files are never cleared, so after the wrap a new message on a reused slot looks acked before the bridge reads it, and the addon stops resending it.',
-      'Known blocker: the bridge must clear ack/sig for a slot before reuse; until then expect lost messages after the wrap.'));
+  const spentAhead = slotsAhead(lastSlot, slots, WRAP_WINDOW).filter(s => !ackSet.has(s));
+  if (spentAhead.length) {
+    issues.push(warn(`${spentAhead.length} ack file(s) ahead of lastSeq ${lastSeq} are missing (${spentAhead.slice(0, 5).map(pad3).join(', ')}${spentAhead.length > 5 ? ', ...' : ''}).`,
+      'An ack is a file the bridge deletes; a slot whose file is already gone cannot signal, so those messages wait for the slower slot polls.',
+      'Restart the bridge on this version (it arms the next 50 slots on every message), then restart WoW so the game sees the armed files.'));
   }
-  const summary = `ack ${ack ? ack.length : 'missing'} .wav, sig ${sig ? sig.length : 'missing'} .wav, lastSeq ${lastSeq} (slot ${pad3(lastSlot)}, ${toWrap} to wrap at ${slots})`;
+  const summary = `${armed}, lastSeq ${lastSeq} (slot ${pad3(lastSlot)}, ${toWrap} to wrap at ${slots})`;
   return finish('signals', 'Signal files', summary, issues);
+}
+
+function signalFilesWithTimes(ctx, addonDir) {
+  const root = path.join(addonDir, 'ClaudeWoW');
+  const out = [];
+  const add = rel => {
+    const st = ctx.sys.stat(path.join(root, rel));
+    if (st && !st.isDir) out.push({ rel, mtimeMs: st.mtimeMs });
+  };
+  for (const dir of ['presence/a', 'presence/b', 'presence', 'ack', 'sig']) {
+    for (const name of ctx.sys.listDir(path.join(root, dir)) || []) {
+      if (/\.wav$/i.test(name)) add(dir + '/' + name);
+    }
+  }
+  return out;
+}
+
+function checkPresence(ctx) {
+  const addonDir = ctx.config.addonDir;
+  if (!addonDir) return finish('presence', 'Presence files', 'no addonDir in config', []);
+  const issues = [];
+  const files = signalFilesWithTimes(ctx, addonDir);
+  const legacy = files.filter(f => /^presence\/\d{4}\.wav$/i.test(f.rel));
+  const ring = SIG.presenceState(ctx.state.presence);
+  const test = ctx.state.presenceTest || {};
+  const wow = wowProcess(ctx);
+  const oldCounter = typeof ctx.state.presence === 'number';
+  const parts = [`${files.length} signal file(s)`, oldCounter ? `bridge state still has the old presence counter ${ctx.state.presence}` : `bridge on ring ${ring.ring} at ${ring.at}`];
+  if (wow && wow.startedAt !== null) {
+    const late = files.filter(f => f.mtimeMs > wow.startedAt + LAUNCH_SLACK_MS).sort((a, b) => b.mtimeMs - a.mtimeMs);
+    parts.push(`WoW started ${formatClock(wow.startedAt)}`, `${late.length} created after it`);
+    if (late.length) {
+      issues.push(warn(`${late.length} signal file(s) were created after WoW started at ${formatClock(wow.startedAt)}, newest ${late[0].rel} (${formatAgo(ctx.now - late[0].mtimeMs)}).`,
+        'The client only sees files that existed when it started: on 2026-09-29 presence files made after launch were never seen (beats seen 0), and the light went red 5 minutes after every reply.',
+        'Quit WoW fully and start it again. The bridge arms its files ahead of time, so a fresh start sees them.'));
+    }
+  } else {
+    parts.push(wow ? 'WoW running, start time unknown' : 'WoW not running');
+  }
+  if (legacy.length) {
+    issues.push(warn(`${legacy.length} presence file(s) from the old create-on-beat scheme sit in presence/ (e.g. ${legacy[0].rel}).`,
+      'The bridge no longer writes them and the addon no longer reads them.',
+      'Restart the bridge on this version (it removes them) or run "npm run slots", then restart WoW.'));
+  }
+  if (test.result || test.late) parts.push(`game self-test ${test.result || 'pending'}, late-created file ${test.late || 'not checked'}`);
+  if (test.result === 'failed') {
+    issues.push(warn('The addon reported that a launch-time file the bridge deleted still reads as present (pt=failed).',
+      'Presence beats cannot reach this client, so the addon uses the slot-poll windows (stale after 12 minutes, down after 22).',
+      `Nothing breaks. Note the late-created file result (${test.late || 'not checked'}) when you report it.`));
+  }
+  return finish('presence', 'Presence files', parts.join(', '), issues);
 }
 
 function tocInterface(text) {
@@ -461,8 +525,10 @@ function checkDisk(ctx) {
     const strips = names.filter(Screens.isScreenshotFile);
     parts.push(`screenshots ${strips.length} strip-sized leftover(s) of ${names.length}`);
     if (strips.length > LIMITS.screenshotLeftovers) issues.push(warn(`${strips.length} WoWScrnShot files sit in ${shotsDir}.`, 'The bridge deletes strips after it decodes them; leftovers are strips it could not read.', `Check the log for "unreadable", then delete the old WoWScrnShot files in ${shotsDir}.`));
-    const presence = ctx.sys.listDir(path.join(ctx.config.addonDir, 'ClaudeWoW', 'presence'));
-    parts.push(`presence ${presence ? presence.length : 'missing'} file(s)`);
+    const presenceDir = path.join(ctx.config.addonDir, 'ClaudeWoW', 'presence');
+    const presence = ctx.sys.listDir(presenceDir);
+    const wavs = dir => (ctx.sys.listDir(dir) || []).filter(n => /\.wav$/i.test(n)).length;
+    parts.push(`presence ${presence ? wavs(presenceDir) + SIG.RINGS.reduce((n, r) => n + wavs(path.join(presenceDir, r)), 0) : 'missing'} file(s)`);
   }
   for (const s of sessionFiles(ctx)) {
     parts.push(`${s.chat} session ${s.bytes === null ? 'not found' : formatBytes(s.bytes)}`);
@@ -558,7 +624,7 @@ function checkCi(ctx) {
   return finish('ci', 'CI', `${repo.branch} latest run ${state} on ${String(latest.headSha).slice(0, 7)} (HEAD ${shortHead})`, issues);
 }
 
-const CHECKS = [checkService, checkDrift, checkLogs, checkSignals, checkInterface, checkPermissions, checkDisk, checkData, checkCost, checkConfig, checkCi];
+const CHECKS = [checkService, checkDrift, checkLogs, checkSignals, checkPresence, checkInterface, checkPermissions, checkDisk, checkData, checkCost, checkConfig, checkCi];
 
 function runChecks(ctx, checks = CHECKS) {
   return checks.map(check => {
@@ -570,6 +636,6 @@ function runChecks(ctx, checks = CHECKS) {
 
 module.exports = {
   CHECKS, LIMITS, TROUBLE_PATTERN,
-  runChecks, checkService, checkDrift, checkLogs, checkSignals, checkInterface, checkPermissions, checkDisk, checkData, checkCost, checkConfig, checkCi,
+  runChecks, checkService, checkDrift, checkLogs, checkSignals, checkPresence, checkInterface, checkPermissions, checkDisk, checkData, checkCost, checkConfig, checkCi,
   parseEtime, formatBytes, summarizeLog, parseLastSeq, slotsAhead, tocInterface, interfaceFromVersion, productForFlavor, parseBuildInfo, parseReflog, claudeProjectDir, allowsEdits,
 };

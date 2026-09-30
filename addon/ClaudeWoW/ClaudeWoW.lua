@@ -32,7 +32,8 @@ local MAX_CHATS = 16
 local SLOT_COUNT = 200
 local SLOT_PREFIX = "ClaudeWoW_S"
 local ACT_MAX = 60 -- heartbeat files per message (act/NNN/01..60.wav)
-local PRESENCE_MAX = 2000 -- presence/0001..2000.wav, one flipped by the bridge every 30 s
+local PRESENCE_MAX = 2000
+local Presence = { RINGS = { "a", "b" }, STALL_SECONDS = 150 }
 local STRIP_TRIES = 3 -- re-show an unacknowledged message this many times before falling back
 local CELL, CELLS_PER_ROW, MAX_ROWS = 4, 200, 48
 local STRIP_SECONDS = 40 -- max per message; it leaves the strip as soon as the bridge acknowledges
@@ -586,6 +587,8 @@ local function RecordFor(id, rec)
 	-- the reload outbox says it too).
 	local shot = NoScreenshot() and "missing" or (rec.shotFailed and "failed") or nil
 	if shot then flags = flags == "" and ("shot=" .. shot) or (flags .. ";shot=" .. shot) end
+	local report = Presence.Report and Presence.Report() or ""
+	if report ~= "" then flags = flags == "" and report or (flags .. ";" .. report) end
 	local fields = { Wire(db.session), Wire(rec.chat), tostring(id), Wire(rec.cwd), flags, Wire(rec.name) }
 	if rec.ctx ~= nil then
 		fields[5] = flags == "" and "c" or (flags .. ";c")
@@ -868,21 +871,17 @@ end
 -- Signals and slots (in)
 ---------------------------------------------------------------------------
 
--- Optional cheap poll: a missing .wav won't play, a real one will. The bridge
--- creates sig/NNN.wav when reply NNN is ready and deletes it to take it back.
--- (An EMPTY file is not a reliable "no": this client reports a 0-byte file as
--- playable, so absence is the only signal that works.) Self-disables if it misbehaves.
 local signalAvailable = type(PlaySoundFile) == "function"
 local signalStats = { checks = 0, hits = 0, lastHit = nil }
 
-local function SoundValid(path)
-	if not signalAvailable or not db.settings.signal then return false end
+function Presence.Probe(path)
+	if not signalAvailable or not db.settings.signal then return nil end
 	signalStats.checks = signalStats.checks + 1
 	local ok, willPlay, handle = pcall(PlaySoundFile, path, "Master")
 	if not ok then
 		signalAvailable = false
 		signalStats.error = tostring(willPlay)
-		return false
+		return nil
 	end
 	if willPlay and handle then pcall(StopSound, handle) end
 	if willPlay then
@@ -892,9 +891,17 @@ local function SoundValid(path)
 	return willPlay and true or false
 end
 
+local function SoundValid(path)
+	return Presence.Probe(path) == true
+end
+
+function Presence.Fired(path)
+	return Presence.Probe(path) == false
+end
+
 local function CheckSignal(kind, id)
 	if run.signalUnreliable then return false end
-	return SoundValid(string.format("Interface\\AddOns\\ClaudeWoW\\%s\\%03d.wav", kind, SlotNumber(id)))
+	return Presence.Fired(string.format("Interface\\AddOns\\ClaudeWoW\\%s\\%03d.wav", kind, SlotNumber(id)))
 end
 
 local function NoteStaleSignals(id)
@@ -912,28 +919,24 @@ local function FreshSignal(kind, id)
 	return CheckSignal(kind, id)
 end
 
--- Heartbeat: the bridge flips act/NNN/kk.wav for the k-th action of message NNN.
 local function ActPath(id, k)
 	return string.format("Interface\\AddOns\\ClaudeWoW\\act\\%03d\\%02d.wav", SlotNumber(id), k)
 end
 
 local function StartActivity(chat, id)
 	local a = { next = 1, count = 0, startedAt = GetTime() }
-	-- The bridge can't have written anything yet, so a valid first file means the
-	-- client cached this slot number's files from an earlier use: don't trust them.
-	if SoundValid(ActPath(id, 1)) then a.unreliable = true end
+	if Presence.Fired(ActPath(id, 1)) then a.unreliable = true end
 	run.act = run.act or {}
 	run.act[chat.id] = a
 end
 
--- Returns true if the counter moved.
 local function PollActivity(chat)
 	local a = run.act and run.act[chat.id]
 	if not a or a.unreliable or not chat.pendingId then return false end
 	local moved = false
 	for _ = 1, 3 do
 		if a.next > ACT_MAX then break end
-		if not SoundValid(ActPath(chat.pendingId, a.next)) then break end
+		if not Presence.Fired(ActPath(chat.pendingId, a.next)) then break end
 		a.count = a.count + 1
 		a.next = a.next + 1
 		a.last = GetTime()
@@ -942,53 +945,132 @@ local function PollActivity(chat)
 	return moved
 end
 
--- Bridge presence. Evidence the bridge is alive comes from several places:
--- presence beats, acks, slot data (which carries the bridge's clock), replies.
 local function NotedBridge(at)
 	at = at or GetTime()
 	if not run.bridgeSeen or at > run.bridgeSeen then run.bridgeSeen = at end
 	run.pixelFailed = nil
 end
 
-local function PresencePath(k)
-	return string.format("Interface\\AddOns\\ClaudeWoW\\presence\\%04d.wav", k)
+local function PresencePath(ring, k)
+	return string.format("Interface\\AddOns\\ClaudeWoW\\presence\\%s\\%04d.wav", ring, k)
 end
 
--- Valid presence files form a prefix 1..k, so a binary search finds the head.
-local function FindPresenceHead()
-	local lo, hi = 0, PRESENCE_MAX
+local function FindPresenceHead(ring)
+	local lo, hi = 1, PRESENCE_MAX + 1
 	while lo < hi do
-		local mid = math.ceil((lo + hi) / 2)
-		if SoundValid(PresencePath(mid)) then lo = mid else hi = mid - 1 end
+		local mid = math.floor((lo + hi) / 2)
+		if SoundValid(PresencePath(ring, mid)) then hi = mid else lo = mid + 1 end
 	end
 	return lo
 end
 
-local function PollPresence()
-	if not signalAvailable or not db.settings.signal then return end
-	run.presence = run.presence or { last = FindPresenceHead() }
-	local p = run.presence
-	for _ = 1, 3 do
-		local k = (p.last % PRESENCE_MAX) + 1
-		if not SoundValid(PresencePath(k)) then break end
-		p.last = k
-		p.beats = (p.beats or 0) + 1
-		NotedBridge()
+function Presence.Channel()
+	return signalAvailable and db ~= nil and db.settings.signal and true or false
+end
+
+function Presence.State()
+	if run.presence then return run.presence end
+	local p = { heads = {}, loginHeads = {}, staleRing = {}, beats = 0, test = "pending" }
+	for _, ring in ipairs(Presence.RINGS) do
+		p.heads[ring] = FindPresenceHead(ring)
+		p.loginHeads[ring] = p.heads[ring]
+	end
+	run.presence = p
+	return p
+end
+
+function Presence.Passed(p, why)
+	if p.test == "passed" then return end
+	p.test = "passed"
+	p.testWhy = why
+	p.testAt = GetTime()
+end
+
+local function PollPresence(limit)
+	if not Presence.Channel() then return end
+	local p = Presence.State()
+	for _, ring in ipairs(Presence.RINGS) do
+		for _ = 1, limit or 3 do
+			local k = p.heads[ring]
+			if k > PRESENCE_MAX or not Presence.Fired(PresencePath(ring, k)) then break end
+			p.heads[ring] = k + 1
+			p.beats = p.beats + 1
+			p.lastBeat = GetTime()
+			Presence.Passed(p, "a launch-time file read missing after the bridge deleted it")
+			NotedBridge()
+		end
 	end
 end
 
--- Whether the 30-second presence beats can reach us at all. When they can't
--- (self-test failed, or signal checks turned off), the only evidence of the
--- bridge is a slot read: the idle poll below and the replies themselves.
-local function PresenceWorks()
-	return signalAvailable and db ~= nil and db.settings.signal
+function Presence.Check(info, bridgeNow)
+	if type(info) ~= "table" or type(info.ring) ~= "string" or type(info.at) ~= "number" then return end
+	run.bridgePresence = info
+	if not Presence.Channel() then return end
+	local p = Presence.State()
+	PollPresence(PRESENCE_MAX)
+	local head = p.heads[info.ring]
+	if not head then return end
+	if head <= info.at then
+		if p.test ~= "passed" then
+			p.test = "failed"
+			p.testWhy = "presence/" .. info.ring .. string.format("/%04d.wav", head) .. " still reads present after the bridge deleted it"
+			p.testAt = GetTime()
+		else
+			p.staleRing[info.ring] = "a file the bridge deleted still reads present"
+		end
+	elseif head > PRESENCE_MAX and info.at < PRESENCE_MAX then
+		p.staleRing[info.ring] = "the bridge beats on files this client did not see at launch"
+	elseif p.test == "passed" and type(bridgeNow) == "number" and time() - bridgeNow < 90
+		and GetTime() - (p.lastBeat or p.testAt or GetTime()) > Presence.STALL_SECONDS then
+		p.staleRing[info.ring] = "the bridge is up but its beats stopped reaching this client"
+	end
+	if type(info.probe) == "string" and run.lateProbe and info.probe == run.lateProbe.token and run.lateProbe.result == nil then
+		run.lateProbe.result = SoundValid("Interface\\AddOns\\ClaudeWoW\\ctl\\probe-" .. info.probe .. ".wav") and "seen" or "unseen"
+	end
 end
 
--- How long the bridge may go unheard before it counts as stale, then down.
--- With presence beats the bridge is heard from every 30 s, so 90 s of silence is
--- suspicious. Without them the addon only hears from it every IDLE_POLL_SECONDS,
--- so the windows have to be wider or the light could never stay green between
--- messages and every reply would be followed by a Reconnect.
+local function PresenceWorks()
+	if not Presence.Channel() then return false end
+	local p = run.presence
+	if not p or p.test ~= "passed" then return false end
+	local current = run.bridgePresence and run.bridgePresence.ring
+	if current and p.staleRing[current] then return false end
+	for _, ring in ipairs(Presence.RINGS) do
+		if p.heads[ring] <= PRESENCE_MAX and not p.staleRing[ring] then return true end
+	end
+	return false
+end
+
+ClaudeWoW.PresenceWorks = PresenceWorks
+ClaudeWoW.Presence = Presence
+
+function Presence.Scheme()
+	if not Presence.Channel() then return "slot polls only (sound channel unusable)" end
+	local p = run.presence
+	if not p then return "not started" end
+	if p.test == "failed" then return "slot polls only (self-test failed: " .. tostring(p.testWhy) .. ")" end
+	if p.test ~= "passed" then
+		local seen = false
+		for _, ring in ipairs(Presence.RINGS) do
+			if p.loginHeads[ring] <= PRESENCE_MAX then seen = true end
+		end
+		if not seen then return "slot polls only (no presence file existed when the game started: run setup, then restart WoW)" end
+		return "slot polls until the self-test passes (pending: waiting for a bridge-driven deletion)"
+	end
+	if PresenceWorks() then return "beats (self-test passed: " .. tostring(p.testWhy) .. ")" end
+	local current = run.bridgePresence and run.bridgePresence.ring
+	local why = current and p.staleRing[current]
+	return "slot polls only (self-test passed, but " .. (type(why) == "string" and why or "no presence ring this client can see is left") .. ": restart WoW)"
+end
+
+function Presence.Report()
+	local out = {}
+	local p = run.presence
+	if p and (p.test == "passed" or p.test == "failed") then table.insert(out, "pt=" .. p.test) end
+	if run.lateProbe and run.lateProbe.result then table.insert(out, "lc=" .. run.lateProbe.result) end
+	return table.concat(out, ";")
+end
+
 local function PresenceWindows()
 	if PresenceWorks() then return 90, 300 end
 	return IDLE_POLL_SECONDS + 120, IDLE_POLL_SECONDS * 2 + 120
@@ -1147,6 +1229,7 @@ local function SelfTestSignals()
 		signalStats.selftest = "a valid file reports as unplayable (files not indexed? restart WoW)"
 	else
 		signalStats.selftest = "passed"
+		Presence.State()
 	end
 end
 
@@ -1418,6 +1501,7 @@ local function TryLoadSlot(why)
 		ClaudeWoW.ApplyLive(data.live)
 		ClaudeWoW.ApplySessions(data.sessions, data.now)
 		ApplyTransport(data)
+		Presence.Check(data.presence, data.now)
 	end
 	local matched = ApplyReplies(type(data) == "table" and data.replies or nil)
 	if type(data) == "table" and data.restore then ImportRestore(data.restore) end
@@ -1441,6 +1525,11 @@ local function Tick()
 		and now - (run.lastIdlePoll or -1e9) >= IDLE_POLL_SECONDS then
 		run.lastIdlePoll = now
 		TryLoadSlot("idle")
+	elseif PresenceWorks() and db.settings.mode == "pixel" and not AnyPending()
+		and now - (run.presence.lastBeat or run.presence.testAt or now) > Presence.STALL_SECONDS
+		and now - (run.lastPresenceCheck or -1e9) >= IDLE_POLL_SECONDS then
+		run.lastPresenceCheck = now
+		TryLoadSlot("presence")
 	end
 	ClaudeWoW.UpdateDot()
 	ClaudeWoW.CheckConnection()
@@ -1478,6 +1567,7 @@ local function Tick()
 			changed = true
 			NotedBridge()
 			if (rec.text or "") ~= "" and ClaudeWoWVoice then ClaudeWoWVoice.Started(id) end
+			if rec.hello and run.lateProbe and not run.lateProbe.result then run.helloPollAt = now + 1 end
 		end
 		-- A hello only needs the bridge to have been seen; it never escalates.
 		-- A forget is the same, but the bridge must have been seen a moment after
@@ -2385,7 +2475,7 @@ function ClaudeWoW.Send(text, allow, opts)
 	if not ClaudeWoW.IsConnected() then
 		if ui.input then ui.input:SetText(text) end
 		run.sendOnConnect = { chat = c.id, text = text, allow = allow, opts = opts }
-		if not run.connectingAt then ClaudeWoW.Connect() end
+		if not run.connectingAt then ClaudeWoW.Connect(ShotsPaused(true)) end
 		if not (Whisper.Active() and Whisper.System(c, "Not connected to the bridge yet; connecting now. Your message goes out as soon as it answers.", true)) then
 			ClaudeWoW.Toggle(true)
 		end
@@ -2517,7 +2607,12 @@ function ClaudeWoW.SayHello()
 	db.lastSeq = db.lastSeq + 1
 	local c = ActiveChat()
 	local ctx = db.settings.context and ClaudeWoW.GameContext() or ""
-	run.outbound[db.lastSeq] = { chat = c and c.id or "", cwd = c and c.cwd or "", flags = "h", name = c and c.name or "", text = "", ctx = ctx, sentAt = now, hello = true }
+	local flags = "h"
+	if Presence.Channel() and not (run.lateProbe and run.lateProbe.result) then
+		run.lateProbe = run.lateProbe or { token = string.format("%06x%04x", time() % 16777216, math.floor(now * 1000) % 65536) }
+		flags = flags .. ";probe=" .. run.lateProbe.token
+	end
+	run.outbound[db.lastSeq] = { chat = c and c.id or "", cwd = c and c.cwd or "", flags = flags, name = c and c.name or "", text = "", ctx = ctx, sentAt = now, hello = true }
 	NoteStaleSignals(db.lastSeq)
 	run.helloPollAt = now + 5
 	-- Deletions the bridge never confirmed ride along with the hello.
@@ -5399,7 +5494,10 @@ RunCommand = function(cmd, rest)
 			"signal setting: " .. tostring(s.signal) .. ", marked unreliable this session: " .. tostring(run.signalUnreliable or false),
 			"sound checks: " .. signalStats.checks .. ", valid hits: " .. signalStats.hits .. (signalStats.lastHit and (", last hit " .. FmtDur(GetTime() - signalStats.lastHit) .. " ago") or ""),
 			"slot polls this session: " .. (run.polls or 0) .. ", free slots: " .. free .. "/" .. SLOT_COUNT,
-			"presence: head at " .. tostring(run.presence and run.presence.last or "?") .. ", beats seen: " .. tostring(run.presence and run.presence.beats or 0),
+			"signals: launch-time files, on = file deleted (a file created after the game started is never seen); bridge presence: " .. (run.bridgePresence and (string.format("ring %s at %d of %d", tostring(run.bridgePresence.ring), run.bridgePresence.at, tonumber(run.bridgePresence.n) or PRESENCE_MAX)) or "not heard yet"),
+			"presence: " .. Presence.Scheme(),
+			"presence self-test: " .. (run.presence and run.presence.test or "not run") .. ", late-created file: " .. (run.lateProbe and (run.lateProbe.result or "pending") or "not checked"),
+			"presence: head at " .. (run.presence and string.format("a %d, b %d", run.presence.heads.a, run.presence.heads.b) or "?") .. ", beats seen: " .. tostring(run.presence and run.presence.beats or 0),
 			select(5, ClaudeWoW.BridgeState()),
 			"mode: " .. s.mode .. ", session token: " .. tostring(db.session),
 			Whisper.Status(),

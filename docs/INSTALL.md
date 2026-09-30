@@ -71,7 +71,7 @@ This route needs Node.js 22.2+ or Bun (`bun setup.js`, `bun bridge/supervisor.js
 
 ## What setup does
 
-`claude-wow setup` (the same as `node setup.js`) finds the client (or takes `--wow`), copies the addon into `Interface/AddOns/ClaudeWoW`, writes `config.json` in `~/.claude-wow` (or `CLAUDE_WOW_HOME`) with the paths and the default project folder, reports which agent CLIs it found, and creates the 200 reply-slot addons plus about 15,000 tiny signal files. That count is normal: the client only discovers addon files at launch, so everything the bridge might ever touch has to exist up front. Re-running it keeps your config and the slot pool; `--project <folder>` on a re-run corrects the default folder.
+`claude-wow setup` (the same as `node setup.js`) finds the client (or takes `--wow`), copies the addon into `Interface/AddOns/ClaudeWoW`, writes `config.json` in `~/.claude-wow` (or `CLAUDE_WOW_HOME`) with the paths and the default project folder, reports which agent CLIs it found, and creates the 200 reply-slot addons plus about 16,400 tiny signal files. That count is normal: the client only sees addon files that existed at launch, so every signal file exists up front and the bridge signals by deleting one. Re-running it keeps your config and the slot pool; `--project <folder>` on a re-run corrects the default folder.
 
 Then **fully quit and relaunch World of Warcraft** (a `/reload` is not enough) and enable *Claude WoW* on the character-select AddOns screen. The 200 *Claude WoW slot* entries stay enabled; leave them alone.
 

@@ -85,6 +85,8 @@ function stripRecords(vm, threshold) {
 }
 
 // Make the next LoadAddOn deliver this slot data (a Lua table literal body).
+const flagsOf = r => r.flags.split(';').filter(t => !/^(probe|pt|lc)=/.test(t)).join(';');
+
 function nextSlot(vm, luaBody) {
   vm.run(`STUB.onLoadAddOn = function(name) ClaudeWoW_SlotData = ${luaBody} end`);
 }
@@ -735,7 +737,7 @@ function frames(vm, n) {
 
 test('screenshot transport: the strip is shot once per message, hidden on the event, and the format CVar is restored', () => {
   const vm = newVM();
-  vm.run('STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW\\\\ctl\\\\valid.wav"] = true'); // the sound channel works: acks arrive as files
+  vm.run('STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW\\\\ctl\\\\valid.wav"] = true; STUB.armed = true');
   login(vm);
   vm.run('STUB.RunTimers()'); // SayHello: not knowing better, the hello goes up pixel-style
   assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'true');
@@ -753,7 +755,7 @@ test('screenshot transport: the strip is shot once per message, hidden on the ev
   frames(vm, 1);
   assert.equal(vm.num('STUB.screenshots'), 1);
   assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'true', 'still up until the client confirms');
-  assert.equal(stripRecords(vm)[0].flags, 'h;c');
+  assert.equal(flagsOf(stripRecords(vm)[0]), 'h;c');
   vm.run('STUB.FireEvent("SCREENSHOT_SUCCEEDED")');
   assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'false', 'hidden as soon as the shot is confirmed');
   assert.equal(vm.evaluate('ClaudeWoWStrip.scripts.OnUpdate'), null, 'no OnUpdate left running');
@@ -764,7 +766,7 @@ test('screenshot transport: the strip is shot once per message, hidden on the ev
   assert.equal(vm.num('STUB.screenshots'), 2);
   const recs = stripRecords(vm);
   assert.ok(recs.find(r => r.text === 'hello world'));
-  assert.ok(recs.find(r => r.flags === 'h;c'));
+  assert.ok(recs.find(r => flagsOf(r) === 'h;c'));
   vm.run('STUB.FireEvent("SCREENSHOT_SUCCEEDED")');
   assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'false');
   // Ticks without news take no more screenshots; an ack changes nothing on screen either.
@@ -773,7 +775,7 @@ test('screenshot transport: the strip is shot once per message, hidden on the ev
   assert.equal(vm.num('STUB.screenshots'), 2);
   assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'false');
   const id = vm.num('ClaudeWoWDB.chats[1].pendingId');
-  vm.run(`STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW\\\\ack\\\\${String(id).padStart(3, '0')}.wav"] = true; STUB.now = STUB.now + 2; STUB.Tick()`);
+  vm.run(`STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW\\\\ack\\\\${String(id).padStart(3, '0')}.wav"] = false; STUB.now = STUB.now + 2; STUB.Tick()`);
   frames(vm, 3);
   assert.equal(vm.num('STUB.screenshots'), 2);
   assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'false');
@@ -839,7 +841,7 @@ function stripImage(vm, width, height) {
 test('screenshot transport: the strip is dense (2 px cells, four levels) when the bridge asks for codec 2, 4 px when it does not', () => {
   const D = require('../bridge/decode');
   const vm = newVM();
-  vm.run('STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW\\\\ctl\\\\valid.wav"] = true');
+  vm.run('STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW\\\\ctl\\\\valid.wav"] = true; STUB.armed = true');
   login(vm);
   vm.run('STUB.RunTimers()');
   nextSlot(vm, '{ now = time(), cwd = "", transport = "screenshot", strip = { on = 60, off = 0, codec = 2 }, replies = {} }');
@@ -855,7 +857,7 @@ test('screenshot transport: the strip is dense (2 px cells, four levels) when th
   assert.deepEqual(r.offset, [0, 0]);
   const fields = text => text.split('\x1E').map(x => x.split('\x1F'));
   assert.ok(fields(r.msg.text).some(p => p[p.length - 1] === 'dense hello'), 'the message is on the dense strip');
-  assert.ok(fields(r.msg.text).some(p => p[4] === 'h;c'), 'the unacknowledged hello too');
+  assert.ok(fields(r.msg.text).some(p => flagsOf({ flags: p[4] }) === 'h;c'), 'the unacknowledged hello too');
   assert.equal(r.msg.height, r.msg.rows * 2);
   assert.equal(shot.cells, r.msg.rows * 400, 'whole rows are drawn, the tail padded');
   // Only the four levels appear: 0/20/40/60 of 255, from strip = { on = 60, off = 0 }.
@@ -1065,11 +1067,13 @@ test('screenshotFormat: a crash that skipped the logout restore is repaired at t
 // pixel-style instead, so the usual retries and fallback carry the message.
 test('screenshot transport: shots stop once the bridge has been dark for a while, the player is told, Connect takes one by hand, and shooting resumes when the bridge is back', () => {
   const vm = newVM();
-  vm.run('STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW\\\\ctl\\\\valid.wav"] = true'); // presence beats can be heard
+  vm.run('STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW\\\\ctl\\\\valid.wav"] = true; STUB.armed = true');
   login(vm);
-  vm.run('STUB.RunTimers()'); // SayHello
-  nextSlot(vm, '{ now = time(), cwd = "", transport = "screenshot", replies = {} }');
-  vm.run('STUB.now = STUB.now + 6; STUB.Tick()'); // the bridge is seen through the hello slot
+  vm.run('STUB.RunTimers()');
+  vm.run('STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW\\\\presence\\\\a\\\\0001.wav"] = false');
+  nextSlot(vm, '{ now = time(), cwd = "", transport = "screenshot", presence = { ring = "a", at = 1, n = 2000, probe = "" }, replies = {} }');
+  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+  assert.equal(vm.evaluate('ClaudeWoW.PresenceWorks()'), 'true', 'the login self-test saw the bridge delete a launch-time file');
   frames(vm, 2);
   vm.run('STUB.FireEvent("SCREENSHOT_SUCCEEDED")');
   assert.equal(vm.num('STUB.screenshots'), 1);
@@ -1094,29 +1098,22 @@ test('screenshot transport: shots stop once the bridge has been dark for a while
   assert.equal(vm.num('STUB.screenshots'), 3, 'no screenshot for a bridge that has been dark 5 minutes');
   assert.ok(prints().includes('bridge not seen for 5m10s: screenshots paused'), 'the player is told in the game chat: ' + prints());
   assert.ok(vm.evaluate('ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].text').includes('screenshots paused'), 'and in the window');
-  // A message typed now: Send is gated on the connection, and the automatic
-  // Connect it triggers says hello without a file. The pause is said once.
   vm.run('STUB.prints = {}; ClaudeWoW.NewChat("Two"); ClaudeWoW.Send("anyone?")');
   assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'true');
-  frames(vm, 3);
-  assert.equal(vm.num('STUB.screenshots'), 3, 'a message typed at a dead bridge leaves no file behind');
+  frames(vm, 2);
+  assert.equal(vm.num('STUB.screenshots'), 4, 'a message typed at a dark bridge buys one hello shot, like a Connect click');
+  assert.ok(stripRecords(vm).find(r => r.text === 'still there?'), 'the message that waited rides on that one shot');
+  vm.run('STUB.FireEvent("SCREENSHOT_SUCCEEDED")');
   assert.ok(!prints().includes('screenshots paused'), 'said once, not per message');
   vm.run('SlashCmdList.CLAUDE("diag")');
   assert.ok(vm.evaluate('ClaudeWoWDB.chats[2].history[#ClaudeWoWDB.chats[2].history].text').includes('screenshots PAUSED (bridge not seen for'), 'diag says so');
-  // The Connect button is a deliberate act: it buys exactly one shot.
-  vm.run('STUB.now = STUB.now + 20; STUB.Tick()'); // the automatic connect attempt gives up
-  assert.equal(vm.evaluate('ClaudeWoWFrame ~= nil'), 'true');
-  vm.run('ClaudeWoW.Connect(true)');
-  frames(vm, 2);
-  assert.equal(vm.num('STUB.screenshots'), 4, 'one hello shot for the click');
-  assert.ok(stripRecords(vm).find(r => r.text === 'still there?'), 'the message that waited rides on that one shot');
-  vm.run('STUB.FireEvent("SCREENSHOT_SUCCEEDED")');
+  vm.run('STUB.now = STUB.now + 20; STUB.Tick()');
   vm.run('STUB.now = STUB.now + 2; STUB.Tick()');
   frames(vm, 3);
   assert.equal(vm.num('STUB.screenshots'), 4, 'and no more');
-  assert.ok(!prints().includes('resume'), 'a click is not the bridge coming back');
+  assert.ok(!prints().includes('resume'), 'a send is not the bridge coming back');
   // The bridge is back: a presence beat. Said once, and sends shoot again.
-  vm.run('STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW\\\\presence\\\\0001.wav"] = true; STUB.prints = {}; STUB.now = STUB.now + 2; STUB.Tick()');
+  vm.run('STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW\\\\presence\\\\a\\\\0002.wav"] = false; STUB.prints = {}; STUB.now = STUB.now + 2; STUB.Tick()');
   assert.ok(prints().includes('bridge is back: screenshots resume'), prints());
   assert.equal(vm.evaluate('ClaudeWoW.IsConnected()'), 'true');
   vm.run('ClaudeWoW.Send("back?")');
@@ -1153,7 +1150,7 @@ test('screenshot transport: the strip is drawn at the levels the bridge asked fo
   assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'true', 'the hello is being shot');
   assert.deepEqual(stripLevels(vm), [0, 60], 'dark levels: the strip is drawn at 0 and 60 of 255');
   // Reads back at the bridge's threshold (31), not at the pixel transport's (128).
-  assert.equal(stripRecords(vm, 31 / 255)[0].flags, 'h;c');
+  assert.equal(flagsOf(stripRecords(vm, 31 / 255)[0]), 'h;c');
   frames(vm, 2);
   vm.run('STUB.FireEvent("SCREENSHOT_SUCCEEDED")');
   // The bridge changes its levels: the next strip follows without a transport change.
@@ -2250,4 +2247,88 @@ test('context growth: past the threshold the chat is warned once per crossing, w
   assert.equal(vm.num('ClaudeWoWDB.settings.contextWarn'), 100000);
   vm.run('SlashCmdList.CLAUDE("diag")');
   assert.ok(last().includes('context: warning at 100.0k tokens'), last());
+});
+
+const gamePath = rel => 'Interface\\\\AddOns\\\\ClaudeWoW\\\\' + rel.split('/').join('\\\\');
+const lastSystem = vm => vm.evaluate('(function() local h = ClaudeWoWDB.chats[1].history; for i = #h, 1, -1 do if h[i].role == "system" then return h[i].text end end end)()');
+
+function launchArmed(vm, extra = '') {
+  vm.run(`STUB.sounds["${gamePath('ctl/valid.wav')}"] = true; STUB.armed = true; ${extra} STUB.Launch()`);
+  login(vm);
+  vm.run('STUB.RunTimers()');
+  const hello = stripRecords(vm).find(r => r.flags.split(';').includes('h'));
+  const probe = /probe=(\w+)/.exec(hello.flags);
+  assert.ok(probe, 'the hello asks the bridge for a late-created probe file: ' + hello.flags);
+  return probe[1];
+}
+
+test('signals: a file created after the game started never reads present, so the old create-on-beat presence saw 0 beats (2026-09-29)', () => {
+  const vm = newVM();
+  launchArmed(vm);
+  vm.run('OLD_BEATS = 0');
+  for (let k = 1962; k <= 1981; k++) {
+    vm.run(`STUB.sounds["${gamePath(`presence/${k}.wav`)}"] = true; if ClaudeWoW.Presence.Probe("${gamePath(`presence/${k}.wav`)}") then OLD_BEATS = OLD_BEATS + 1 end`);
+  }
+  assert.equal(vm.num('OLD_BEATS'), 0, 'twenty beats created after launch, none seen');
+  assert.equal(vm.evaluate(`ClaudeWoW.Presence.Probe("${gamePath('ack/005.wav')}")`), 'true', 'a launch-time file reads present');
+  vm.run(`STUB.sounds["${gamePath('ack/005.wav')}"] = false`);
+  assert.equal(vm.evaluate(`ClaudeWoW.Presence.Probe("${gamePath('ack/005.wav')}")`), 'false', 'and missing once deleted: the only transition the new scheme uses');
+});
+
+test('signals: the bridge deleting a launch-time presence file passes the login self-test; beats keep the light green and the next strip reports pt=passed', () => {
+  const vm = newVM();
+  const token = launchArmed(vm);
+  assert.equal(vm.evaluate('ClaudeWoW.PresenceWorks()'), 'false', 'no beat windows before the self-test passes');
+  vm.run(`STUB.sounds["${gamePath('presence/a/0001.wav')}"] = false; STUB.sounds["${gamePath('ctl/probe-' + token + '.wav')}"] = true`);
+  nextSlot(vm, `{ now = time(), cwd = "", replies = {}, signals = "armed", presence = { ring = "a", at = 1, n = 2000, probe = "${token}" } }`);
+  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+  assert.equal(vm.evaluate('ClaudeWoW.PresenceWorks()'), 'true');
+  assert.equal(vm.evaluate('ClaudeWoW.IsConnected()'), 'true');
+  vm.run('SlashCmdList.CLAUDE("diag")');
+  const diag = lastSystem(vm);
+  assert.match(diag, /presence: beats \(self-test passed: a launch-time file read missing after the bridge deleted it\)/);
+  assert.match(diag, /presence self-test: passed, late-created file: unseen/);
+  assert.match(diag, /bridge presence: ring a at 1 of 2000/);
+  assert.match(diag, /presence: head at a 2, b 1, beats seen: 1/);
+  vm.run('ClaudeWoW.Send("after the test")');
+  const rec = stripRecords(vm).find(r => r.text === 'after the test');
+  assert.ok(rec.flags.split(';').includes('pt=passed'), rec.flags);
+  assert.ok(rec.flags.split(';').includes('lc=unseen'), rec.flags);
+  for (let k = 2; k <= 4; k++) {
+    vm.run(`STUB.sounds["${gamePath(`presence/a/${String(k).padStart(4, '0')}.wav`)}"] = false; STUB.now = STUB.now + 30; STUB.Tick()`);
+    assert.equal(vm.evaluate('ClaudeWoW.BridgeState()'), 'ok', `still green after beat ${k}`);
+  }
+  assert.equal(vm.num('ClaudeWoW.Presence.State().beats'), 4);
+});
+
+test('signals: when a deleted launch-time file still reads present the self-test fails, presence falls back to the idle-poll windows, and pt=failed rides on the next strip', () => {
+  const vm = newVM();
+  const token = launchArmed(vm, 'STUB.deletionVisible = false;');
+  vm.run(`STUB.sounds["${gamePath('presence/a/0001.wav')}"] = false`);
+  nextSlot(vm, `{ now = time(), cwd = "", replies = {}, signals = "armed", presence = { ring = "a", at = 1, n = 2000, probe = "${token}" } }`);
+  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+  assert.equal(vm.evaluate('ClaudeWoW.Presence.State().test'), 'failed');
+  assert.equal(vm.evaluate('ClaudeWoW.PresenceWorks()'), 'false');
+  vm.run('STUB.now = STUB.now + 400; STUB.Tick()');
+  assert.equal(vm.evaluate('ClaudeWoW.BridgeState()'), 'ok', 'the 12-minute window of the no-presence mode, not the 90 s one');
+  vm.run('SlashCmdList.CLAUDE("diag")');
+  const diag = lastSystem(vm);
+  assert.match(diag, /presence: slot polls only \(self-test failed: presence\/a\/0001\.wav still reads present after the bridge deleted it\)/);
+  vm.run('ClaudeWoW.Send("after a failed test")');
+  const rec = stripRecords(vm).find(r => r.text === 'after a failed test');
+  assert.ok(rec.flags.split(';').includes('pt=failed'), rec.flags);
+});
+
+test('signals: an ack already spent at launch is not trusted, a launch-time one fires when the bridge deletes it', () => {
+  const vm = newVM();
+  launchArmed(vm, `STUB.sounds["${gamePath('ack/002.wav')}"] = false;`);
+  nextSlot(vm, '{ now = time(), cwd = "", replies = {} }');
+  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+  vm.run('ClaudeWoW.Send("first")');
+  assert.equal(vm.num('ClaudeWoWDB.chats[1].pendingId'), 2);
+  vm.run('STUB.now = STUB.now + 2; STUB.Tick()');
+  assert.ok(stripRecords(vm).find(r => r.text === 'first'), 'a spent ack does not take the message off the strip');
+  vm.run('ClaudeWoW.NewChat("Two"); ClaudeWoW.Send("second")');
+  vm.run(`STUB.sounds["${gamePath('ack/003.wav')}"] = false; STUB.now = STUB.now + 2; STUB.Tick()`);
+  assert.ok(!stripRecords(vm).find(r => r.text === 'second'), 'a deleted launch-time ack takes it off');
 });

@@ -65,10 +65,11 @@ function makeWorld(name, options = {}) {
   const toc = options.toc || '16001';
   write(path.join(addonDir, 'ClaudeWoW', 'ClaudeWoW.toc'), `## Interface: ${toc}\n## Title: Claude WoW\n`);
   write(path.join(addonDir, 'ClaudeWoW_S001', 'ClaudeWoW_S001.toc'), `## Interface: ${options.slotToc || toc}\n`);
-  for (const slot of options.ack || [1, 2, 3]) write(path.join(addonDir, 'ClaudeWoW', 'ack', String(slot).padStart(3, '0') + '.wav'), 'RIFF');
+  for (const slot of options.ack || Array.from({ length: 200 }, (_, i) => i + 1)) write(path.join(addonDir, 'ClaudeWoW', 'ack', String(slot).padStart(3, '0') + '.wav'), 'RIFF');
   for (const slot of options.sig || [2]) write(path.join(addonDir, 'ClaudeWoW', 'sig', String(slot).padStart(3, '0') + '.wav'), 'RIFF');
   fs.mkdirSync(path.join(addonDir, 'ClaudeWoW', 'presence'), { recursive: true });
-  write(path.join(addonDir, 'ClaudeWoW', 'presence', '0001.wav'), 'RIFF');
+  write(path.join(addonDir, 'ClaudeWoW', 'presence', 'a', '0001.wav'), 'RIFF');
+  for (const rel of options.presenceFiles || []) write(path.join(addonDir, 'ClaudeWoW', ...rel.split('/')), 'RIFF');
   write(svFile, `ClaudeWoWDB = {\n\t["lastSeq"] = ${options.lastSeq === undefined ? 3 : options.lastSeq},\n}\n`);
   write(path.join(wowRoot, '.build.info'), 'Branch!STRING:0|Version!STRING:0|Product!STRING:0\nus|12.1.0.69933|wow\nus|' + (options.clientVersion || '1.60.1.70058') + '|wow_classic_beta\n');
   fs.mkdirSync(path.join(clientDir, 'Screenshots'), { recursive: true });
@@ -156,7 +157,7 @@ test('a healthy world: every check ok, exit code 0', () => {
   Doctor.main(['--json'], ctx.sys, l => json.push(l));
   const parsed = JSON.parse(json[0]);
   assert.equal(parsed.status, 'ok');
-  assert.equal(parsed.checks.length, 11);
+  assert.equal(parsed.checks.length, 12);
 });
 
 test('service: missing plist, missing node, unloaded job, dead child', () => {
@@ -239,21 +240,50 @@ test('logs: error-like lines in 24 h counted, older ones not; last strip and don
   assert.ok(!notRunning.problems.some(p => /logged nothing/.test(p.what)));
 });
 
-test('signals: the wrap hazard warns only near a multiple of slots with stale acks ahead', () => {
+test('signals: acks are armed files, and a missing one ahead of the next message warns', () => {
   assert.deepEqual(C.slotsAhead(199, 200, 3), [200, 1, 2]);
   assert.equal(C.parseLastSeq('x = { ["lastSeq"] = 68, }'), 68);
-  const nearWrap = C.checkSignals(context(makeWorld('wrap', { lastSeq: 190, ack: [1, 2, 3, 150, 190] })));
-  assert.equal(nearWrap.status, 'warn');
-  assert.match(nearWrap.problems[0].what, /lastSeq 190 is 10 from a multiple of 200 slots, and 3 ack file\(s\)/);
-  assert.match(nearWrap.problems[0].why, /looks acked before the bridge reads it/);
-  const wrapped = C.checkSignals(context(makeWorld('wrapped', { lastSeq: 210, ack: [1, 10, 11, 12] })));
-  assert.equal(wrapped.status, 'warn');
-  const early = C.checkSignals(context(makeWorld('early', { lastSeq: 68, ack: [40, 69, 70, 71] })));
+  const all = Array.from({ length: 200 }, (_, i) => i + 1);
+  const spent = C.checkSignals(context(makeWorld('spent', { lastSeq: 190, ack: all.filter(s => s < 191 || s > 195) })));
+  assert.equal(spent.status, 'warn');
+  assert.match(spent.problems[0].what, /5 ack file\(s\) ahead of lastSeq 190 are missing \(191, 192, 193, 194, 195\)/);
+  assert.match(spent.problems[0].why, /a slot whose file is already gone cannot signal/);
+  const early = C.checkSignals(context(makeWorld('early', { lastSeq: 68 })));
   assert.equal(early.status, 'ok');
-  assert.match(early.summary, /ack 4 \.wav, sig 1 \.wav, lastSeq 68 \(slot 068, 132 to wrap at 200\)/);
+  assert.match(early.summary, /ack 200 armed \.wav, sig 1 armed \.wav, lastSeq 68 \(slot 068, 132 to wrap at 200\)/);
   const noSv = makeWorld('nosv');
   fs.rmSync(path.join(noSv.clientDir, 'WTF'), { recursive: true });
   assert.equal(C.checkSignals(context(noSv)).status, 'warn');
+});
+
+test('presence: files created after the running game started warn, with the old flat files and a failed in-game self-test', () => {
+  const world = makeWorld('presence-late', {
+    presenceFiles: ['presence/a/0002.wav', 'presence/1981.wav'],
+    state: { presence: { ring: 'a', at: 0 }, presenceTest: { result: 'failed', late: 'unseen' } },
+  });
+  const before = new Date(NOW - 120 * MINUTE);
+  for (const rel of ['a/0001.wav', 'a/0002.wav']) fs.utimesSync(path.join(world.addonDir, 'ClaudeWoW', 'presence', ...rel.split('/')), before, before);
+  const after = new Date(NOW - 10 * MINUTE);
+  fs.utimesSync(path.join(world.addonDir, 'ClaudeWoW', 'presence', '1981.wav'), after, after);
+  for (const slot of [1, 2]) fs.utimesSync(path.join(world.addonDir, 'ClaudeWoW', 'ack', String(slot).padStart(3, '0') + '.wav'), before, before);
+  const running = {
+    pgrep: { ok: true, out: '123 /Applications/World of Warcraft/_classic_era_/World of Warcraft Classic.app/Contents/MacOS/World of Warcraft Classic\n' },
+    ps: { 123: { ok: true, out: '  01:00:00 /Applications/World of Warcraft/x.app/Contents/MacOS/World of Warcraft\n' } },
+  };
+  const all = Array.from({ length: 200 }, (_, i) => i + 1);
+  for (const slot of all.slice(2)) fs.utimesSync(path.join(world.addonDir, 'ClaudeWoW', 'ack', String(slot).padStart(3, '0') + '.wav'), before, before);
+  fs.utimesSync(path.join(world.addonDir, 'ClaudeWoW', 'sig', '002.wav'), before, before);
+  const r = C.checkPresence(context(world, running));
+  assert.equal(r.status, 'warn');
+  assert.match(r.summary, /bridge on ring a at 0, WoW started 2026-09-29 17:40:00Z, 1 created after it/);
+  assert.match(r.summary, /game self-test failed, late-created file unseen/);
+  assert.match(r.problems[0].what, /1 signal file\(s\) were created after WoW started at 2026-09-29 17:40:00Z, newest presence\/1981\.wav/);
+  assert.match(r.problems[0].fix, /Quit WoW fully and start it again/);
+  assert.ok(r.problems.some(p => /old create-on-beat scheme/.test(p.what)));
+  assert.ok(r.problems.some(p => /pt=failed/.test(p.what)));
+  const idle = C.checkPresence(context(makeWorld('presence-idle')));
+  assert.equal(idle.status, 'ok');
+  assert.match(idle.summary, /WoW not running/);
 });
 
 test('interface: client build from .build.info, toc and slot mismatches', () => {
@@ -277,12 +307,12 @@ test('interface: client build from .build.info, toc and slot mismatches', () => 
 test('permissions: a 0644 file under the addon folders warns with Battle.net error 2113', { skip: process.platform === 'win32' }, () => {
   const world = makeWorld('perms');
   assert.equal(C.checkPermissions(context(world)).status, 'ok');
-  const presence = path.join(world.addonDir, 'ClaudeWoW', 'presence', '0001.wav');
+  const presence = path.join(world.addonDir, 'ClaudeWoW', 'presence', 'a', '0001.wav');
   fs.chmodSync(presence, 0o644);
   const r = C.checkPermissions(context(world));
   assert.equal(r.status, 'warn');
   assert.match(r.summary, /1 not world-writable/);
-  assert.match(r.problems[0].what, /1 of \d+ file\(s\) and folder\(s\).*presence[\\/]0001\.wav/);
+  assert.match(r.problems[0].what, /1 of \d+ file\(s\) and folder\(s\).*presence[\\/]a[\\/]0001\.wav/);
   assert.match(r.problems[0].why, /Battle\.net error 2113/);
   assert.match(r.problems[0].fix, /claude-wow setup/);
   const onWindows = C.checkPermissions({ ...context(world), sys: { ...context(world).sys, platform: 'win32' } });
