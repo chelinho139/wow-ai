@@ -38,6 +38,7 @@ function fakeCore(home, extra = {}) {
   const calls = { reply: [], fail: [], progress: [], accept: [], publish: 0, log: [] };
   const core = {
     home,
+    claudeDir: extra.claudeDir || '',
     timeoutMs: 60000,
     liveStartCommand: 'claude --dangerously-load-development-channels server:claude-wow',
     options: () => extra.options || {},
@@ -70,7 +71,7 @@ async function rig(opts = {}) {
   live.start(core);
   await until(() => fs.existsSync(LP.endpoint(home)) || !POSIX);
   const out = fakeStdout();
-  const ch = createChannel({ stdout: out, home, name: 'proj', cwd: '/work/proj', retryMs: 20 });
+  const ch = createChannel({ stdout: out, home, name: 'proj', cwd: '/work/proj', retryMs: 20, ppid: opts.ppid });
   if (opts.connect !== false) {
     ch.connect();
     await until(() => ch.verified);
@@ -232,6 +233,38 @@ test('no session connected: the chat is told plainly how to start one', async ()
     assert.match(r.calls.fail[0].text, /^No live Claude Code session is connected\. Start one with:\nclaude --dangerously-load-development-channels server:claude-wow/);
     assert.deepEqual(r.live.status(), []);
   } finally { r.cleanup(); }
+});
+
+test('/claude -r targets one running session: by its Claude Code session id or prefix, its title or its name; another target is told it is not connected', async () => {
+  const claudeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-claude-'));
+  const id = '6624f327-7126-423e-a653-d7cf7a4e492b';
+  fs.mkdirSync(path.join(claudeDir, 'sessions'));
+  fs.writeFileSync(path.join(claudeDir, 'sessions', '4242.json'), JSON.stringify({ pid: 4242, sessionId: id, cwd: '/work/proj', name: 'wow-ai-90' }));
+  const r = await rig({ claudeDir, ppid: 4242, options: { waitMs: 0 } });
+  try {
+    await initialize(r.ch, r.out);
+    const [s] = r.live.sessions();
+    assert.equal(s.id, id, 'the channel names the Claude Code process that spawned it, and its pid file names the session');
+    assert.equal(s.name, 'proj');
+    assert.equal(s.title, 'wow-ai-90');
+    assert.equal(s.cwd, '/work/proj');
+    const sent = () => r.out.lines.filter(l => l.method === 'notifications/claude/channel').length;
+    const tries = [['6624f327', true], [id, true], ['WOW-AI-90', true], ['proj', true], ['662', false], ['other', false]];
+    let n = 0;
+    for (const [target, hit] of tries) {
+      const job = { id: ++n, session: 'tok', chat: 'c' + n, text: 'hi ' + target, allow: [], liveTarget: target };
+      const before = sent();
+      await r.live.handle(job, r.core);
+      if (hit) {
+        await until(() => sent() === before + 1);
+      } else {
+        const fail = r.calls.fail.find(f => f.job === job);
+        assert.ok(fail, target);
+        assert.equal(fail.text, `The running Claude Code session "${target}" is not connected. /claude -r lists the ones that are, and /claude -r <id> resumes a session headless when its terminal is closed.`);
+        assert.equal(sent(), before);
+      }
+    }
+  } finally { r.cleanup(); fs.rmSync(claudeDir, { recursive: true, force: true }); }
 });
 
 test('a session that connects within waitMs still gets the message', async () => {

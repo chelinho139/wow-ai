@@ -201,7 +201,7 @@ test('herb/ore nodes toggle and follow the gathering skill', () => {
   assert.match(vm.evaluate('ClaudeWoW.GameContext()'), /Professions: Bergbau 50\/75(\n|$)/);
 });
 
-test('/claude-wow map hide, show, nav and stop', () => {
+test('/aimap hide, show, nav and stop', () => {
   const vm = newVM();
   vm.run(`ClaudeWoWMap.Sync(${LAYER})`);
   vm.run('SlashCmdList.CLAUDEWOWMAP("hide mining")');

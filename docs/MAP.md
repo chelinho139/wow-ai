@@ -24,16 +24,16 @@ The agent can mark your world map. What it draws are **layers**: a named list of
 
 | Command | Does |
 |---|---|
-| `/claude-wow map` | List layers, navigation and node settings |
-| `/claude-wow map ore [on\|off]`, `/claude-wow map herb [on\|off]` | Show or hide mining / herbalism nodes |
-| `/claude-wow map filter all\|skill` | Every node, or only those your skill can gather (default) |
-| `/claude-wow map hide <layer>`, `/claude-wow map show <layer>` | Hide or show a layer locally |
-| `/claude-wow map nav <layer> [n]`, `next`, `prev`, `stop` | Drive the navigator |
+| `/claude config map` | List layers, navigation and node settings |
+| `/claude config map ore [on\|off]`, `/claude config map herb [on\|off]` | Show or hide mining / herbalism nodes |
+| `/claude config map filter all\|skill` | Every node, or only those your skill can gather (default) |
+| `/claude config map hide <layer>`, `/claude config map show <layer>` | Hide or show a layer locally |
+| `/claude config map nav <layer> [n]`, `next`, `prev`, `stop` | Drive the navigator |
 
-`/aimap` is a shorter alias for `/claude-wow map`. Everything here only reads positions and draws. Nothing moves, targets or acts for you.
+`/aimap` is a shorter alias for `/claude config map`. Everything here only reads positions and draws. Nothing moves, targets or acts for you.
 
 ## Where the data comes from
 
-The bridge ships no game data: the agent has to know where things are. With just the system prompt it can place marks it knows or that you tell it about. For real routes, point the chat at a folder (`/claude-wow cd`) that holds game data and tools to query it, and describe them in that folder's `CLAUDE.md` (or the equivalent for your agent): quests, NPCs, objects and gathering spawns with their `uiMapID` and coordinates, and a script that appends `set` commands to `$CLAUDE_WOW_MAP_FILE`. Such datasets exist (QuestieDB, AtlasLootClassic, the vmangos world database) but their licences don't allow redistributing them here, so that folder stays yours.
+The bridge ships no game data: the agent has to know where things are. With just the system prompt it can place marks it knows or that you tell it about. For real routes, point the chat at a folder (`/claude cd`) that holds game data and tools to query it, and describe them in that folder's `CLAUDE.md` (or the equivalent for your agent): quests, NPCs, objects and gathering spawns with their `uiMapID` and coordinates, and a script that appends `set` commands to `$CLAUDE_WOW_MAP_FILE`. Such datasets exist (QuestieDB, AtlasLootClassic, the vmangos world database) but their licences don't allow redistributing them here, so that folder stays yours.
 
-The optional `ClaudeWoW_Nodes` addon is the same idea for the in-game node pins: a separate addon that sets the global `ClaudeWoWNodes = { kinds = { { name, "mining"|"herbalism", requiredSkill }, ... }, maps = { [uiMapID] = { [kindIndex] = "xxxyyyxxxyyy..." } } }`, where each point is x and y in tenths of a percent, three digits each. `Map.lua` reads it if it is there and says so in `/claude-wow map` if it is not.
+The optional `ClaudeWoW_Nodes` addon is the same idea for the in-game node pins: a separate addon that sets the global `ClaudeWoWNodes = { kinds = { { name, "mining"|"herbalism", requiredSkill }, ... }, maps = { [uiMapID] = { [kindIndex] = "xxxyyyxxxyyy..." } } }`, where each point is x and y in tenths of a percent, three digits each. `Map.lua` reads it if it is there and says so in `/claude config map` if it is not.

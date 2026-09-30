@@ -467,7 +467,7 @@ function checkDisk(ctx) {
   for (const s of sessionFiles(ctx)) {
     parts.push(`${s.chat} session ${s.bytes === null ? 'not found' : formatBytes(s.bytes)}`);
     if (s.bytes !== null && s.bytes > LIMITS.sessionBytes) {
-      issues.push(warn(`The agent session for ${s.chat} is ${formatBytes(s.bytes)} (${s.file}).`, 'Every --resume reloads the whole session, so turns get slower and cost more.', `Start a new chat in game for ${s.chat}, or /claude-wow new.`));
+      issues.push(warn(`The agent session for ${s.chat} is ${formatBytes(s.bytes)} (${s.file}).`, 'Every --resume reloads the whole session, so turns get slower and cost more.', `Start a new chat in game for ${s.chat} with /claude.`));
     }
   }
   return finish('disk', 'Disk', parts.join(', '), issues);

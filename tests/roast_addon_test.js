@@ -125,7 +125,7 @@ function ready({ on = true } = {}) {
   connect(vm);
   withRoastChatHelper(vm);
   vm.run('STUB.prints = {}');
-  if (on) vm.run('SlashCmdList.CLAUDEWOW("roast on")');
+  if (on) vm.run('SlashCmdList.CLAUDE("config roast on")');
   return vm;
 }
 
@@ -146,18 +146,18 @@ test('roast: off by default, the slash command turns it on and off and says so, 
   assert.equal(vm.num('#ClaudeWoWDB.chats'), 1, 'no roast chat while off');
   assert.ok(!stripJobs(vm).some(j => j.kind), 'no roast record on the strip');
 
-  vm.run('SlashCmdList.CLAUDEWOW("roast")');
+  vm.run('SlashCmdList.CLAUDE("config roast")');
   assert.ok(vm.evaluate('STUB.prints[#STUB.prints]').includes('Death roast is OFF'), vm.evaluate('STUB.prints[#STUB.prints]'));
-  vm.run('SlashCmdList.CLAUDEWOW("roast on")');
+  vm.run('SlashCmdList.CLAUDE("config roast on")');
   assert.equal(vm.evaluate('ClaudeWoWDB.roast.on'), 'true');
   assert.ok(vm.evaluate('STUB.prints[#STUB.prints]').includes('Death roast is ON'));
-  vm.run('SlashCmdList.CLAUDEWOW("roast off")');
+  vm.run('SlashCmdList.CLAUDE("config roast off")');
   assert.equal(vm.evaluate('ClaudeWoWDB.roast.on'), 'false');
 
-  vm.run('SlashCmdList.CLAUDEWOW("roast the lich king for me please")');
-  assert.ok(stripJobs(vm).some(j => j.text === 'roast the lich king for me please'), 'free text starting with "roast" is still a message');
-  vm.run('SlashCmdList.CLAUDEWOW("help")');
-  assert.ok(vm.evaluate('ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].text').includes('/claude-wow roast [on|off]'));
+  vm.run('SlashCmdList.CLAUDE("roast the lich king for me please")');
+  assert.ok(stripJobs(vm).some(j => j.text === 'roast the lich king for me please'), 'free text starting with "roast" is a message');
+  vm.run('ClaudeWoW.SwitchChat(ClaudeWoWDB.chats[1].id); SlashCmdList.CLAUDE("config")');
+  assert.ok(vm.evaluate('ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].text').includes('\nroast = off  -  on|off'));
 });
 
 test('roast: the recap names the attackers, abilities, amounts, crits, levels, overkill and the killing blow from the last 10 seconds', () => {
@@ -240,7 +240,7 @@ test('roast: a death goes out as a roast-kind message in its own chat bound to t
 
 test('roast: vision on attaches the screenshot to the death message like any other', () => {
   const vm = ready();
-  vm.run('SlashCmdList.CLAUDEWOW("vision on")');
+  vm.run('SlashCmdList.CLAUDE("config vision on")');
   swing(vm, { amount: 52, overkill: 17 });
   die(vm);
   const job = stripJobs(vm).find(j => j.kind === 'roast');
@@ -267,7 +267,7 @@ test('roast: at most one roast every two minutes, and a death while disconnected
   die(vm);
   assert.equal(vm.evaluate(`${chat}.pendingId`), null, 'still inside the two minutes: the wipe does not spam the agent');
   assert.ok(vm.evaluate('ClaudeWoWRoast.lastSkip').startsWith('cooling down'), vm.evaluate('ClaudeWoWRoast.lastSkip'));
-  vm.run('SlashCmdList.CLAUDEWOW("roast")');
+  vm.run('SlashCmdList.CLAUDE("config roast")');
   assert.ok(vm.evaluate('STUB.prints[#STUB.prints]').includes('next in'), vm.evaluate('STUB.prints[#STUB.prints]'));
 
   vm.run('STUB.now = STUB.now + 120');

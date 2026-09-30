@@ -96,7 +96,7 @@ function sendAndReply(vm, fields) {
 
 function slash(vm, text) {
   vm.run('STUB.prints = {}');
-  vm.run(`SlashCmdList.CLAUDEWOW(${JSON.stringify(text)})`);
+  vm.run(`SlashCmdList.CLAUDE(${JSON.stringify('config ' + text)})`);
   return vm.evaluate('table.concat(STUB.prints, "\\n")') || '';
 }
 
@@ -169,7 +169,7 @@ test('a failed run and a permission prompt each play their own line', () => {
 
 test('the bridge picking a message up plays the started line once the sent line has had its time', () => {
   const vm = ready();
-  vm.run('SlashCmdList.CLAUDEWOW("voice peasant")');
+  vm.run('SlashCmdList.CLAUDE("config voice peasant")');
   vm.run('ClaudeWoW.Send("fix the bug")');
   const id = vm.num('ClaudeWoWDB.chats[1].pendingId');
   const slot = String(id).padStart(3, '0');
@@ -202,7 +202,7 @@ test('without an ack file, the first progress report plays the started line, and
 
 test('overlapping events are throttled: a quick ack is dropped, a reply cuts in, a second reply waits its turn', () => {
   const vm = ready();
-  vm.run('SlashCmdList.CLAUDEWOW("voice peon")');
+  vm.run('SlashCmdList.CLAUDE("config voice peon")');
   vm.run('ClaudeWoWVoice.Event("sent")');
   vm.run('STUB.now = STUB.now + 0.5; ClaudeWoWVoice.Event("started")');
   assert.equal(played(vm).length, 1, 'started right after sent is dropped');
@@ -216,7 +216,7 @@ test('overlapping events are throttled: a quick ack is dropped, a reply cuts in,
   assert.equal(played(vm).length, 3, 'after the gap it plays again');
 });
 
-test('/claude-wow voice picks a pack, sets and resets lines per event, and previews them', () => {
+test('/claude config voice picks a pack, sets and resets lines per event, and previews them', () => {
   const vm = ready();
   let out = slash(vm, 'voice');
   assert.match(out, /pack: race/);
@@ -273,8 +273,9 @@ test('voice off silences every event, voice on brings the race pack back', () =>
 
 test('free text that starts with "voice" still goes to the agent', () => {
   const vm = ready();
-  vm.run('SlashCmdList.CLAUDEWOW("voice set up the speech recognition module")');
-  assert.ok(vm.num('ClaudeWoWDB.chats[1].pendingId') > 0, 'sent as a message');
+  vm.run('SlashCmdList.CLAUDE("config voice set up the speech recognition module")');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 2, 'a message for a new chat');
+  assert.ok(vm.num('ClaudeWoWDB.chats[2].pendingId') > 0, 'sent as a message');
   assert.equal(vm.evaluate('ClaudeWoWDB.voice.lines.set'), null);
 });
 

@@ -50,6 +50,7 @@ const H = require('./home');     // where config, state and logs live (tests/hom
 const R = require('./runtime');  // node, bun, or the compiled binary (tests/runtime_test.js)
 const AS = require('./assets');  // the capture scripts and the primer, by path, from a checkout or the binary (tests/assets_test.js)
 const ACH = require('./achievements');
+const SS = require('./sessions');
 const G = require('./gamefs');
 
 // The plugins this bridge has (docs/PLATFORM.md). Registration order is the
@@ -79,7 +80,7 @@ if (argv.includes('--help') || argv.includes('-h')) {
     'Runs the Claude WoW bridge. Chats without a folder of their own work in <dir>,\n' +
     'or in the folder you started it from, or in defaultCwd from bridge/config.json.\n' +
     '--image attaches a screenshot to an --inject run the way vision does in game.\n' +
-    `Agents: ${A.agentIds().join(', ')} (the default is "agent" in config.json; chats pick with /claude-wow agent).\n` +
+    `Agents: ${A.agentIds().join(', ')} (the default is "agent" in config.json; chats pick with /claude --agent).\n` +
     `Plugins: ${registry.ids().join(', ')} (the default is plugins.default in config.json).`);
   process.exit(0);
 }
@@ -136,6 +137,11 @@ const DEFAULT_CWD = path.resolve(
     : cfg.defaultCwd || process.cwd());
 const DEFAULT_CWD_SOURCE = projectIdx >= 0 ? '--project' : PROJECT_ENV ? (process.env.CLAUDE_WOW_PROJECT ? 'CLAUDE_WOW_PROJECT' : 'WOW_AI_PROJECT')
   : !insideRepo(process.cwd()) ? 'started here' : 'config.json';
+
+const CLAUDE_DIR = SS.claudeDir(process.env, cfg.claudeDir);
+const SESSION_LIST_MAX = 12;
+const CLAUDE_SESSIONS_TTL_MS = 30000;
+let claudeSessionsCache = { at: 0, list: [] };
 
 const SLOTS = cfg.slots || 200;
 const MAX_PARALLEL = cfg.maxParallel || 3;
@@ -483,7 +489,47 @@ function slotFile(globalName, records, urgent = true) {
   const achievementsLua = ACHIEVEMENTS_ON ? ACH.luaAchievements(state) : '';
   const lp = livePlugin();
   const liveInfo = lp ? { sessions: lp.status(), start: liveStartCommand() } : null;
-  return P.luaTable(globalName, records, { live: liveInfo, cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), plugin: DEFAULT_PLUGIN, plugins: registry.ids(), map, widgets, transport: TRANSPORT, levels: LEVELS, codec: STRIP_CODEC, transportNote, achievementsLua });
+  return P.luaTable(globalName, records, { live: liveInfo, sessions: sessionList(), cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), plugin: DEFAULT_PLUGIN, plugins: registry.ids(), map, widgets, transport: TRANSPORT, levels: LEVELS, codec: STRIP_CODEC, transportNote, achievementsLua });
+}
+
+function recentClaudeSessions() {
+  if (cfg.claudeSessions === false) return [];
+  if (Date.now() - claudeSessionsCache.at > CLAUDE_SESSIONS_TTL_MS) {
+    let list = [];
+    try { list = SS.recentClaudeSessions(CLAUDE_DIR, { limit: SESSION_LIST_MAX }); } catch (e) { log(`sessions: cannot read ${CLAUDE_DIR} (${e.message})`); }
+    claudeSessionsCache = { at: Date.now(), list };
+  }
+  return claudeSessionsCache.list;
+}
+
+function sessionList() {
+  const lp = livePlugin();
+  const live = lp && typeof lp.sessions === 'function' ? lp.sessions() : [];
+  return SS.mergeSessions({ live, own: SS.ownSessions(state, transcripts), claude: recentClaudeSessions(), limit: SESSION_LIST_MAX });
+}
+
+function resolveResume(job) {
+  const find = ref => {
+    if (cfg.claudeSessions === false) return [];
+    try { return SS.findClaudeSessions(CLAUDE_DIR, ref); } catch (e) { log(`${tagOf(job)} sessions: cannot search ${CLAUDE_DIR} (${e.message})`); return []; }
+  };
+  return SS.resolveResume(job.resume, { own: SS.ownSessions(state, transcripts), find });
+}
+
+function adoptSession(job, m) {
+  const skey = sessKey(job);
+  state.sessions[skey] = m.id;
+  delete state.sessions[chatKey(job)];
+  (state.sessionAgent = state.sessionAgent || {})[skey] = m.agent || 'claude';
+  if (m.cwd) (state.sessionCwd = state.sessionCwd || {})[skey] = m.cwd;
+  if (!job.agent) job.agent = m.agent || 'claude';
+  const plugin = !job.plugin && m.plugin && m.plugin !== 'live' ? m.plugin : '';
+  if (plugin) job.plugin = plugin;
+  if (!job.plugin && m.cwd) job.plugin = 'claude-code';
+  if (!job.cwd && m.cwd && registry.normalize(job.plugin) === 'claude-code') job.cwd = m.cwd;
+  job.newSession = false;
+  job.adopted = m;
+  log(`${tagOf(job)} resumes session ${m.id}${m.cwd ? ' in ' + m.cwd : ''} (${m.agent || 'claude'})`);
 }
 
 const ACHIEVEMENTS_ON = cfg.achievements !== false;
@@ -805,13 +851,26 @@ function runJob(job) {
   signal('sig', job.id, false);
   resetBeats(job.id);
   signal('ack', job.id, true);
+  if (job.resume && !job.liveTarget) {
+    const found = resolveResume(job);
+    if (found.error) {
+      log(`${tag} resume ${job.resume}: ${found.error.split('\n')[0]}`);
+      finish(job, 'error', found.error);
+      return;
+    }
+    adoptSession(job, found.session);
+  }
   const r = registry.route(job, { fallback: DEFAULT_PLUGIN });
   if (r.error) {
     log(`${tag} ${r.error}`);
-    finish(job, 'error', `${r.error}\nUse /claude-wow plugin <name> to pick one, or /claude-wow plugin alone for the default (${DEFAULT_PLUGIN}).`);
+    finish(job, 'error', `${r.error}\nUse /claude config plugin <name> to pick one, or /claude config plugin default for the bridge's default (${DEFAULT_PLUGIN}).`);
     return;
   }
   job.plugin = r.plugin.id;
+  if (job.adopted) {
+    (state.sessionPlugin = state.sessionPlugin || {})[sessKey(job)] = job.plugin;
+    saveState();
+  }
   if (r.text !== undefined) job.text = r.text; // "@ask ..." addressed it; the address is not part of the prompt
   const failed = e => {
     log(`${tag} ${r.plugin.id}: ${e && e.stack ? e.stack : e}`);
@@ -841,6 +900,7 @@ const core = {
   get home() { return HOME.dir; },
   get timeoutMs() { return cfg.timeoutMs || 1800000; },
   get liveStartCommand() { return liveStartCommand(); },
+  get claudeDir() { return CLAUDE_DIR; },
   runAgent,
 };
 
@@ -883,12 +943,14 @@ function runAgent(job, opts = {}) {
   if (!agentId) {
     log(`${tag} unknown agent "${job.agent}"`);
     finish(job, 'error', `Unknown agent "${job.agent}". This bridge knows: ${A.agentIds().join(', ')}.\n` +
-      `Use /claude-wow agent <name> to pick one, or /claude-wow agent alone for the default (${DEFAULT_AGENT}).`);
+      `Use /claude -c --agent <name> to pick one, or /claude -c --agent default for the bridge's default (${DEFAULT_AGENT}).`);
     return;
   }
   job.agent = agentId;
   const agent = A.AGENTS[agentId];
-  const acfg = P.withRunOnlyRules(A.agentConfig(cfg, agentId), job.allowOnce);
+  const chosen = chatSettings(job);
+  const acfg = A.withChatSettings(P.withRunOnlyRules(A.agentConfig(cfg, agentId), job.allowOnce), agentId, chosen);
+  const ignored = A.unsupportedSettings(agentId, chosen);
   const cmd = A.resolveCommand(agentId, acfg);
   if (!cmd.found) {
     log(`${tag} ${agentId} not found: ${cmd.note}`);
@@ -976,7 +1038,8 @@ function runAgent(job, opts = {}) {
     } catch (e) { log(`${tag} ui file unavailable: ${e.message}`); }
   }
 
-  log(`${tag} (${job.via}) [${plugin.id}] ${agent.name} starting in ${cwd}${resume ? ' (resume ' + resume.slice(0, 8) + ')' : ' (new session)'}${ctx ? ' [game context]' : ''}${image ? ` [screen ${image.width}x${image.height}, ${Math.round(image.bytes / 1024)} KB]` : ''}${running.size ? ' [' + (running.size + 1) + ' running]' : ''}`);
+  const picked = [acfg.model && 'model ' + acfg.model, acfg.effort && 'effort ' + acfg.effort, chosen.permissionMode && 'mode ' + acfg.permissionMode, (acfg.addDirs || []).length && '+' + acfg.addDirs.length + ' dir(s)'].filter(Boolean).join(', ');
+  log(`${tag} (${job.via}) [${plugin.id}] ${agent.name} starting in ${cwd}${picked ? ' [' + picked + ']' : ''}${resume ? ' (resume ' + resume.slice(0, 8) + ')' : ' (new session)'}${ctx ? ' [game context]' : ''}${image ? ` [screen ${image.width}x${image.height}, ${Math.round(image.bytes / 1024)} KB]` : ''}${running.size ? ' [' + (running.size + 1) + ' running]' : ''}`);
   const startedAt = Date.now(); // a fresh session's clock starts here (the footer's elapsed time)
   const child = PR.spawnChild(cmd.file, args, { cwd, env, windowsHide: true, stdio: [input.stdin !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
   running.set(key, { job, child });
@@ -1006,6 +1069,10 @@ function runAgent(job, opts = {}) {
   if (agent.stream === 'text') pushProgress(`${agent.name} is working (no live progress)`);
   if (input.note) notes.push(input.note);
   if (visionNote) notes.push(visionNote);
+  if (ignored.length) {
+    notes.push(`${agent.name} has no ${ignored.map(f => f.split(' ')[0]).join(', ')} option, so ${ignored.join(', ')} ${ignored.length === 1 ? 'was' : 'were'} ignored.`);
+    log(`${tag} ${agent.name} ignores ${ignored.join(', ')}`);
+  }
   // Long thinking stretches produce no tool events; keep the heartbeat alive anyway.
   const keepalive = setInterval(() => beat(job), 45000);
 
@@ -1122,6 +1189,15 @@ function runAgent(job, opts = {}) {
       finish(job, 'error', `${agent.name} exited with code ${code} and no result.\n${stderr.trim().slice(-1500)}`, sessionId);
     }
   });
+}
+
+function chatSettings(job) {
+  return {
+    model: job.model || '',
+    effort: job.effort || '',
+    permissionMode: job.permissionMode || '',
+    addDirs: (Array.isArray(job.addDirs) ? job.addDirs : []).map(d => P.resolveCwd(d, DEFAULT_CWD)),
+  };
 }
 
 function noteInflight(key, job, child, agentName, marker) {
@@ -1369,21 +1445,21 @@ function banner() {
   console.log('Claude WoW bridge');
   console.log(`  runtime  : ${R.describe()}`);
   console.log(`  home     : ${HOME.dir}  (${HOME.source === 'legacy' ? 'the layout from before CLAUDE_WOW_HOME; run setup to move it to ' + H.defaultDir() : HOME.source}; config, state, transcripts, log)`);
-  console.log(`  folder   : ${DEFAULT_CWD}  (${DEFAULT_CWD_SOURCE}; chats can override with /claude-wow cd)`);
+  console.log(`  folder   : ${DEFAULT_CWD}  (${DEFAULT_CWD_SOURCE}; chats can override with /claude cd)`);
   console.log(`  addons   : ${cfg.addonDir}`);
   console.log(`  addon    : ${addonInstalled() ? 'installed' : 'NOT INSTALLED - run: node setup.js, then restart WoW'}`);
   console.log(`  slots    : ${slotsInstalled() ? SLOTS + ' installed' : 'NOT INSTALLED - run: node setup.js (or node bridge/install-slots.js), then restart WoW'}`);
   console.log(`  capture  : ${!cap.enabled ? 'off' : TRANSPORT === 'screenshot' ? 'screenshot transport' + (TRANSPORT_SOURCE === 'default' ? ' (the default; no screen capture, no permissions, no python)' : ' (capture.mode in config.json)') + ': ' + SCREENSHOT_DIR + ', strip codec ' + STRIP_CODEC + ': ' + stripGeometry() : 'pixel transport, DEPRECATED (' + (TRANSPORT_SOURCE === 'fallback' ? 'FALLBACK: ' + P.transportNote(state.transportFallback) : 'capture.mode in config.json; kept only until Screenshot() is confirmed on Windows and Linux/Wine') + '): screen capture of ' + cap.processName + ', ' + cap.cellsPerRow + 'x' + cap.maxRows + ' cells of ' + cap.cellPx + 'px'}`);
-  console.log(`  vision   : ${TRANSPORT === 'screenshot' ? 'per chat (/claude-wow vision on, or /claude-wow look <question>); the game view goes out up to ' + vis.maxWidth + 'px wide' : 'needs capture.mode "screenshot" (the pixel capture never sees more than the strip)'}`);
+  console.log(`  vision   : ${TRANSPORT === 'screenshot' ? 'per chat (/claude config vision on, or /claude look <question>); the game view goes out up to ' + vis.maxWidth + 'px wide' : 'needs capture.mode "screenshot" (the pixel capture never sees more than the strip)'}`);
   console.log(`  parallel : up to ${MAX_PARALLEL} chats at once`);
   console.log(`  fallback : ${SAVED_VARS}`);
-  console.log(`  plugins  : ${registry.all().map(p => p.id + (p.id === DEFAULT_PLUGIN ? ' (default)' : '')).join(', ')}  (chats pick their own with /claude-wow plugin)`);
+  console.log(`  plugins  : ${registry.all().map(p => p.id + (p.id === DEFAULT_PLUGIN ? ' (default)' : '')).join(', ')}  (a chat with a folder uses claude-code, one without the default; /claude config plugin overrides)`);
   for (const p of registry.all()) if (typeof p.banner === 'function') console.log(`  ${p.id.padEnd(9)}: ${p.banner(core.options(p.id))}`);
-  console.log(`  agent    : ${DEFAULT_AGENT} (default; chats pick their own with /claude-wow agent)`);
+  console.log(`  agent    : ${DEFAULT_AGENT} (default; chats pick their own with /claude --agent)`);
   for (const id of A.agentIds()) console.log(`  ${id.padEnd(9)}: ${agentLine(id)}`);
   console.log(`  sessions : ${Object.keys(state.sessions).length} saved`);
   const ctx = gameContext();
-  console.log(`  context  : ${cfg.gameContext === false ? 'off (gameContext in config.json)' : ctx ? (ctx.split('\n').find(l => /^Character:/i.test(l)) || ctx.split('\n')[0]).slice(0, 100) : 'none yet (the addon sends it with its hello; /claude-wow context in game)'}`);
+  console.log(`  context  : ${cfg.gameContext === false ? 'off (gameContext in config.json)' : ctx ? (ctx.split('\n').find(l => /^Character:/i.test(l)) || ctx.split('\n')[0]).slice(0, 100) : 'none yet (the addon sends it with its hello; /claude config context in game)'}`);
   console.log(`  primer   : ${!PRIMER_FILE ? 'off (primerFile in config.json)' : primer() ? primerPath() + ' (' + primer().length + ' chars, in the system prompt while the addon sends a context)' : 'NOT FOUND: ' + primerPath()}`);
   console.log('Leave this window open while you play. Ctrl+C to stop.\n');
 }

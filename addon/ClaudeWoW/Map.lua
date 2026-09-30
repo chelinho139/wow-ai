@@ -377,7 +377,7 @@ local function BuildNavigator()
 	nav:SetScript("OnEnter", function(self)
 		GameTooltip:SetOwner(self, "ANCHOR_BOTTOM")
 		GameTooltip:AddLine("Route")
-		GameTooltip:AddLine("Drag to move, right-click to skip this stop. /claude-wow map for options.", 1, 1, 1, true)
+		GameTooltip:AddLine("Drag to move, right-click to skip this stop. /claude config map for options.", 1, 1, 1, true)
 		GameTooltip:Show()
 	end)
 	nav:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -504,7 +504,7 @@ local function Status()
 	end
 	local n = mdb.nodes
 	Print(string.format("nodes: ore %s, herb %s, filter %s%s", n.ore and "on" or "off", n.herb and "on" or "off", n.filter, ClaudeWoWNodes and "" or "  (ClaudeWoW_Nodes data addon not installed)"))
-	Print("commands: /claude-wow map ore|herb [on|off], filter all|skill, show|hide <layer>, nav <layer> [n], next, prev, stop  (/aimap is the same)")
+	Print("commands: /claude config map ore|herb [on|off], filter all|skill, show|hide <layer>, nav <layer> [n], next, prev, stop  (/aimap is the same)")
 end
 
 function M.Command(msg)

@@ -85,7 +85,7 @@ function W.Fail(widget, err)
 	widget.failed = true
 	failures[widget.name] = { rev = widget.rev, err = tostring(err) }
 	W.Stop(widget)
-	Report(string.format("%s failed and was stopped: %s. /claude-wow ui run %s tries again; or ask the agent to fix it.", widget.name, tostring(err), widget.name))
+	Report(string.format("%s failed and was stopped: %s. /claude config ui run %s tries again; or ask the agent to fix it.", widget.name, tostring(err), widget.name))
 end
 
 local function Guarded(widget, fn)
@@ -225,7 +225,7 @@ function W.Start(item, announce)
 		W.Fail(widget, err)
 		return false
 	end
-	if announce then Report(string.format("%s is live: %s. /claude-wow ui lists widgets, /claude-wow ui remove %s removes it.", item.name, widget.title, item.name)) end
+	if announce then Report(string.format("%s is live: %s. /claude config ui lists widgets, /claude config ui remove %s removes it.", item.name, widget.title, item.name)) end
 	return true
 end
 
@@ -287,7 +287,7 @@ local function List()
 		local status, err = W.Status(item.name)
 		Print(string.format("%s  %s  (%s%s, %d bytes)", item.name, item.title, status, err and (": " .. err) or "", #item.source))
 	end
-	Print("commands: /claude-wow ui list, /claude-wow ui remove <name>, /claude-wow ui run <name>")
+	Print("commands: /claude config ui list, /claude config ui remove <name>, /claude config ui run <name>")
 end
 
 function W.Remove(name)
@@ -295,7 +295,7 @@ function W.Remove(name)
 	if not item then Print("no widget " .. tostring(name)); return end
 	DB().removed[name] = item.rev
 	if running[name] then W.Stop(running[name]) end
-	Report(string.format("%s removed. It stays off until the agent sends a new version; /claude-wow ui run %s brings it back.", name, name))
+	Report(string.format("%s removed. It stays off until the agent sends a new version; /claude config ui run %s brings it back.", name, name))
 end
 
 function W.Run(name)

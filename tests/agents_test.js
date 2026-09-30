@@ -484,3 +484,38 @@ test('the other agents report no context size: their streams carry none the brid
   assert.equal(A.agyParser().feed({ event: 'result', result: { status: 'SUCCESS', response: 'ok' } }).usage, undefined);
   assert.equal(A.hermesParser().finish({ stdout: 'ok', stderr: '', code: 0 }).usage, undefined);
 });
+
+test('per-chat settings from /claude flags: each agent gets the ones it has, in its own spelling, and the rest are named as ignored', () => {
+  const chosen = { model: 'opus', effort: 'high', permissionMode: 'plan', addDirs: ['/srv/extra', '-x'] };
+  const argsFor = id => {
+    const cfg = A.withChatSettings({ permissionMode: 'acceptEdits', model: 'from-config' }, id, chosen);
+    return A.AGENTS[id].args({ cfg, resume: '', cwd: '/proj', system: '', systemShort: '', promptFile: '/tmp/p.txt', prompt: 'hi', images: [] });
+  };
+  const after = (a, flag) => a[a.indexOf(flag) + 1];
+  const claude = argsFor('claude');
+  assert.equal(after(claude, '--model'), 'opus', 'the chat overrides config.json');
+  assert.equal(after(claude, '--effort'), 'high');
+  assert.equal(after(claude, '--permission-mode'), 'plan');
+  assert.equal(after(claude, '--add-dir'), '/srv/extra');
+  assert.ok(!claude.includes('-x'), 'a path that looks like a flag is dropped');
+  const codex = argsFor('codex');
+  assert.equal(after(codex, '-m'), 'opus');
+  assert.equal(after(codex, '-c'), 'model_reasoning_effort=high');
+  assert.equal(after(codex, '--sandbox'), 'read-only', 'plan is read-only for Codex');
+  assert.equal(after(codex, '--add-dir'), '/srv/extra');
+  const grok = argsFor('grok');
+  assert.equal(after(grok, '-m'), 'opus');
+  assert.ok(!grok.includes('--effort') && !grok.includes('--add-dir'));
+  assert.ok(!grok.includes('Edit'), 'plan gives Grok no edit rules');
+  const agy = argsFor('agy');
+  assert.equal(after(agy, '--mode'), 'plan');
+  assert.deepEqual(agy.filter((a, i) => agy[i - 1] === '--add-dir'), ['/proj', '/srv/extra']);
+  assert.deepEqual(A.unsupportedSettings('claude', chosen), []);
+  assert.deepEqual(A.unsupportedSettings('codex', chosen), []);
+  assert.deepEqual(A.unsupportedSettings('grok', chosen), ['--effort high', '--add-dir /srv/extra -x']);
+  assert.deepEqual(A.unsupportedSettings('agy', chosen), ['--effort high']);
+  assert.deepEqual(A.unsupportedSettings('hermes', chosen), ['--effort high', '--permission-mode plan', '--add-dir /srv/extra -x']);
+  assert.deepEqual(A.unsupportedSettings('grok', { model: '', effort: '', addDirs: [] }), []);
+  assert.equal(A.withChatSettings({ model: 'keep' }, 'claude', { model: '' }).model, 'keep', 'an unset chat setting leaves config.json alone');
+  assert.equal(A.withChatSettings({}, 'hermes', chosen).effort, undefined, 'an agent never gets a setting it cannot take');
+});

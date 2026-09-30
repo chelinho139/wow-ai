@@ -4,8 +4,10 @@ const fs = require('fs');
 const net = require('net');
 const LP = require('../liveproto');
 const P = require('../protocol');
+const SS = require('../sessions');
 
 const DEFAULTS = { waitMs: 3000, permissionTimeoutMs: 120000, helloTimeoutMs: 5000 };
+const CLAUDE_INFO_TTL_MS = 5000;
 
 function createLive(overrides = {}) {
   const sessions = new Map();
@@ -38,8 +40,33 @@ function createLive(overrides = {}) {
     return `${s.name}${s.cwd ? ' (' + s.cwd + ')' : ''}`;
   }
 
+  function claudeInfo(s) {
+    const dir = overrides.claudeDir || (core && core.claudeDir) || '';
+    if (!dir || !s.ppid) return null;
+    if (!s.info || Date.now() - s.info.at > CLAUDE_INFO_TTL_MS) s.info = { at: Date.now(), value: SS.runningClaude(dir, s.ppid) };
+    return s.info.value;
+  }
+
+  function sessionOf(s) {
+    const info = claudeInfo(s);
+    return { id: (info && info.id) || '', name: s.name, title: (info && info.name) || '', cwd: s.cwd || (info && info.cwd) || '', agent: 'claude', at: Math.floor(s.connectedAt / 1000) };
+  }
+
   function status() {
     return connected().sort((a, b) => a.connectedAt - b.connectedAt).map(describe);
+  }
+
+  function sessionsList() {
+    return connected().sort((a, b) => a.connectedAt - b.connectedAt).map(sessionOf);
+  }
+
+  function matchesTarget(s, target) {
+    const want = String(target || '').trim().toLowerCase();
+    if (!want) return true;
+    const info = sessionOf(s);
+    const id = info.id.toLowerCase();
+    return (id && (id === want || (want.length >= SS.MIN_PREFIX && id.startsWith(want))))
+      || info.name.toLowerCase() === want || (info.title && info.title.toLowerCase() === want);
   }
 
   function changed() {
@@ -154,6 +181,7 @@ function createLive(overrides = {}) {
       s.name = String(msg.name || 'claude').replace(/[^\w .@-]/g, '').slice(0, 40) || 'claude';
       s.cwd = String(msg.cwd || '').slice(0, 300);
       s.pid = Number(msg.pid) || 0;
+      s.ppid = Number(msg.ppid) || 0;
       sock.write(LP.encode({ type: 'welcome', proof: LP.proof(token, 'bridge', msg.nonce) }));
       log(`session "${s.name}" connected${s.cwd ? ' from ' + s.cwd : ''}${s.pid ? ', pid ' + s.pid : ''}`);
       for (const w of [...waiters]) w();
@@ -205,23 +233,24 @@ function createLive(overrides = {}) {
     }
   }
 
-  function pick(chatId) {
-    const live = connected();
+  function pick(chatId, target) {
+    const live = connected().filter(s => matchesTarget(s, target));
     if (!live.length) return null;
     const sticky = live.find(s => s.chats && s.chats.has(chatId));
     return sticky || live.sort((a, b) => b.connectedAt - a.connectedAt)[0];
   }
 
-  function waitForSession(ms) {
+  function waitForSession(ms, target) {
     return new Promise(resolve => {
-      if (connected().length) { resolve(); return; }
+      if (connected().some(s => matchesTarget(s, target))) { resolve(); return; }
       const done = () => { clearTimeout(timer); waiters.delete(done); resolve(); };
       const timer = setTimeout(done, ms);
       waiters.add(done);
     });
   }
 
-  function noSessionText() {
+  function noSessionText(target) {
+    if (target) return `The running Claude Code session "${target}" is not connected. /claude -r lists the ones that are, and /claude -r <id> resumes a session headless when its terminal is closed.`;
     return `No live Claude Code session is connected. Start one with:\n${core.liveStartCommand}\n(see docs/LIVE-SESSION.md)`;
   }
 
@@ -245,18 +274,19 @@ function createLive(overrides = {}) {
       }
     }
     if (!server) { c.fail(job, 'The live plugin is off on this bridge (plugins.live.enabled is false).'); return; }
-    if (!connected().length) await waitForSession(opt('waitMs'));
-    const s = pick(chatId);
+    const target = job.liveTarget || '';
+    if (!connected().some(x => matchesTarget(x, target))) await waitForSession(opt('waitMs'), target);
+    const s = pick(chatId, target);
     if (!s) {
-      log(`${c.tag(job)} no live session connected`);
-      c.fail(job, noSessionText());
+      log(`${c.tag(job)} no live session connected${target ? ' matching "' + target + '"' : ''}`);
+      c.fail(job, noSessionText(target));
       return;
     }
     const ctx = c.gameContext();
     const content = LP.channelContent(P.messagePrompt(job.text, ctx), chatId);
     const meta = LP.channelMeta(job, chatId, ctx);
     if (!sendTo(s, { type: 'message', content, meta })) {
-      c.fail(job, noSessionText());
+      c.fail(job, noSessionText(target));
       return;
     }
     (s.chats = s.chats || new Set()).add(chatId);
@@ -276,6 +306,7 @@ function createLive(overrides = {}) {
     start,
     stop,
     status,
+    sessions: sessionsList,
     banner: () => `forwards chats to a running Claude Code session (${LP.DEV_FLAG} ${LP.CHANNEL_ARG}); see docs/LIVE-SESSION.md`,
     _state: { sessions, pending, permissions, get address() { return address; } },
   };

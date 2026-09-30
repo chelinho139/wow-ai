@@ -118,30 +118,30 @@ test('a bridge whose ledger was reset starts the count again', () => {
   assert.equal(vm.evaluate('ClaudeWoWAchievementToast.title.text'), 'Again');
 });
 
-test('/claude-wow achievements off silences the toasts, the list still works', () => {
+test('/claude config achievements off silences the toasts, the list still works', () => {
   const vm = newVM();
-  vm.run('SlashCmdList.CLAUDEWOW("achievements off")');
+  vm.run('SlashCmdList.CLAUDE("config achievements off")');
   assert.equal(vm.evaluate('ClaudeWoWDB.settings.toasts'), 'false');
   vm.run(`ClaudeWoWAchievements.Sync(${payload(1, [entry(1, 'leeroy', 'Leeroy Jenkins')], [earned('leeroy', 'Leeroy Jenkins')])})`);
   assert.equal(vm.evaluate('ClaudeWoWAchievementToast'), null, 'no toast frame at all');
   assert.equal(vm.evaluate('#STUB.soundKits'), '0');
-  vm.run('SlashCmdList.CLAUDEWOW("achievements")');
+  vm.run('SlashCmdList.CLAUDE("config achievements")');
   const out = vm.prints();
   assert.match(out, /Achievements: 1 of 14 earned, 10 points\. Toasts are off/);
   assert.match(out, /\[Leeroy Jenkins\]\|r 10 pts - t leeroy/);
-  vm.run('SlashCmdList.CLAUDEWOW("toasts on")');
+  vm.run('SlashCmdList.CLAUDE("config toasts on")');
   assert.equal(vm.evaluate('ClaudeWoWDB.settings.toasts'), 'true');
-  vm.run('SlashCmdList.CLAUDEWOW("achievements test")');
+  vm.run('SlashCmdList.CLAUDE("config achievements test")');
   assert.equal(vm.evaluate('ClaudeWoWAchievementToast.title.text'), 'Achievement Unlocked');
 });
 
 test('an empty list says how to earn one, and free text starting with the word is a message', () => {
   const vm = newVM();
-  vm.run('SlashCmdList.CLAUDEWOW("achievements")');
+  vm.run('SlashCmdList.CLAUDE("config achievements")');
   assert.match(vm.prints(), /Achievements: 0 of 0 earned, 0 points\. Toasts are on/);
   assert.match(vm.prints(), /None yet/);
   vm.run('STUB.prints = {}');
-  vm.run('SlashCmdList.CLAUDEWOW("achievements are a fun idea, add some")');
+  vm.run('SlashCmdList.CLAUDE("config achievements are a fun idea, add some")');
   assert.doesNotMatch(vm.prints(), /Achievements:/);
 });
 

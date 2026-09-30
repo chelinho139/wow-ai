@@ -48,14 +48,14 @@ Widgets only read and draw. Two checks enforce that:
 
 ## Errors
 
-The first run is in a `pcall`, and so are the widget's script handlers (`SetScript`, `HookScript`) and timer callbacks. On an error, the addon stops the widget (hides its frames, unregisters their events, cancels its tickers) and writes the error to the game chat and to the chat window. `/claude-wow ui run <name>` tries again.
+The first run is in a `pcall`, and so are the widget's script handlers (`SetScript`, `HookScript`) and timer callbacks. On an error, the addon stops the widget (hides its frames, unregisters their events, cancels its tickers) and writes the error to the game chat and to the chat window. `/claude config ui run <name>` tries again.
 
 ## In game
 
 | Command | Does |
 |---|---|
-| `/claude-wow ui` or `/claude-wow ui list` | list the widgets: running, removed, or failed with the error |
-| `/claude-wow ui remove <name>` | stop a widget and keep it off after login. It comes back only when the agent sends a new version |
-| `/claude-wow ui run <name>` | start a widget again (after an error or a remove) |
+| `/claude config ui` or `/claude config ui list` | list the widgets: running, removed, or failed with the error |
+| `/claude config ui remove <name>` | stop a widget and keep it off after login. It comes back only when the agent sends a new version |
+| `/claude config ui run <name>` | start a widget again (after an error or a remove) |
 
 Widgets live in `ClaudeWoWWidgetDB` and start again at login. `Widgets.lua` is a new addon file, so the client needs one full restart after the update (a `/reload` does not discover new files). To delete a widget on the bridge too, ask the agent ("remove the DPS meter").

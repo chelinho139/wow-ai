@@ -33,7 +33,7 @@ const plugin = {
       core.fail(job, `Folder does not exist: ${cwd}\n` +
         `Paths are relative to ${core.defaultCwd}.` +
         (sibs.length ? `\nFolders there: ${sibs.join(', ')}` : '') +
-        `\nUse /claude-wow cd <folder> to pick one, or /claude-wow cd alone for the default.`);
+        `\nUse /claude cd <folder> to pick one, or /claude cd alone for the default.`);
       return;
     }
     core.runAgent(job, {

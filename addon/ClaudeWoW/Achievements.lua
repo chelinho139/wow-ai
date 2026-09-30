@@ -205,7 +205,7 @@ function T.List()
 	local store = Store()
 	if not store then return end
 	local earned = store.earned or {}
-	Print(string.format("Achievements: %d of %d earned, %d points. Toasts are %s (/claude-wow achievements on|off|test).",
+	Print(string.format("Achievements: %d of %d earned, %d points. Toasts are %s (/claude config achievements on|off|test).",
 		#earned, math.max(store.total or 0, #earned), store.points or 0, T.ToastsOn() and "on" or "off"))
 	if #earned == 0 then
 		Print("None yet. Finish a task, make the tests pass, commit, push...")
@@ -222,10 +222,10 @@ function T.Command(rest)
 	if rest == "on" or rest == "off" then
 		if s then s.toasts = rest == "on" end
 		if rest == "off" then wipe(queue) end
-		Print("Achievement toasts are " .. rest .. ". /claude-wow achievements lists what you earned.")
+		Print("Achievement toasts are " .. rest .. ". /claude config achievements lists what you earned.")
 	elseif rest == "test" then
 		if not T.ToastsOn() then
-			Print("Achievement toasts are off. /claude-wow achievements on first.")
+			Print("Achievement toasts are off. /claude config achievements on first.")
 			return
 		end
 		T.Announce(SAMPLE)

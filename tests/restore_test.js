@@ -71,3 +71,18 @@ test('slot file without a restore has no restore field and tolerates empty recor
   assert.equal(d.restore, undefined);
   assert.deepEqual(d.replies, {});
 });
+
+test('slot file carries the session list for /claude -r: running sessions flagged live, a chat id when the bridge made it', () => {
+  const sessions = [
+    { id: '6624f327-7126-423e-a653-d7cf7a4e492b', name: 'wow-ai "main"', cwd: '/Users/me/wow-ai', agent: 'claude', at: 1790000000, live: true },
+    { id: 'thread-9', name: 'Quests', cwd: '', agent: 'codex', plugin: 'ask', chat: 'c2', at: 1789990000.7 },
+  ];
+  const t = readSlot(P.luaTable('ClaudeWoW_SlotData', [], { sessions }), 'ClaudeWoW_SlotData');
+  assert.deepEqual(t.sessions, [
+    { id: '6624f327-7126-423e-a653-d7cf7a4e492b', name: 'wow-ai "main"', cwd: '/Users/me/wow-ai', agent: 'claude', at: 1790000000, live: true },
+    { id: 'thread-9', name: 'Quests', cwd: '', agent: 'codex', at: 1789990000, plugin: 'ask', chat: 'c2' },
+  ]);
+  const empty = readSlot(P.luaTable('ClaudeWoW_SlotData', [], { sessions: [] }), 'ClaudeWoW_SlotData');
+  assert.deepEqual(empty.sessions, {});
+  assert.equal(readSlot(P.luaTable('ClaudeWoW_SlotData', [], {}), 'ClaudeWoW_SlotData').sessions, undefined, 'no list, no key');
+});

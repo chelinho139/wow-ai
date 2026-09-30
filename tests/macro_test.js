@@ -191,7 +191,7 @@ test('replacing a different macro asks first, and undo brings the old one back',
   assert.equal(vm.evaluate('select(3, GetMacroInfo(1))'), '/cast New');
   assert.equal(vm.evaluate('select(2, GetMacroInfo(1))'), '99', 'the player\'s icon is kept when the agent set none');
   assert.equal(vm.evaluate('STUB.picked'), '1');
-  vm.run('SlashCmdList.CLAUDEWOW("macro undo")');
+  vm.run('SlashCmdList.CLAUDE("config macro undo")');
   assert.equal(vm.evaluate('select(3, GetMacroInfo(1))'), '/cast Old');
 });
 
@@ -200,15 +200,17 @@ test('undo removes a macro the button created', () => {
   deliver(vm, '{ { name = "New", body = "/sit", char = false } }');
   click(vm);
   assert.equal(vm.evaluate('(GetNumMacros())'), '1');
-  vm.run('SlashCmdList.CLAUDEWOW("macro undo")');
+  vm.run('SlashCmdList.CLAUDE("config macro undo")');
   assert.equal(vm.evaluate('(GetNumMacros())'), '0');
 });
 
 test('"/claude macro ..." with anything but undo is a message for the agent', () => {
   const vm = newVM();
-  vm.run('SENT = nil; ClaudeWoW.Send = function(m) SENT = m end; SlashCmdList.CLAUDEWOW("macro para mi guerrero con carga")');
+  vm.run('SENT = nil; ClaudeWoW.Send = function(m) SENT = m end; SlashCmdList.CLAUDE("macro para mi guerrero con carga")');
   assert.equal(vm.evaluate('SENT'), 'macro para mi guerrero con carga');
-  vm.run('SENT = nil; SlashCmdList.CLAUDEWOW("macro undo")');
+  vm.run('SENT = nil; SlashCmdList.CLAUDE("config macro para mi guerrero con carga")');
+  assert.equal(vm.evaluate('SENT'), 'config macro para mi guerrero con carga', 'a config line whose value does not fit is a message too');
+  vm.run('SENT = nil; SlashCmdList.CLAUDE("config macro undo")');
   assert.equal(vm.evaluate('SENT'), null);
 });
 

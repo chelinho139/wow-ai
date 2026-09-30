@@ -39,7 +39,7 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 
 or type `claude-wow.cmd` instead. Don't use `npm install -g .`: that copies the files into npm's global folder, where there is no `config.json`, and the bridge refuses to start.
 
-Like the agent CLIs, `claude-wow` works in the folder you start it from: `cd C:\path\to\realms` then `claude-wow` makes `realms` the default folder for every chat that hasn't chosen its own with `/claude-wow cd`. Only one bridge can run at a time.
+Like the agent CLIs, `claude-wow` works in the folder you start it from: `cd C:\path\to\realms` then `claude-wow` makes `realms` the default folder for every chat that hasn't chosen its own with `/claude cd`. Only one bridge can run at a time.
 
 ## Starting at login
 
@@ -49,7 +49,7 @@ Like the agent CLIs, `claude-wow` works in the folder you start it from: `cd C:\
 
 The project was called wow-ai, and wow-claude before that; the addon was `WoWAI` (`WoWClaude`), the command `wow-ai` and the slash command `/wow-ai` (`/ai`, `/wow-claude`). To move an existing install, run the installer again (or `git pull` and `node setup.js` in your clone). `setup.js` copies your chats and settings from `WoWAI.lua` (or `WoWClaude.lua`) to `ClaudeWoW.lua` in the game's SavedVariables with the globals renamed, removes the old addon and its 200 `WoWAI_S###` slot folders (two addons would both answer `/r`), rewrites the addon paths in `config.json` (and, from a wow-claude config, moves the Claude settings under `agents.claude`), then builds the new slot pool. The installer also copies `config.json`, `state.json` and `transcripts.json` from the old `%LocalAppData%\Programs\wow-ai\bridge` to `~\.claude-wow`, removes the old *WoW AI bridge.vbs* launcher and takes the old `bin` folder off your PATH. Quit and relaunch the game, and enable *Claude WoW* on the AddOns screen. Your agent sessions carry on, since the bridge keeps them per chat.
 
-If you had installed the command with npm: `npm unlink -g wow-ai`, and `npm link` again from the repo folder. A hotkey set with `/wow-ai bind` needs `/claude-wow bind <key>` again. The old slash commands are gone, not aliased: macros that typed `/ai ...` need `/claude ...`.
+If you had installed the command with npm: `npm unlink -g wow-ai`, and `npm link` again from the repo folder. A hotkey set with `/wow-ai bind` needs `/claude config bind <key>` again. The old slash commands are gone, not aliased: macros that typed `/ai ...` need `/claude ...`.
 
 ## Uninstalling
 
@@ -73,4 +73,4 @@ If you had installed the command with npm: `npm unlink -g wow-ai`, and `npm link
 
 **Windows Defender or another antivirus complains about the slot files.** They are 15,000 empty or 124-byte files; nothing runs from them. Exclude `Interface\AddOns` if the scanner slows the bridge's writes down.
 
-**Everything else** is in the README's Troubleshooting section and in `/claude-wow diag` in game.
+**Everything else** is in the README's Troubleshooting section and in `/claude diag` in game.

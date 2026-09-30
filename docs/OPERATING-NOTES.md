@@ -43,7 +43,7 @@ outbox), tells the player once in the game chat, and the bridge, on the first re
 that carries it, switches to the pixel capture, logs `TRANSPORT FALLBACK: ...` with
 the reason and what the fallback needs, writes `transportFallback` to `state.json`
 (the next start goes straight to pixels; the banner says why), and names the reason
-in its slot files, where `/claude-wow diag` shows it (`transport: pixel (bridge: pixel
+in its slot files, where `/claude diag` shows it (`transport: pixel (bridge: pixel
 transport, fallen back to since ... because ...)`). The first report takes the slow road:
 a bridge waiting for screenshots is not watching the screen, so it arrives through the
 reload fallback, about two minutes after the first message. An explicit `capture.mode`
@@ -106,8 +106,8 @@ sum and prices the run at `CLAUDE_RATES` in `bridge/agents.js`), keeps it per ch
 in `state.json` (`sessionUsage`) and ships it on the reply record; the addon's
 footer shows it like Claude Code's status line (`11m 58s · ↓ 106.9k tokens ·
 ≈$2.41 API` — the dollar figure is the API-list-price equivalent, a comparison,
-since a subscription is not billed per token), `/claude-wow context` and `diag`
-report it, and past `/claude-wow context <n>` (100k by default: half of a 200k
+since a subscription is not billed per token), `/claude config context` and `diag`
+report it, and past `/claude config context <n>` (100k by default: half of a 200k
 window, about eight messages in) the chat says so once, with a **New chat**
 button. Codex, Grok, agy and Hermes report nothing the bridge can trust, so those
 chats show turns and elapsed time only.
