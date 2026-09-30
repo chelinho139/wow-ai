@@ -700,6 +700,10 @@ function luaSession(s) {
   if (s.plugin) f.push(`plugin = ${luaStr(s.plugin)}`);
   if (s.chat) f.push(`chat = ${luaStr(s.chat)}`);
   if (s.live) f.push('live = true');
+  if (s.running) f.push('running = true');
+  if (s.title) f.push(`title = ${luaStr(s.title)}`);
+  if (s.branch) f.push(`branch = ${luaStr(s.branch)}`);
+  if (s.restart) f.push(`restart = ${luaStr(s.restart)}`);
   return `\t\t{ ${f.join(', ')} },`;
 }
 
@@ -752,6 +756,8 @@ function luaTable(globalName, records, opts = {}) {
     lines.push(`\t\t\tagent = ${luaStr(r.agent || '')},`);
     if (r.plugin) lines.push(`\t\t\tplugin = ${luaStr(r.plugin)},`);
     if (r.summary) lines.push(`\t\t\tsummary = ${luaStr(r.summary)},`);
+    if (r.late) lines.push('\t\t\tlate = true,');
+    if (r.lateOk) lines.push('\t\t\tlateOk = true,');
     // Context growth (noteUsage): only on a final record, and only what is known.
     if (Number(r.ctx) > 0) lines.push(`\t\t\tctx = ${Math.round(Number(r.ctx))},`);
     if (Number(r.turns) > 0) lines.push(`\t\t\tturns = ${Math.round(Number(r.turns))},`);

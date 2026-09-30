@@ -23,6 +23,7 @@ function createChannel(opts) {
   const name = opts.name || 'claude';
   const cwd = opts.cwd || '';
   const parentPid = opts.ppid || process.ppid;
+  const claudeSession = opts.sessionId !== undefined ? String(opts.sessionId || '') : String(process.env.CLAUDE_CODE_SESSION_ID || '');
   const retryMs = opts.retryMs || 1000;
   const connectTo = opts.connect || (addr => net.connect(addr));
   const platform = opts.platform || process.platform;
@@ -113,7 +114,7 @@ function createChannel(opts) {
     verified = false;
     myNonce = LP.nonce();
     s.on('connect', () => {
-      s.write(LP.encode({ type: 'hello', name, cwd, pid: process.pid, ppid: parentPid, nonce: myNonce, proof: LP.proof(token, 'client', myNonce) }));
+      s.write(LP.encode({ type: 'hello', name, cwd, pid: process.pid, ppid: parentPid, session: claudeSession, nonce: myNonce, proof: LP.proof(token, 'client', myNonce) }));
     });
     s.on('data', LP.lineReader(onBridge, () => s.destroy()));
     s.on('error', () => {});

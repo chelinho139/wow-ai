@@ -22,6 +22,24 @@ claude --resume <session-id> --dangerously-load-development-channels server:clau
 
 `claude --resume --dangerously-load-development-channels server:claude-wow` with no id opens a picker of recent sessions in that folder.
 
+### Restarting a session that is not listening
+
+Every Claude Code session opened in this repository starts the channel server, because `.mcp.json` registers it. That server connects to the bridge whether or not the session was started with the channel flag, but only a session started with the flag receives the messages. The bridge tells the two apart (see [How listening is detected](#how-listening-is-detected)) and never offers a session without the flag as live.
+
+To make such a session live, quit it in its terminal and start it again with its own session id. The exact command, as the bridge and `/claude -r` print it:
+
+```sh
+cd <session folder> && claude --resume <session-id> --dangerously-load-development-channels server:claude-wow
+```
+
+For example:
+
+```sh
+cd /Users/me/wow-ai && claude --resume 6624f327-7126-423e-a653-d7cf7a4e492b --dangerously-load-development-channels server:claude-wow
+```
+
+When the bridge uses a home folder other than `~/.claude-wow`, the command also carries `CLAUDE_WOW_HOME=<home>` before `claude`. `--resume` keeps the conversation; only the flag is new.
+
 Claude Code shows two prompts the first time:
 
 1. "WARNING: Loading development channels": choose **I am using this for local development**. The flag is needed because a custom channel is not on Anthropic's channel allowlist during the preview.
@@ -46,11 +64,30 @@ and start Claude Code there with the same flag. The name must be `claude-wow`.
 ## In game
 
 ```
-/claude -r                     the running and recent sessions; running ones are marked [running]
-/claude -r wow-ai [text]       attach a chat to the running session named wow-ai (or give its id, a prefix of it, or its number in the list)
+/claude -r                     the sessions, as a short list of clickable rows
+/claude -r more                the whole list
+/claude -r <n> [text]          attach a chat to row n (or give a session id, a prefix of it, its title or its folder name)
 ```
 
-`/claude -r` picks the kind of attachment for you. A session that is running with the channel gets the chat live: the text goes into that terminal, as below. Any other session is resumed headless with `claude -p --resume <id>` in its own folder, like any other chat. You never name the plugin; `/claude config plugin live` is still there for a chat you want pinned to whichever session connected last.
+Each row shows a number, the session's title (its Claude Code title, else its first prompt), the folder and git branch, its age, and a state:
+
+| State | Meaning | A click |
+|---|---|---|
+| `live` | running and started with the channel | attaches the chat live: the text goes into that terminal |
+| `running, not listening` | running, but started without the channel flag | shows the exact restart command and a `[resume headless]` link |
+| `resume` | not running (or a chat of your own) | resumes it headless with `claude -p --resume <id>` in its folder |
+
+Live sessions come first, the same session never shows twice, and the list stops at 8 rows with a `[more]` link. The row for the current chat says `(this chat)`. Every row is a link in the whisper tab and a button in the workspace window, so you never copy an id. `/claude -r <n>` still works. You never name the plugin; `/claude config plugin live` is still there for a chat you want pinned to whichever listening session connected last.
+
+### How listening is detected
+
+The channel server sends the bridge its parent pid, which is the Claude Code process that started it, and the session id from `CLAUDE_CODE_SESSION_ID` (the bridge prefers `sessions/<pid>.json` in the Claude Code folder, which follows a `/resume` inside the session). It does not use `CLAUDE_PID`: a Claude Code started from inside another session inherits the outer session's value. The bridge reads that process's command line once, when the server connects (`ps -ww -o args= -p <pid>` on macOS and Linux, `Win32_Process.CommandLine` through PowerShell on Windows). The session is `listening` only when the command line has `--dangerously-load-development-channels` or `--channels` with `server:claude-wow` (or `plugin:claude-wow@...`) among its values. Another server name, no flag, or a command line that cannot be read counts as not listening. The bridge log says which: `session "wow-ai" connected from /Users/me/wow-ai, pid 3460, not listening (Claude Code pid 3421 was started without --dangerously-load-development-channels server:claude-wow)`.
+
+The MCP `initialize` request carries no channel signal. Claude Code 2.1.285 sends the same `initialize` (protocol `2025-11-25`, capabilities `roots` and `elicitation`, the same `clientInfo`) with and without the flag, and the server's environment is the same too, so the command line is the only signal.
+
+### When the session does not pick a message up
+
+After a message goes to a live session, the bridge watches the session's transcript for it (`chat_id="..." message_id="..."`). A `wow_reply` or a relayed permission prompt counts too. When none of these arrives within 45 s (`plugins.live.pickupMs`), the chat gets one line and stops waiting: `The session "wow-ai" did not pick it up — it may be busy or not listening. A late reply still lands here.` If the session answers later, the reply still arrives in that chat: the addon checks for it for 5 minutes, and after that it comes with the next slot the addon reads.
 
 The bridge matches a running session by the Claude Code session id (the channel server tells it the pid of the Claude Code process that started it, and Claude Code's `sessions/<pid>.json` names the session), by the session's name in Claude Code, or by the name the channel server gives it (`CLAUDE_WOW_LIVE_NAME`, else the folder's name). If that session is gone when a message is sent, the chat says so; `/claude -r <id>` then resumes it headless.
 
@@ -105,6 +142,7 @@ session -> wow_reply tool -> channel.js -> socket -> bridge -> slot files -> add
 | `plugins.live.waitMs` | `3000` | How long a message waits for a session to connect before the chat is told there is none. |
 | `plugins.live.timeoutMs` | `timeoutMs` | How long a message waits for `wow_reply`. |
 | `plugins.live.permissionTimeoutMs` | `120000` | How long a relayed permission roll waits before it is denied. |
+| `plugins.live.pickupMs` | `45000` | How long a message may show no sign of pickup before the chat is told. `0` turns the watchdog off. |
 
 ## Testing it
 

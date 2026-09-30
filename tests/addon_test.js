@@ -2105,9 +2105,9 @@ test('/claude -r: bare lists running and recent sessions; a number, a name or an
   vm.run('SlashCmdList.CLAUDE("-r")');
   assert.equal(vm.num('#ClaudeWoWDB.chats'), 1, 'the list starts nothing');
   const list = vm.evaluate('ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].text');
-  assert.match(list, /\n1\. \[running\]  wow-ai  \/Users\/me\/wow-ai  6624f327  now/);
-  assert.match(list, /\n2\. Claude version check  \/Users\/me\/proj  f02436b8  2h ago/);
-  assert.match(list, /\n5\. Chat 1 .*\(this chat\)/);
+  assert.match(list, /\n1\. wow-ai · wow-ai · now · live\n/);
+  assert.match(list, /\n3\. Claude version check · proj · 2h ago · resume\n/);
+  assert.match(list, /\n2\. Chat 1 · now · resume \(this chat\)\n/, "chats and sessions by age");
   const prints = vm.evaluate('table.concat(STUB.prints, "\\n")');
   assert.ok(prints.includes('|Haddon:claudewow:resume:2|h'), 'each line in the game chat is a link that picks it');
 
@@ -2146,7 +2146,7 @@ test('/claude -r: bare lists running and recent sessions; a number, a name or an
   vm.run('SlashCmdList.CLAUDE("-r abcd")');
   assert.equal(vm.num('#ClaudeWoWDB.chats'), 3, 'an ambiguous prefix attaches nothing');
   assert.match(lastText(), /^"abcd" matches 2 sessions/);
-  assert.match(lastText(), /\n2\. Second abcd  \/b  abcd2222/);
+  assert.match(lastText(), /\n2\. Second abcd · b · 1d ago · resume/);
   vm.run('SlashCmdList.CLAUDE("-r 2")');
   assert.equal(vm.num('#ClaudeWoWDB.chats'), 4, 'a number picks from the list just shown');
   assert.equal(field('resumeId'), 'abcd2222-0000-4000-8000-000000000002');
@@ -2174,6 +2174,127 @@ test('/claude -r: bare lists running and recent sessions; a number, a name or an
   assert.equal(vm.num('#ClaudeWoWDB.chats'), 5);
 });
 
+const PICK_LIVE = '6624f327-7126-423e-a653-d7cf7a4e492b';
+const PICK_DEAF = 'f02436b8-8a5f-4c05-823e-bef25f88ff7b';
+const PICK_RESTART = `cd /Users/ryan/wow-ai && claude --resume ${PICK_DEAF} --dangerously-load-development-channels server:claude-wow`;
+
+function pickerVM() {
+  const vm = whisperVM();
+  const headless = Array.from({ length: 12 }, (_, i) => `{ id = "0000000${i.toString(16)}-0000-4000-8000-000000000000", name = "Old task ${i + 1}", cwd = "/srv/p${i}", agent = "claude", at = time() - ${(i + 2) * 86400} },`).join('\n');
+  vm.run(`ClaudeWoW.ApplyLive({ sessions = { "wow-ai (/Users/ryan/wow-ai)" }, start = "cd /repo && claude --dangerously-load-development-channels server:claude-wow" })`);
+  vm.run(`ClaudeWoW.ApplySessions({
+    { id = "${PICK_DEAF}", name = "wow-ai", title = "Refactor the bridge", cwd = "/Users/ryan/wow-ai", branch = "main", agent = "claude", at = time() - 2280, running = true, restart = "${PICK_RESTART}" },
+    { id = "${PICK_LIVE}", name = "wow-ai", title = "Fix the live picker", cwd = "/Users/ryan/wow-ai", branch = "fix/live-session-picker", agent = "claude", at = time() - 60, live = true, running = true },
+    { id = "${PICK_DEAF}", name = "wow-ai", title = "Refactor the bridge", cwd = "/Users/ryan/wow-ai", branch = "main", agent = "claude", at = time() - 2280, running = true, restart = "${PICK_RESTART}" },
+    ${headless}
+  }, time())`);
+  return vm;
+}
+
+const activeField = (vm, f) => vm.evaluate(`(function() for _, c in ipairs(ClaudeWoWDB.chats) do if c.id == ClaudeWoWDB.activeChat then return c.${f} end end end)()`);
+const tabOf = (vm, chatId) => vm.evaluate(`(function() for _, name in ipairs(CHAT_FRAMES) do if _G[name].claudewowChatId == "${chatId}" then return name end end end)()`);
+const chatTabText = (vm, chatId) => vm.evaluate(`(function() local t = {} for _, m in ipairs(${tabOf(vm, chatId)}.messages or {}) do t[#t + 1] = m.text end return table.concat(t, "\\n") end)()`);
+
+test('/claude -r picker: short clickable rows with title, folder and branch, age and state; live first, duplicates collapsed, 8 rows and [more], this chat marked', () => {
+  const vm = pickerVM();
+  const firstId = vm.evaluate('ClaudeWoWDB.chats[1].id');
+  vm.run('SlashCmdList.CLAUDE("-r")');
+  const text = vm.evaluate('ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].text');
+  const lines = text.split('\n');
+  assert.equal(lines[0], 'Sessions: click one to attach this chat, or /claude -r <n>.');
+  assert.equal(lines[1], '1. Fix the live picker · wow-ai (fix/live-session-picker) · 1m ago · live');
+  assert.equal(lines[2], '2. Refactor the bridge · wow-ai (main) · 38m ago · running, not listening');
+  assert.equal(lines[3], '3. Chat 1 · now · resume (this chat)');
+  assert.equal(lines[4], '4. Old task 1 · p0 · 2d ago · resume');
+  assert.equal(lines.filter(l => /^\d+\. /.test(l)).length, 8, 'eight rows at most');
+  assert.equal(lines[9], '[more] 7 older sessions: /claude -r more');
+  assert.equal(text.split('Refactor the bridge').length, 2, 'the duplicate is one row');
+  assert.doesNotMatch(text, /f02436b8|6624f327/, 'no ids to copy');
+
+  const tab = chatTabText(vm, firstId);
+  for (let i = 1; i <= 8; i++) assert.ok(tab.includes(`|Haddon:claudewow:resume:${i}|h`), `row ${i} is a link`);
+  assert.ok(tab.includes('|Haddon:claudewow:sessions:all|h'), '[more] is a link');
+  assert.ok(tab.includes('|cff55ff55live|r'), 'live badge in green');
+  assert.ok(tab.includes('running, not listening'), tab);
+  assert.ok(!tab.includes('resume:9|h'));
+
+  const n = vm.num('#ClaudeWoWDB.chats[1].history');
+  assert.equal(vm.num('#ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].picker'), 9, 'the workspace gets 8 rows and [more]');
+  assert.equal(vm.evaluate(`ClaudeWoW.UI.bubbles[${n}].body.text`), 'Sessions: click one to attach this chat, or /claude -r <n>.', 'the bubble shows the header; the rows are buttons');
+  assert.match(vm.evaluate(`ClaudeWoW.UI.bubbles[${n}].rowBtns[1].label.text`), /^\|cff7ec8ff\[1\]\|r Fix the live picker .*\|cff55ff55live\|r$/);
+  assert.equal(vm.evaluate(`ClaudeWoW.UI.bubbles[${n}].rowBtns[1].shown`), 'true');
+
+  vm.run(`local b = ClaudeWoW.UI.bubbles[${n}].rowBtns[9]; b.scripts.OnClick(b)`);
+  const all = vm.evaluate('ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].text');
+  assert.equal(all.split('\n').filter(l => /^\d+\. /.test(l)).length, 15, '[more] lists them all');
+  assert.doesNotMatch(all, /\[more\]/);
+  vm.run('SlashCmdList.CLAUDE("-r more")');
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].text').split('\n').filter(l => /^\d+\. /.test(l)).length, 15);
+
+  vm.run('SlashCmdList.CLAUDE("-r")');
+  const m = vm.num('#ClaudeWoWDB.chats[1].history');
+  vm.run(`local b = ClaudeWoW.UI.bubbles[${m}].rowBtns[1]; b.scripts.OnClick(b)`);
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 2, 'a click on a row attaches a chat');
+  assert.equal(activeField(vm, 'liveTarget'), PICK_LIVE);
+  vm.run('SlashCmdList.CLAUDE("-r")');
+  const again = vm.evaluate('(function() for _, c in ipairs(ClaudeWoWDB.chats) do if c.id == ClaudeWoWDB.activeChat then return c.history[#c.history].text end end end)()');
+  assert.match(again, /\n1\. Fix the live picker · wow-ai \(fix\/live-session-picker\) · 1m ago · live \(this chat\)\n/);
+  const liveChat = activeField(vm, 'id');
+  vm.run(`STUB.ClickLink("${'|Haddon:claudewow:resume:3|h'}")`);
+  assert.equal(activeField(vm, 'id'), firstId, 'a chat link in the tab switches to that chat');
+  vm.run('SlashCmdList.CLAUDE("-r 1")');
+  assert.equal(activeField(vm, 'id'), liveChat, '/claude -r <n> still works');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 2);
+});
+
+test('/claude -r on a session running without the channel: no live attach, the exact restart command, and a one-click headless resume', () => {
+  const vm = pickerVM();
+  const firstId = vm.evaluate('ClaudeWoWDB.chats[1].id');
+  vm.run('SlashCmdList.CLAUDE("-r")');
+  vm.run('SlashCmdList.CLAUDE("-r 2 hello there")');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 1, 'nothing is attached to a session that cannot hear the game');
+  assert.equal(stripRecords(vm).find(r => r.text === 'hello there'), undefined, 'nothing is sent');
+  const notice = vm.evaluate('ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].text');
+  assert.equal(notice, [
+    'Refactor the bridge is running in a terminal, but it was not started with the claude-wow channel, so it cannot hear the game.',
+    'Restart it in its terminal with:',
+    PICK_RESTART,
+    'Or resume it headless here: click [resume headless] below.',
+    'Your message was not sent.',
+  ].join('\n'));
+  const tab = chatTabText(vm, firstId);
+  assert.ok(tab.includes(PICK_RESTART), 'the tab shows the command');
+  assert.ok(tab.includes(`|Haddon:claudewow:headless:${PICK_DEAF}|h`), tab);
+  assert.equal(vm.num('#ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].picker'), 1, 'the workspace gets a resume headless button');
+
+  vm.run('SlashCmdList.CLAUDE("-r refactor")');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 1, 'by name as well');
+  vm.run(`STUB.ClickLink("|Haddon:claudewow:headless:${PICK_DEAF}|h")`);
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 2, 'the click resumes it headless in a chat of its own');
+  assert.equal(activeField(vm, 'resumeId'), PICK_DEAF);
+  assert.equal(activeField(vm, 'liveTarget'), null);
+  assert.equal(activeField(vm, 'cwd'), '/Users/ryan/wow-ai');
+});
+
+test('a live reply that arrives after the watchdog failed the message still lands in the chat, once', () => {
+  const vm = pickerVM();
+  vm.run('SlashCmdList.CLAUDE("-r 1 hey!")');
+  const chatId = activeField(vm, 'id');
+  const id = vm.num(`(function() for _, c in ipairs(ClaudeWoWDB.chats) do if c.id == "${chatId}" then return c.pendingId end end end)()`);
+  assert.ok(id >= 1);
+  const failed = `{ chat = "${chatId}", id = ${id}, status = "error", text = "The session \\"wow-ai\\" did not pick it up — it may be busy or not listening. A late reply still lands here.", agent = "claude", plugin = "live", lateOk = true }`;
+  nextSlot(vm, `{ now = time(), cwd = "", replies = { ${failed} } }`);
+  for (let i = 0; i < 8 && activeField(vm, 'pendingId') !== null; i++) vm.run('STUB.now = STUB.now + 10; STUB.Tick()');
+  assert.equal(activeField(vm, 'pendingId'), null);
+  assert.match(activeField(vm, 'history[#c.history].text'), /^Bridge error: The session "wow-ai" did not pick it up/);
+  const late = `{ now = time(), cwd = "", replies = { ${failed}, { chat = "${chatId}", id = ${id}, status = "done", late = true, text = "Sorry, I was busy. Hi!", agent = "claude", plugin = "live" } } }`;
+  nextSlot(vm, late);
+  for (let i = 0; i < 30; i++) vm.run('STUB.now = STUB.now + 5; STUB.Tick()');
+  const texts = JSON.parse(vm.evaluate(`(function() local t = {} for _, c in ipairs(ClaudeWoWDB.chats) do if c.id == "${chatId}" then for _, m in ipairs(c.history) do t[#t + 1] = string.format("%q", m.role .. ":" .. m.text) end end end return "[" .. table.concat(t, ",") .. "]" end)()`).replace(/\\\n/g, '\\n'));
+  assert.equal(texts.filter(t => t === 'assistant:Sorry, I was busy. Hi!').length, 1, texts.join('\n'));
+  assert.ok(chatTabText(vm, chatId).includes('Sorry, I was busy. Hi!'), 'it shows in the whisper tab');
+});
+
 test('/claude -r with no running session names the command that starts one, and Pass on a live chat sends the denial to that session', () => {
   const vm = newVM();
   login(vm);
@@ -2182,7 +2303,7 @@ test('/claude -r with no running session names the command that starts one, and 
   vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
   const last = () => vm.evaluate('ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].text');
   vm.run('SlashCmdList.CLAUDE("-r")');
-  assert.ok(last().endsWith('start Claude Code with: cd /repo && claude --dangerously-load-development-channels server:claude-wow'), last());
+  assert.ok(last().endsWith('Start one with: cd /repo && claude --dangerously-load-development-channels server:claude-wow'), last());
   vm.run('ClaudeWoW.ApplySessions({ { id = "", name = "wow-ai", cwd = "/Users/me/wow-ai", agent = "claude", at = time(), live = true } }, time())');
   vm.run('SlashCmdList.CLAUDE("-r wow-ai")');
   assert.equal(vm.num('#ClaudeWoWDB.chats'), 2);
@@ -2251,7 +2372,7 @@ test('/claude-wow is a hidden alias for one release: the old verbs still work, t
   vm.run('SlashCmdList.CLAUDEWOW("chat 1")');
   assert.equal(vm.evaluate('ClaudeWoWDB.activeChat'), firstId);
   vm.run('SlashCmdList.CLAUDEWOW("live")');
-  assert.ok(last().startsWith('Sessions ('), last());
+  assert.ok(last().startsWith('Sessions:'), last());
   typeIn(vm, 'ChatFrame1EditBox', '/claude-wow continue here');
   assert.equal(vm.num('#ClaudeWoWDB.chats'), 2, 'old text continues the current chat');
   assert.equal(stripRecords(vm).find(r => r.text === 'continue here').chat, firstId);

@@ -34,6 +34,10 @@ function readSlice(file, bytes, fromEnd) {
   }
 }
 
+function readTail(file, bytes = HISTORY_TAIL_BYTES) {
+  return readSlice(file, bytes, true);
+}
+
 function jsonLines(text) {
   const out = [];
   for (const line of String(text || '').split('\n')) {
@@ -60,6 +64,66 @@ function sessionTitle(file) {
     else if (ev.type === 'ai-title' && typeof ev.aiTitle === 'string' && ev.aiTitle.trim()) ai = ev.aiTitle;
   }
   return oneLine(custom || ai);
+}
+
+function promptText(content) {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  const part = content.find(p => p && p.type === 'text' && typeof p.text === 'string');
+  return part ? part.text : '';
+}
+
+function firstPrompt(file) {
+  for (const ev of jsonLines(readSlice(file, CWD_HEAD_BYTES, false))) {
+    if (ev.type !== 'user' || ev.isMeta || !ev.message) continue;
+    const text = promptText(ev.message.content).trim();
+    if (text && !text.startsWith('<') && !text.startsWith('/')) return oneLine(text);
+  }
+  return '';
+}
+
+function sessionLabel(dir, id, cwd) {
+  const file = id ? sessionFileFor(dir, id, cwd) : '';
+  return file ? (sessionTitle(file) || firstPrompt(file)) : '';
+}
+
+const BRANCH_TTL_MS = 30000;
+const BRANCH_DEPTH = 12;
+const branchCache = new Map();
+
+function readGitHead(dir) {
+  const dotGit = path.join(dir, '.git');
+  let st;
+  try { st = fs.statSync(dotGit); } catch { return null; }
+  let gitDir = dotGit;
+  if (st.isFile()) {
+    const m = /^gitdir:\s*(.+)$/m.exec(fs.readFileSync(dotGit, 'utf8'));
+    if (!m) return '';
+    gitDir = path.resolve(dir, m[1].trim());
+  }
+  try { return fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf8').trim(); } catch { return ''; }
+}
+
+function gitBranch(cwd, now = Date.now()) {
+  if (!cwd) return '';
+  const hit = branchCache.get(cwd);
+  if (hit && now - hit.at < BRANCH_TTL_MS) return hit.branch;
+  let branch = '';
+  let dir = path.resolve(String(cwd));
+  for (let i = 0; i < BRANCH_DEPTH; i++) {
+    let head = null;
+    try { head = readGitHead(dir); } catch { head = ''; }
+    if (head !== null) {
+      const ref = /^ref:\s*refs\/heads\/(.+)$/.exec(head);
+      branch = ref ? ref[1] : (/^[0-9a-f]{7,}$/i.test(head) ? head.slice(0, 7) : '');
+      break;
+    }
+    const up = path.dirname(dir);
+    if (up === dir) break;
+    dir = up;
+  }
+  branchCache.set(cwd, { at: now, branch });
+  return branch;
 }
 
 function sessionCwd(file) {
@@ -93,18 +157,18 @@ function recentClaudeSessions(dir, { limit = 10 } = {}) {
     const id = String(ev.sessionId || '');
     if (!SESSION_ID_RE.test(id)) continue;
     const at = Number(ev.timestamp) || 0;
-    const cur = byId.get(id) || { id, cwd: '', at: 0, prompt: '' };
+    const cur = byId.get(id) || { id, cwd: '', at: 0, prompt: '', promptAt: Infinity };
     if (at >= cur.at) {
       cur.at = at;
       if (ev.project) cur.cwd = String(ev.project);
-      const prompt = String(ev.display || '').trim();
-      if (prompt && !prompt.startsWith('/')) cur.prompt = prompt;
     }
+    const prompt = String(ev.display || '').trim();
+    if (prompt && !prompt.startsWith('/') && at < cur.promptAt) { cur.prompt = prompt; cur.promptAt = at; }
     byId.set(id, cur);
   }
   return [...byId.values()].sort((a, b) => b.at - a.at).slice(0, limit).map(s => {
     const file = sessionFileFor(dir, s.id, s.cwd);
-    const name = (file && sessionTitle(file)) || oneLine(s.prompt);
+    const name = (file && sessionTitle(file)) || oneLine(s.prompt) || (file && firstPrompt(file));
     return { id: s.id, name, cwd: s.cwd, agent: 'claude', at: Math.floor(s.at / 1000) };
   });
 }
@@ -166,9 +230,13 @@ function ownSessions(state, transcripts) {
 function mergeSessions({ live = [], own = [], claude = [], limit = 12 } = {}) {
   const seen = new Set();
   const out = [];
-  for (const s of live) {
-    out.push({ ...s, live: true });
-    if (s.id) seen.add(s.id);
+  const running = [...live].sort((a, b) => Number(b.listening !== false) - Number(a.listening !== false));
+  for (const s of running) {
+    const key = s.id || `${s.name || ''}\n${s.cwd || ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const listening = s.listening !== false;
+    out.push({ ...s, live: listening, running: true });
   }
   const rest = [];
   for (const s of [...own, ...claude]) {
@@ -212,6 +280,6 @@ function describe(s) {
 
 module.exports = {
   SESSION_ID_RE, REF_RE, MIN_PREFIX,
-  claudeDir, projectSlug, sessionTitle, sessionCwd, sessionFileFor,
+  claudeDir, projectSlug, sessionTitle, sessionCwd, sessionFileFor, readTail, firstPrompt, sessionLabel, gitBranch,
   recentClaudeSessions, findClaudeSessions, runningClaude, ownSessions, mergeSessions, matchRef, resolveResume, describe, oneLine,
 };

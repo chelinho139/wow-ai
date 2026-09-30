@@ -54,7 +54,7 @@ test('recent Claude Code sessions come from the prompt history, newest first, na
     const list = SS.recentClaudeSessions(dir, { limit: 10 });
     assert.deepEqual(list.map(s => s.id), [B, C1, A]);
     assert.deepEqual(list[0], { id: B, name: 'Fix the build', cwd: '/Users/me/proj', agent: 'claude', at: 3 });
-    assert.equal(list[1].name, 'first', 'no title: the last prompt');
+    assert.equal(list[1].name, 'first', 'no title: the first prompt');
     assert.equal(list[2].name, 'Claude version check');
     assert.deepEqual(SS.recentClaudeSessions(dir, { limit: 1 }).map(s => s.id), [B]);
     assert.deepEqual(SS.recentClaudeSessions(path.join(dir, 'missing')), []);
@@ -108,4 +108,65 @@ test('a reference resolves by exact id, exact name, id prefix, then name prefix;
   const found = SS.resolveResume('f024', { own: list, find: ref => { asked = ref; return [{ id: B, name: 'Fix the build', cwd: '/Users/me/proj', agent: 'claude' }]; } });
   assert.equal(asked, 'f024', 'the Claude Code store is searched only when the bridge\'s own sessions have no match');
   assert.equal(found.session.cwd, '/Users/me/proj');
+});
+
+test('a session without a title is named by its first prompt, from the history or the transcript, never a command or a channel event', () => {
+  const dir = fakeClaudeDir();
+  try {
+    const hist = path.join(dir, 'history.jsonl');
+    fs.appendFileSync(hist, JSON.stringify({ display: 'a later prompt', timestamp: 2500, project: '/srv/one', sessionId: C1 }) + '\n');
+    assert.equal(SS.recentClaudeSessions(dir).find(s => s.id === C1).name, 'first', 'the first prompt, not the latest');
+    const p = path.join(dir, 'projects', SS.projectSlug('/srv/three'));
+    fs.mkdirSync(p, { recursive: true });
+    const id = 'abcd3333-0000-4000-8000-000000000003';
+    fs.writeFileSync(path.join(p, `${id}.jsonl`), [
+      { type: 'user', isMeta: true, message: { role: 'user', content: 'meta' } },
+      { type: 'user', message: { role: 'user', content: '<command-name>/clear</command-name>' } },
+      { type: 'user', message: { role: 'user', content: '<channel source="claude-wow" chat_id="x">hey</channel>' } },
+      { type: 'user', message: { role: 'user', content: [{ type: 'text', text: '  Fix the   live session picker so the player can click a row and attach it without copying ids  ' }] } },
+    ].map(l => JSON.stringify(l)).join('\n') + '\n');
+    assert.equal(SS.firstPrompt(path.join(p, `${id}.jsonl`)), 'Fix the live session picker so the player can click a row...');
+    assert.equal(SS.sessionLabel(dir, id, '/srv/three'), 'Fix the live session picker so the player can click a row...');
+    assert.equal(SS.sessionLabel(dir, B, '/Users/me/proj'), 'Fix the build', 'a title wins over the first prompt');
+    assert.equal(SS.sessionLabel(dir, 'ffffffff-0000-4000-8000-000000000000', ''), '');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('git branch of a session folder: a checkout, a subfolder, a worktree, a detached head, no repository', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-wow-git-'));
+  try {
+    const repo = path.join(root, 'repo');
+    fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+    fs.mkdirSync(path.join(repo, 'bridge', 'plugins'), { recursive: true });
+    fs.writeFileSync(path.join(repo, '.git', 'HEAD'), 'ref: refs/heads/fix/live-session-picker\n');
+    const wt = path.join(root, 'wt');
+    fs.mkdirSync(path.join(repo, '.git', 'worktrees', 'wt'), { recursive: true });
+    fs.writeFileSync(path.join(repo, '.git', 'worktrees', 'wt', 'HEAD'), 'ref: refs/heads/feature\n');
+    fs.mkdirSync(wt);
+    fs.writeFileSync(path.join(wt, '.git'), `gitdir: ${path.join(repo, '.git', 'worktrees', 'wt')}\n`);
+    const detached = path.join(root, 'detached');
+    fs.mkdirSync(path.join(detached, '.git'), { recursive: true });
+    fs.writeFileSync(path.join(detached, '.git', 'HEAD'), 'b99347b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7\n');
+    const none = path.join(root, 'none');
+    fs.mkdirSync(none);
+    assert.equal(SS.gitBranch(repo), 'fix/live-session-picker');
+    assert.equal(SS.gitBranch(path.join(repo, 'bridge', 'plugins')), 'fix/live-session-picker');
+    assert.equal(SS.gitBranch(wt), 'feature');
+    assert.equal(SS.gitBranch(detached), 'b99347b');
+    assert.equal(SS.gitBranch(none), '');
+    assert.equal(SS.gitBranch(''), '');
+    fs.writeFileSync(path.join(repo, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+    assert.equal(SS.gitBranch(repo), 'fix/live-session-picker', 'cached for a while');
+    assert.equal(SS.gitBranch(repo, Date.now() + 60000), 'main');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('merged list: listening sessions first, then running ones that cannot hear the game, each session once', () => {
+  const live = [
+    { id: B, name: 'wow-ai', cwd: '/w', at: 5, listening: false },
+    { id: A, name: 'wow-ai', cwd: '/w', at: 1, listening: true },
+    { id: B, name: 'wow-ai', cwd: '/w', at: 4, listening: false },
+  ];
+  const merged = SS.mergeSessions({ live, own: [], claude: [{ id: A, name: 'dup', at: 9 }, { id: C1, name: 'old', at: 3 }] });
+  assert.deepEqual(merged.map(s => [s.id, s.live, !!s.running]), [[A, true, true], [B, false, true], [C1, undefined, false]]);
 });
