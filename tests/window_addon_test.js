@@ -433,7 +433,20 @@ test('the footer is a short state on the left and context and spend on the right
   assert.ok(stats.includes('UI-GoldIcon'), stats);
   assert.ok(stats.includes('$2.41'), 'this chat\'s spend: ' + stats);
   assert.ok(stats.includes('all chats $14.80'), 'and the total across chats: ' + stats);
-  assert.ok(stats.includes('186.7k'), 'and the context size: ' + stats);
+  assert.equal(vm.evaluate('ClaudeWoWContextBar.shown'), 'true', 'the context is a bar');
+  assert.ok(vm.evaluate('ClaudeWoWContextBar.text:GetText()').startsWith('186.7k / 200'), vm.evaluate('ClaudeWoWContextBar.text:GetText()'));
+  const color = () => vm.evaluate('(function() return string.format("%.2f,%.2f", ClaudeWoWContextBar.color[1], ClaudeWoWContextBar.color[2]) end)()');
+  assert.equal(color(), '0.85,0.10', '93% full is red');
+  vm.run('ClaudeWoWDB.chats[1].ctx = 80000; ClaudeWoW.UpdateStatus()');
+  assert.equal(color(), '0.10,0.75', '40% is green');
+  vm.run('ClaudeWoWDB.chats[1].ctx = 130000; ClaudeWoW.UpdateStatus()');
+  assert.equal(color(), '1.00,0.82', '65% is yellow');
+  vm.run('ClaudeWoWDB.chats[1].ctx = 170000; ClaudeWoW.UpdateStatus()');
+  assert.equal(color(), '1.00,0.50', '85% is orange');
+  vm.run('ClaudeWoWDB.chats[1].window = 1000000; ClaudeWoW.UpdateStatus()');
+  assert.equal(color(), '0.10,0.75', 'measured against the model window when the agent reports one');
+  vm.run('ClaudeWoWDB.chats[1].ctx = nil; ClaudeWoW.UpdateStatus()');
+  assert.equal(vm.evaluate('ClaudeWoWContextBar.shown'), 'false', 'no bar without a context size');
 
   vm.run('ClaudeWoWDB.chats[1].pendingId = 159; ClaudeWoW.UpdateStatus()');
   const status = vm.evaluate('ClaudeWoW.UI.status:GetText()');

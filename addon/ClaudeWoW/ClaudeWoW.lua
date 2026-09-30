@@ -3423,6 +3423,11 @@ function ClaudeWoW.UpdateStatus()
 		else
 			ui.stats:SetPoint("BOTTOMRIGHT", ui.frame, "BOTTOMRIGHT", -26, 9)
 		end
+		Q.UpdateContextBar(c)
+		if ui.ctxBar then
+			ui.ctxBar:ClearAllPoints()
+			ui.ctxBar:SetPoint("RIGHT", ui.stats, "LEFT", -14, 0)
+		end
 	end
 	ClaudeWoW.UpdateMini()
 end
@@ -3970,6 +3975,71 @@ Q.TITLE_REPLY = { 0.25, 0.75, 0.25 }
 Q.COUNT_W = 92
 Q.GOLD_ICON = "|TInterface\\MoneyFrame\\UI-GoldIcon:12:12:0:-1|t"
 Q.STATUS_HIT_W = 260
+Q.CTX_BAR_W, Q.CTX_BAR_H = 120, 13
+Q.CTX_DEFAULT_WINDOW = 200000
+Q.CTX_LEVELS = {
+	{ upTo = 0.50, color = { 0.10, 0.75, 0.10 } },
+	{ upTo = 0.75, color = { 1.00, 0.82, 0.00 } },
+	{ upTo = 0.90, color = { 1.00, 0.50, 0.00 } },
+	{ upTo = math.huge, color = { 0.85, 0.10, 0.10 } },
+}
+
+function Q.ContextWindow(c)
+	return (c and c.window) or Q.CTX_DEFAULT_WINDOW
+end
+
+function Q.ContextColor(fraction)
+	for _, level in ipairs(Q.CTX_LEVELS) do
+		if fraction <= level.upTo then return level.color end
+	end
+end
+
+function Q.ContextBar(f)
+	local bar = CreateFrame("StatusBar", "ClaudeWoWContextBar", f)
+	bar:SetSize(Q.CTX_BAR_W, Q.CTX_BAR_H)
+	bar:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
+	bar:SetMinMaxValues(0, 1)
+	local bg = bar:CreateTexture(nil, "BACKGROUND")
+	bg:SetAllPoints()
+	bg:SetColorTexture(0, 0, 0, 0.6)
+	local border = CreateFrame("Frame", nil, bar, "BackdropTemplate")
+	border:SetPoint("TOPLEFT", bar, "TOPLEFT", -2, 2)
+	border:SetPoint("BOTTOMRIGHT", bar, "BOTTOMRIGHT", 2, -2)
+	if border.SetBackdrop then
+		border:SetBackdrop({ edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border", edgeSize = 8 })
+		border:SetBackdropBorderColor(0.6, 0.6, 0.6, 1)
+	end
+	bar.text = bar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	bar.text:SetPoint("CENTER", bar, "CENTER", 0, 0)
+	bar:EnableMouse(true)
+	bar:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_TOP")
+		GameTooltip:SetText("Context")
+		local c = ActiveChat()
+		GameTooltip:AddLine(ContextReport(c), 1, 1, 1, true)
+		GameTooltip:Show()
+	end)
+	bar:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	bar:Hide()
+	return bar
+end
+
+function Q.UpdateContextBar(c)
+	local bar = ui.ctxBar
+	if not bar then return end
+	if not (c and c.ctx) then
+		bar:Hide()
+		return
+	end
+	local window = Q.ContextWindow(c)
+	local fraction = c.ctx / window
+	local color = Q.ContextColor(fraction)
+	bar:SetValue(math.min(fraction, 1))
+	bar:SetStatusBarColor(color[1], color[2], color[3])
+	bar.fraction = fraction
+	bar.text:SetText(FmtTokens(c.ctx) .. " / " .. FmtTokens(window))
+	bar:Show()
+end
 
 function Q.ShortStatus(c, full)
 	if c and c.pendingId then
@@ -3994,7 +4064,6 @@ end
 
 function Q.FooterStats(c)
 	local parts = {}
-	if c and c.ctx then table.insert(parts, "|cffffd100" .. SEG_DOWN .. "|r " .. FmtTokens(c.ctx)) end
 	local total, chats = Q.TotalCost()
 	if c and c.cost then
 		local money = Q.GOLD_ICON .. " " .. string.format("$%.2f", c.cost)
@@ -4018,8 +4087,6 @@ function Q.StatusTooltip()
 		if chats > 0 then GameTooltip:AddDoubleLine("All chats", string.format("$%.2f", total), 1, 0.82, 0, 1, 1, 1) end
 		GameTooltip:AddLine("At API list prices: a comparison, not a bill. A subscription is not charged per token.", 0.6, 0.6, 0.6, true)
 	end
-	local seg = ContextSegment(c, true)
-	if seg ~= "" then GameTooltip:AddLine(seg, 0.8, 0.8, 0.8, true) end
 end
 Q.PARCHMENT_STYLE = {
 	user      = { color = { 0.10, 0.22, 0.45 }, bg = { 0.10, 0.20, 0.40, 0.07 } },
@@ -4596,6 +4663,11 @@ function Q.BuildQuestFrames(f)
 		nav:SetHeight(Q.NAV_H)
 		if pcall(NavBar_Initialize, nav, "NavButtonTemplate", { name = "Claude", OnClick = function() ClaudeWoW.RefreshNav(true) end }, nav.home, nav.overflow) then
 			ui.nav = nav
+			local function Measure(self)
+				if type(NavBar_CheckLength) == "function" then pcall(NavBar_CheckLength, self) end
+			end
+			nav:HookScript("OnSizeChanged", Measure)
+			nav:HookScript("OnShow", Measure)
 		else
 			nav:Hide()
 		end
@@ -4690,6 +4762,7 @@ local function BuildUI()
 		stats:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -26, 9)
 		stats:SetJustifyH("RIGHT")
 		ui.stats = stats
+		ui.ctxBar = Q.ContextBar(f)
 	else
 		dotHolder:SetPoint("TOPLEFT", f, "TOPLEFT", 14, -16)
 		status:SetPoint("TOPLEFT", f, "TOPLEFT", 14, -34)

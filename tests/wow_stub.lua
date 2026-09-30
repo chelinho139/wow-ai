@@ -160,6 +160,7 @@ function Methods.Play(self) self.playing = true end
 function Methods.Stop(self) self.playing = false end
 function Methods.SetColorTexture(self, r, g, b, a) self.color = { r, g, b, a } end
 function Methods.SetTexture(self, path) self.texture = path; return true end
+function Methods.SetStatusBarColor(self, r, g, b) self.color = { r, g, b } end
 function Methods.GetTexture(self) return self.texture end
 function Methods.SetBackdrop(self, t)
 	-- The real client would silently draw nothing; make it a test failure instead.
