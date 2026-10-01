@@ -21,6 +21,10 @@ const PROFESSION_TYPE = 'profession';
 const GEARSET_TYPE = 'gearset';
 const GOAL_TYPES = Object.freeze([PROFESSION_TYPE, GEARSET_TYPE]);
 const GEARSET_ID = 'g_gearset';
+const GEARSET_TITLE_PREFIX = 'Gear set: ';
+const TWO_HAND_TYPE = 17;
+const MAIN_HAND_SLOT = 16;
+const OFF_HAND_SLOT = 17;
 const EQUIP_SLOT_MAX = 19;
 const INVENTORY_TYPE_SLOTS = Object.freeze({
   1: [1], 2: [2], 3: [3], 4: [4], 5: [5], 20: [5], 6: [6], 7: [7], 8: [8], 9: [9], 10: [10],
@@ -249,11 +253,28 @@ function itemProblem(store, slot, itemID) {
   if (!Number.isInteger(itemID) || itemID <= 0) return `slot ${slot}: the item ID must be a whole number above 0.`;
   const row = store.byId('items', itemID);
   if (!row) return `slot ${slot}: {item:${itemID}} is not in the Forever client data for build ${store.build}. Look the ID up with the wowdata tools; never use an ID from memory or from Classic.`;
-  if (row.inventoryType === undefined || row.inventoryType === null) return { row };
+  if (!Number.isInteger(row.inventoryType)) return `slot ${slot}: the synced data does not say where {item:${itemID}} is worn (claude-wow data sync --force).`;
   const fits = INVENTORY_TYPE_SLOTS[row.inventoryType];
   if (!fits) return `slot ${slot}: {item:${itemID}} cannot be equipped (inventory type ${row.inventoryType}).`;
   if (!fits.includes(slot)) return `slot ${slot}: {item:${itemID}} goes in slot ${fits.join(' or ')}, not ${slot}.`;
   return { row };
+}
+
+function gearsetTitle(store, refs) {
+  const expander = GR.createExpander(store);
+  const counts = new Map();
+  for (const ref of refs) {
+    const shown = expander.expand(`{item:${ref.id}}`);
+    if (!shown.ok) return fail(`The gearset was refused and nothing was saved. ${GR.errorsText(shown.errors, store)}`);
+    counts.set(shown.text, (counts.get(shown.text) || 0) + 1);
+  }
+  const parts = [...counts].map(([name, n]) => (n > 1 ? `${n}x ${name}` : name));
+  for (let k = parts.length; k >= 1; k--) {
+    const rest = parts.length - k;
+    const text = `${GEARSET_TITLE_PREFIX}${parts.slice(0, k).join(', ')}${rest ? ` and ${rest} more` : ''}`;
+    if (text.length <= GOAL_TITLE_MAX) return done(text);
+  }
+  return done(`${GEARSET_TITLE_PREFIX}${refs.length} items`);
 }
 
 function checkGearset(args, snap, gameData) {
@@ -265,6 +286,7 @@ function checkGearset(args, snap, gameData) {
   if (stop) return fail(`Gearset items are checked against the synced game data. ${GR.errorsText([{ reason: stop }], store)}`);
   const slots = {};
   const refs = [];
+  const rows = {};
   const problems = [];
   for (const [key, value] of entries) {
     const slot = Number(key);
@@ -273,11 +295,14 @@ function checkGearset(args, snap, gameData) {
     const r = itemProblem(store, slot, itemID);
     if (typeof r === 'string') { problems.push(r); continue; }
     slots[slot] = itemID;
+    rows[slot] = r.row;
     refs.push({ kind: 'item', id: itemID, name: r.row.name, trust: store.rowTrust, build: store.build, slot });
   }
+  if (rows[MAIN_HAND_SLOT] && rows[MAIN_HAND_SLOT].inventoryType === TWO_HAND_TYPE && rows[OFF_HAND_SLOT]) problems.push(`slot ${OFF_HAND_SLOT}: slot ${MAIN_HAND_SLOT} holds a two-hand item, so slot ${OFF_HAND_SLOT} stays empty.`);
   if (problems.length) return fail(`The gearset was refused and nothing was saved. ${problems.join(' ')}`);
-  const n = refs.length;
-  return { ok: true, goal: { id: GEARSET_ID, type: GEARSET_TYPE, target: { slots }, title: `Gear set: ${n} item${n === 1 ? '' : 's'}`, refs }, label: 'the gear set' };
+  const title = gearsetTitle(store, refs);
+  if (!title.ok) return title;
+  return { ok: true, goal: { id: GEARSET_ID, type: GEARSET_TYPE, target: { slots }, title: title.text, refs }, label: 'the gear set' };
 }
 
 function checkProfession(args, snap) {
@@ -396,7 +421,7 @@ function slotPct(pct) {
 }
 
 function slotTitle(goal, names) {
-  const checked = validateOrderText(goal && goal.title, names);
+  const checked = validateOrderText(goal && goal.title, names.concat(storedRefNames(goal || {})));
   return checked.ok && checked.text.length <= GOAL_TITLE_MAX ? checked.text : null;
 }
 
@@ -480,36 +505,52 @@ function createGoals(opts) {
     return snap;
   }
 
-  function voteOptions(raw, snap) {
+  function dataOnce(snap) {
+    let opened = false;
+    let store = null;
+    return () => {
+      if (!opened) { opened = true; store = gameData(snap.text); }
+      return store;
+    };
+  }
+
+  function voteOptions(raw, snap, doc) {
     if (!Array.isArray(raw) || raw.length < V.OPTIONS_MIN || raw.length > V.OPTIONS_MAX) return fail(`A vote needs ${V.OPTIONS_MIN} to ${V.OPTIONS_MAX} options.`);
     const names = knownNames(snap);
+    const data = dataOnce(snap);
     const out = [];
     const seen = new Set();
+    const titles = new Set();
     for (const [i, option] of raw.entries()) {
       const spec = option && typeof option === 'object' && !Array.isArray(option) ? option : {};
       if (spec.drop === true) return fail(`Option ${i + 1}: a vote option sets a goal; it cannot drop one.`);
-      const checked = checkGoalSpec(spec, snap, gameData);
+      const checked = checkGoalSpec(spec, snap, data);
       if (!checked.ok) return fail(`Option ${i + 1}: ${checked.text}`);
       const key = JSON.stringify([checked.goal.id, checked.goal.target]);
       if (seen.has(key)) return fail(`Option ${i + 1} is the same goal as an earlier option.`);
       seen.add(key);
-      const shown = validateOrderText(checked.goal.title, names);
+      if (!doc.goals.some(g => g.id === checked.goal.id) && doc.goals.length >= ACTIVE_GOALS_MAX) return fail(`Option ${i + 1} would be a new goal, and there are already ${ACTIVE_GOALS_MAX} goals. Drop one first.`);
+      const shown = validateOrderText(checked.goal.title, names.concat(storedRefNames(checked.goal)));
       if (!shown.ok || shown.text.length > GOAL_TITLE_MAX) return fail(`Option ${i + 1}: its title "${checked.goal.title}" cannot be shown to viewers.`);
+      if (titles.has(shown.text)) return fail(`Option ${i + 1} has the same title as an earlier option ("${shown.text}"), so viewers could not tell them apart.`);
+      titles.add(shown.text);
       out.push({ title: shown.text, spec });
     }
     return { ok: true, options: out };
   }
 
-  function openVote(args, snap) {
+  function openVote(args, snap, file) {
     if (!votes) return fail('This bridge has no vote collector.');
     const seconds = Number(args.seconds);
     if (!Number.isInteger(seconds) || seconds < V.SECONDS_MIN || seconds > V.SECONDS_MAX) return fail(`seconds must be a whole number from ${V.SECONDS_MIN} to ${V.SECONDS_MAX}.`);
-    const checked = voteOptions(args.options, snap);
+    let doc;
+    try { doc = readStore(file, snap.character.key); } catch (e) { return fail(`A vote needs a readable goal store to adopt into: ${e.message}`); }
+    const checked = voteOptions(args.options, snap, doc);
     if (!checked.ok) return checked;
-    return votes.start({ options: checked.options, seconds });
+    return votes.start({ options: checked.options, seconds, character: snap.character.key });
   }
 
-  function closeVote(doc, args, snap) {
+  function takeVote(args, snap) {
     if (!votes) return { result: fail('This bridge has no vote collector.') };
     const wasOpen = votes.isOpen();
     const rec = wasOpen ? votes.close() : votes.last();
@@ -518,11 +559,16 @@ function createGoals(opts) {
     if (args.adopt !== true) return { result: done(summary) };
     if (rec.adopted) return { result: fail(`${summary} Its winner was already adopted.`) };
     if (!rec.result.winner) return { result: done(`${summary} Nothing was adopted.`) };
-    const checked = checkGoalSpec(rec.options[rec.result.winner - 1].spec, snap, gameData);
-    if (!checked.ok) return { result: fail(`${summary} The winner failed the goal check now and was not adopted: ${checked.text}`) };
+    if (rec.character !== snap.character.key) return { result: fail(`${summary} The vote was opened for ${rec.character || 'no character'}, but the game now reports ${snap.character.key}; nothing was adopted. Log back in to that character to adopt it.`) };
+    return { rec, summary };
+  }
+
+  function adoptVote(doc, taken, snap) {
+    const checked = checkGoalSpec(taken.rec.options[taken.rec.result.winner - 1].spec, snap, dataOnce(snap));
+    if (!checked.ok) return fail(`${taken.summary} The winner failed the goal check now and was not adopted: ${checked.text}`);
     const change = writeGoal(doc, checked.goal, now(), 'vote');
-    if (!change.ok) return { result: fail(`${summary} ${change.text}`) };
-    return { result: done(`${summary} ${change.text}`), write: true, adopted: () => votes.markAdopted() };
+    if (!change.ok) return fail(`${taken.summary} ${change.text}`);
+    return done(`${taken.summary} ${change.text}`);
   }
 
   function slotProblem(text) {
@@ -587,17 +633,17 @@ function createGoals(opts) {
     const snap = currentSnap();
     if (!snap.character) return fail('The game has not reported a character yet. Log in with the addon running, or send any message from the game first.');
     const file = storeFile(root, snap.character.key);
+    if (tool === TOOL.voteOpen) return openVote(args, snap, file);
+    const taken = tool === TOOL.voteClose ? takeVote(args, snap) : null;
+    if (taken && taken.result) return taken.result;
     let doc;
-    try { doc = readStore(file, snap.character.key); } catch (e) { return fail(e.message); }
+    try { doc = readStore(file, snap.character.key); } catch (e) { return fail(taken ? `${taken.summary} ${e.message}` : e.message); }
     if (tool === TOOL.list) return done(JSON.stringify(listView(doc, snap), null, 2));
-    if (tool === TOOL.voteOpen) return openVote(args, snap);
     let change;
     let afterWrite = () => {};
-    if (tool === TOOL.voteClose) {
-      const closed = closeVote(doc, args, snap);
-      if (!closed.write) return closed.result;
-      change = closed.result;
-      afterWrite = closed.adopted;
+    if (taken) {
+      change = adoptVote(doc, taken, snap);
+      afterWrite = () => votes.markAdopted();
     } else {
       change = tool === TOOL.set ? setGoal(doc, args, snap, now, gameData) : issueOrder(doc, args, snap, now, gameData);
     }
@@ -663,7 +709,7 @@ function toolSchemas() {
     },
     {
       name: TOOL.voteOpen,
-      description: `Open a Twitch chat vote between ${V.OPTIONS_MIN} and ${V.OPTIONS_MAX} candidate goals. Each option is a goal_set argument object and gets the same checks; the bridge writes each option's title, never you. Viewers type !1, !2 or !3 in the configured channel (votes.channel); one vote per Twitch name. The stream overlay shows the counts. Nothing changes until goal_vote_close adopts the winner.`,
+      description: `Open a Twitch chat vote between ${V.OPTIONS_MIN} and ${V.OPTIONS_MAX} candidate goals. Each option is a goal_set argument object and gets the same checks; the bridge writes each option's title, never you. Viewers type !1, !2 or !3 in the configured channel (votes.channel); one vote per Twitch name. The stream overlay shows the counts only when the stream service (wow-stream) has the "vote" control action; votes are counted either way. Nothing changes until goal_vote_close adopts the winner.`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -675,7 +721,7 @@ function toolSchemas() {
     },
     {
       name: TOOL.voteClose,
-      description: 'Close the open vote (or read the result of one that timed out) and return the counts. With adopt true, the single winner is checked again like goal_set and saved as a goal; a tie or no votes adopts nothing.',
+      description: 'Close the open vote (or read the result of one that timed out) and return the counts. With adopt true, the single winner is checked again like goal_set and saved as a goal for the character the vote was opened for; a tie, no votes or another logged-in character adopts nothing.',
       inputSchema: { type: 'object', properties: { adopt: { type: 'boolean', description: 'true saves the winning option as a goal' } } },
     },
   ];

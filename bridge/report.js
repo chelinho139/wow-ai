@@ -9,6 +9,19 @@ const E = require('./events');
 const DAY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const CHARACTER_RE = /^[\p{L}\p{N}_-]{1,64}$/u;
 const HIDDEN_TEXT = '(not shown: it fails the text check)';
+const EVENT_FIELDS = Object.freeze({
+  level_up: ['from', 'to'],
+  money: ['delta'],
+  death: [],
+  zone: ['to'],
+  skill: ['id', 'to'],
+  recipe: ['id'],
+  item: ['id', 'from', 'to'],
+  goal_complete: ['id', 'target'],
+  reputation: ['id'],
+  equip: [],
+});
+const NULLABLE_FIELDS = Object.freeze({ skill: ['from'] });
 
 const USAGE = [
   'claude-wow report [--day [YYYY-MM-DD]] [--character Name-Realm]',
@@ -51,6 +64,14 @@ function dayRange(day) {
   return { day, start: start.getTime(), end: new Date(y, mo - 1, d + 1).getTime() };
 }
 
+function usableEvent(e) {
+  if (!e || typeof e !== 'object' || !Number.isSafeInteger(e.ms) || !e.data || typeof e.data !== 'object') return false;
+  const fields = Object.prototype.hasOwnProperty.call(EVENT_FIELDS, e.type) ? EVENT_FIELDS[e.type] : null;
+  if (!fields) return false;
+  if (!fields.every(k => Number.isSafeInteger(e.data[k]))) return false;
+  return (NULLABLE_FIELDS[e.type] || []).every(k => e.data[k] === null || e.data[k] === undefined || Number.isSafeInteger(e.data[k]));
+}
+
 function readEventLines(folder) {
   const out = [];
   for (const name of [TL.EVENTS_ROTATED_FILE, TL.EVENTS_FILE]) {
@@ -60,7 +81,7 @@ function readEventLines(folder) {
       if (!line) continue;
       try {
         const e = JSON.parse(line);
-        if (e && typeof e.type === 'string' && Number.isSafeInteger(e.ms) && e.data && typeof e.data === 'object') out.push(e);
+        if (usableEvent(e)) out.push(e);
       } catch {}
     }
   }
@@ -96,12 +117,8 @@ function shownText(text, names) {
   return checked.ok ? checked.text : HIDDEN_TEXT;
 }
 
-function knownNames(character, doc) {
-  const names = [character.split('-')[0]];
-  for (const g of doc.goals || []) {
-    if (g && g.target && G.PROFESSION_SKILL_IDS[g.target.skillID]) names.push(G.PROFESSION_SKILL_IDS[g.target.skillID]);
-  }
-  return names;
+function knownNames(character) {
+  return [character.split('-')[0], ...Object.values(G.PROFESSION_SKILL_IDS)];
 }
 
 function orderNames(order) {
@@ -153,7 +170,7 @@ function goalLines(doc, snapshot, names) {
   const lines = ['Goals now:'];
   for (const g of doc.goals) {
     const p = G.progressOf(g, snap);
-    lines.push(`  ${shownText(g.title, names)}: ${p.pct === null ? 'no progress reported yet' : `${p.pct}%`}`);
+    lines.push(`  ${shownText(g.title, names.concat(orderNames(g)))}: ${p.pct === null ? 'no progress reported yet' : `${p.pct}%`}`);
   }
   return lines;
 }
@@ -168,7 +185,7 @@ function build({ goalsDir, character, range }) {
   lines.push(...(body.length ? body : ['No game events this day.']));
   if (doc.error) lines.push(`Goals: not read (${doc.error})`);
   else {
-    const names = knownNames(character, doc);
+    const names = knownNames(character);
     lines.push(...orderLines(doc, range, names), ...goalLines(doc, snapshot, names));
   }
   lines.push(`Data: ${events.length} events; snapshot updated ${snapshot.updatedAt ? new Date(snapshot.updatedAt).toISOString() : 'never'}`);

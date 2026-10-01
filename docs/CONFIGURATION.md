@@ -199,7 +199,7 @@ Event importance: 1 money and item ticks, skill, gear and reputation changes; 2 
 
 ### Daily report
 
-`claude-wow report --day 2026-10-01` reads only the character's `events.jsonl` and `events.1.jsonl`, `snapshot.json` and `goals.json`; it needs no model and no network. Game things appear by ID (`Skill 393`, `Item 2318`, `maps 1420`), never by name. Every order text and goal title goes through the order text validator again before it prints, with the character's first name, the professions of the stored goals and the names an order stored in its checked `refs` as the only allowed names; a text that fails prints `(not shown: it fails the text check)`. Only the last 20 orders are kept, so a busy day can show fewer orders than were issued. Goal progress comes from the snapshot's `skills` and `equip` sections.
+`claude-wow report --day 2026-10-01` reads only the character's `events.jsonl` and `events.1.jsonl`, `snapshot.json` and `goals.json`; it needs no model and no network. Game things appear by ID (`Skill 393`, `Item 2318`, `maps 1420`), never by name, and an event whose fields are not whole numbers is skipped. Every order text and goal title goes through the order text validator again before it prints, with the character's first name, the bridge's own profession names and the names an order or goal stored in its checked `refs` as the only allowed names; a text that fails prints `(not shown: it fails the text check)`. Only the last 20 orders are kept, so a busy day can show fewer orders than were issued. Goal progress comes from the snapshot's `skills` and `equip` sections.
 
 Nothing schedules it. Two ways to run it daily, neither installed by the bridge:
 

@@ -38,6 +38,12 @@ function fixture(opts = {}) {
     ev(NOON + 8, 'goal_complete', { id: 2318, count: 30, target: 30 }, 3),
     'not json',
     '{"type":"money"}',
+    ev(NOON + 9, 'zone', { from: 1, to: 'Orgrimmar' }, 2),
+    ev(NOON + 10, 'skill', { id: 'Undercity', from: 1, to: 5 }),
+    ev(NOON + 11, 'skill', { id: 186, from: 'Thunder Bluff', to: 5 }),
+    ev(NOON + 12, 'whisper', { text: 'Silvermoon' }, 3),
+    ev(NOON + 13, 'recipe', { id: 1.5 }, 3),
+    ev(NOON + 14, 'level_up', { from: 20, to: '21 Crossroads' }, 3),
     ev(TOMORROW, 'death', { at: 6, deaths: 2 }, 3),
   ].join('\n') + '\n');
   fs.writeFileSync(path.join(folder, TL.SNAPSHOT_FILE), JSON.stringify({
@@ -140,6 +146,30 @@ test('report: usage errors, no folder and an unreadable goal store', () => {
     assert.doesNotMatch(run(['--day', DAY], f.dir).out, /Goals now|Orders issued/, 'no goals file: no goal lines');
     fs.writeFileSync(path.join(f.dir, KEY, G.GOALS_FILE), '{bad');
     assert.match(run(['--day', DAY], f.dir).out, /Goals: not read \(.*not valid JSON/);
+  } finally { f.cleanup(); }
+});
+
+test('report: a tampered events file never prints free text; events whose used fields are not whole numbers are skipped', () => {
+  const f = fixture();
+  try {
+    const out = run(['--day', DAY], f.dir).out;
+    for (const word of ['Orgrimmar', 'Undercity', 'Thunder', 'Silvermoon', 'Crossroads', '1.5']) assert.doesNotMatch(out, new RegExp(word));
+    assert.match(out, /Data: 10 events/);
+  } finally { f.cleanup(); }
+});
+
+test('report: the bridge-owned profession names are allowed in order texts, and a gear set title shows its stored item names', () => {
+  const f = fixture();
+  try {
+    const file = path.join(f.dir, KEY, G.GOALS_FILE);
+    const doc = JSON.parse(fs.readFileSync(file, 'utf8'));
+    doc.orders.history.unshift({ id: 'o_9', text: 'Raise Mining to 50', issuedAt: NOON - 10, status: 'superseded' });
+    doc.goals[1].title = 'Gear set: 2x Fixture Blade';
+    doc.goals[1].refs = [{ kind: 'item', id: 501, name: 'Fixture Blade', slot: 16 }, { kind: 'item', id: 501, name: 'Fixture Blade', slot: 17 }];
+    fs.writeFileSync(file, JSON.stringify(doc));
+    const out = run(['--day', DAY], f.dir).out;
+    assert.match(out, /  Raise Mining to 50 \(superseded\)/);
+    assert.match(out, /  Gear set: 2x Fixture Blade: 50%/);
   } finally { f.cleanup(); }
 });
 

@@ -989,17 +989,12 @@ const voteBox = VOTES.createVotes({
   log,
 });
 
-function equippedItems(characterKey) {
-  const section = telemetry.snapshot(characterKey).sections.equip;
-  return section ? section.value.slots : null;
-}
-
 const goalStore = GOALS.createBridgeGoals({
   home: HOME,
   context: () => state.context,
   streamOptions: () => core.options('stream'),
   onChange: () => publishNow(true, { refresh: true }),
-  equipped: equippedItems,
+  equipped: TL.equippedReader(telemetry, TELEMETRY_ON),
   votes: voteBox,
   log,
 });
