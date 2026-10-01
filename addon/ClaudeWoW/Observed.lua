@@ -12,6 +12,11 @@ O.WINDOW_SECONDS = 2
 O.AH_REPEAT_SECONDS = 300
 O.AH_LIST = "list"
 O.AH_PAGE_MAX = 50
+O.AH_FIRST_PAGE = 0
+O.AH_SEARCH_SECONDS = 15
+O.AH_UI_ADDON = "Blizzard_AuctionUI"
+O.AH_SEARCH_FUNCTION = "AuctionFrameBrowse_Search"
+O.ITEM_LINK_SUFFIX_FIELD = 7
 O.AH_LIST_COUNT = 3
 O.AH_LIST_BUYOUT = 10
 O.AH_LIST_ITEM_ID = 17
@@ -41,7 +46,7 @@ O.PROBES = {
 }
 O.EVENTS = { "MERCHANT_SHOW", "AUCTION_HOUSE_BROWSE_RESULTS_UPDATED", "COMMODITY_SEARCH_RESULTS_UPDATED", "AUCTION_ITEM_LIST_UPDATE", "LOOT_READY", "LOOT_OPENED", "LOOT_CLOSED" }
 
-local state = { vendor = nil, ah = {}, loot = {}, looted = {}, lootedOrder = {}, windowAt = nil, spell = nil, gather = {} }
+local state = { vendor = nil, ah = {}, loot = {}, looted = {}, lootedOrder = {}, windowAt = nil, spell = nil, gather = {}, ahSearchAt = nil, ahHooked = false }
 
 local function Try(fn, ...)
 	if type(fn) ~= "function" then return nil end
@@ -176,16 +181,46 @@ function O.OnCommodity(itemID)
 	if type(first) == "table" and Quote(itemID, first.unitPrice, first.quantity) then Changed() end
 end
 
+function O.LinkSuffix(link, itemID)
+	link = PlainString(link)
+	local body = link and link:match("|Hitem:([%-%d:]+)|h")
+	if not body then return nil end
+	local fields = {}
+	for field in (body .. ":"):gmatch("([^:]*):") do fields[#fields + 1] = field end
+	if tonumber(fields[1]) ~= itemID then return nil end
+	return tonumber(fields[O.ITEM_LINK_SUFFIX_FIELD]) or 0
+end
+
+function O.OnPlayerSearch()
+	local browse = AuctionFrameBrowse
+	local firstPage = type(browse) == "table" and browse.page == O.AH_FIRST_PAGE
+	state.ahSearchAt = firstPage and GetTime() or nil
+end
+
+function O.HookAuctionSearch()
+	if state.ahHooked or type(hooksecurefunc) ~= "function" or type(_G[O.AH_SEARCH_FUNCTION]) ~= "function" then return end
+	state.ahHooked = true
+	hooksecurefunc(O.AH_SEARCH_FUNCTION, O.OnPlayerSearch)
+end
+
+local function PlayerSearchShown()
+	if not state.ahSearchAt or GetTime() - state.ahSearchAt > O.AH_SEARCH_SECONDS then return false end
+	return type(AuctionFrame) == "table" and type(AuctionFrame.IsShown) == "function" and AuctionFrame:IsShown() and true or false
+end
+
 function O.OnAuctionList()
 	if type(GetNumAuctionItems) ~= "function" or type(GetAuctionItemInfo) ~= "function" then return end
+	if not PlayerSearchShown() then return end
 	local shown = WholeNumber(Try(GetNumAuctionItems, O.AH_LIST)) or 0
+	if shown > O.AH_PAGE_MAX then return end
 	local best, order = {}, {}
-	for i = 1, math.min(shown, O.AH_PAGE_MAX) do
+	for i = 1, shown do
 		local r = Returns(GetAuctionItemInfo, O.AH_LIST, i)
 		local count = r and WholeNumber(r[O.AH_LIST_COUNT + 1])
 		local buyout = r and WholeNumber(r[O.AH_LIST_BUYOUT + 1])
 		local itemID = r and WholeNumber(r[O.AH_LIST_ITEM_ID + 1])
-		if count and count > 0 and buyout and buyout > 0 and itemID and itemID > 0 and buyout % count == 0 then
+		if count and count > 0 and buyout and buyout > 0 and itemID and itemID > 0 and buyout % count == 0
+			and O.LinkSuffix(Try(GetAuctionItemLink, O.AH_LIST, i), itemID) == 0 then
 			local unit = buyout / count
 			local b = best[itemID]
 			if not b then
@@ -346,8 +381,14 @@ end
 
 local frame = CreateFrame("Frame")
 frame:RegisterEvent("PLAYER_LOGIN")
+frame:RegisterEvent("ADDON_LOADED")
 frame:SetScript("OnEvent", function(_, event, ...)
+	if event == "ADDON_LOADED" then
+		if ... == O.AH_UI_ADDON then O.HookAuctionSearch() end
+		return
+	end
 	if event == "PLAYER_LOGIN" then
+		O.HookAuctionSearch()
 		for _, name in ipairs(O.EVENTS) do pcall(frame.RegisterEvent, frame, name) end
 		if not (frame.RegisterUnitEvent and pcall(frame.RegisterUnitEvent, frame, "UNIT_SPELLCAST_SUCCEEDED", "player")) then
 			pcall(frame.RegisterEvent, frame, "UNIT_SPELLCAST_SUCCEEDED")

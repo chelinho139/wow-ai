@@ -2083,6 +2083,10 @@ local PROFESSION_SKILL_IDS = {
 	[333] = true, [393] = true, [129] = true, [185] = true, [356] = true,
 }
 ClaudeWoW.PROFESSION_SKILL_IDS = PROFESSION_SKILL_IDS
+ClaudeWoW.PROFESSION_SKILL_NAMES = {
+	Blacksmithing = 164, Leatherworking = 165, Alchemy = 171, Herbalism = 182, Mining = 186, Tailoring = 197,
+	Engineering = 202, Enchanting = 333, Skinning = 393, ["First Aid"] = 129, Cooking = 185, Fishing = 356,
+}
 
 -- The character's skill lines as { name, isHeader, rank, maxRank, skillID }.
 -- Forever only has C_SkillInfo (one table per line); the classic globals
@@ -2110,7 +2114,7 @@ function ClaudeWoW.SkillLines()
 	for i = 1, (type(n) == "number" and n or 0) do
 		local sname, isHeader, _, rank, _, _, maxRank = Try(GetSkillLineInfo, i)
 		if type(sname) == "string" then
-			out[#out + 1] = { name = sname, isHeader = isHeader and true or false, rank = rank, maxRank = maxRank }
+			out[#out + 1] = { name = sname, isHeader = isHeader and true or false, rank = rank, maxRank = maxRank, skillID = not isHeader and ClaudeWoW.PROFESSION_SKILL_NAMES[sname] or nil }
 		end
 	end
 	return out

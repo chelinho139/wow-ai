@@ -264,10 +264,8 @@ function buildPhraseIndex(store) {
   }
   for (const row of store.rows('items')) {
     const name = typeof row.name === 'string' ? row.name : '';
-    const book = SPELL_ITEM_PREFIX.exec(name);
-    if (book) { add(book[1], SPELL_ITEM_SOURCE); continue; }
-    const rune = RUNE_ITEM_PREFIX.exec(name);
-    if (rune && !ordinaryRemainder(rune[1])) add(rune[1], SPELL_ITEM_SOURCE);
+    const taught = SPELL_ITEM_PREFIX.exec(name) || RUNE_ITEM_PREFIX.exec(name);
+    if (taught && !ordinaryRemainder(taught[1])) add(taught[1], SPELL_ITEM_SOURCE);
   }
   return index;
 }
@@ -283,7 +281,7 @@ function dataPhrases(store) {
   const key = indexKey(store);
   if (phraseIndexes.has(key)) return { index: phraseIndexes.get(key), note: '' };
   const missing = [...Object.keys(PHRASE_SOURCES), 'items'].filter(entity => !store.has(entity));
-  if (missing.length) return { index: null, note: `The synced game data is missing or has a damaged ${missing.join(', ')} table (claude-wow data sync --force).` };
+  if (missing.length) return { index: null, note: `The synced game data is missing or has a damaged ${missing.join(', ')} table (${syncHint(store)} --force).` };
   const index = buildPhraseIndex(store);
   phraseIndexes.clear();
   phraseIndexes.set(key, index);

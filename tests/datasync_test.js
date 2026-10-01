@@ -378,6 +378,10 @@ test('the current pointer is ignored when it is not a build string or has no man
   fs.writeFileSync(path.join(root, 'current'), `${BUILD}\n`);
   assert.equal(D.readCurrent(root), null);
   fs.writeFileSync(path.join(root, BUILD, 'manifest.json'), JSON.stringify({ build: BUILD }));
+  assert.equal(D.readCurrent(root), null, 'a manifest that names no flavor is not read');
+  fs.writeFileSync(path.join(root, BUILD, 'manifest.json'), JSON.stringify({ build: BUILD, flavor: 'classic_era' }));
+  assert.equal(D.readCurrent(root), null, 'nor one that names another flavor');
+  fs.writeFileSync(path.join(root, BUILD, 'manifest.json'), JSON.stringify({ build: BUILD, flavor: 'forever' }));
   assert.equal(D.readCurrent(root).build, BUILD);
 });
 

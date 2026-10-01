@@ -342,35 +342,33 @@ const IDIOM_ROASTS = [
   'Not your lucky day, Hogger won.', 'Mind the gap next time.', 'You picked the wrong fight.', 'That was a long day at work.',
 ];
 
-const GAME_NAMES_IN_CORPUS = Object.freeze({
-  classic_era: Object.freeze({ 'That was the big one.': 'the big one (spell taught by an item)' }),
-});
-
-function realData() {
+function realDataStores() {
   const homeDir = process.env.CLAUDE_WOW_HOME;
-  if (!homeDir) return null;
+  if (!homeDir) return [];
   const GDm = require('../bridge/gamedata');
   const dataDir = path.join(homeDir, 'data');
-  for (const flavor of Object.keys(require('../bridge/datasync').FLAVORS)) {
-    const probe = GDm.openStore({ dataDir, flavor });
-    if (probe.build) return GDm.openStore({ dataDir, clientBuild: probe.build });
-  }
-  return null;
+  return Object.keys(require('../bridge/datasync').FLAVORS)
+    .map(flavor => GDm.openStore({ dataDir, flavor }))
+    .filter(probe => probe.build)
+    .map(probe => GDm.openStore({ dataDir, clientBuild: probe.build }));
 }
 
-test('real synced data (opt-in, CLAUDE_WOW_HOME with data): ordinary and idiom roast lines show, known game phrases are refused', { skip: !realData() && 'set CLAUDE_WOW_HOME to a home with synced data to run this' }, () => {
-  const data = realData();
-  const game = FIXTURES.gameRecap.recap;
-  const check = summary => roast.checkLine(game, { status: 'done', text: 'Roast.', summary }, data);
-  const gameNames = GAME_NAMES_IN_CORPUS[data.flavor] || {};
-  const dropped = [...ORDINARY_ROASTS, ...IDIOM_ROASTS].filter(line => check(line).text !== line && !(gameNames[line] && check(line).refused.includes(gameNames[line]))).map(line => `${line} -> ${check(line).refused}`);
-  assert.deepEqual(dropped, [], dropped.join('\n'));
-  for (const line of ['Next time, go to old town.', 'You needed the mark of the wild.', 'A gift of the wild would help.', 'What a gold mine of a clip.',
-    'Should have used chain heal.', 'No victory rush for you.', 'Try water walking next time.', 'That was a raging blow.', 'No healing rain could save you.', 'Far sight would have helped.']) {
-    assert.equal(check(line).text, '', line);
-  }
-  assert.equal(check('Hogger sends his regards.').phrasesNote, '', 'the real data indexed cleanly');
-});
+const REAL_DATA = realDataStores();
+if (!REAL_DATA.length) test('real synced data (opt-in, CLAUDE_WOW_HOME with data)', { skip: 'set CLAUDE_WOW_HOME to a home with synced data to run this' }, () => {});
+for (const data of REAL_DATA) {
+  test(`real synced ${data.flavor} data ${data.build}: ordinary and idiom roast lines show, known game phrases are refused`, () => {
+    assert.equal(data.rowTrust, 'client-data');
+    const game = FIXTURES.gameRecap.recap;
+    const check = summary => roast.checkLine(game, { status: 'done', text: 'Roast.', summary }, data);
+    const dropped = [...ORDINARY_ROASTS, ...IDIOM_ROASTS].filter(line => check(line).text !== line).map(line => `${line} -> ${check(line).refused}`);
+    assert.deepEqual(dropped, [], dropped.join('\n'));
+    for (const line of ['Next time, go to old town.', 'You needed the mark of the wild.', 'A gift of the wild would help.', 'What a gold mine of a clip.',
+      'Should have used chain heal.', 'No victory rush for you.', 'Try water walking next time.', 'That was a raging blow.', 'No healing rain could save you.', 'Far sight would have helped.']) {
+      assert.equal(check(line).text, '', line);
+    }
+    assert.equal(check('Hogger sends his regards.').phrasesNote, '', 'the real data indexed cleanly');
+  });
+}
 
 test('roast: a typed line that starts with "Death recap:" is treated as a recap; one that does not makes no card', async () => {
   const svc = await overlayServer();

@@ -443,8 +443,7 @@ function readCurrent(root) {
   try {
     const manifest = JSON.parse(fs.readFileSync(path.join(dir, MANIFEST_FILE), 'utf8'));
     if (!manifest || manifest.build !== build) return null;
-    const flavorName = path.basename(root);
-    if (Object.prototype.hasOwnProperty.call(FLAVORS, flavorName) && manifest.flavor !== undefined && manifest.flavor !== flavorName) return null;
+    if (manifest.flavor !== path.basename(root)) return null;
     return { build, dir, manifest };
   } catch {
     return null;

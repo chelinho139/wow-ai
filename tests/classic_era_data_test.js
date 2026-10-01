@@ -79,7 +79,7 @@ test('claude-wow data sync --flavor classic_era fetches the newest 1.15.9 wow_cl
   const m = current.manifest;
   assert.deepEqual([m.flavor, m.product, m.buildFamily, m.dropped], ['classic_era', 'wow_classic_era', '1.15.9', 0]);
   assert.deepEqual(Object.fromEntries(Object.entries(m.entities).map(([k, v]) => [k, v.rows])), {
-    uimaps: 2, uimapassignments: 2, zones: 1, flightpaths: 1, quests: 1, items: 2, skilllines: 3, skilllineabilities: 6, spellreagents: 1,
+    uimaps: 2, uimapassignments: 2, zones: 1, flightpaths: 1, quests: 1, items: 4, skilllines: 3, skilllineabilities: 6, spellreagents: 1,
   });
   const items = fs.readFileSync(path.join(current.dir, 'items.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
   assert.deepEqual(items[1], { id: ERA_CAP, name: 'Era Fixture Cap', quality: 2, itemLevel: 18, requiredLevel: 13, inventoryType: 1, sellPrice: 210, buyPrice: 1050, startQuestID: 0 });
@@ -199,6 +199,17 @@ test('Era tokens, phrases, gearset goals and route_draw use the Classic Era data
   assert.equal(cross.ok, false);
   assert.match(cross.text, /\{map:9002,40,50\}: that map ID is not in the Classic Era client data/);
   assert.equal(applied.length, before, 'nothing is drawn');
+});
+
+test('a taught spell whose name starts with "the" is not indexed as a game phrase; other taught spells are', async () => {
+  const dataDir = await syncedData('taught', { forever: false });
+  const store = GD.openStore({ dataDir, clientBuild: ERA_CLIENT });
+  const words = new Set(['it', 'was', 'the', 'era', 'fixture', 'go', 'blast']);
+  const check = text => GR.checkText(text, { store, names: [], plainWords: words, charRe: /[ -~]/, maxLength: 200 });
+  assert.equal(check('it was the era fixture').ok, true, '"Schematic: The Era Fixture" adds no phrase');
+  const blast = check('go era blast');
+  assert.equal(blast.ok, false);
+  assert.deepEqual(blast.phrases.map(p => [p.run, p.source]), [['era blast', 'spell taught by an item']]);
 });
 
 test('the wowdata server for an Era client serves Classic Era rows labeled with their flavor', async () => {

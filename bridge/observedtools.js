@@ -205,7 +205,7 @@ function toolSchemas() {
     },
     {
       name: TOOL.price,
-      description: 'The prices the player saw for an item: the auction house results of searches the player ran in game, and vendor windows the player opened, in copper, with n and asOf. Nothing here comes from the web or from memory, and the bridge never searches the auction house. An itemID the game data does not have is refused. No observation means you do not know the price.',
+      description: 'The prices the player saw for an item: the auction house results of searches the player ran in game, and vendor windows the player opened, in copper, with n and asOf. On Forever an auction quote is the lowest price and total quantity the search listed; on Classic Era it is the lowest buyout per unit on the first result page of a search the player ran, with the units at that price, so it is not the low of the whole auction house. Nothing here comes from the web or from memory, and the bridge never searches the auction house. An itemID the game data does not have is refused. No observation means you do not know the price.',
       inputSchema: {
         type: 'object',
         properties: { itemID: { type: 'integer', minimum: 1, description: 'The item ID, from the wowdata tools' } },

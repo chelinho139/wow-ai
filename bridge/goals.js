@@ -253,7 +253,7 @@ function itemProblem(store, slot, itemID) {
   if (!Number.isInteger(itemID) || itemID <= 0) return `slot ${slot}: the item ID must be a whole number above 0.`;
   const row = store.byId('items', itemID);
   if (!row) return `slot ${slot}: {item:${itemID}} is not in the ${store.flavorLabel || 'synced'} client data for build ${store.build}. Look the ID up with the wowdata tools; never use an ID from memory or from another game version.`;
-  if (!Number.isInteger(row.inventoryType)) return `slot ${slot}: the synced data does not say where {item:${itemID}} is worn (claude-wow data sync --force).`;
+  if (!Number.isInteger(row.inventoryType)) return `slot ${slot}: the synced data does not say where {item:${itemID}} is worn (${store.syncCommand || 'claude-wow data sync'} --force).`;
   const fits = INVENTORY_TYPE_SLOTS[row.inventoryType];
   if (!fits) return `slot ${slot}: {item:${itemID}} cannot be equipped (inventory type ${row.inventoryType}).`;
   if (!fits.includes(slot)) return `slot ${slot}: {item:${itemID}} goes in slot ${fits.join(' or ')}, not ${slot}.`;

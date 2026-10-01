@@ -8,6 +8,7 @@ const { lua, lauxlib, lualib, to_luastring, to_jsstring } = require('fengari');
 const P = require('../bridge/protocol');
 const TL = require('../bridge/telemetry');
 const OB = require('../bridge/observed');
+const G = require('../bridge/goals');
 
 const ADDON = path.join(__dirname, '..', 'addon', 'ClaudeWoW');
 const CELLS_PER_ROW = 200;
@@ -346,6 +347,31 @@ function GetAuctionItemInfo(kind, i)
   if not a then return nil end
   return "Auction Item", 134400, a.count, 1, true, 10, nil, 5, 1, a.buyout, 0, false, nil, "Seller", nil, 0, a.id, true
 end
+function GetAuctionItemLink(kind, i)
+  local a = kind == "list" and STUB.auctions[i]
+  if not a then return nil end
+  return "|cff1eff00|Hitem:" .. a.id .. "::::::" .. (a.suffix or "") .. ":12345:20:::::|h[Auction Item]|h|r"
+end
+STUB.skillLines = {
+  { "Professions", true }, { "Skinning", false, 187, 225 }, { "Weapon Skills", true }, { "Daggers", false, 100, 115 },
+}
+function GetNumSkillLines() return #STUB.skillLines end
+function GetSkillLineInfo(i)
+  local l = STUB.skillLines[i]
+  if not l then return nil end
+  return l[1], l[2], true, l[3] or 0, 0, 0, l[4] or 0, false, 0, 0, 0, 0, ""
+end
+STUB.searches = 0
+function STUB.LoadAuctionUI()
+  AuctionFrame = CreateFrame("Frame", "AuctionFrame", UIParent)
+  AuctionFrameBrowse = { page = 0 }
+  function AuctionFrameBrowse_Search() STUB.searches = STUB.searches + 1 end
+  STUB.FireEvent("ADDON_LOADED", "Blizzard_AuctionUI")
+end
+function STUB.PlayerSearch(page)
+  AuctionFrameBrowse.page = page or 0
+  AuctionFrameBrowse_Search()
+end
 function GetFactionInfoByID(id)
   local f = STUB.factions and STUB.factions[id]
   if not f then return nil end
@@ -366,10 +392,13 @@ test('Classic Era vendor window: prices come from GetMerchantItemInfo, extended-
   assert.deepEqual(r.sections.vendor.value.visit.items, [{ itemID: 501, price: 600, stack: 1 }, { itemID: 505, price: 25, stack: 5 }]);
 });
 
-test('Classic Era auction list: the lowest exact unit buyout per item on the page the player searched, never a bid-only or uneven-stack price, and no query from addon code', () => {
+test('Classic Era auction list: the lowest exact unit buyout per item on the first page of a player search, never a suffix variant, a bid-only or uneven-stack price, and no query from addon code', () => {
   const vm = ready({ extra: ERA_CLIENT, gs: eraGs() });
+  vm.run('STUB.LoadAuctionUI(); STUB.PlayerSearch(0)');
+  assert.equal(vm.num('STUB.searches'), 1, 'the Blizzard search still ran');
   vm.run(`STUB.auctions = {
     { id = 501, count = 1, buyout = 1500 }, { id = 501, count = 1, buyout = 1400 }, { id = 501, count = 1, buyout = 1400 },
+    { id = 501, count = 1, buyout = 900, suffix = 1179 }, { id = 4100, count = 1, buyout = 700, suffix = 589 },
     { id = 505, count = 20, buyout = 140 }, { id = 505, count = 5, buyout = 100 }, { id = 505, count = 3, buyout = 20 },
     { id = 2589, count = 3, buyout = 100 }, { id = 4000, count = 1, buyout = 0 },
   }`);
@@ -380,6 +409,43 @@ test('Classic Era auction list: the lowest exact unit buyout per item on the pag
   assert.equal(vm.evaluate('#STUB.ahCalls'), '0', 'no search, sort or bid call from addon code, ever');
 });
 
+test('Classic Era auction list: nothing is stored without a player search on the first page, with the auction house closed, after the search window, or for a scan larger than one page', () => {
+  const vm = ready({ extra: ERA_CLIENT, gs: eraGs() });
+  const page = '{ { id = 501, count = 1, buyout = 1400 } }';
+  const stored = () => vm.evaluate('ClaudeWoWObserved.Sections().ah');
+  vm.run(`STUB.auctions = ${page}; STUB.FireEvent("AUCTION_ITEM_LIST_UPDATE")`);
+  assert.equal(stored(), null, 'another addon scanned before the auction UI even loaded');
+  vm.run('STUB.LoadAuctionUI(); STUB.FireEvent("AUCTION_ITEM_LIST_UPDATE")');
+  assert.equal(stored(), null, 'no player search yet');
+  vm.run('STUB.PlayerSearch(2); STUB.FireEvent("AUCTION_ITEM_LIST_UPDATE")');
+  assert.equal(stored(), null, 'a later page is not the low of the search');
+  vm.run('STUB.PlayerSearch(0); AuctionFrame:Hide(); STUB.FireEvent("AUCTION_ITEM_LIST_UPDATE")');
+  assert.equal(stored(), null, 'the auction house window is closed');
+  vm.run('AuctionFrame:Show()');
+  tick(vm, 16);
+  vm.run('STUB.FireEvent("AUCTION_ITEM_LIST_UPDATE")');
+  assert.equal(stored(), null, 'the search is more than 15 s old: a bid refresh, not the search');
+  vm.run('STUB.PlayerSearch(0); STUB.auctions = {}; for i = 1, 51 do STUB.auctions[i] = { id = 501, count = 1, buyout = 1400 } end; STUB.FireEvent("AUCTION_ITEM_LIST_UPDATE")');
+  assert.equal(stored(), null, 'a getAll scan is larger than one page');
+  vm.run(`STUB.auctions = ${page}; STUB.FireEvent("AUCTION_ITEM_LIST_UPDATE")`);
+  assert.equal(stored().split('@')[0], '501=1400/1', 'the same search with one page is stored');
+});
+
+test('Classic Era skills: profession lines get their skill ID from the profession name table, other lines are left out', () => {
+  const vm = ready({ extra: ERA_CLIENT, gs: eraGs() });
+  assert.equal(vm.evaluate('ClaudeWoWTelemetry.Sections().skills'), '393=187/225');
+  vm.run('STUB.skillLines[2][3] = 188; STUB.FireEvent("SKILL_LINES_CHANGED")');
+  const r = nextRecord(vm);
+  assert.deepEqual(r.sections.skills.value.skills, { 393: { rank: 188, max: 225 } });
+});
+
+test('the addon profession name table matches the bridge one', () => {
+  const vm = ready({ extra: ERA_CLIENT, gs: eraGs() });
+  vm.run('local parts = {}; for name, id in pairs(ClaudeWoW.PROFESSION_SKILL_NAMES) do parts[#parts + 1] = id .. "=" .. name end; table.sort(parts); RESULT = table.concat(parts, ",")');
+  const bridge = Object.entries(G.PROFESSION_SKILL_IDS).map(([id, name]) => `${id}=${name}`).sort();
+  assert.deepEqual(vm.evaluate('RESULT').split(','), bridge);
+});
+
 test('Classic Era factions: standing from GetFactionInfoByID, and a row for another faction is never reported', () => {
   const vm = ready({ extra: ERA_CLIENT, gs: eraGs(`${ERA_FACTION}, 81`) });
   vm.run(`STUB.factions = { [${ERA_FACTION}] = { standing = 5, value = 3200 }, [81] = { standing = 4, value = 10, reportedID = 530 } }`);
@@ -388,9 +454,9 @@ test('Classic Era factions: standing from GetFactionInfoByID, and a row for anot
   assert.deepEqual(r.sections.factions.value.factions, { [ERA_FACTION]: { reaction: 5, standing: 3200 } });
 });
 
-test('on Classic Era the capability probe names only what has no Era equivalent', () => {
+test('on Classic Era the capability probe names nothing: every probed function has an Era equivalent', () => {
   const vm = ready({ extra: ERA_CLIENT, gs: eraGs() });
-  assert.equal(vm.evaluate('table.concat(ClaudeWoWTelemetry.Missing(), ",")'), 'C_SkillInfo.GetNumSkillLines,C_SkillInfo.GetSkillLineInfo');
-  const none = ready({ extra: `${ERA_CLIENT}\nGetMerchantItemInfo = nil\nGetFactionInfoByID = nil\nGetAuctionItemInfo = nil\nGetNumAuctionItems = nil`, gs: eraGs() });
+  assert.equal(vm.evaluate('table.concat(ClaudeWoWTelemetry.Missing(), ",")'), '');
+  const none = ready({ extra: `${ERA_CLIENT}\nGetMerchantItemInfo = nil\nGetFactionInfoByID = nil\nGetAuctionItemInfo = nil\nGetNumAuctionItems = nil\nGetNumSkillLines = nil\nGetSkillLineInfo = nil`, gs: eraGs() });
   assert.equal(none.evaluate('table.concat(ClaudeWoWTelemetry.Missing(), ",")'), 'C_SkillInfo.GetNumSkillLines,C_SkillInfo.GetSkillLineInfo,C_Reputation.GetFactionDataByID,C_MerchantFrame.GetItemInfo,C_AuctionHouse.GetBrowseResults,C_AuctionHouse.GetCommoditySearchResultInfo', 'with neither API, the modern name is reported');
 });
