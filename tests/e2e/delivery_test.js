@@ -33,8 +33,9 @@ test('the first message of a new chat comes back with a title from the lightweig
 test('every file the bridge writes into the game folder is 0777 like the rest of the install (Battle.net error 2113)', { skip: process.platform === 'win32' }, async () => {
   await withGame({}, async h => {
     await h.client.say('permissions');
-    const addon = path.join(h.sb.addons, 'ClaudeWoW');
+    const addon = path.join(h.sb.addons, 'ClaudeWoW_Runtime');
     const presence = fs.readdirSync(path.join(addon, 'presence', 'b')).filter(n => n.endsWith('.wav'));
+    assert.ok(fs.existsSync(path.join(addon, 'Inbox.lua')) && fs.existsSync(path.join(addon, 'ClaudeWoW_Runtime.toc')));
     assert.equal(presence.length, 2000, 'the presence rings are armed');
     const slotInboxes = fs.readdirSync(h.sb.addons).filter(n => /^ClaudeWoW_S\d{3}$/.test(n)).map(n => path.join(h.sb.addons, n, 'Inbox.lua'));
     assert.ok(slotInboxes.some(f => /echo/.test(fs.readFileSync(f, 'utf8'))), 'a slot carries the reply');
@@ -73,6 +74,19 @@ test('a reply survives a /reload while the agent is still working', async () => 
       return c && !c.pendingId && (c.history || []).find(m => m.id === id && m.role === 'assistant');
     }, { timeoutMs: 40000, label: 'the reply after the reload' });
     assert.match(reply.text, /slow one/);
+  });
+});
+
+test('the reload path reads the Inbox.lua the bridge writes into ClaudeWoW_Runtime, and the shipped ClaudeWoW folder stays as shipped', async () => {
+  await withGame({}, async h => {
+    const r = await h.client.say('through the runtime folder');
+    assert.match(r.text, /through the runtime folder/);
+    h.client.reload();
+    assert.equal(h.client.luaValue('C_AddOns.IsAddOnLoaded("ClaudeWoW_Runtime")'), 'true');
+    assert.ok(Number(h.client.luaValue('ClaudeWoW_Inbox.now')) > 0, 'the bridge-written inbox, not the empty placeholder');
+    const shipped = path.join(SB.REPO, 'addon', 'ClaudeWoW');
+    assert.deepEqual(fs.readdirSync(path.join(h.sb.addons, 'ClaudeWoW')).sort(), fs.readdirSync(shipped).sort());
+    assert.equal(fs.readFileSync(path.join(h.sb.addons, 'ClaudeWoW', 'Inbox.lua'), 'utf8'), fs.readFileSync(path.join(shipped, 'Inbox.lua'), 'utf8'));
   });
 });
 

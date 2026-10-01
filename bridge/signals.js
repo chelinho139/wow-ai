@@ -2,23 +2,31 @@
 const fs = require('fs');
 const path = require('path');
 const G = require('./gamefs');
-const { SILENT_WAV, pad3 } = require('./protocol');
+const { SILENT_WAV, pad3, ADDON, RUNTIME_ADDON, TOC_INTERFACE } = require('./protocol');
 
 const SCHEME = 'armed';
 const RINGS = ['a', 'b'];
 const DEFAULT_PRESENCE_MAX = 2000;
 const DEFAULT_ACT_MAX = 60;
+const DEFAULT_SLOTS = 200;
 const PROBE_TOKEN = /^[0-9a-z]{4,16}$/;
 const PROBE_FILE = /^probe-[0-9a-z]{4,16}\.wav$/;
 const LEGACY_PRESENCE_FILE = /^\d{4}\.wav$/i;
+const RUNTIME_FOLDERS = Object.freeze(['ack', 'sig', 'act', 'ctl', 'presence']);
+const RETIRED_CTL_FILES = Object.freeze(['absent.wav', 'empty.wav']);
+const INBOX_PLACEHOLDER = 'ClaudeWoW_Inbox = ClaudeWoW_Inbox or { id = 0, replies = {} }\n';
+const RESTART_NOTE = `the signal files moved from ${ADDON} to ${RUNTIME_ADDON}: fully quit and relaunch WoW once so the game sees them`;
 
-const addonRoot = addonDir => path.join(addonDir, 'ClaudeWoW');
-const signalFile = (addonDir, kind, slot) => path.join(addonRoot(addonDir), kind, pad3(slot) + '.wav');
-const actFile = (addonDir, slot, k) => path.join(addonRoot(addonDir), 'act', pad3(slot), String(k).padStart(2, '0') + '.wav');
-const presenceDir = addonDir => path.join(addonRoot(addonDir), 'presence');
+const runtimeRoot = addonDir => path.join(addonDir, RUNTIME_ADDON);
+const runtimeToc = addonDir => path.join(runtimeRoot(addonDir), RUNTIME_ADDON + '.toc');
+const runtimeInbox = addonDir => path.join(runtimeRoot(addonDir), 'Inbox.lua');
+const signalFile = (addonDir, kind, slot) => path.join(runtimeRoot(addonDir), kind, pad3(slot) + '.wav');
+const actFile = (addonDir, slot, k) => path.join(runtimeRoot(addonDir), 'act', pad3(slot), String(k).padStart(2, '0') + '.wav');
+const presenceDir = addonDir => path.join(runtimeRoot(addonDir), 'presence');
 const ringDir = (addonDir, ring) => path.join(presenceDir(addonDir), ring);
 const ringFile = (addonDir, ring, k) => path.join(ringDir(addonDir, ring), String(k).padStart(4, '0') + '.wav');
-const ctlDir = addonDir => path.join(addonRoot(addonDir), 'ctl');
+const ctlDir = addonDir => path.join(runtimeRoot(addonDir), 'ctl');
+const validFile = addonDir => path.join(ctlDir(addonDir), 'valid.wav');
 const probeFile = (addonDir, token) => path.join(ctlDir(addonDir), 'probe-' + token + '.wav');
 const otherRing = ring => (ring === 'a' ? 'b' : 'a');
 
@@ -114,8 +122,73 @@ function clearProbes(addonDir, keep = '') {
   return removed;
 }
 
+function runtimeTocText(tocInterface = TOC_INTERFACE) {
+  return [
+    '## Interface: ' + tocInterface,
+    '## Title: Claude WoW runtime',
+    '## Notes: Files the Claude WoW bridge writes while it runs. Leave it enabled.',
+    '## Dependencies: ' + ADDON,
+    '',
+    'Inbox.lua',
+    '',
+  ].join('\n');
+}
+
+function writeWhenDifferent(file, content) {
+  let current = null;
+  try { current = fs.readFileSync(file, 'utf8'); } catch {}
+  if (current === content) return false;
+  G.mkdir(path.dirname(file));
+  G.writeFile(file, content);
+  return true;
+}
+
+function legacySignalFolders(addonDir) {
+  return RUNTIME_FOLDERS.map(name => path.join(addonDir, ADDON, name)).filter(dir => fs.existsSync(dir));
+}
+
+function removeLegacySignalFolders(addonDir) {
+  let removed = 0;
+  for (const dir of legacySignalFolders(addonDir)) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+      removed++;
+    } catch {}
+  }
+  return removed;
+}
+
+function needsMigration(addonDir) {
+  return legacySignalFolders(addonDir).length > 0 && !fs.existsSync(validFile(addonDir));
+}
+
+function prepareRuntime(addonDir, { slots = DEFAULT_SLOTS, actMax = DEFAULT_ACT_MAX, presence = null, presenceMax = DEFAULT_PRESENCE_MAX, tocInterface = TOC_INTERFACE, removeLegacy = false } = {}) {
+  const result = { made: 0, updated: 0, armed: 0, cleaned: 0, legacy: legacySignalFolders(addonDir).length, legacyRemoved: 0, presence: null };
+  const tocExisted = fs.existsSync(runtimeToc(addonDir));
+  if (writeWhenDifferent(runtimeToc(addonDir), runtimeTocText(tocInterface))) {
+    if (tocExisted) result.updated++;
+    else result.made++;
+  }
+  if (G.ensureFile(runtimeInbox(addonDir), INBOX_PLACEHOLDER)) result.made++;
+  for (let slot = 1; slot <= slots; slot++) result.armed += armSlot(addonDir, slot, actMax);
+  G.mkdir(presenceDir(addonDir));
+  result.presence = preparePresence(addonDir, presence, presenceMax);
+  result.armed += result.presence.made;
+  result.cleaned += result.presence.removed;
+  G.mkdir(ctlDir(addonDir));
+  for (const name of RETIRED_CTL_FILES) {
+    const file = path.join(ctlDir(addonDir), name);
+    if (fs.existsSync(file) && G.remove(file)) result.cleaned++;
+  }
+  result.cleaned += clearProbes(addonDir);
+  if (arm(validFile(addonDir))) result.made++;
+  if (removeLegacy) result.legacyRemoved = removeLegacySignalFolders(addonDir);
+  return result;
+}
+
 module.exports = {
-  SCHEME, RINGS, DEFAULT_PRESENCE_MAX, DEFAULT_ACT_MAX, PROBE_TOKEN,
-  signalFile, actFile, presenceDir, ringDir, ringFile, probeFile, otherRing,
+  SCHEME, RINGS, DEFAULT_PRESENCE_MAX, DEFAULT_ACT_MAX, DEFAULT_SLOTS, PROBE_TOKEN, RUNTIME_FOLDERS, INBOX_PLACEHOLDER, RESTART_NOTE,
+  runtimeRoot, runtimeToc, runtimeInbox, runtimeTocText, signalFile, actFile, presenceDir, ringDir, ringFile, ctlDir, validFile, probeFile, otherRing,
   arm, fire, armSlot, presenceState, armRing, legacyPresenceFiles, removeLegacyPresence, preparePresence, beat, placeProbe, clearProbes,
+  legacySignalFolders, removeLegacySignalFolders, needsMigration, prepareRuntime,
 };

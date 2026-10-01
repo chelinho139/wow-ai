@@ -9,7 +9,7 @@ const CL = require('../bridge/chatlog');
 const P = require('../bridge/protocol');
 
 const ADDON = path.join(__dirname, '..', 'addon', 'ClaudeWoW');
-const ACK = id => `Interface\\\\AddOns\\\\ClaudeWoW\\\\ack\\\\${String(id).padStart(3, '0')}.wav`;
+const ACK = id => `Interface\\\\AddOns\\\\ClaudeWoW_Runtime\\\\ack\\\\${String(id).padStart(3, '0')}.wav`;
 const KEY = '0123456789abcdef0123456789abcdef';
 const SLOT = `{ now = time(), cwd = "", transport = "screenshot", chatlog = { line = 200, filler = 4096, key = "${KEY}" }, replies = {} }`;
 
@@ -42,7 +42,7 @@ function newVM(clientApi = CLIENT_LOG_API) {
 
 function loggedIn(slot = SLOT, clientApi = CLIENT_LOG_API, { ackHello = true } = {}) {
   const vm = newVM(clientApi);
-  vm.run('STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW\\\\ctl\\\\valid.wav"] = true; STUB.armed = true');
+  vm.run('STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW_Runtime\\\\ctl\\\\valid.wav"] = true; STUB.armed = true');
   vm.run('STUB.FireEvent("ADDON_LOADED", "ClaudeWoW"); STUB.FireEvent("PLAYER_LOGIN")');
   vm.run('ClaudeWoW.PresenceWorks = function() return true end');
   vm.run('STUB.RunTimers()');

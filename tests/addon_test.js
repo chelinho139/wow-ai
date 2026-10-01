@@ -384,7 +384,7 @@ test('deleting a chat tells the bridge to forget it, and a restore never brings 
   assert.equal(vm.num('#ClaudeWoWDB.chats'), 1, 'deleted chat not restored');
   // The bridge acks the forget record: it leaves the strip and the memory.
   const slot = String(rec.id).padStart(3, '0');
-  vm.run(`STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW\\\\ack\\\\${slot}.wav"] = true; STUB.Tick()`);
+  vm.run(`STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW_Runtime\\\\ack\\\\${slot}.wav"] = true; STUB.Tick()`);
   assert.equal(vm.evaluate(`ClaudeWoWDB.forget["${gone}"]`), null, 'forgotten once acked');
   assert.ok(!stripRecords(vm).find(r => r.flags === 'd'), 'forget record left the strip');
 });
@@ -864,7 +864,7 @@ function frames(vm, n) {
 
 test('screenshot transport: Blizzard\'s "Screen captured" status stays hidden for the addon\'s own shots, on both Classic Era frames, and shows for the player\'s', () => {
   const vm = newVM();
-  vm.run('STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW\\\\ctl\\\\valid.wav"] = true; STUB.armed = true');
+  vm.run('STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW_Runtime\\\\ctl\\\\valid.wav"] = true; STUB.armed = true');
   login(vm);
   vm.run(`
     WorldFrame = CreateFrame("Frame", "WorldFrame")
@@ -894,7 +894,7 @@ test('screenshot transport: Blizzard\'s "Screen captured" status stays hidden fo
 
 test('screenshot transport: the late event of a shot that timed out still keeps "Screen captured" hidden, and the player\'s next one shows', () => {
   const vm = newVM();
-  vm.run('STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW\\\\ctl\\\\valid.wav"] = true; STUB.armed = true');
+  vm.run('STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW_Runtime\\\\ctl\\\\valid.wav"] = true; STUB.armed = true');
   login(vm);
   vm.run(`
     STATUS = CreateFrame("Frame", "ActionStatus", UIParent)
@@ -918,7 +918,7 @@ test('screenshot transport: the late event of a shot that timed out still keeps 
 
 test('screenshot transport: the strip is shot once per message, hidden on the event, and the format CVar is restored', () => {
   const vm = newVM();
-  vm.run('STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW\\\\ctl\\\\valid.wav"] = true; STUB.armed = true');
+  vm.run('STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW_Runtime\\\\ctl\\\\valid.wav"] = true; STUB.armed = true');
   login(vm);
   vm.run('STUB.RunTimers()'); // SayHello: not knowing better, the hello goes up pixel-style
   assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'true');
@@ -956,7 +956,7 @@ test('screenshot transport: the strip is shot once per message, hidden on the ev
   assert.equal(vm.num('STUB.screenshots'), 2);
   assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'false');
   const id = vm.num('ClaudeWoWDB.chats[1].pendingId');
-  vm.run(`STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW\\\\ack\\\\${String(id).padStart(3, '0')}.wav"] = false; STUB.now = STUB.now + 2; STUB.Tick()`);
+  vm.run(`STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW_Runtime\\\\ack\\\\${String(id).padStart(3, '0')}.wav"] = false; STUB.now = STUB.now + 2; STUB.Tick()`);
   frames(vm, 3);
   assert.equal(vm.num('STUB.screenshots'), 2);
   assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'false');
@@ -1022,7 +1022,7 @@ function stripImage(vm, width, height) {
 test('screenshot transport: the strip is dense (2 px cells, four levels) when the bridge asks for codec 2, 4 px when it does not', () => {
   const D = require('../bridge/decode');
   const vm = newVM();
-  vm.run('STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW\\\\ctl\\\\valid.wav"] = true; STUB.armed = true');
+  vm.run('STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW_Runtime\\\\ctl\\\\valid.wav"] = true; STUB.armed = true');
   login(vm);
   vm.run('STUB.RunTimers()');
   nextSlot(vm, '{ now = time(), cwd = "", transport = "screenshot", strip = { on = 60, off = 0, codec = 2 }, replies = {} }');
@@ -1248,10 +1248,10 @@ test('screenshotFormat: a crash that skipped the logout restore is repaired at t
 // pixel-style instead, so the usual retries and fallback carry the message.
 test('screenshot transport: shots stop once the bridge has been dark for a while, the player is told, Connect takes one by hand, and shooting resumes when the bridge is back', () => {
   const vm = newVM();
-  vm.run('STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW\\\\ctl\\\\valid.wav"] = true; STUB.armed = true');
+  vm.run('STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW_Runtime\\\\ctl\\\\valid.wav"] = true; STUB.armed = true');
   login(vm);
   vm.run('STUB.RunTimers()');
-  vm.run('STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW\\\\presence\\\\a\\\\0001.wav"] = false');
+  vm.run('STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW_Runtime\\\\presence\\\\a\\\\0001.wav"] = false');
   nextSlot(vm, '{ now = time(), cwd = "", transport = "screenshot", presence = { ring = "a", at = 1, n = 2000, probe = "" }, replies = {} }');
   vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
   assert.equal(vm.evaluate('ClaudeWoW.PresenceWorks()'), 'true', 'the login self-test saw the bridge delete a launch-time file');
@@ -1294,7 +1294,7 @@ test('screenshot transport: shots stop once the bridge has been dark for a while
   assert.equal(vm.num('STUB.screenshots'), 4, 'and no more');
   assert.ok(!prints().includes('resume'), 'a send is not the bridge coming back');
   // The bridge is back: a presence beat. Said once, and sends shoot again.
-  vm.run('STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW\\\\presence\\\\a\\\\0002.wav"] = false; STUB.prints = {}; STUB.now = STUB.now + 2; STUB.Tick()');
+  vm.run('STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW_Runtime\\\\presence\\\\a\\\\0002.wav"] = false; STUB.prints = {}; STUB.now = STUB.now + 2; STUB.Tick()');
   assert.ok(prints().includes('bridge is back: screenshots resume'), prints());
   assert.equal(vm.evaluate('ClaudeWoW.IsConnected()'), 'true');
   vm.run('ClaudeWoW.Send("back?")');
@@ -2709,7 +2709,7 @@ test('context growth: past the threshold the chat is warned once per crossing, w
   assert.ok(last().includes('context: warning at 100.0k tokens'), last());
 });
 
-const gamePath = rel => 'Interface\\\\AddOns\\\\ClaudeWoW\\\\' + rel.split('/').join('\\\\');
+const gamePath = rel => 'Interface\\\\AddOns\\\\ClaudeWoW_Runtime\\\\' + rel.split('/').join('\\\\');
 const lastSystem = vm => vm.evaluate('(function() local h = ClaudeWoWDB.chats[1].history; for i = #h, 1, -1 do if h[i].role == "system" then return h[i].text end end end)()');
 
 function launchArmed(vm, extra = '') {
@@ -2721,6 +2721,53 @@ function launchArmed(vm, extra = '') {
   assert.ok(probe, 'the hello asks the bridge for a late-created probe file: ' + hello.flags);
   return probe[1];
 }
+
+const legacyPath = rel => 'Interface\\\\AddOns\\\\ClaudeWoW\\\\' + rel.split('/').join('\\\\');
+
+test('signals: the addon probes ClaudeWoW_Runtime, the bridge-owned folder an addon update never replaces', () => {
+  const vm = newVM();
+  launchArmed(vm, `STUB.sounds["${legacyPath('ctl/valid.wav')}"] = true;`);
+  assert.equal(vm.evaluate('ClaudeWoW.Presence.root'), 'Interface\\AddOns\\ClaudeWoW_Runtime\\', 'the runtime folder wins while both read valid');
+  assert.equal(vm.evaluate('ClaudeWoW.PresenceWorks()'), 'false');
+  vm.run(`STUB.sounds["${gamePath('presence/a/0001.wav')}"] = false`);
+  nextSlot(vm, '{ now = time(), cwd = "", replies = {}, signals = "armed", presence = { ring = "a", at = 1, n = 2000 } }');
+  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+  assert.equal(vm.evaluate('ClaudeWoW.Presence.State().test'), 'passed', 'a beat in the runtime folder is seen');
+  vm.run('SlashCmdList.CLAUDE("diag")');
+  assert.match(lastSystem(vm), /sound channel: usable \(self-test: passed, files: Interface\\AddOns\\ClaudeWoW_Runtime\\\)/);
+});
+
+test('signals: with only the old ClaudeWoW signal folders indexed (a bridge from before ClaudeWoW_Runtime, or no restart since setup) the addon falls back to them', () => {
+  const vm = newVM();
+  vm.run('STUB.signalRoot = "ClaudeWoW"');
+  launchArmed(vm, `STUB.sounds["${gamePath('ctl/valid.wav')}"] = nil; STUB.sounds["${legacyPath('ctl/valid.wav')}"] = true;`);
+  assert.equal(vm.evaluate('ClaudeWoW.Presence.root'), 'Interface\\AddOns\\ClaudeWoW\\');
+  assert.equal(vm.evaluate('ClaudeWoW.Presence.Channel()'), 'true');
+  vm.run(`STUB.sounds["${legacyPath('presence/a/0001.wav')}"] = false`);
+  nextSlot(vm, '{ now = time(), cwd = "", replies = {}, signals = "armed", presence = { ring = "a", at = 1, n = 2000 } }');
+  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+  assert.equal(vm.evaluate('ClaudeWoW.Presence.State().test'), 'passed', 'a beat in the old folder is seen');
+  assert.equal(vm.num('ClaudeWoW.Presence.State().beats'), 1);
+});
+
+test('the shipped Inbox.lua placeholder never clobbers an inbox the runtime folder already loaded', () => {
+  const vm = newVM();
+  const placeholder = fs.readFileSync(path.join(ADDON, 'Inbox.lua'), 'utf8');
+  vm.run('ClaudeWoW_Inbox = { id = 5, replies = {} }');
+  vm.run(placeholder);
+  assert.equal(vm.num('ClaudeWoW_Inbox.id'), 5);
+  vm.run('ClaudeWoW_Inbox = nil');
+  vm.run(placeholder);
+  assert.equal(vm.num('ClaudeWoW_Inbox.id'), 0, 'alone it is the empty inbox');
+});
+
+test('signals: with neither folder indexed the sound channel is unusable and the addon says to restart', () => {
+  const vm = newVM();
+  vm.run('STUB.armed = true; STUB.Launch()');
+  login(vm);
+  vm.run('SlashCmdList.CLAUDE("diag")');
+  assert.match(lastSystem(vm), /sound channel: UNUSABLE \(self-test: a valid file reports as unplayable \(files not indexed\? restart WoW\), files: Interface\\AddOns\\ClaudeWoW_Runtime\\\)/);
+});
 
 test('signals: a file created after the game started never reads present, so the old create-on-beat presence saw 0 beats (2026-09-29)', () => {
   const vm = newVM();

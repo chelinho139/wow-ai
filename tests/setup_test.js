@@ -166,19 +166,51 @@ test('upgradeConfig: paths naming an old addon are rewritten to the new one, oth
     };
     const notes = S.upgradeConfig(cfg, example);
     assert.deepEqual(notes.sort(), ['inboxFile', 'savedVariablesFile']);
-    assert.equal(cfg.inboxFile, path.join(cfg.addonDir, P.ADDON, 'Inbox.lua'));
+    assert.equal(cfg.inboxFile, path.join(cfg.addonDir, P.RUNTIME_ADDON, 'Inbox.lua'));
     assert.equal(cfg.savedVariablesFile, `/Games/WoW/_classic_beta_/WTF/Account/A/SavedVariables/${P.ADDON}.lua`);
     assert.equal(cfg.agent, 'codex');
     assert.deepEqual(cfg.agents, { codex: { model: 'm' } });
     // Windows spelling too.
     const win = { addonDir: 'C:\\WoW\\Interface\\AddOns', inboxFile: `C:\\WoW\\Interface\\AddOns\\${oldName}\\Inbox.lua`, savedVariablesFile: `C:\\WoW\\WTF\\Account\\A\\SavedVariables\\${oldName}.lua`, agents: {} };
     S.upgradeConfig(win, example);
-    assert.ok(win.inboxFile.endsWith(path.join(P.ADDON, 'Inbox.lua')));
+    assert.ok(win.inboxFile.endsWith(path.join(P.RUNTIME_ADDON, 'Inbox.lua')));
     assert.ok(win.savedVariablesFile.endsWith(`\\${P.ADDON}.lua`));
   }
   // A current config is left alone.
-  const cfg = { addonDir: '/a', inboxFile: `/a/${P.ADDON}/Inbox.lua`, savedVariablesFile: `/s/${P.ADDON}.lua`, agents: {} };
+  const cfg = { addonDir: '/a', inboxFile: `/a/${P.RUNTIME_ADDON}/Inbox.lua`, savedVariablesFile: `/s/${P.ADDON}.lua`, agents: {} };
   assert.deepEqual(S.upgradeConfig(cfg, example), []);
+  const shipped = { addonDir: '/a', inboxFile: `/a/${P.ADDON}/Inbox.lua`, savedVariablesFile: `/s/${P.ADDON}.lua`, agents: {} };
+  assert.deepEqual(S.upgradeConfig(shipped, example), ['inboxFile'], 'the Inbox.lua inside the shipped folder moves to the runtime folder');
+  assert.equal(shipped.inboxFile, path.join('/a', P.RUNTIME_ADDON, 'Inbox.lua'));
+});
+
+test('copyAddon refreshes only the shipped ClaudeWoW files and never writes or deletes a runtime file', () => {
+  const dir = scratch('copy-runtime');
+  const addons = path.join(dir, 'Interface', 'AddOns');
+  const runtime = path.join(addons, P.RUNTIME_ADDON);
+  const runtimeFiles = {
+    'Inbox.lua': 'ClaudeWoW_Inbox = { id = 41 }\n',
+    [`${P.RUNTIME_ADDON}.toc`]: '## Interface: 16001\n',
+    'ack/001.wav': 'RIFF-ack',
+    'presence/a/0002.wav': 'RIFF-ring',
+    'ctl/valid.wav': 'RIFF-valid',
+  };
+  for (const [rel, body] of Object.entries(runtimeFiles)) {
+    fs.mkdirSync(path.dirname(path.join(runtime, rel)), { recursive: true });
+    fs.writeFileSync(path.join(runtime, rel), body);
+  }
+  fs.mkdirSync(path.join(addons, P.ADDON), { recursive: true });
+  fs.writeFileSync(path.join(addons, P.ADDON, 'Inbox.lua'), 'ClaudeWoW_Inbox = { id = 7 }\n');
+  const before = Object.fromEntries(Object.keys(runtimeFiles).map(rel => [rel, fs.statSync(path.join(runtime, rel)).mtimeMs]));
+  const { dest } = S.copyAddon(dir);
+  const shippedSrc = path.join(__dirname, '..', 'addon', P.ADDON);
+  assert.deepEqual(fs.readdirSync(dest).sort(), fs.readdirSync(shippedSrc).sort(), 'the shipped folder holds exactly the shipped files');
+  assert.equal(fs.readFileSync(path.join(dest, 'Inbox.lua'), 'utf8'), fs.readFileSync(path.join(shippedSrc, 'Inbox.lua'), 'utf8'), 'the shipped Inbox.lua is the placeholder again');
+  for (const [rel, body] of Object.entries(runtimeFiles)) {
+    assert.equal(fs.readFileSync(path.join(runtime, rel), 'utf8'), body, rel);
+    assert.equal(fs.statSync(path.join(runtime, rel)).mtimeMs, before[rel], rel);
+  }
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 // The whole installer against a fake client, with CLAUDE_WOW_HOME pointing at a
@@ -214,12 +246,12 @@ test('node setup.js --wow <fake client>: migrates the chats, installs ClaudeWoW 
   assert.equal(fs.readFileSync(path.join(addons, 'ClaudeWoW_S001', 'Inbox.lua'), 'utf8'), 'ClaudeWoW_SlotData = nil\n');
   assert.match(fs.readFileSync(path.join(addons, 'ClaudeWoW_S001', 'ClaudeWoW_S001.toc'), 'utf8'), /^## Dependencies: ClaudeWoW$/m);
   assert.ok(fs.existsSync(path.join(addons, 'ClaudeWoW', 'ClaudeWoW.toc')));
-  assert.ok(fs.existsSync(path.join(addons, 'ClaudeWoW', 'ctl', 'valid.wav')));
-  for (const d of ['sig', 'ack', 'act', 'presence']) assert.ok(fs.statSync(path.join(addons, 'ClaudeWoW', d)).isDirectory(), d);
+  assert.ok(fs.existsSync(path.join(addons, 'ClaudeWoW_Runtime', 'ctl', 'valid.wav')));
+  for (const d of ['sig', 'ack', 'act', 'presence']) assert.ok(fs.statSync(path.join(addons, 'ClaudeWoW_Runtime', d)).isDirectory(), d);
   const slotInbox = path.join(addons, 'ClaudeWoW_S001', 'Inbox.lua');
   if (process.platform !== 'win32') {
     const locked = [];
-    for (const folder of names.filter(n => /^ClaudeWoW(_S\d{3})?$/.test(n))) {
+    for (const folder of names.filter(n => /^ClaudeWoW(_S\d{3}|_Runtime)?$/.test(n))) {
       const pending = [path.join(addons, folder)];
       while (pending.length) {
         const current = pending.pop();
@@ -235,7 +267,7 @@ test('node setup.js --wow <fake client>: migrates the chats, installs ClaudeWoW 
   // The config: in the home folder, naming the new addon; nothing in bridge/ was touched.
   const cfg = JSON.parse(fs.readFileSync(path.join(home, 'config.json'), 'utf8'));
   assert.equal(cfg.addonDir, addons);
-  assert.equal(cfg.inboxFile, path.join(addons, 'ClaudeWoW', 'Inbox.lua'));
+  assert.equal(cfg.inboxFile, path.join(addons, 'ClaudeWoW_Runtime', 'Inbox.lua'));
   assert.equal(cfg.savedVariablesFile, path.join(saved, 'ClaudeWoW.lua'));
   assert.equal(cfg.defaultCwd, project);
   assert.ok(!fs.existsSync(path.join(home, 'state.json')), 'an explicit CLAUDE_WOW_HOME is not filled from this checkout');
@@ -271,10 +303,18 @@ test('node setup.js --wow <fake client>: migrates the chats, installs ClaudeWoW 
   // without one: the bridge's default, the screenshot transport, applies.
   delete cfg.capture.mode;
   fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify(cfg, null, 2) + '\n');
+  for (const rel of ['ack/001.wav', 'presence/a/0001.wav']) {
+    fs.mkdirSync(path.dirname(path.join(addons, 'ClaudeWoW', rel)), { recursive: true });
+    fs.writeFileSync(path.join(addons, 'ClaudeWoW', rel), 'RIFF');
+  }
   const third = spawnSync(process.execPath, [path.join(__dirname, '..', 'setup.js'), '--wow', client], {
     encoding: 'utf8', env: { ...process.env, CLAUDE_WOW_HOME: home }, timeout: 120000,
   });
   assert.equal(third.status, 0, third.stdout + third.stderr);
+  assert.match(third.stdout, /^migrate: removed 2 old signal folder\(s\)/m);
+  assert.match(third.stdout, /^warning {2}: the signal files moved from ClaudeWoW to ClaudeWoW_Runtime: fully quit and relaunch WoW once/m);
+  assert.match(third.stdout, /warning\(s\) to deal with first:\n {2}- the signal files moved/, 'repeated at the end so it is not scrolled past');
+  assert.deepEqual(fs.readdirSync(path.join(addons, 'ClaudeWoW')).sort(), fs.readdirSync(path.join(__dirname, '..', 'addon', 'ClaudeWoW')).sort());
   assert.match(third.stdout, /^transport: screenshot \(the default\)/m);
   assert.equal(JSON.parse(fs.readFileSync(path.join(home, 'config.json'), 'utf8')).capture.mode, undefined, 'setup does not write a mode into an existing config');
   fs.rmSync(dir, { recursive: true, force: true });
@@ -309,7 +349,7 @@ test('node setup.js --wow <another client> on an existing config points it at th
   assert.match(switched.stdout, /updated \(tocInterface, client\); everything else kept/);
   const after = readCfg();
   assert.equal(after.addonDir, eraClient.addons);
-  assert.equal(after.inboxFile, path.join(eraClient.addons, P.ADDON, 'Inbox.lua'));
+  assert.equal(after.inboxFile, path.join(eraClient.addons, P.RUNTIME_ADDON, 'Inbox.lua'));
   assert.equal(after.savedVariablesFile, path.join(eraClient.saved, `${P.ADDON}.lua`));
   assert.equal(after.capture.processName, 'World of Warcraft.app');
   assert.equal(after.tocInterface, P.TOC_INTERFACE);

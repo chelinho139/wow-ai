@@ -51,7 +51,9 @@ test('a sandbox keeps every path the bridge and the client use inside itself', (
     assert.equal(sb.env.CLAUDE_WOW_SERVICE, undefined);
     assert.ok(fs.existsSync(path.join(sb.addons, 'ClaudeWoW', 'ClaudeWoW.toc')));
     assert.ok(fs.existsSync(path.join(sb.addons, 'ClaudeWoW_S200', 'ClaudeWoW_S200.toc')));
-    assert.ok(fs.existsSync(path.join(sb.addons, 'ClaudeWoW', 'ctl', 'valid.wav')));
+    assert.ok(fs.existsSync(path.join(sb.addons, 'ClaudeWoW_Runtime', 'ctl', 'valid.wav')));
+    assert.equal(sb.cfg.inboxFile, path.join(sb.addons, 'ClaudeWoW_Runtime', 'Inbox.lua'));
+    assert.ok(!fs.existsSync(path.join(sb.addons, 'ClaudeWoW', 'ctl')), 'nothing runtime in the shipped folder');
     assert.match(sb.cfg.agents.claude.path, /fake-claude\.js$/);
   } finally {
     fs.rmSync(ROOT, { recursive: true, force: true });
@@ -67,8 +69,9 @@ test('install-slots rewrites slot .toc files when tocInterface changes', () => {
     SB.writeConfig(sb, { tocInterface: '16002' });
     const r = spawnSync(process.execPath, [path.join(SB.REPO, 'bridge', 'install-slots.js')], { env: sb.env, encoding: 'utf8' });
     assert.equal(r.status, 0, r.stderr);
-    assert.match(r.stdout, /updated: 200/);
+    assert.match(r.stdout, /updated: 201/, 'the 200 slot tocs and the runtime toc');
     assert.match(fs.readFileSync(toc, 'utf8'), /## Interface: 16002/);
+    assert.match(fs.readFileSync(path.join(sb.addons, 'ClaudeWoW_Runtime', 'ClaudeWoW_Runtime.toc'), 'utf8'), /## Interface: 16002/);
   } finally {
     fs.rmSync(ROOT, { recursive: true, force: true });
   }

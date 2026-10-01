@@ -628,7 +628,8 @@ function fakeInstall(dir) {
   const home = path.join(dir, 'home');
   const client = path.join(dir, 'client');
   const addons = path.join(client, 'Interface', 'AddOns');
-  for (const d of ['sig', 'ack', 'act', 'presence']) fs.mkdirSync(path.join(addons, 'ClaudeWoW', d), { recursive: true });
+  for (const d of ['sig', 'ack', 'act', 'presence']) fs.mkdirSync(path.join(addons, 'ClaudeWoW_Runtime', d), { recursive: true });
+  fs.mkdirSync(path.join(addons, 'ClaudeWoW'), { recursive: true });
   fs.writeFileSync(path.join(addons, 'ClaudeWoW', 'ClaudeWoW.toc'), '## Interface: 16001\n');
   fs.mkdirSync(path.join(addons, 'ClaudeWoW_S001'), { recursive: true });
   fs.writeFileSync(path.join(addons, 'ClaudeWoW_S001', 'Inbox.lua'), 'ClaudeWoW_SlotData = nil\n');
@@ -649,7 +650,7 @@ function fakeInstall(dir) {
   const cfg = {
     addonDir: addons,
     savedVariablesFile: path.join(savedDir, 'ClaudeWoW.lua'),
-    inboxFile: path.join(addons, 'ClaudeWoW', 'Inbox.lua'),
+    inboxFile: path.join(addons, 'ClaudeWoW_Runtime', 'Inbox.lua'),
     slots: 1, agent: 'claude', agents: { claude: { path: agent, allowedTools: ['WebSearch'] } },
     plugins: { default: 'ask', ask: { cwd: path.join(dir, 'scratch') }, stream: { ...ST.INERT_OPTIONS } },
     gameContext: false, primerFile: '', capture: { enabled: true },
@@ -949,7 +950,7 @@ test('slot field through the real bridge: the slot files carry the current order
     writeOutbox(saved, 7, BONE_CONTEXT);
     const r = spawnSync(process.execPath, [BRIDGE, '--once'], { encoding: 'utf8', env: { ...process.env, CLAUDE_WOW_HOME: home }, timeout: 60000 });
     assert.equal(r.status, 0, r.stdout + r.stderr);
-    const files = [['ClaudeWoW_S001', 'ClaudeWoW_SlotData'], ['ClaudeWoW', 'ClaudeWoW_Inbox']];
+    const files = [['ClaudeWoW_S001', 'ClaudeWoW_SlotData'], ['ClaudeWoW_Runtime', 'ClaudeWoW_Inbox']];
     for (const [folder, globalName] of files) {
       const data = slotData(fs.readFileSync(path.join(addons, folder, 'Inbox.lua'), 'utf8'), globalName);
       assert.deepEqual(data.goals, { rev: 12, char: BONE_KEY, order: { id: 'o_12', text: 'Skin 30 more', pct: 83 }, goals: {} });

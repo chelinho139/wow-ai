@@ -8,12 +8,12 @@ const { makeRoot, gameRunner } = require('./helpers');
 const ROOT = makeRoot('presence');
 const withGame = gameRunner(ROOT);
 
-const gamePath = rel => 'Interface\\\\AddOns\\\\ClaudeWoW\\\\' + rel.split('/').join('\\\\');
+const gamePath = rel => 'Interface\\\\AddOns\\\\ClaudeWoW_Runtime\\\\' + rel.split('/').join('\\\\');
 const beatsSeen = h => Number(h.client.luaValue('ClaudeWoW.Presence.State().beats'));
 
 test('the old scheme reproduced: presence files the bridge creates after the game started are never seen (beats seen 0, 2026-09-29)', async () => {
   await withGame({ bridge: false }, async h => {
-    const flat = path.join(h.sb.addons, 'ClaudeWoW', 'presence');
+    const flat = path.join(h.sb.addons, 'ClaudeWoW_Runtime', 'presence');
     let seen = 0;
     for (let k = 1962; k <= 1981; k++) {
       fs.writeFileSync(path.join(flat, `${k}.wav`), 'RIFF');
@@ -39,11 +39,11 @@ test('the bridge deletes launch-time presence files: the self-test passes at the
     await h.bridge.waitForLine(/signal self-test from the game: deleting a launch-time file reads as missing \(presence beats work\); a file created after launch is unseen/, { timeoutMs: 10000 });
     assert.equal(h.state().presenceTest.result, 'passed');
     assert.equal(h.state().presenceTest.late, 'unseen');
-    const dir = path.join(h.sb.addons, 'ClaudeWoW', 'presence', 'a');
+    const dir = path.join(h.sb.addons, 'ClaudeWoW_Runtime', 'presence', 'a');
     const st = h.state().presence;
     assert.ok(!fs.existsSync(path.join(dir, String(st.at).padStart(4, '0') + '.wav')), 'the beaten file is gone');
     assert.ok(fs.existsSync(path.join(dir, String(st.at + 1).padStart(4, '0') + '.wav')), 'the next one is still armed');
-    assert.equal(fs.readdirSync(path.join(h.sb.addons, 'ClaudeWoW', 'presence', 'b')).length, 2000, 'the other ring stays armed for the next launch');
+    assert.equal(fs.readdirSync(path.join(h.sb.addons, 'ClaudeWoW_Runtime', 'presence', 'b')).length, 2000, 'the other ring stays armed for the next launch');
   });
 });
 
