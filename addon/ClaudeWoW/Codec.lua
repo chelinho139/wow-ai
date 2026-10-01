@@ -82,12 +82,12 @@ function C.Base64(bytes)
 	return table.concat(out)
 end
 
-function C.LogLines(id, payload, lineLength, fillerBytes)
+function C.LogLines(id, payload, lineLength, fillerBytes, key)
 	local text = C.Base64(C.FrameBytes(id % 65536, payload, C.MAGIC2_LOG))
 	local total = math.ceil(#text / lineLength)
 	local lines = {}
 	for seq = 1, total do
-		lines[seq] = string.format("%s %d %d/%d %s", C.LOG_TAG, id, seq, total, text:sub((seq - 1) * lineLength + 1, seq * lineLength))
+		lines[seq] = string.format("%s %s %d %d/%d %s", C.LOG_TAG, key, id, seq, total, text:sub((seq - 1) * lineLength + 1, seq * lineLength))
 	end
 	local pad = C.LOG_TAG .. " " .. id .. " pad " .. string.rep("z", lineLength)
 	local written = 0

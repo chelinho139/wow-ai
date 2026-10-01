@@ -5,7 +5,8 @@ const path = require('path');
 const TAG = 'CWX1';
 const MAGIC = [0xc7, 0x3a];
 const STAMP = '^\\d+/\\d+ \\d\\d:\\d\\d:\\d\\d\\.\\d{3}  ';
-const LINE = new RegExp(`${STAMP}${TAG} (\\d+) (\\d+)/(\\d+) ([A-Za-z0-9+/=]+)\\s*$`);
+const KEY = /^[0-9a-f]{16,64}$/;
+const LINE = new RegExp(`${STAMP}${TAG} ([0-9a-f]{16,64}) (\\d+) (\\d+)/(\\d+) ([A-Za-z0-9+/=]+)\\s*$`);
 const MAX_OPEN_FRAMES = 8;
 const MAX_CHUNKS = 400;
 const DEFAULTS = { enabled: false, line: 900, filler: 50000, show: false, clean: true, pollMs: 250 };
@@ -27,6 +28,7 @@ const WRITE_BUCKET = 1024;
 const MIN_WRITE_SAMPLE = 2048;
 const MAX_WRITE_SAMPLES = 30;
 const MIN_CLUSTER = 3;
+const SAME_SIZE_TOLERANCE = 0.05;
 const MAX_FILLER = 65536;
 const FILLER_STEP = 1000;
 
@@ -35,16 +37,28 @@ function noteWrite(samples, bytes) {
   return [...samples, bytes].slice(-MAX_WRITE_SAMPLES);
 }
 
-function bufferSize(samples) {
+function writeClusters(samples) {
   const counts = new Map();
   for (const s of samples) counts.set(Math.floor(s / WRITE_BUCKET), (counts.get(Math.floor(s / WRITE_BUCKET)) || 0) + 1);
-  let best = null;
+  const clusters = [];
   for (const [bucket, n] of counts) {
     const total = n + (counts.get(bucket + 1) || 0);
-    if (total >= MIN_CLUSTER && (!best || bucket < best.bucket)) best = { bucket, total };
+    if (total < MIN_CLUSTER) continue;
+    const size = Math.min(...samples.filter(s => { const b = Math.floor(s / WRITE_BUCKET); return b === bucket || b === bucket + 1; }));
+    clusters.push({ size, total });
   }
-  if (!best) return 0;
-  return Math.min(...samples.filter(s => { const b = Math.floor(s / WRITE_BUCKET); return b === best.bucket || b === best.bucket + 1; }));
+  return clusters;
+}
+
+function bufferSize(samples) {
+  const clusters = writeClusters(samples);
+  if (!clusters.length) return 0;
+  let best = clusters.reduce((a, b) => (b.total > a.total || (b.total === a.total && b.size < a.size) ? b : a));
+  for (const writesPerRead of [2, 3]) {
+    const single = clusters.find(c => Math.abs(c.size * writesPerRead - best.size) / best.size < SAME_SIZE_TOLERANCE);
+    if (single) { best = single; break; }
+  }
+  return best.size;
 }
 
 function calibratedFiller(samples, configured) {
@@ -88,8 +102,10 @@ function stripOurLines(file, chunkBytes = STRIP_CHUNK_BYTES) {
     }
     if (OUR_LINE.test(carry)) removed++;
     else keep(carry);
-    if (removed > 0) fs.ftruncateSync(fd, writeAt);
-    return { before, after: removed > 0 ? writeAt : before, removed };
+    if (removed === 0) return { before, after: before, removed };
+    if (fs.fstatSync(fd).size !== before) return { before, after: before, removed, grewMeanwhile: true };
+    fs.ftruncateSync(fd, writeAt);
+    return { before, after: writeAt, removed };
   } finally {
     fs.closeSync(fd);
   }
@@ -128,13 +144,13 @@ function chatLogFile(cfg) {
   return path.join(path.dirname(path.dirname(addonDir)), 'Logs', 'WoWChatLog.txt');
 }
 
-function parseLine(line) {
+function parseLine(line, key) {
   const m = LINE.exec(line);
-  if (!m) return null;
-  const seq = Number(m[2]);
-  const total = Number(m[3]);
+  if (!m || !KEY.test(String(key || '')) || m[1] !== key) return null;
+  const seq = Number(m[3]);
+  const total = Number(m[4]);
   if (seq < 1 || total < 1 || seq > total || total > MAX_CHUNKS) return null;
-  return { id: Number(m[1]), seq, total, chunk: m[4] };
+  return { id: Number(m[2]), seq, total, chunk: m[5] };
 }
 
 function decodeFrame(base64) {
@@ -152,9 +168,10 @@ function decodeFrame(base64) {
   return { id: bytes[2] * 256 + bytes[3], text: bytes.subarray(6, 6 + len).toString('utf8') };
 }
 
-function createAssembler(onFrame) {
+function createAssembler(onFrame, { key } = {}) {
   const open = new Map();
   let carry = '';
+  let insideLine = false;
 
   function take(part) {
     const key = `${part.id}/${part.total}`;
@@ -174,20 +191,27 @@ function createAssembler(onFrame) {
   }
 
   function feed(text) {
+    if (insideLine) {
+      const lineEnd = text.indexOf('\n');
+      if (lineEnd < 0) return;
+      text = text.slice(lineEnd + 1);
+      insideLine = false;
+    }
     const all = carry + text;
     const cut = all.lastIndexOf('\n');
     if (cut < 0) { carry = all; return; }
     carry = all.slice(cut + 1);
     for (const line of all.slice(0, cut).split('\n')) {
       if (line.indexOf(TAG) < 0) continue;
-      const part = parseLine(line.replace(/\r$/, ''));
+      const part = parseLine(line.replace(/\r$/, ''), key);
       if (part) take(part);
     }
   }
 
-  function reset() {
+  function reset({ midLine = false } = {}) {
     open.clear();
     carry = '';
+    insideLine = midLine;
   }
 
   return { feed, reset };
@@ -196,9 +220,19 @@ function createAssembler(onFrame) {
 function watchChatLog(file, onFrame, opts = {}) {
   const log = opts.log || (() => {});
   const pollMs = opts.pollMs || DEFAULTS.pollMs;
-  const assembler = createAssembler(onFrame);
+  const assembler = createAssembler(onFrame, { key: opts.key });
   let offset = -1;
   let missingTold = false;
+
+  function midLineAt(position) {
+    if (position <= 0) return false;
+    try { return read(position - 1, position) !== '\n'; } catch { return true; }
+  }
+
+  function startAt(position) {
+    offset = position;
+    assembler.reset({ midLine: midLineAt(position) });
+  }
 
   function sizeNow() {
     try { return fs.statSync(file).size; } catch { return -1; }
@@ -223,8 +257,8 @@ function watchChatLog(file, onFrame, opts = {}) {
       if (offset < 0) offset = 0;
       return;
     }
-    if (offset < 0) { offset = size; return; }
-    if (size < offset) { offset = 0; assembler.reset(); }
+    if (offset < 0) { startAt(size); return; }
+    if (size < offset) startAt(0);
     if (size === offset) return;
     let text;
     try { text = read(offset, size); } catch (e) { log(`chat log transport: cannot read ${file} (${e.message})`); return; }
@@ -234,8 +268,7 @@ function watchChatLog(file, onFrame, opts = {}) {
   }
 
   function resync() {
-    offset = Math.max(sizeNow(), 0);
-    assembler.reset();
+    startAt(Math.max(sizeNow(), 0));
   }
 
   check();

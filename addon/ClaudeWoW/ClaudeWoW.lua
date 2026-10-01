@@ -750,17 +750,19 @@ function ClaudeWoW.ChatLog.Spec(data)
 	if type(spec) ~= "table" or type(spec.line) ~= "number" or type(spec.filler) ~= "number" then return nil end
 	local line, filler = math.floor(spec.line), math.floor(spec.filler)
 	if line < 60 or line > 1000 or filler < 0 or filler > 65536 then return nil end
-	return { line = line, filler = filler, show = spec.show == true or nil }
+	local key = spec.key
+	if type(key) ~= "string" or #key < 16 or #key > 64 or key:find("[^0-9a-f]") then return nil end
+	return { line = line, filler = filler, key = key, show = spec.show == true or nil }
 end
 
 function ClaudeWoW.ChatLog.Same(a, b)
 	if a == nil or b == nil then return a == b end
-	return a.line == b.line and a.filler == b.filler and a.show == b.show
+	return a.line == b.line and a.filler == b.filler and a.key == b.key and a.show == b.show
 end
 
 function ClaudeWoW.ChatLog.Mode()
 	return db ~= nil and db.settings.mode == "pixel" and db.settings.transport == "screenshot"
-		and type(db.settings.chatlog) == "table" and not ClaudeWoW.ChatLog.Paused()
+		and type(db.settings.chatlog) == "table" and type(db.settings.chatlog.key) == "string" and not ClaudeWoW.ChatLog.Paused()
 		and type(SendSystemMessage) == "function" and type(LoggingChat) == "function"
 end
 
@@ -788,7 +790,7 @@ function ClaudeWoW.ChatLog.Write(id, payload)
 	local ok, err = pcall(function()
 		if not LoggingChat() then LoggingChat(true) end
 		if not spec.show then ClaudeWoW.ChatLog.InstallFilter() end
-		local lines = Codec.LogLines(id, payload, spec.line, spec.filler)
+		local lines = Codec.LogLines(id, payload, spec.line, spec.filler, spec.key)
 		for i = 1, #lines do SendSystemMessage(lines[i]) end
 		run.chatlogStats = run.chatlogStats or { frames = 0, lines = 0, acked = 0, late = 0 }
 		run.chatlogStats.frames = run.chatlogStats.frames + 1
