@@ -1812,9 +1812,8 @@ end
 
 function ClaudeWoW.ActiveTraitConfigID()
 	local specGroup = Try(C_SpecializationInfo and C_SpecializationInfo.GetActiveSpecGroup)
-	local configID = type(specGroup) == "number" and Try(C_SpecializationInfo.GetCombatConfigIDForSpecGroup, specGroup) or nil
-	if type(configID) == "number" then return configID end
-	configID = Try(C_ClassTalents and C_ClassTalents.GetActiveConfigID)
+	if type(specGroup) ~= "number" then return nil end
+	local configID = Try(C_SpecializationInfo.GetCombatConfigIDForSpecGroup, specGroup)
 	if type(configID) == "number" then return configID end
 end
 
@@ -1835,9 +1834,10 @@ function ClaudeWoW.TraitTalentTrees()
 	if type(currencies) ~= "table" then return {} end
 	local spentByGroup = {}
 	for _, group in ipairs(currencies) do
-		local first = type(group) == "table" and type(group.currencyInfos) == "table" and group.currencyInfos[1]
+		local first = type(group) == "table" and type(group.traitNodeGroupID) == "number" and type(group.currencyInfos) == "table" and group.currencyInfos[1]
 		if type(first) == "table" and type(first.spent) == "number" then spentByGroup[group.traitNodeGroupID] = first.spent end
 	end
+	if next(spentByGroup) == nil then return {} end
 	local trees = {}
 	for _, display in ipairs(displays) do
 		if type(display) == "table" and type(display.displayName) == "string" and display.displayName ~= "" then
@@ -1860,9 +1860,10 @@ function ClaudeWoW.TabTalentTrees()
 end
 
 function ClaudeWoW.TalentTrees()
-	local trees = ClaudeWoW.TraitTalentTrees()
-	if #trees > 0 then return trees end
-	return ClaudeWoW.TabTalentTrees()
+	local trees = Try(ClaudeWoW.TraitTalentTrees)
+	if type(trees) == "table" and #trees > 0 then return trees end
+	trees = Try(ClaudeWoW.TabTalentTrees)
+	return type(trees) == "table" and trees or {}
 end
 
 function ClaudeWoW.GameContext()
