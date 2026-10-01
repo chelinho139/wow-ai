@@ -194,7 +194,7 @@ test('the chat log is cleaned only while the game is closed: transport lines go,
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const keep1 = '9/30 19:00:00.000  You feel rested.\r\n';
   const keep2 = '9/30 19:00:03.000  [1. General] Someone: CWX1 7 1/1 is only words here\r\n';
-  const ours = '9/30 19:00:01.000  CWX1 7 1/1 abcd\r\n9/30 19:00:01.000  CWX1 7 pad zzzz\r\n';
+  const ours = '9/30 19:00:01.000  CWX1 7 1/1 abcd\r\n9/30 19:00:01.000  CWX1 7 pad zzzz\r\n9/30 19:00:02.000  CWLOG1790830585 V 00001 zzzz\r\n';
   const fill = () => { fs.writeFileSync(file, keep1 + ours + keep2, 'latin1'); const old = (Date.now() - 120000) / 1000; fs.utimesSync(file, old, old); };
   const running = () => `/usr/sbin/cfprefsd agent\n${folder}/World of Warcraft Beta.app/Contents/MacOS/World of Warcraft -launcherlogin\n`;
   const closed = () => '/usr/sbin/cfprefsd agent\n/Applications/Other.app/Contents/MacOS/Other\n';
@@ -210,7 +210,7 @@ test('the chat log is cleaned only while the game is closed: transport lines go,
     fill();
     const r = CL.cleanWhenClosed(file, folder, { platform: 'darwin', listProcesses: closed });
     assert.equal(r.cleaned, true);
-    assert.equal(r.removed, 2);
+    assert.equal(r.removed, 3);
     assert.equal(fs.readFileSync(file, 'latin1'), keep1 + keep2);
     assert.equal(fs.statSync(file).ino, inode);
     assert.equal(CL.cleanWhenClosed(path.join(dir, 'missing.txt'), folder, { platform: 'darwin', listProcesses: closed }).why, 'no file');

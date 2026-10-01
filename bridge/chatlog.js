@@ -53,7 +53,8 @@ function calibratedFiller(samples, configured) {
   return { filler: Math.min(filler, MAX_FILLER), size, usable: filler <= MAX_FILLER };
 }
 
-const OUR_LINE = new RegExp(`^\\d+/\\d+ \\d\\d:\\d\\d:\\d\\d\\.\\d{3}  ${TAG} `);
+const PROBE_TAG = 'CWLOG\\d+';
+const OUR_LINE = new RegExp(`^\\d+/\\d+ \\d\\d:\\d\\d:\\d\\d\\.\\d{3}  (${TAG}|${PROBE_TAG}) `);
 const CLEAN_MIN_IDLE_MS = 60000;
 
 function stripOurLines(file) {
@@ -87,7 +88,7 @@ function clientRunning(folder, { platform = process.platform, listProcesses } = 
   } catch {
     return null;
   }
-  const prefix = folder + path.sep;
+  const prefix = folder.replace(/[\\/]+$/, '') + '/';
   return String(commands).split('\n').some(line => line.includes(prefix));
 }
 
