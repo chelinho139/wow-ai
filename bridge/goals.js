@@ -252,8 +252,8 @@ function resolveProfession(args, snap) {
 function itemProblem(store, slot, itemID) {
   if (!Number.isInteger(itemID) || itemID <= 0) return `slot ${slot}: the item ID must be a whole number above 0.`;
   const row = store.byId('items', itemID);
-  if (!row) return `slot ${slot}: {item:${itemID}} is not in the Forever client data for build ${store.build}. Look the ID up with the wowdata tools; never use an ID from memory or from Classic.`;
-  if (!Number.isInteger(row.inventoryType)) return `slot ${slot}: the synced data does not say where {item:${itemID}} is worn (claude-wow data sync --force).`;
+  if (!row) return `slot ${slot}: {item:${itemID}} is not in the ${store.flavorLabel || 'synced'} client data for build ${store.build}. Look the ID up with the wowdata tools; never use an ID from memory or from another game version.`;
+  if (!Number.isInteger(row.inventoryType)) return `slot ${slot}: the synced data does not say where {item:${itemID}} is worn (${store.syncCommand || 'claude-wow data sync'} --force).`;
   const fits = INVENTORY_TYPE_SLOTS[row.inventoryType];
   if (!fits) return `slot ${slot}: {item:${itemID}} cannot be equipped (inventory type ${row.inventoryType}).`;
   if (!fits.includes(slot)) return `slot ${slot}: {item:${itemID}} goes in slot ${fits.join(' or ')}, not ${slot}.`;
@@ -690,7 +690,7 @@ function toolSchemas() {
   return [
     {
       name: TOOL.set,
-      description: `Set, change or drop a goal for the character the game last reported. Progress is read from the game, never typed in. type "profession" (the default): only professions in the Professions line of the game context. type "gearset": one gear set, slots maps equipment slot 1 to ${EQUIP_SLOT_MAX} to an item ID from the wowdata tools; every ID must be in the synced Forever data and fit its slot; progress counts the set's items the game reports equipped. At most ${ACTIVE_GOALS_MAX} goals.`,
+      description: `Set, change or drop a goal for the character the game last reported. Progress is read from the game, never typed in. type "profession" (the default): only professions in the Professions line of the game context. type "gearset": one gear set, slots maps equipment slot 1 to ${EQUIP_SLOT_MAX} to an item ID from the wowdata tools; every ID must be in the synced client data for the player's game and fit its slot; progress counts the set's items the game reports equipped. At most ${ACTIVE_GOALS_MAX} goals.`,
       inputSchema: goalSpecSchema({ drop: { type: 'boolean', description: 'true removes the goal' } }),
     },
     {
@@ -700,7 +700,7 @@ function toolSchemas() {
     },
     {
       name: TOOL.order,
-      description: `Issue the one current order shown on the stream overlay, or clear it. Advice only. Never type a zone, NPC, item or quest name, in any letter case. Name a game thing only with a reference token, which the bridge expands to its real name from the synced Forever client data: ${GR.TOKEN_FORMS}. A map token shows only the map's name; its x and y (0 to 100) are kept with the order as your estimate, never shown as fact. Put a space or punctuation on both sides of each token. Take each ID from the wowdata tools, never from memory or Classic; an ID the data does not have refuses the whole order. {npc:ID}, {quest:ID} and {faction:ID} have no name source yet and are refused. Without synced data no token works and only reported names may appear. Every other word must be the character's name, a profession in the game's Professions line, a number, or a plain English word from a fixed vocabulary; any other word is refused and the error names it. The text you send may be up to ${GR.TOKEN_TEXT_MAX} characters with its tokens (${ORDER_TEXT_MAX} without any); the order as shown, after expansion, is at most ${ORDER_TEXT_MAX} characters. Use only ${ORDER_CHARS_TEXT}, so no slash commands or macros. Refused when the game context is more than ${CONTEXT_STALE_MS / 60000} minutes old.`,
+      description: `Issue the one current order shown on the stream overlay, or clear it. Advice only. Never type a zone, NPC, item or quest name, in any letter case. Name a game thing only with a reference token, which the bridge expands to its real name from the synced client data of the player's game (Forever or Classic Era, picked by the client build the game reports): ${GR.TOKEN_FORMS}. A map token shows only the map's name; its x and y (0 to 100) are kept with the order as your estimate, never shown as fact. Put a space or punctuation on both sides of each token. Take each ID from the wowdata tools, never from memory or another game version; an ID the data does not have refuses the whole order. {npc:ID}, {quest:ID} and {faction:ID} have no name source yet and are refused. Without synced data no token works and only reported names may appear. Every other word must be the character's name, a profession in the game's Professions line, a number, or a plain English word from a fixed vocabulary; any other word is refused and the error names it. The text you send may be up to ${GR.TOKEN_TEXT_MAX} characters with its tokens (${ORDER_TEXT_MAX} without any); the order as shown, after expansion, is at most ${ORDER_TEXT_MAX} characters. Use only ${ORDER_CHARS_TEXT}, so no slash commands or macros. Refused when the game context is more than ${CONTEXT_STALE_MS / 60000} minutes old.`,
       inputSchema: {
         type: 'object',
         properties: {

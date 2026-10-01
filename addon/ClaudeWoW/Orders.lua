@@ -27,6 +27,29 @@ local MAX_DATA_AGE_SECONDS = 300
 local ORDER_STYLE = "Header"
 local GOAL_STYLE = "Normal"
 local PLAYER = "player"
+local WATCH_LINE_HEIGHT = 13
+local WATCH_HEADER_HEIGHT = 16
+local WATCH_BLOCK_GAP = 4
+local WATCH_DASH = " - "
+local PERCENT_DONE = 100
+
+T.STYLE = { tracker = "tracker", watch = "watch" }
+
+T.WATCH_FONTS = {
+	header = { "GameFontNormal", "GameFontNormalSmall" },
+	line = { "GameFontHighlight", "GameFontHighlightSmall" },
+}
+
+T.WATCH_FILES = {
+	highlight = "Interface\\Buttons\\UI-PlusButton-Hilight",
+}
+
+local WATCH_COLORS = {
+	title = { r = 0.75, g = 0.61, b = 0 },
+	titleDone = { r = 1, g = 0.82, b = 0 },
+	line = { r = 0.8, g = 0.8, b = 0.8 },
+	lineDone = { r = 1, g = 1, b = 1 },
+}
 
 T.TEMPLATES = {
 	header = "ObjectiveTrackerModuleHeaderTemplate",
@@ -114,6 +137,25 @@ end
 
 local function FontName(pair)
 	return _G[pair[1]] ~= nil and pair[1] or pair[2]
+end
+
+function T.Style()
+	if type(ObjectiveTrackerFrame) ~= "table" and type(QuestWatchFrame) == "table" then return T.STYLE.watch end
+	return T.STYLE.tracker
+end
+
+local function Watching()
+	return card ~= nil and card.style == T.STYLE.watch
+end
+
+local function WatchColor(name)
+	local live = (name == "titleDone" and NORMAL_FONT_COLOR) or (name == "lineDone" and HIGHLIGHT_FONT_COLOR) or nil
+	local c = type(live) == "table" and type(live.r) == "number" and live or WATCH_COLORS[name]
+	return c.r, c.g, c.b
+end
+
+local function PercentText(pct)
+	return string.format(type(PERCENTAGE_STRING) == "string" and PERCENTAGE_STRING or DEFAULT_PERCENT, pct)
 end
 
 local function TrackerColor(style)
@@ -235,6 +277,20 @@ local function BuildPlainHeader(parent)
 	return header
 end
 
+local function BuildWatchHeader(parent)
+	local header = CreateFrame("Frame", nil, parent)
+	header:SetSize(CARD_WIDTH, WATCH_HEADER_HEIGHT)
+	local button = CreateFrame("Button", nil, header)
+	button:SetSize(14, 14)
+	button:SetPoint("LEFT", header, "LEFT", 0, 0)
+	button:SetHighlightTexture(T.WATCH_FILES.highlight, "ADD")
+	header.MinimizeButton = button
+	header.Text = header:CreateFontString(nil, "ARTWORK", FontName(T.WATCH_FONTS.header))
+	header.Text:SetPoint("LEFT", button, "RIGHT", 2, 0)
+	header.Text:SetJustifyH("LEFT")
+	return header
+end
+
 local function BuildHeader(parent)
 	if T.TemplateExists(T.TEMPLATES.header) then
 		local ok, header = pcall(CreateFrame, "Frame", nil, parent, T.TEMPLATES.header)
@@ -293,8 +349,8 @@ local function BuildBar(parent)
 	return BuildPlainBar(parent)
 end
 
-local function LineString(parent)
-	local line = parent:CreateFontString(nil, "ARTWORK", FontName(T.FONTS.line))
+local function LineString(parent, watch)
+	local line = parent:CreateFontString(nil, "ARTWORK", FontName(watch and T.WATCH_FONTS.line or T.FONTS.line))
 	line:SetWidth(CARD_WIDTH - TEXT_INDENT)
 	line:SetJustifyH("LEFT")
 	line:SetWordWrap(true)
@@ -304,16 +360,22 @@ end
 local SetCollapsedArt
 
 local function BuildParts(f)
-	f:SetSize(CARD_WIDTH, HEADER_HEIGHT)
+	local watch = f.style == T.STYLE.watch
+	f:SetSize(CARD_WIDTH, watch and WATCH_HEADER_HEIGHT or HEADER_HEIGHT)
 	f:SetFrameStrata("LOW")
 	f:SetClampedToScreen(true)
-	f.header = BuildHeader(f)
+	f.header = watch and BuildWatchHeader(f) or BuildHeader(f)
 	f.header:SetPoint("TOPLEFT", f, "TOPLEFT", 0, 0)
 	f.header.Text:SetText(HEADER_TEXT)
 	f.header.MinimizeButton:SetScript("OnClick", function() T.ToggleCollapsed() end)
-	f.orderText = LineString(f)
+	f.orderText = LineString(f, watch)
 	f.goalLines, f.bars = {}, {}
-	for i = 1, GOALS_MAX do f.goalLines[i] = LineString(f) end
+	for i = 1, GOALS_MAX do f.goalLines[i] = LineString(f, watch) end
+	if watch then
+		f.pctLine = LineString(f, true)
+		f:Hide()
+		return
+	end
 	for i = 1, GOALS_MAX + 1 do
 		f.bars[i] = BuildBar(f)
 		f.bars[i].Bar:EnableMouse(false)
@@ -324,6 +386,8 @@ end
 
 local function Build()
 	local f = CreateFrame("Frame", CARD_NAME, UIParent)
+	f.style = T.Style()
+	T.debug.style = f.style
 	card = f
 	local ok, err = pcall(BuildParts, f)
 	if not ok then f.buildError = err end
@@ -331,6 +395,12 @@ end
 
 SetCollapsedArt = function(collapsed)
 	local button = card.header.MinimizeButton
+	if Watching() then
+		local file = collapsed and T.FILES.plus or T.FILES.minus
+		button:SetNormalTexture(file)
+		T.debug.buttonArt = file
+		return
+	end
 	if collapsed then
 		T.debug.buttonArt = SetButtonArt(button, T.ATLAS.expand, T.ATLAS.expandPressed, T.FILES.plus)
 	else
@@ -343,7 +413,7 @@ local function ShowBar(holder, pct, y)
 	holder:SetPoint("TOPLEFT", card, "TOPLEFT", TEXT_INDENT, y)
 	holder.Bar:SetMinMaxValues(0, 100)
 	holder.Bar:SetValue(pct)
-	holder.Bar.Label:SetText(string.format(type(PERCENTAGE_STRING) == "string" and PERCENTAGE_STRING or DEFAULT_PERCENT, pct))
+	holder.Bar.Label:SetText(PercentText(pct))
 	holder:Show()
 	return y - BAR_HEIGHT
 end
@@ -357,7 +427,39 @@ local function ShowLine(line, text, style, y)
 	return y - line:GetStringHeight() - LINE_GAP
 end
 
+local function ShowWatchLine(line, text, color, y)
+	line:ClearAllPoints()
+	line:SetPoint("TOPLEFT", card, "TOPLEFT", 0, y)
+	line:SetText(text)
+	line:SetTextColor(WatchColor(color))
+	line:Show()
+	return y - math.max(WATCH_LINE_HEIGHT, line:GetStringHeight())
+end
+
+local function WatchLayout(view)
+	local collapsed = Collapsed()
+	SetCollapsedArt(collapsed)
+	card.orderText:Hide()
+	card.pctLine:Hide()
+	for _, line in ipairs(card.goalLines) do line:Hide() end
+	if collapsed then
+		card:SetHeight(WATCH_HEADER_HEIGHT)
+		return
+	end
+	local order = view.order
+	local orderDone = order.pct == PERCENT_DONE
+	local y = ShowWatchLine(card.orderText, order.text, orderDone and "titleDone" or "title", -WATCH_HEADER_HEIGHT)
+	if order.pct then
+		y = ShowWatchLine(card.pctLine, WATCH_DASH .. PercentText(order.pct), orderDone and "lineDone" or "line", y)
+	end
+	for i, goal in ipairs(view.goals) do
+		y = ShowWatchLine(card.goalLines[i], WATCH_DASH .. goal.title .. ": " .. PercentText(goal.pct), goal.pct == PERCENT_DONE and "lineDone" or "line", y)
+	end
+	card:SetHeight(-y)
+end
+
 local function Layout(view)
+	if Watching() then return WatchLayout(view) end
 	local collapsed = Collapsed()
 	SetCollapsedArt(collapsed)
 	card.orderText:Hide()
@@ -383,8 +485,24 @@ local function Layout(view)
 	card:SetHeight(-y)
 end
 
+local function WatchAnchor(watch)
+	if watch:IsShown() then
+		card:SetPoint("TOPLEFT", watch, "BOTTOMLEFT", 0, -WATCH_BLOCK_GAP)
+		T.debug.anchoredTo = "watch"
+	else
+		card:SetPoint("TOPLEFT", watch, "TOPLEFT", 0, 0)
+		T.debug.anchoredTo = "watch-top"
+	end
+end
+
+local function TrackerFrame()
+	if Watching() then return QuestWatchFrame end
+	return ObjectiveTrackerFrame
+end
+
 local function Anchor()
 	card:ClearAllPoints()
+	if Watching() and type(QuestWatchFrame) == "table" then return WatchAnchor(QuestWatchFrame) end
 	local tracker = ObjectiveTrackerFrame
 	if type(tracker) == "table" and tracker.NineSlice and tracker:IsShown() and tracker.NineSlice:IsShown() then
 		card:SetPoint("TOPLEFT", tracker.NineSlice, "BOTTOMLEFT", TRACKER_NINESLICE_INSET, -TRACKER_GAP)
@@ -399,7 +517,7 @@ local function Anchor()
 end
 
 local function FollowTracker()
-	local tracker = ObjectiveTrackerFrame
+	local tracker = TrackerFrame()
 	if T.followingTracker or type(tracker) ~= "table" or type(tracker.HookScript) ~= "function" then return end
 	T.followingTracker = true
 	local function Reanchor()

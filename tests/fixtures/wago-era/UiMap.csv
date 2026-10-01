@@ -1,0 +1,3 @@
+Name_lang,ID,ParentUiMapID,Flags,System,Type,Field_5_5_4_67090_006,Field_5_5_4_67090_007,VisibilityPlayerConditionID,HelpTextPosition,Field_1_14_4_50252_011,LevelRangeMin,LevelRangeMax
+"Era Fixture World",9101,0,0,0,2,0,0,0,0,0,0,0
+"Era Fixture Vale",9102,9101,0,0,3,0,0,0,0,0,0,0

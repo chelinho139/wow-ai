@@ -89,9 +89,14 @@ function farmView(store, item, lines, minSamples, asOfContext) {
   return out;
 }
 
+const FLAVORS_WITHOUT_AUCTION_PRICES = Object.freeze(new Set(['classic_era']));
+const NO_AUCTION_PRICES_NOTE = 'Auction house prices are not collected on this client (Classic Era) yet; only vendor prices are. Say you do not know the auction price.';
+
 function priceView(store, item, lines, asOfContext) {
-  const { ah, vendors } = OB.prices(lines, item.id);
-  const notes = new Set();
+  const auctionsCollected = !(store && FLAVORS_WITHOUT_AUCTION_PRICES.has(store.flavor));
+  const { ah: seen, vendors } = OB.prices(lines, item.id);
+  const ah = auctionsCollected ? seen : null;
+  const notes = new Set(auctionsCollected ? [] : [NO_AUCTION_PRICES_NOTE]);
   const vendorRows = vendors.map(v => {
     const placed = v.mapID ? observedPoint(store, { mapID: v.mapID, x: null, y: null, n: v.n }, notes) : null;
     return { npc: sourceView({ type: 'npc', id: v.npcID, spell: 0 }), price: v.price, stack: v.stack, unitPrice: Math.round(v.price / v.stack), n: v.n, asOf: v.asOf, trust: OB.TRUST, map: placed ? placed.map : null };
@@ -196,7 +201,7 @@ function toolSchemas() {
   return [
     {
       name: TOOL.farm,
-      description: `Where the player's own loot dropped an item: for each loot source (an NPC by ID, a gathering object by ID, or fishing in a zone), the observed drop rate with its sample size n, the maps where it dropped and the average spot there. Only data the game reported to this bridge (trust "observed") and the synced Forever client data (item and map names). Sources with fewer than ${OB.MIN_SAMPLES} loot windows show no rate. Rates of different sources are never added together. NPC and object names have no verified source: refer to them only by what the player sees. An itemID the game data does not have is refused.`,
+      description: `Where the player's own loot dropped an item: for each loot source (an NPC by ID, a gathering object by ID, or fishing in a zone), the observed drop rate with its sample size n, the maps where it dropped and the average spot there. Only data the game reported to this bridge (trust "observed") and the synced client data of the player's game (item and map names). Sources with fewer than ${OB.MIN_SAMPLES} loot windows show no rate. Rates of different sources are never added together. NPC and object names have no verified source: refer to them only by what the player sees. An itemID the game data does not have is refused.`,
       inputSchema: {
         type: 'object',
         properties: { itemID: { type: 'integer', minimum: 1, description: 'The item ID, from the wowdata tools' } },
@@ -205,7 +210,7 @@ function toolSchemas() {
     },
     {
       name: TOOL.price,
-      description: 'The prices the player saw for an item: the auction house results of searches the player ran in game, and vendor windows the player opened, in copper, with n and asOf. Nothing here comes from the web or from memory, and the bridge never searches the auction house. An itemID the game data does not have is refused. No observation means you do not know the price.',
+      description: 'The prices the player saw for an item: the auction house results of searches the player ran in game, and vendor windows the player opened, in copper, with n and asOf. On Classic Era auction prices are not collected yet: only vendor prices. Nothing here comes from the web or from memory, and the bridge never searches the auction house. An itemID the game data does not have is refused. No observation means you do not know the price.',
       inputSchema: {
         type: 'object',
         properties: { itemID: { type: 'integer', minimum: 1, description: 'The item ID, from the wowdata tools' } },
@@ -214,7 +219,7 @@ function toolSchemas() {
     },
     {
       name: TOOL.route,
-      description: `Draw one ordered route on the player's world map, replacing the last one, or clear it. Each point is a map token {map:ID,x,y} with the uiMapID from the wowdata tools and x, y from 0 to 100. A map ID the synced Forever data does not have refuses the whole route. Your x and y are shown in game only as a model estimate. At most ${ROUTE_POINTS_MAX} points. The route reaches the game on the next slot it loads anyway; no slot is spent for it. Advice only: it moves nothing and acts for no one.`,
+      description: `Draw one ordered route on the player's world map, replacing the last one, or clear it. Each point is a map token {map:ID,x,y} with the uiMapID from the wowdata tools and x, y from 0 to 100. A map ID the synced client data of the player's game does not have refuses the whole route. Your x and y are shown in game only as a model estimate. At most ${ROUTE_POINTS_MAX} points. The route reaches the game on the next slot it loads anyway; no slot is spent for it. Advice only: it moves nothing and acts for no one.`,
       inputSchema: {
         type: 'object',
         properties: {

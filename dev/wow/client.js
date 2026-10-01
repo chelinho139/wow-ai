@@ -77,6 +77,8 @@ class WowClient {
       width: 1920,
       height: 1080,
       interface: 16001,
+      version: '1.60.1',
+      build: '70058',
       loadOutOfDate: false,
       hasScreenshot: true,
       shotDelayMs: 120,
@@ -216,7 +218,7 @@ class WowClient {
     this.runLua(fs.readFileSync(STUB), '@wow_stub.lua');
     this.runLua(fs.readFileSync(PRELUDE), '@prelude.lua');
     const o = this.opts;
-    this.runLua(`DEV.interface = ${Number(o.interface)}; DEV.loadOutOfDate = ${!!o.loadOutOfDate}; DEV.width = ${o.width}; DEV.height = ${o.height}`);
+    this.runLua(`DEV.interface = ${Number(o.interface)}; DEV.version = ${luaQuote(String(o.version))}; DEV.build = ${luaQuote(String(o.build))}; DEV.loadOutOfDate = ${!!o.loadOutOfDate}; DEV.width = ${o.width}; DEV.height = ${o.height}`);
     this.runLua(`for _, n in ipairs({${this.indexed.map(luaQuote).join(',')}}) do DEV.indexed[n] = true end`);
     this.runLua(`for _, n in ipairs({${(o.disabled || []).map(luaQuote).join(',')}}) do DEV.disabled[n] = true end`);
     if (!o.hasScreenshot) this.runLua('Screenshot = nil');

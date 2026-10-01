@@ -27,16 +27,19 @@ T.PROBES = {
 	"UnitXP",
 	"UnitXPMax",
 	"C_Map.GetBestMapForUnit",
-	"C_SkillInfo.GetNumSkillLines",
-	"C_SkillInfo.GetSkillLineInfo",
+	{ "C_SkillInfo.GetNumSkillLines", "GetNumSkillLines" },
+	{ "C_SkillInfo.GetSkillLineInfo", "GetSkillLineInfo" },
 	"C_Item.GetItemCount",
 	"C_Container.GetContainerNumFreeSlots",
 	"GetInventoryItemID",
-	"C_Reputation.GetFactionDataByID",
+	{ "C_Reputation.GetFactionDataByID", "GetFactionInfoByID" },
 	"C_Reputation.GetWatchedFactionData",
 }
 T.URGENT_EVENTS = { PLAYER_LEVEL_UP = true, PLAYER_DEAD = true, NEW_RECIPE_LEARNED = true }
 T.CHANGE_EVENTS = { "PLAYER_MONEY", "PLAYER_XP_UPDATE", "ZONE_CHANGED_NEW_AREA", "BAG_UPDATE_DELAYED", "PLAYER_EQUIPMENT_CHANGED", "SKILL_LINES_CHANGED", "UPDATE_FACTION" }
+T.FACTION_STANDING = 3
+T.FACTION_BAR_VALUE = 6
+T.FACTION_ID = 14
 T.CHARS_MAX = 20
 T.KEY_MAX_CHARS = 64
 T.KEY_MAX_BYTES = 256
@@ -50,6 +53,12 @@ local function Try(fn, ...)
 	if type(fn) ~= "function" then return nil end
 	local ok, a, b, c, d = pcall(fn, ...)
 	if ok then return a, b, c, d end
+end
+
+local function Returns(fn, ...)
+	if type(fn) ~= "function" then return nil end
+	local r = { pcall(fn, ...) }
+	if r[1] then return r end
 end
 
 local function Int(n)
@@ -164,7 +173,12 @@ function T.Missing()
 	local probes = { T.PROBES, state.observed and ClaudeWoWObserved and ClaudeWoWObserved.PROBES or {} }
 	for _, list in ipairs(probes) do
 		for _, name in ipairs(list) do
-			if type(Lookup(name)) ~= "function" then out[#out + 1] = name end
+			local names = type(name) == "table" and name or { name }
+			local found = false
+			for _, n in ipairs(names) do
+				if type(Lookup(n)) == "function" then found = true end
+			end
+			if not found then out[#out + 1] = names[1] end
 		end
 	end
 	return out
@@ -227,6 +241,17 @@ local function Equipment()
 	return table.concat(parts, ",")
 end
 
+local function FactionStanding(id)
+	if type(C_Reputation.GetFactionDataByID) == "function" then
+		local f = Try(C_Reputation.GetFactionDataByID, id)
+		if type(f) == "table" then return f.reaction, f.currentStanding end
+		return nil
+	end
+	local r = Returns(GetFactionInfoByID, id)
+	if not r or r[T.FACTION_ID + 1] ~= id then return nil end
+	return r[T.FACTION_STANDING + 1], r[T.FACTION_BAR_VALUE + 1]
+end
+
 local function Factions()
 	if not C_Reputation then return nil end
 	local ids = {}
@@ -235,10 +260,11 @@ local function Factions()
 	if type(bar) == "table" and WholeNumber(bar.factionID) and bar.factionID > 0 then ids[#ids + 1] = bar.factionID end
 	local parts, seen = {}, {}
 	for _, id in ipairs(ids) do
-		local f = not seen[id] and Try(C_Reputation.GetFactionDataByID, id)
+		local reaction, standing
+		if not seen[id] then reaction, standing = FactionStanding(id) end
 		seen[id] = true
-		if type(f) == "table" and WholeNumber(f.reaction) and type(f.currentStanding) == "number" and #parts < T.WATCH_FACTIONS_MAX + 1 then
-			parts[#parts + 1] = Int(id) .. "=" .. Int(f.reaction) .. "/" .. Int(f.currentStanding)
+		if WholeNumber(reaction) and type(standing) == "number" and #parts < T.WATCH_FACTIONS_MAX + 1 then
+			parts[#parts + 1] = Int(id) .. "=" .. Int(reaction) .. "/" .. Int(standing)
 		end
 	end
 	return table.concat(parts, ",")

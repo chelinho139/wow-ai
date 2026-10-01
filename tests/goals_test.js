@@ -311,7 +311,7 @@ test('order tokens: unknown IDs, a malformed map token, a kind with no name sour
       assert.match(res.text, /The whole order was refused and nothing was saved\./, text);
       assert.match(res.text, re, text);
     };
-    await refuse('Buy 2 {item:999}', /\{item:999\}: that item ID is not in the Forever client data for build 1\.60\.1\.200\. Look the ID up with the wowdata tools; never use an ID from memory or from Classic\./);
+    await refuse('Buy 2 {item:999}', /\{item:999\}: that item ID is not in the Forever client data for build 1\.60\.1\.200\. Look the ID up with the wowdata tools; never use an ID from memory or from another game version\./);
     await refuse('Buy 2 {item:501} and 5 {item:2318}', /\{item:2318\}: that item ID is not in the Forever client data/);
     await refuse('go to {map:4242,10,10}', /\{map:4242,10,10\}: that map ID/);
     await refuse('go to {map:9003,101,10}', /coordinates run from 0 to 100/);
@@ -401,11 +401,11 @@ test('order_issue says when the data phrase check was skipped for lack of synced
     assert.equal(res.ok, true, res.text);
     assert.match(res.text, /No game data is synced for this build yet \(claude-wow data sync\).* Multi-word game names were checked only against the short built-in list\./);
   } finally { none.cleanup(); }
-  const mismatch = rig({ gameData: openFixtureData, ctx: BONE_CONTEXT.replace('client 1.60.1.70124', 'client 1.59.0.1') });
+  const mismatch = rig({ gameData: openFixtureData, ctx: BONE_CONTEXT.replace('client 1.60.1.70124', 'client 1.60.0.1') });
   try {
     const res = await mismatch.store.call('order_issue', { text: 'take the low road to 150' });
     assert.equal(res.ok, true, res.text);
-    assert.match(res.text, /The synced game data is build 1\.60\.1\.200, which is not in the client's build family \(client 1\.59\.0\.1\)\. Multi-word game names were checked only against the short built-in list\./, 'the note names the real reason');
+    assert.match(res.text, /The synced game data is build 1\.60\.1\.200, which is not in the client's build family \(client 1\.60\.0\.1\)\. Multi-word game names were checked only against the short built-in list\./, 'the note names the real reason');
     assert.doesNotMatch(res.text, /try again|reference token/, 'a saved order gets no retry or token advice');
   } finally { mismatch.cleanup(); }
   const synced = rig({ gameData: openFixtureData });
@@ -489,20 +489,20 @@ test('order tokens: without synced data, or with data for another build or an un
     assert.equal(tokenOrder.ok, false);
     assert.match(tokenOrder.text, /No game data is synced for this build yet \(claude-wow data sync\).*only names the game itself reported may appear/);
     const word = G.validateOrderText('Buy 2 in Silverpine', NAMES, none);
-    assert.match(word.text, /"silverpine".*Tokens work only once game data is synced for the client's build \(claude-wow data sync\); until then only names the game reported may appear\./);
+    assert.match(word.text, /"silverpine".*Tokens work only once game data is synced for the client's build \(claude-wow data sync, with --flavor classic_era for Classic Era\); until then only names the game reported may appear\./);
     assert.deepEqual(G.validateOrderText('Raise Leatherworking to 150', NAMES, none), { ok: true, text: 'Raise Leatherworking to 150' }, 'Phase 0 orders work as before');
     assert.match(G.validateOrderText('Buy 2 {item:501}', NAMES, null).text, /No game data is synced/);
   } finally { fs.rmSync(empty, { recursive: true, force: true }); }
-  const mismatch = G.validateOrderText('Buy 2 {item:501}', NAMES, fixtureData('1.61.0.1'));
-  assert.match(mismatch.text, /build 1\.60\.1\.200, which is not in the client's build family \(client 1\.61\.0\.1\)/);
+  const mismatch = G.validateOrderText('Buy 2 {item:501}', NAMES, fixtureData('1.60.2.1'));
+  assert.match(mismatch.text, /build 1\.60\.1\.200, which is not in the client's build family \(client 1\.60\.2\.1\)/);
   const unknown = G.validateOrderText('Buy 2 {item:501}', NAMES, fixtureData(''));
   assert.match(unknown.text, /has not reported its client build/);
 
-  const r = rig({ gameData: openFixtureData, ctx: BONE_CONTEXT.replace('client 1.60.1.70124', 'client 1.59.0.1') });
+  const r = rig({ gameData: openFixtureData, ctx: BONE_CONTEXT.replace('client 1.60.1.70124', 'client 1.60.0.1') });
   try {
     const res = await r.store.call('order_issue', { text: 'Buy 2 {item:501}' });
     assert.equal(res.ok, false, 'the client build comes from the game context the order is checked against');
-    assert.match(res.text, /not in the client's build family \(client 1\.59\.0\.1\)/);
+    assert.match(res.text, /not in the client's build family \(client 1\.60\.0\.1\)/);
   } finally { r.cleanup(); }
 });
 
@@ -568,7 +568,7 @@ test('order_issue is refused when the game context is older than 15 minutes; cle
 
 test('context cut by the addon at 900 bytes: the last Professions entry is dropped, so a cut rank never counts', async () => {
   const src = fs.readFileSync(ADDON, 'utf8');
-  assert.equal(Number((/^local CONTEXT_MAX = (\d+)/m.exec(src) || [])[1]), G.ADDON_CONTEXT_MAX_BYTES, 'mirrors CONTEXT_MAX in ClaudeWoW.lua');
+  assert.equal(Number((/^local CTX = \{ MAX = (\d+)/m.exec(src) || [])[1]), G.ADDON_CONTEXT_MAX_BYTES, 'mirrors CTX.MAX in ClaudeWoW.lua');
   const head = 'Character: Bone on Forever, level 20 Orc Rogue (Horde)\n';
   const tail = 'Professions: Leatherworking 107/150, Skinning 18';
   const cut = head + 'Money: 1g'.padEnd(G.ADDON_CONTEXT_MAX_BYTES - head.length - tail.length - 1, '.') + '\n' + tail;
@@ -611,7 +611,7 @@ test('MCP tool schemas: goal_set, goal_list, order_issue and the two vote tools;
   assert.deepEqual(G.toolSchemas().map(t => t.name), ['goal_set', 'goal_list', 'order_issue', 'goal_vote_open', 'goal_vote_close']);
   assert.equal(G.toolSchemas()[2].inputSchema.properties.text.maxLength, GR.TOKEN_TEXT_MAX, 'raw text may carry tokens; the 90-character cap applies after expansion');
   assert.match(G.toolSchemas()[2].description, /\{item:ID\}, \{skill:ID\} or \{map:ID,x,y\}/);
-  assert.match(G.toolSchemas()[2].description, /never from memory or Classic/);
+  assert.match(G.toolSchemas()[2].description, /never from memory or another game version/);
   assert.deepEqual(LP.GOAL_WRITE_TOOLS, ['mcp__claude-wow__goal_set', 'mcp__claude-wow__order_issue', 'mcp__claude-wow__goal_vote_open', 'mcp__claude-wow__goal_vote_close', 'mcp__claude-wow__route_draw']);
   const acfg = P.withRunDeniedRules({ allowedTools: ['WebSearch'], deniedTools: ['Bash(rm:*)'] }, LP.GOAL_WRITE_TOOLS);
   assert.deepEqual(acfg.deniedTools, ['Bash(rm:*)', ...LP.GOAL_WRITE_TOOLS]);

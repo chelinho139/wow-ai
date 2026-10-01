@@ -38,6 +38,7 @@ const REASON = Object.freeze({
   noData: 'noData',
   buildMismatch: 'buildMismatch',
   buildUnknown: 'buildUnknown',
+  noFlavor: 'noFlavor',
   tableUnavailable: 'tableUnavailable',
   badToken: 'badToken',
   unknownId: 'unknownId',
@@ -45,7 +46,7 @@ const REASON = Object.freeze({
   unsupportedKind: 'unsupportedKind',
   unsafeName: 'unsafeName',
 });
-const STORE_REASONS = Object.freeze(new Set([REASON.noData, REASON.buildMismatch, REASON.buildUnknown]));
+const STORE_REASONS = Object.freeze(new Set([REASON.noData, REASON.buildMismatch, REASON.buildUnknown, REASON.noFlavor]));
 const PROBLEM = Object.freeze({ empty: 'empty', length: 'length', char: 'char', glued: 'glued', words: 'words', phrases: 'phrases', refs: 'refs' });
 
 function parseRefs(text) {
@@ -92,7 +93,9 @@ function resolveMap(store, args) {
 const RESOLVERS = Object.freeze({ item: resolveNamed('items'), skill: resolveNamed('skilllines'), map: resolveMap });
 
 function storeProblem(store) {
-  if (!store || !store.build) return REASON.noData;
+  if (!store) return REASON.noData;
+  if (!store.flavor) return store.clientBuild ? REASON.noFlavor : REASON.buildUnknown;
+  if (!store.build) return REASON.noData;
   if (store.buildCheck === GD.BUILD_CHECK.mismatch) return REASON.buildMismatch;
   if (store.buildCheck === GD.BUILD_CHECK.unknown) return REASON.buildUnknown;
   return null;
@@ -127,22 +130,41 @@ function createExpander(store) {
   return { expand };
 }
 
-function storeProblemShort(reason, store) {
-  if (reason === REASON.noData) return 'No game data is synced for this build yet (claude-wow data sync).';
-  if (reason === REASON.buildMismatch) return `The synced game data is build ${store.build}, which is not in the client's build family (client ${store.clientBuild}).`;
+function syncHint(store) {
+  return (store && store.syncCommand) || 'claude-wow data sync';
+}
+
+function noDataText(store) {
+  return `No game data is synced for this build yet (${syncHint(store)})`;
+}
+
+function unknownBuildText(store) {
+  if (!store || !store.build) return 'The game has not reported its client build, so the bridge cannot tell which game data belongs to it.';
   return `The game has not reported its client build, so the synced data (build ${store.build}) cannot be checked against it.`;
 }
 
+function noFlavorText(store) {
+  return `Client build ${store.clientBuild} belongs to no game the bridge has data for (Forever is 1.60.*, Classic Era is 1.15.*), so no game data is used.`;
+}
+
+function storeProblemShort(reason, store) {
+  if (reason === REASON.noData) return `${noDataText(store)}.`;
+  if (reason === REASON.noFlavor) return noFlavorText(store);
+  if (reason === REASON.buildMismatch) return `The synced game data is build ${store.build}, which is not in the client's build family (client ${store.clientBuild}).`;
+  return unknownBuildText(store);
+}
+
 function storeProblemText(reason, store) {
-  if (reason === REASON.noData) return 'No game data is synced for this build yet (claude-wow data sync), so no reference token can be checked. Until it is, only names the game itself reported may appear.';
-  if (reason === REASON.buildMismatch) return `The synced game data is build ${store.build}, which is not in the client's build family (client ${store.clientBuild}). No reference token is expanded until the data matches the client (claude-wow data sync).`;
-  return `The game has not reported its client build, so the synced data (build ${store.build}) cannot be checked against it. Send any message from the game, then try again.`;
+  if (reason === REASON.noData) return `${noDataText(store)}, so no reference token can be checked. Until it is, only names the game itself reported may appear.`;
+  if (reason === REASON.noFlavor) return `${noFlavorText(store)} No reference token can be checked; only names the game itself reported may appear.`;
+  if (reason === REASON.buildMismatch) return `The synced game data is build ${store.build}, which is not in the client's build family (client ${store.clientBuild}). No reference token is expanded until the data matches the client (${syncHint(store)}).`;
+  return `${unknownBuildText(store)} Send any message from the game, then try again.`;
 }
 
 function tokenErrorText(error, store) {
   const where = store && store.build ? ` for build ${store.build}` : '';
   switch (error.reason) {
-    case REASON.unknownId: return `${error.token}: that ${error.kind} ID is not in the Forever client data${where}. Look the ID up with the wowdata tools; never use an ID from memory or from Classic.`;
+    case REASON.unknownId: return `${error.token}: that ${error.kind} ID is not in the ${(store && store.flavorLabel) || 'synced'} client data${where}. Look the ID up with the wowdata tools; never use an ID from memory or from another game version.`;
     case REASON.tableUnavailable: return `${error.token}: the ${error.kind} table is missing or damaged in the synced data, so the ID cannot be checked.`;
     case REASON.badToken: return `${error.token} is not a well-formed token. Use ${TOKEN_FORMS}, with whole-number IDs and x, y from 0 to 100.`;
     case REASON.outOfRange: return `${error.token}: map coordinates run from 0 to 100.`;
@@ -159,7 +181,7 @@ function errorsText(errors, store) {
 }
 
 function tokenHint() {
-  return `Name a game thing with a reference token instead (${TOKEN_FORMS}), using an ID from the wowdata tools; the bridge writes the real name. Tokens work only once game data is synced for the client's build (claude-wow data sync); until then only names the game reported may appear.`;
+  return `Name a game thing with a reference token instead (${TOKEN_FORMS}), using an ID from the wowdata tools; the bridge writes the real name. Tokens work only once game data is synced for the client's build (claude-wow data sync, with --flavor classic_era for Classic Era); until then only names the game reported may appear.`;
 }
 
 function gluedText(token) {
@@ -242,10 +264,8 @@ function buildPhraseIndex(store) {
   }
   for (const row of store.rows('items')) {
     const name = typeof row.name === 'string' ? row.name : '';
-    const book = SPELL_ITEM_PREFIX.exec(name);
-    if (book) { add(book[1], SPELL_ITEM_SOURCE); continue; }
-    const rune = RUNE_ITEM_PREFIX.exec(name);
-    if (rune && !ordinaryRemainder(rune[1])) add(rune[1], SPELL_ITEM_SOURCE);
+    const taught = SPELL_ITEM_PREFIX.exec(name) || RUNE_ITEM_PREFIX.exec(name);
+    if (taught && !ordinaryRemainder(taught[1])) add(taught[1], SPELL_ITEM_SOURCE);
   }
   return index;
 }
@@ -261,7 +281,7 @@ function dataPhrases(store) {
   const key = indexKey(store);
   if (phraseIndexes.has(key)) return { index: phraseIndexes.get(key), note: '' };
   const missing = [...Object.keys(PHRASE_SOURCES), 'items'].filter(entity => !store.has(entity));
-  if (missing.length) return { index: null, note: `The synced game data is missing or has a damaged ${missing.join(', ')} table (claude-wow data sync --force).` };
+  if (missing.length) return { index: null, note: `The synced game data is missing or has a damaged ${missing.join(', ')} table (${syncHint(store)} --force).` };
   const index = buildPhraseIndex(store);
   phraseIndexes.clear();
   phraseIndexes.set(key, index);
