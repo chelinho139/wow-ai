@@ -344,7 +344,8 @@ function createCampaigns(opts) {
     let fired = fireMatching(c, edges, stamp, Infinity);
     if (!fired.length && standingToo) fired = fireMatching(c, standingHappenings(standingOf(character)).map(h => ({ ...h, by: `${h.type} (already there)` })), stamp, 1);
     if (!fired.length) return [];
-    try { save(file, doc, `beat ${fired.map(i => c.beats[i].id).join(', ')} fired`, character); } catch (e) {
+    const firedText = c.fired.slice(-fired.length).map(f => `beat ${f.id} fired by ${f.by}`).join(', ');
+    try { save(file, doc, firedText, character); } catch (e) {
       log(`campaign: could not save ${file} (${e.message})`);
       return [];
     }
