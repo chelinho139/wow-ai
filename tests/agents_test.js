@@ -627,3 +627,20 @@ test('per-chat settings from /claude flags: each agent gets the ones it has, in 
   assert.equal(A.withChatSettings({ model: 'keep' }, 'claude', { model: '' }).model, 'keep', 'an unset chat setting leaves config.json alone');
   assert.equal(A.withChatSettings({}, 'hermes', chosen).effort, undefined, 'an agent never gets a setting it cannot take');
 });
+
+test('a plugin block sets the model and effort for its chats; a chat flag still wins; nothing else comes through', () => {
+  const agentCfg = { model: 'opus[1m]', effort: 'max', permissionMode: 'acceptEdits' };
+  const askOpts = { cwd: '', agents: { claude: { model: 'claude-sonnet-5-5', effort: 'medium', permissionMode: 'bypassPermissions' } } };
+  const ask = A.withPluginSettings(agentCfg, 'claude', askOpts);
+  assert.equal(ask.model, 'claude-sonnet-5-5');
+  assert.equal(ask.effort, 'medium');
+  assert.equal(ask.permissionMode, 'acceptEdits', 'a plugin block cannot change the permission mode');
+  assert.equal(agentCfg.model, 'opus[1m]', 'the agent config is not mutated');
+  const chat = A.withChatSettings(ask, 'claude', { model: 'opus[1m]', effort: 'max' });
+  assert.equal(chat.model, 'opus[1m]');
+  assert.equal(chat.effort, 'max', 'a chat that asks for max effort still gets it');
+  assert.deepEqual(A.withPluginSettings(agentCfg, 'claude', {}), agentCfg, 'no block keeps config.json');
+  assert.deepEqual(A.withPluginSettings(agentCfg, 'codex', askOpts), agentCfg, 'another agent ignores the claude block');
+  assert.equal(A.withPluginSettings(agentCfg, 'claude', { agents: { claude: { model: 'x y; rm' } } }).model, 'opus[1m]', 'a malformed value is ignored');
+  assert.equal(A.withPluginSettings({}, 'hermes', { agents: { hermes: { effort: 'high' } } }).effort, undefined, 'an agent never gets a setting it cannot take');
+});

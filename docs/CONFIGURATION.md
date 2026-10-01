@@ -42,6 +42,7 @@ A `config.json` from before agents existed kept Claude's settings at the top lev
 | Key | Default | Meaning |
 |---|---|---|
 | `plugins.default` | `"ask"` | The plugin for chats that are not bound to one (`plugin=` flag): `ask` (general in-game chat) or `claude-code` (an agent session in a folder). The bridge refuses to start on a name it does not have; `--help` lists them. |
+| `plugins.<id>.agents.<agent>.model`, `.effort` | unset | The model and effort that plugin's chats run with, over `agents.<agent>`. A chat's own `--model` / `--effort` still wins. Example: `"ask": { "agents": { "claude": { "model": "claude-sonnet-5-5", "effort": "medium" } } }` keeps quick in-game questions off a max-effort Opus default. Only `model` and `effort` are read; other keys are ignored. |
 | `plugins.ask.cwd` | `""` | The scratch folder the `ask` plugin runs the agent in (it has no project). Empty = the per-user application data folder (`~/Library/Application Support/claude-wow/ask` on macOS, `%LOCALAPPDATA%\claude-wow\ask` on Windows, `~/.local/share/claude-wow/ask` on Linux), created on demand. |
 
 | `plugins.live.enabled` | `true` | `false` keeps the bridge from opening the live-session socket (`live.sock` in the home folder). |
