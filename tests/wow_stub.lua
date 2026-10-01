@@ -91,6 +91,7 @@ function Methods.IsVisible(self) return self.shown end
 function Methods.SetText(self, t) self.text = t; table.insert(STUB.texts, tostring(t)) end
 function Methods.GetText(self) return self.text or "" end
 function Methods.GetName(self) return self.name end
+function Methods.GetChildren(self) return (table.unpack or unpack)(self.children) end
 function Methods.GetParent(self) return self.parent end
 function Methods.GetWidth(self) return self.width or 400 end
 function Methods.GetHeight(self) return self.height or 300 end
