@@ -15,6 +15,8 @@ const ADDON = 'ClaudeWoW';
 const OLD_ADDONS = ['WoWAI', 'WoWClaude']; // newest first
 const OLD_ADDON_PATH = new RegExp('(^|[\\\\/])(' + OLD_ADDONS.join('|') + ')([\\\\/]|$)');
 const OLD_SAVED_FILE = new RegExp('(' + OLD_ADDONS.join('|') + ')\\.lua$');
+const TOC_INTERFACE = '11509, 16001';
+const OLD_TOC_INTERFACES = Object.freeze(['16001']);
 
 function fromHex(hex) {
   return Buffer.from(hex || '', 'hex').toString('utf8');
@@ -404,7 +406,7 @@ function visionHint(image) {
 const SITUATION_RULE = 'A message may open with a block marked as the player\'s in-game situation, reported by the addon the moment they wrote it (not written by them): character, zone, map coordinates, money, professions, quest log. Use it when the request is about the game or the character (questions, macros, addon code, gear advice); ignore it when the task is unrelated. Every message carries a fresh one, so the latest block is where they are now. Items, spells or quests the player shift-clicked into a message appear as [Name] in the text, with their tooltip in a "Linked from the game" block at the end of the message.';
 
 const WHERE_HINT = [
-  'The situation block\'s "Game:" line names the client. World of Warcraft: Forever is its own game: its NPCs, quests, drops and spawns can differ from retail and from Classic, so web databases and wikis (Wowhead and the like) are unverified guides there.',
+  'The situation block\'s "Game:" line names the client. World of Warcraft: Forever is its own game: its NPCs, quests, drops and spawns can differ from retail and from Classic, so web databases and wikis (Wowhead and the like) are unverified guides there. World of Warcraft Classic (interface 115xx) is Classic Era: Classic web databases describe it, but the wowdata tools hold Forever data only (their answers are labeled build-mismatch there) and reference tokens are refused.',
   'Coordinates are percent of the map with that uiMapID, 0 to 100, with 0,0 at the top left; give them as "x, y" and mark the spot on the map as well.',
 ];
 
@@ -1171,7 +1173,7 @@ function luaWidgets(set) {
 }
 
 module.exports = {
-  ADDON, OLD_ADDONS, OLD_ADDON_PATH, OLD_SAVED_FILE,
+  ADDON, OLD_ADDONS, OLD_ADDON_PATH, OLD_SAVED_FILE, TOC_INTERFACE, OLD_TOC_INTERFACES,
   fromHex, pad3, slotNumber, SIGNAL_CLEAR_AHEAD, slotsToClearAhead, PRESENCE_TEST_RESULTS, LATE_CREATE_RESULTS, chatKey, sessKey,
   alreadyHandled, markHandled, pruneStale, MONTH_MS,
   noteUsage, usageFields, tokensLabel,
