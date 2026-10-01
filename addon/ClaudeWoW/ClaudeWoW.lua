@@ -4944,7 +4944,7 @@ function Q.ListSettingsMenu(anchor)
 		local shown = pcall(MenuUtil.CreateContextMenu, anchor, function(_, root)
 			root:CreateCheckbox("Show message previews", Q.PreviewsOn, TogglePreviews)
 			if ClaudeWoWOrders then root:CreateCheckbox("Show the Orders card", ClaudeWoWOrders.IsOn, ClaudeWoWOrders.Toggle) end
-			if ClaudeWoWTelemetry then root:CreateCheckbox("Send game state to Claude", ClaudeWoWTelemetry.IsOn, ClaudeWoWTelemetry.Toggle) end
+			if ClaudeWoWTelemetry then root:CreateCheckbox("Send game state, prices and loot to Claude", ClaudeWoWTelemetry.IsOn, ClaudeWoWTelemetry.Toggle) end
 			root:CreateDivider()
 			root:CreateButton("Commands and tips", function() ClaudeWoW.ShowHelp() end)
 			root:CreateButton("Expand all folders", function() SetAll(false) end)

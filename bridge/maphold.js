@@ -1,7 +1,5 @@
 'use strict';
 
-const HELLOS_REMEMBERED = 200;
-
 function inSlots({ now, shareUntil, held, urgent, size, progressMax }) {
   return (now < shareUntil || held === true) && (urgent || size <= progressMax);
 }
@@ -26,15 +24,8 @@ function createMapShare({ state, shareMs, now = Date.now, save = () => {} }) {
     return true;
   }
 
-  const hellos = new Set();
-
   function onHello(job) {
-    if (!job || job.kind === 'gs' || !job.hello) return false;
-    const key = `${job.session || ''}#${job.id}`;
-    if (hellos.has(key)) return false;
-    hellos.add(key);
-    while (hellos.size > HELLOS_REMEMBERED) hellos.delete(hellos.values().next().value);
-    return release();
+    return !!(job && job.hello) && release();
   }
 
   return {

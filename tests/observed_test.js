@@ -165,6 +165,7 @@ test('gather spells: the gathering abilities of the synced Herbalism, Mining and
       { skillLine: 393, spell: 8613, trivialHigh: 0, acquireMethod: 0, supercedesSpell: 0 },
       { skillLine: 393, spell: 8617, trivialHigh: 0, acquireMethod: 0, supercedesSpell: 8613 },
       { skillLine: 393, spell: 8618, trivialHigh: 0, acquireMethod: 0, supercedesSpell: 8617 },
+      { skillLine: 393, spell: 10768, trivialHigh: 0, acquireMethod: 0, supercedesSpell: 0 },
       { skillLine: 39, spell: 921, trivialHigh: 0, acquireMethod: 0, supercedesSpell: 0 },
     ],
     spellreagents: [{ spellID: 2657, reagents: [] }, { spellID: 3304, reagents: [] }],
@@ -172,13 +173,16 @@ test('gather spells: the gathering abilities of the synced Herbalism, Mining and
   let opened = 0;
   const store = (trust, tag, tables = rows) => ({ build: '1.60.1.1', buildCheck: 'family', dir: tag, manifest: {}, rowTrust: trust, has: e => { opened += 1; return !!tables[e]; }, rows: e => tables[e] || [] });
   const r = OB.gatherSpells(store('client-data', 'a'));
-  assert.deepEqual(r.spells, { 2366: 2366, 2368: 2366, 2575: 2575, 8613: 8613, 8617: 8613, 8618: 8613, 900001: 900001 }, 'no smelting (reagents, trivial range), no tracking learned with the line and its later ranks, no rogue ability');
-  assert.deepEqual([r.count, r.cut, r.why], [7, 0, '']);
+  assert.deepEqual(r.spells, { 2366: 2366, 2368: 2366, 2575: 2575, 8613: 8613, 8617: 8613, 8618: 8613, 10768: 8613, 900001: 2366 }, 'no smelting (reagents, trivial range), no tracking learned with the line and its later ranks, no rogue ability; one root per gathering line, even for a later rank whose row names no earlier one');
+  assert.deepEqual([r.count, r.cut, r.why], [8, 0, '']);
   const before = opened;
   OB.gatherSpells(store('client-data', 'a'));
   assert.equal(opened, before, 'a cached data identity opens no table');
   assert.match(OB.gatherSpells(store('unverified-build-mismatch', 'b')).why, /not checked against the client build/);
   assert.match(OB.gatherSpells(store('client-data', 'c', { ...rows, spellreagents: undefined })).why, /no usable spellreagents table/, 'without the reagents table crafts cannot be told apart');
+  const missingOpened = opened;
+  OB.gatherSpells(store('client-data', 'c', { ...rows, spellreagents: undefined }));
+  assert.equal(opened, missingOpened, 'the missing table is not looked for again for the same data');
   assert.match(OB.gatherSpells(null).why, /no synced game data/);
   const many = { ...rows, skilllineabilities: Array.from({ length: OB.GATHER_SPELLS_MAX + 5 }, (_, i) => ({ skillLine: 393, spell: 100000 + i, trivialHigh: 0, acquireMethod: 0, supercedesSpell: 0 })) };
   const capped = OB.gatherSpells(store('client-data', 'd', many));
@@ -347,7 +351,7 @@ test('map in the slot files: shared for a while after a change, held without a t
   assert.equal(MH.inSlots({ ...base, held: 'yes' }), false);
 });
 
-test('map hold: a gs record or a message never releases it; the published reply or a new hello does, a replayed hello does not', () => {
+test('map hold: a message never releases it; the published reply or a hello does', () => {
   let clock = 1000;
   let saves = 0;
   const state = { map: { layers: {} } };
@@ -355,7 +359,6 @@ test('map hold: a gs record or a message never releases it; the published reply 
   share.hold();
   assert.equal(state.mapHeldForGame, true);
   clock = 1000 + 10 * 60 * 1000;
-  assert.equal(share.onHello({ kind: 'gs', session: 's', id: 5, hello: true }), false, 'a gs record never releases it');
   assert.equal(share.onHello({ session: 's', id: 7, text: 'a message' }), false, 'a message waits for its reply');
   assert.equal(share.held(), true);
   assert.equal(share.inSlots({ urgent: true, size: 50000, progressMax: 20000 }), true, 'a large held set rides on the urgent reply publish however long the run took');
@@ -364,9 +367,7 @@ test('map hold: a gs record or a message never releases it; the published reply 
   assert.equal(share.shareUntil(), clock + 180000, 'the usual window starts at the reply');
   assert.equal(share.onHello({ session: 's', id: 8, hello: true }), false, 'nothing held: nothing to release');
   share.hold();
-  assert.equal(share.onHello({ session: 's', id: 8, hello: true }), false, 'the same hello replayed from the strip does not release it');
-  assert.equal(share.held(), true);
-  assert.equal(share.onHello({ session: 's', id: 9, hello: true }), true, 'a new hello does');
+  assert.equal(share.onHello({ session: 's', id: 9, hello: true }), true, 'a hello does');
   assert.ok(saves >= 4);
 });
 

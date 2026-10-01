@@ -28,6 +28,7 @@ O.PROBES = {
 	"IsFishingLoot",
 	"C_Map.GetPlayerMapPosition",
 	"UnitGUID",
+	"UnitIsDead",
 }
 O.EVENTS = { "MERCHANT_SHOW", "AUCTION_HOUSE_BROWSE_RESULTS_UPDATED", "COMMODITY_SEARCH_RESULTS_UPDATED", "LOOT_READY", "LOOT_OPENED", "LOOT_CLOSED" }
 
@@ -163,7 +164,7 @@ local function SpellBeforeLoot()
 	local s = state.spell
 	state.spell = nil
 	if not s or GetTime() - s.at > O.SPELL_WINDOW_SECONDS then return 0 end
-	return state.gather[s.id]
+	return state.gather[s.id] or 0
 end
 
 local function Entry(code, id, spell, place, items)
@@ -183,6 +184,14 @@ local function AddItem(source, itemID, qty)
 	source.items[#source.items + 1] = { id = itemID, qty = qty }
 end
 
+local function LivingTarget()
+	local guid = PlainString(Try(UnitGUID, "target"))
+	if not guid or type(UnitIsDead) ~= "function" then return nil end
+	local dead = Try(UnitIsDead, "target")
+	if Secret(dead) or dead then return nil end
+	return guid
+end
+
 function O.LootKeyed()
 	return next(state.gather) ~= nil
 end
@@ -194,7 +203,6 @@ function O.OnLoot()
 	state.windowAt = now
 	local count = WholeNumber(Try(GetNumLootItems)) or 0
 	local spell = SpellBeforeLoot()
-	if not spell then return end
 	local place = { Place() }
 	if Try(IsFishingLoot) then
 		local map = tonumber(place[1])
@@ -226,9 +234,10 @@ function O.OnLoot()
 			end
 		end
 	end
+	local alive = LivingTarget()
 	local added = false
 	for _, guid in ipairs(order) do
-		if not Looted(guid .. "_" .. Int(spell)) then
+		if guid ~= alive and not Looted(guid .. "_" .. Int(spell)) then
 			local s = sources[guid]
 			Push(state.loot, Entry(s.code, s.id, spell, place, s.items), O.LOOT_ENTRIES_MAX)
 			added = true

@@ -42,6 +42,7 @@ function GetLootSlotLink(i) return STUB.lootSlots[i].link end
 function GetLootSlotInfo(i) return nil, nil, STUB.lootSlots[i].qty end
 function GetLootSourceInfo(i) return unpack(STUB.lootSlots[i].sources) end
 function IsFishingLoot() return STUB.fishing or false end
+function UnitIsDead(unit) return STUB.targetDead ~= false end
 `;
 
 function newVM({ extra = '', saved = '' } = {}) {
@@ -233,14 +234,24 @@ test('a gather spell after kill loot on the same corpse is a second sample; a pl
   ]);
 });
 
-test('a window right after a cast that is not a gather spell is skipped whole, so a pick pocket never takes the kill loot sample', () => {
-  const vm = ready();
+test('a loot window from the living target is a pick pocket: no sample and no mark, and the kill loot of that GUID later is recorded', () => {
+  const vm = ready({ extra: `STUB.unitGUIDs.target = "${NPC_GUID}"\nSTUB.targetDead = false\nfunction UnitIsDead(unit) return unit == "target" and STUB.targetDead end` });
   vm.run(`STUB.FireEvent("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-4", ${PICK_POCKET_LIKE})`);
   vm.run(`STUB.lootSlots = { ${lootSlot(5374, 1, [NPC_GUID, 1])} }; STUB.FireEvent("LOOT_READY"); STUB.FireEvent("LOOT_CLOSED")`);
   tick(vm, 3);
+  vm.run('STUB.targetDead = true');
   vm.run(`STUB.lootSlots = { ${lootSlot(501, 2, [NPC_GUID, 2])} }; STUB.FireEvent("LOOT_READY"); STUB.FireEvent("LOOT_CLOSED")`);
   const r = nextRecord(vm);
   assert.deepEqual(r.sections.loot.value.samples.map(s => [s.source, s.items]), [[{ type: 'npc', id: 3100, spell: 0 }, { 501: 2 }]]);
+});
+
+test('a finisher cast just before autoloot leaves the kill sample alone', () => {
+  const vm = ready({ extra: `STUB.unitGUIDs.target = "${NPC_GUID}"\nfunction UnitIsDead(unit) return true end` });
+  vm.run(`STUB.FireEvent("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-7", ${PICK_POCKET_LIKE})`);
+  tick(vm, 0.3);
+  vm.run(`STUB.lootSlots = { ${lootSlot(501, 1, [NPC_GUID, 1])} }; STUB.FireEvent("LOOT_READY"); STUB.FireEvent("LOOT_CLOSED")`);
+  const r = nextRecord(vm);
+  assert.deepEqual(r.sections.loot.value.samples.map(s => [s.source, s.items]), [[{ type: 'npc', id: 3100, spell: 0 }, { 501: 1 }]]);
 });
 
 test('one cast keys one window, a higher rank keys its first rank, and without a gather list no loot is read at all', () => {

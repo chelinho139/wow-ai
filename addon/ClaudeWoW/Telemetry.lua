@@ -304,11 +304,16 @@ end
 function T.Command(rest)
 	rest = tostring(rest or ""):lower()
 	if rest == "on" or rest == "off" then T.SetOn(rest == "on") end
-	if T.IsOn() then
-		Print("Game state telemetry is on: money, level, zone, profession ranks, watched items, gear IDs, reputation, deaths, recipes, and the vendor prices, auction results and loot (with your map position) from windows you open go to the bridge on screenshots the addon takes anyway, plus one of its own at most every 2 minutes. /claude config telemetry off stops it.")
-	else
+	if not T.IsOn() then
 		Print("Game state telemetry is off: no game state, vendor, auction or loot records and no telemetry screenshots. /claude config telemetry on starts it again.")
+		return
 	end
+	local extra = ""
+	if T.Observing() then
+		local loot = ClaudeWoWObserved and ClaudeWoWObserved.LootKeyed and ClaudeWoWObserved.LootKeyed()
+		extra = loot and ", and the vendor prices, auction results and loot (with your map position) from windows you open" or ", and the vendor prices and auction results from windows you open (no loot: the bridge has no game data for this client)"
+	end
+	Print("Game state telemetry is on: money, level, zone, profession ranks, watched items, gear IDs, reputation, deaths and recipes" .. extra .. " go to the bridge on screenshots the addon takes anyway, plus one of its own at most every 2 minutes. /claude config telemetry off stops it.")
 end
 
 local function Enabled()

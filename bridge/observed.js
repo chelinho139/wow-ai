@@ -270,38 +270,32 @@ function gatherSpells(store) {
   const m = store.manifest || {};
   const key = [store.dir, store.build, m.fetchedAt || '', m.tableHash || '', store.rowTrust].join('|');
   if (gatherCache.key === key) return gatherCache.result;
+  const remember = result => { gatherCache.key = key; gatherCache.result = result; return result; };
   const missing = ['skilllines', 'skilllineabilities', 'spellreagents'].filter(e => !store.has(e));
-  if (missing.length) return gatherFail(`the synced data has no usable ${missing.join(', ')} table`);
-  const top = new Set(store.rows('skilllines').filter(r => GATHER_SKILL_NAMES.includes(r.name) && !(r.parentSkillLineID > 0)).map(r => r.id));
-  const lines = new Set([...top, ...store.rows('skilllines').filter(r => top.has(r.parentSkillLineID)).map(r => r.id)]);
+  if (missing.length) return remember(gatherFail(`the synced data has no usable ${missing.join(', ')} table`));
+  const skillRows = store.rows('skilllines');
+  const topOf = new Map(skillRows.filter(r => GATHER_SKILL_NAMES.includes(r.name) && !(r.parentSkillLineID > 0)).map(r => [r.id, r.id]));
+  for (const r of skillRows) if (topOf.has(r.parentSkillLineID)) topOf.set(r.id, topOf.get(r.parentSkillLineID));
   const crafted = new Set(store.rows('spellreagents').map(r => r.spellID));
   const abilities = new Map();
   for (const a of store.rows('skilllineabilities')) {
-    if (lines.has(a.skillLine) && Number.isSafeInteger(a.spell) && a.spell > 0) abilities.set(a.spell, a);
+    if (topOf.has(a.skillLine) && Number.isSafeInteger(a.spell) && a.spell > 0) abilities.set(a.spell, a);
   }
   const excluded = a => crafted.has(a.spell) || a.trivialHigh > 0 || a.acquireMethod === LEARNED_WITH_SKILL_LINE;
-  const chainOf = spell => {
-    const chain = [];
-    let at = abilities.get(spell);
-    while (at && !chain.includes(at)) {
-      chain.push(at);
-      at = at.supercedesSpell > 0 ? abilities.get(at.supercedesSpell) : null;
+  const inheritsExclusion = a => {
+    const seen = new Set();
+    for (let at = a; at && !seen.has(at.spell); at = abilities.get(at.supercedesSpell)) {
+      if (excluded(at)) return true;
+      seen.add(at.spell);
     }
-    return chain;
+    return false;
   };
+  const kept = [...abilities.values()].filter(a => !inheritsExclusion(a)).sort((x, y) => x.spell - y.spell);
+  const rootOf = new Map();
+  for (const a of kept) if (!rootOf.has(topOf.get(a.skillLine))) rootOf.set(topOf.get(a.skillLine), a.spell);
   const spells = {};
-  for (const spell of [...abilities.keys()].sort((x, y) => x - y)) {
-    const chain = chainOf(spell);
-    if (chain.some(excluded)) continue;
-    spells[spell] = chain[chain.length - 1].spell;
-  }
-  const ids = Object.keys(spells).map(Number);
-  const kept = {};
-  for (const id of ids.slice(0, GATHER_SPELLS_MAX)) kept[id] = spells[id];
-  const result = { spells: kept, count: Math.min(ids.length, GATHER_SPELLS_MAX), cut: Math.max(0, ids.length - GATHER_SPELLS_MAX), why: ids.length ? '' : 'the synced data has no gathering spells' };
-  gatherCache.key = key;
-  gatherCache.result = result;
-  return result;
+  for (const a of kept.slice(0, GATHER_SPELLS_MAX)) spells[a.spell] = rootOf.get(topOf.get(a.skillLine));
+  return remember({ spells, count: Math.min(kept.length, GATHER_SPELLS_MAX), cut: Math.max(0, kept.length - GATHER_SPELLS_MAX), why: kept.length ? '' : 'the synced data has no gathering spells' });
 }
 
 function createObserved(opts) {
