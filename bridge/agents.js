@@ -684,6 +684,19 @@ function withChatSettings(agentCfg, id, chosen) {
   return out;
 }
 
+const PLUGIN_SETTINGS = ['model', 'effort'];
+const PLUGIN_SETTING_RE = /^[A-Za-z0-9._:\[\]-]{1,80}$/;
+
+function withPluginSettings(agentCfg, id, pluginOpts) {
+  const block = pluginOpts && pluginOpts.agents && pluginOpts.agents[id];
+  if (!block || typeof block !== 'object') return agentCfg;
+  const picked = {};
+  for (const key of PLUGIN_SETTINGS) {
+    if (typeof block[key] === 'string' && PLUGIN_SETTING_RE.test(block[key])) picked[key] = block[key];
+  }
+  return withChatSettings(agentCfg, id, picked);
+}
+
 function agentIds() { return Object.keys(AGENTS); }
 
 // The agent id a config value or strip flag names, or null when it is unknown.
@@ -812,7 +825,7 @@ function resolveCommand(id, cfg = {}) {
 }
 
 module.exports = {
-  AGENTS, DEFAULT_AGENT, SETTING_FLAGS, READ_ONLY_MODES, unsupportedSettings, withChatSettings, addDirs, agentIds, normalizeAgent, displayName, agentConfig,
+  AGENTS, DEFAULT_AGENT, SETTING_FLAGS, READ_ONLY_MODES, unsupportedSettings, withChatSettings, withPluginSettings, PLUGIN_SETTINGS, addDirs, agentIds, normalizeAgent, displayName, agentConfig,
   grokRules, snippet, contextBlock, imagePaths, IMAGE_CAPTION,
   claudeParser, codexParser, grokParser, agyParser, hermesParser, codexItemLine, grokCall, grokRefusal, shellInner, claudeUsage, claudeWindow, claudeCost, claudeRate, CLAUDE_RATES,
   resolveCommand, unwrapShim, nativeNextTo,

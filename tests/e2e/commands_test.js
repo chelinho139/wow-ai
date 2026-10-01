@@ -66,6 +66,26 @@ test('/claude --model and --effort start a new chat whose agent runs with them, 
   });
 });
 
+test('the ask plugin runs on its own model and effort from plugins.ask.agents, and a chat flag still raises it', async () => {
+  const beforeLaunch = sb => {
+    const cfg = JSON.parse(fs.readFileSync(sb.config, 'utf8'));
+    cfg.agents.claude = { ...cfg.agents.claude, model: 'opus[1m]', effort: 'max' };
+    cfg.plugins.ask = { ...cfg.plugins.ask, agents: { claude: { model: 'claude-sonnet-5-5', effort: 'medium' } } };
+    fs.writeFileSync(sb.config, JSON.stringify(cfg, null, 2));
+  };
+  await withGame({ plugin: 'ask', beforeLaunch }, async h => {
+    await h.client.connect();
+    await h.client.say('best race for a rogue');
+    let call = h.agentCalls().at(-1);
+    assert.equal(flagAfter(call.argv, '--model'), 'claude-sonnet-5-5');
+    assert.equal(flagAfter(call.argv, '--effort'), 'medium');
+    await slash(h, '/claude -c --model opus[1m] --effort max plan the whole route');
+    call = h.agentCalls().at(-1);
+    assert.equal(flagAfter(call.argv, '--model'), 'opus[1m]');
+    assert.equal(flagAfter(call.argv, '--effort'), 'max');
+  });
+});
+
 test('/claude -r resumes a Claude Code session headless in its folder: from the list by prefix, by an id only the bridge can find, and refuses one it cannot', async () => {
   let folder = '';
   await withGame({
