@@ -364,6 +364,28 @@ test('chat log transport: without the sound channel the ack comes from a slot po
   assert.equal(vm.num('STUB.screenshots'), 1, 'at 15 s');
 });
 
+test('chat log transport: a bridge not heard from for an hour still gets the message through the chat log, while screenshots stay paused', () => {
+  const vm = loggedIn();
+  vm.run('STUB.now = STUB.now + 3600; STUB.Tick()');
+  const before = vm.num('#SENT');
+  const shots = vm.num('STUB.screenshots');
+  vm.run('ClaudeWoW.NewChat("After idle"); ClaudeWoW.Send("still there?")');
+  const frames = framesOf(asLogText(sentFrom(vm, before + 1)));
+  assert.equal(frames.length, 1);
+  assert.ok(recordsOf(frames[0]).find(r => r.text === 'still there?'));
+  shotFrames(vm, 3);
+  assert.equal(vm.num('STUB.screenshots'), shots, 'no screenshot for a bridge that looks dark');
+});
+
+test('/claude diag copy opens the diagnostics in the copy box, and plain /claude diag does not', () => {
+  const vm = loggedIn();
+  vm.run('SlashCmdList.CLAUDE("diag")');
+  assert.equal(vm.evaluate('ClaudeWoWCopy and ClaudeWoWCopy.shown or false'), 'false');
+  vm.run('SlashCmdList.CLAUDE("diag copy")');
+  assert.equal(vm.evaluate('ClaudeWoWCopy.shown'), 'true');
+  assert.match(lastDiag(vm), /^Diagnostics:\nsound channel/);
+});
+
 test('chat log transport: an ack on the first try keeps the chat log on after one late ack', () => {
   const vm = loggedIn();
   vm.run('ClaudeWoW.NewChat("One"); ClaudeWoW.Send("late")');

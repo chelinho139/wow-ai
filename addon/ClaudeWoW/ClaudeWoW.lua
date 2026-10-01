@@ -927,7 +927,7 @@ RefreshStrip = function()
 		table.insert(included, rec)
 		size = size + #r + 1
 	end
-	if ClaudeWoW.ChatLog.Mode() and not ShotsPaused(true) and ClaudeWoW.ChatLog.Fits(included) then
+	if ClaudeWoW.ChatLog.Mode() and ClaudeWoW.ChatLog.Fits(included) then
 		local unsent = false
 		for _, rec in ipairs(included) do
 			if not rec.shot then unsent = true end
@@ -5613,7 +5613,7 @@ HELP = table.concat({
 	"/claude resend                     show the strip again if the bridge missed it",
 	"/claude reload                     reload now (also frees the slot pool)",
 	"/claude slots                      how many reply slots are still free this session",
-	"/claude diag                       transport diagnostics",
+	"/claude diag [copy]                transport diagnostics; copy opens them in a box, selected for Ctrl+C",
 	"/claude probe [chatlog|asyncfile]  write test lines to the client's own logs so the bridge can measure them",
 	"/claude hide | mini               hide the window, or collapse it to the small bar",
 	"/claude help                       this list",
@@ -5641,7 +5641,7 @@ end
 
 local COMMAND_ARGS = {
 	mini = 0, min = 0, hide = 0, quit = 0, help = 0, clear = 0, delete = 0, reset = 0, copy = 0,
-	cancel = 0, resend = 0, reload = 0, refresh = 0, slots = 0, diag = 0,
+	cancel = 0, resend = 0, reload = 0, refresh = 0, slots = 0, diag = { [""] = true, copy = true },
 	context = function(rest) return rest == "" or rest == "on" or rest == "off" or ParseTokens(rest) ~= nil end,
 	ctx = function(rest) return rest == "" or rest == "on" or rest == "off" or ParseTokens(rest) ~= nil end,
 	mode = { [""] = true, pixel = true, reload = true },
@@ -6909,9 +6909,11 @@ RunCommand = function(cmd, rest)
 			end
 			lines[#lines + 1] = line
 		end
-		AddHistory(c, "system", "Diagnostics:\n" .. table.concat(lines, "\n"))
+		local report = "Diagnostics:\n" .. table.concat(lines, "\n")
+		AddHistory(c, "system", report)
 		ClaudeWoW.Render()
 		Cli.Show(c)
+		if rest:lower() == "copy" then ClaudeWoW.ShowCopy(report) end
 	elseif cmd == "cancel" then
 		ClaudeWoW.Cancel(c)
 	elseif cmd == "clear" then
