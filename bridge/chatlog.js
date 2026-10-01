@@ -5,9 +5,11 @@ const path = require('path');
 const TAG = 'CWX1';
 const MAGIC = [0xc7, 0x3a];
 const STAMP = '^\\d+/\\d+ \\d\\d:\\d\\d:\\d\\d\\.\\d{3}  ';
-const KEY = /^[0-9a-f]{16,64}$/;
-const LINE = new RegExp(`${STAMP}${TAG} ([0-9a-f]{16,64}) (\\d+) (\\d+)/(\\d+) ([A-Za-z0-9+/=]+)\\s*$`);
+const KEY = /^[0-9a-f]{32}$/;
+const LINE = new RegExp(`${STAMP}${TAG} ([0-9a-f]{32}) (\\d+) (\\d+)/(\\d+) ([A-Za-z0-9+/=]+)\\s*$`);
+const FRAME_SHAPED = new RegExp(`${STAMP}${TAG} (?:[0-9a-f]+ )?\\d+ \\d+/\\d+ `);
 const MAX_OPEN_FRAMES = 8;
+const MAX_LINE = 940;
 const MAX_CHUNKS = 400;
 const DEFAULTS = { enabled: false, line: 900, filler: 50000, show: false, clean: true, pollMs: 250 };
 
@@ -16,12 +18,18 @@ function options(raw) {
   const int = (v, lo, hi, dflt) => (Number.isInteger(v) && v >= lo && v <= hi ? v : dflt);
   return {
     enabled: r.enabled === true,
-    line: int(r.line, 60, 1000, DEFAULTS.line),
+    line: int(r.line, 60, MAX_LINE, DEFAULTS.line),
     filler: int(r.filler, 0, 65536, DEFAULTS.filler),
     show: r.show === true,
     clean: r.clean !== false,
     pollMs: int(r.pollMs, 50, 5000, DEFAULTS.pollMs),
   };
+}
+
+function ensureKey(state, randomBytes) {
+  if (KEY.test(String(state.chatLogKey || ''))) return { key: state.chatLogKey, created: false };
+  state.chatLogKey = randomBytes(16).toString('hex');
+  return { key: state.chatLogKey, created: true };
 }
 
 const WRITE_BUCKET = 1024;
@@ -53,18 +61,14 @@ function writeClusters(samples) {
 function bufferSize(samples) {
   const clusters = writeClusters(samples);
   if (!clusters.length) return 0;
-  let best = clusters.reduce((a, b) => (b.total > a.total || (b.total === a.total && b.size < a.size) ? b : a));
-  for (const writesPerRead of [2, 3]) {
-    const single = clusters.find(c => Math.abs(c.size * writesPerRead - best.size) / best.size < SAME_SIZE_TOLERANCE);
-    if (single) { best = single; break; }
-  }
-  return best.size;
+  const best = clusters.reduce((a, b) => (b.total > a.total || (b.total === a.total && b.size < a.size) ? b : a));
+  const single = clusters.find(c => c.total * 2 >= best.total && Math.abs(c.size * 2 - best.size) / best.size < SAME_SIZE_TOLERANCE);
+  return (single || best).size;
 }
 
 function calibratedFiller(samples, configured) {
   const size = bufferSize(samples);
-  if (!size) return { filler: configured, size: 0, usable: true };
-  const filler = Math.ceil(size / FILLER_STEP) * FILLER_STEP;
+  const filler = Math.max(configured, Math.ceil(size / FILLER_STEP) * FILLER_STEP);
   return { filler: Math.min(filler, MAX_FILLER), size, usable: filler <= MAX_FILLER };
 }
 
@@ -103,7 +107,7 @@ function stripOurLines(file, chunkBytes = STRIP_CHUNK_BYTES) {
     if (OUR_LINE.test(carry)) removed++;
     else keep(carry);
     if (removed === 0) return { before, after: before, removed };
-    if (fs.fstatSync(fd).size !== before) return { before, after: before, removed, grewMeanwhile: true };
+    if (fs.fstatSync(fd).size !== before) return { before, after: before, removed, grewMeanwhile: true, keptUpTo: writeAt };
     fs.ftruncateSync(fd, writeAt);
     return { before, after: writeAt, removed };
   } finally {
@@ -168,24 +172,24 @@ function decodeFrame(base64) {
   return { id: bytes[2] * 256 + bytes[3], text: bytes.subarray(6, 6 + len).toString('utf8') };
 }
 
-function createAssembler(onFrame, { key } = {}) {
+function createAssembler(onFrame, { key, onRefused } = {}) {
   const open = new Map();
   let carry = '';
   let insideLine = false;
 
   function take(part) {
-    const key = `${part.id}/${part.total}`;
-    if (part.seq === 1) open.delete(key);
-    let frame = open.get(key);
+    const frameKey = `${part.id}/${part.total}`;
+    if (part.seq === 1) open.delete(frameKey);
+    let frame = open.get(frameKey);
     if (!frame) {
       frame = { chunks: new Array(part.total), have: 0 };
-      open.set(key, frame);
+      open.set(frameKey, frame);
       if (open.size > MAX_OPEN_FRAMES) open.delete(open.keys().next().value);
     }
     if (frame.chunks[part.seq - 1] === undefined) frame.have++;
     frame.chunks[part.seq - 1] = part.chunk;
     if (frame.have < part.total) return;
-    open.delete(key);
+    open.delete(frameKey);
     const decoded = decodeFrame(frame.chunks.join(''));
     onFrame(Object.assign({ lineId: part.id, chunks: part.total }, decoded));
   }
@@ -205,6 +209,7 @@ function createAssembler(onFrame, { key } = {}) {
       if (line.indexOf(TAG) < 0) continue;
       const part = parseLine(line.replace(/\r$/, ''), key);
       if (part) take(part);
+      else if (onRefused && FRAME_SHAPED.test(line)) onRefused();
     }
   }
 
@@ -220,7 +225,7 @@ function createAssembler(onFrame, { key } = {}) {
 function watchChatLog(file, onFrame, opts = {}) {
   const log = opts.log || (() => {});
   const pollMs = opts.pollMs || DEFAULTS.pollMs;
-  const assembler = createAssembler(onFrame, { key: opts.key });
+  const assembler = createAssembler(onFrame, { key: opts.key, onRefused: opts.onRefused });
   let offset = -1;
   let missingTold = false;
 
@@ -277,4 +282,4 @@ function watchChatLog(file, onFrame, opts = {}) {
   return { close: () => clearInterval(timer), check, resync };
 }
 
-module.exports = { TAG, DEFAULTS, options, chatLogFile, parseLine, decodeFrame, createAssembler, watchChatLog, noteWrite, bufferSize, calibratedFiller, stripOurLines, clientFolder, clientRunning, cleanWhenClosed };
+module.exports = { TAG, DEFAULTS, options, ensureKey, chatLogFile, parseLine, decodeFrame, createAssembler, watchChatLog, noteWrite, bufferSize, calibratedFiller, stripOurLines, clientFolder, clientRunning, cleanWhenClosed };

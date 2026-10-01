@@ -761,7 +761,7 @@ function luaTable(globalName, records, opts = {}) {
     const lv = screenshotLevels(opts.levels);
     lines.splice(lines.length - 1, 0, `\tstrip = { on = ${lv.on}, off = ${lv.off}, codec = ${stripCodec(opts.codec)} },`);
     const cl = opts.chatlog;
-    if (cl && cl.enabled === true && Number.isInteger(cl.line) && Number.isInteger(cl.filler) && /^[0-9a-f]{16,64}$/.test(String(cl.key || ''))) {
+    if (cl && cl.enabled === true && Number.isInteger(cl.line) && Number.isInteger(cl.filler) && /^[0-9a-f]{32}$/.test(String(cl.key || ''))) {
       lines.splice(lines.length - 1, 0, `\tchatlog = { line = ${cl.line}, filler = ${cl.filler}, key = "${cl.key}"${cl.show ? ', show = true' : ''} },`);
     }
   }

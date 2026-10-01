@@ -137,6 +137,81 @@ test('a frame without the bridge\'s key is never read, even as a perfect system 
   vm.run(`LINES = ClaudeWoW_Codec.LogLines(4242, "abc", 900, 0, "${KEY}")`);
   keyless.feed(asLogText(sentLinesOf(vm)));
   assert.deepEqual(frames, [], 'a bridge with no key reads nothing');
+  let refused = 0;
+  const strict = CL.createAssembler(f => frames.push(f), { key: KEY, onRefused: () => { refused++; } });
+  strict.feed(asLogText(forged));
+  assert.equal(refused, forged.length, 'each refused frame line is reported');
+  strict.feed('10/1 12:00:02.000  You feel rested.\r\n10/1 12:00:02.000  CWX1 4242 pad zzzz\r\n10/1 12:00:02.000  [1. General] Someone: CWX1 words\r\n');
+  assert.equal(refused, forged.length, 'padding and ordinary chat are not reported');
+});
+
+test('the bridge makes its key once, keeps it in its state, and replaces one that is not 32 hex characters', () => {
+  const state = {};
+  let calls = 0;
+  const random = (n) => { calls++; return Buffer.alloc(n, 0xab); };
+  assert.deepEqual(CL.ensureKey(state, random), { key: 'ab'.repeat(16), created: true });
+  assert.deepEqual(CL.ensureKey(state, random), { key: 'ab'.repeat(16), created: false });
+  assert.equal(calls, 1);
+  assert.equal(state.chatLogKey, 'ab'.repeat(16));
+  state.chatLogKey = 'short';
+  assert.equal(CL.ensureKey(state, random).created, true);
+});
+
+test('the addon follows a new key from the bridge, refuses an offer with no key, and writes nothing with a saved offer that has no key', () => {
+  const other = 'f'.repeat(32);
+  const vm = loggedIn();
+  vm.run(`STUB.onLoadAddOn = function(name) ClaudeWoW_SlotData = { now = time(), cwd = "", transport = "screenshot", chatlog = { line = 200, filler = 4096, key = "${other}" }, replies = {} } end`);
+  vm.run('ClaudeWoW.Connect(); STUB.now = STUB.now + 6; STUB.Tick()');
+  let before = vm.num('#SENT');
+  vm.run('ClaudeWoW.NewChat("Rotated"); ClaudeWoW.Send("new key")');
+  assert.ok(vm.evaluate(`SENT[${before + 1}]`).startsWith(`CWX1 ${other} `), 'the next frame carries the new key');
+
+  const keyless = loggedIn('{ now = time(), cwd = "", transport = "screenshot", chatlog = { line = 200, filler = 4096 }, replies = {} }');
+  assert.equal(keyless.evaluate('ClaudeWoWDB.settings.chatlog'), null, 'an offer with no key is not taken');
+  keyless.run('ClaudeWoW.NewChat("Old bridge"); ClaudeWoW.Send("by screenshot")');
+  assert.equal(keyless.num('#SENT'), 0);
+  shotFrames(keyless, 2);
+  assert.ok(keyless.num('STUB.screenshots') >= 1, 'it goes by screenshot at once');
+
+  const saved = loggedIn('{ now = time(), cwd = "", transport = "screenshot", replies = {} }');
+  saved.run('ClaudeWoWDB.settings.chatlog = { line = 200, filler = 4096 }');
+  saved.run('ClaudeWoW.NewChat("Saved"); ClaudeWoW.Send("still by screenshot")');
+  assert.equal(saved.num('#SENT'), 0, 'a saved offer from before the key writes nothing');
+});
+
+test('a watcher that is resynced in the middle of a line drops the rest of that line', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-chatlog-'));
+  const file = path.join(dir, 'WoWChatLog.txt');
+  const vm = newVM();
+  vm.run(`LINES = ClaudeWoW_Codec.LogLines(78, "after resync", 900, 0, "${KEY}")`);
+  const frameLine = '10/1 12:00:01.234  ' + sentLinesOf(vm)[0];
+  const frames = [];
+  fs.writeFileSync(file, '10/1 12:00:00.000  whole line\r\n');
+  const w = CL.watchChatLog(file, f => frames.push(f), { pollMs: 60000, key: KEY });
+  try {
+    fs.appendFileSync(file, '10/1 12:00:01.000  [Griefer] whispers: look ');
+    w.resync();
+    fs.appendFileSync(file, frameLine + '\r\n');
+    w.check();
+    assert.deepEqual(frames, []);
+    fs.appendFileSync(file, frameLine + '\r\n');
+    w.check();
+    assert.deepEqual(frames.map(f => f.text), ['after resync']);
+  } finally {
+    w.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('with show on, the chat frame gets the frame line without the key, and the logged line is the one the addon sent', () => {
+  const vm = loggedIn(`{ now = time(), cwd = "", transport = "screenshot", chatlog = { line = 200, filler = 400, key = "${KEY}", show = true }, replies = {} }`);
+  const before = vm.num('#SENT');
+  vm.run('ClaudeWoW.NewChat("Shown"); ClaudeWoW.Send("visible frame")');
+  assert.ok(vm.evaluate(`SENT[${before + 1}]`).startsWith(`CWX1 ${KEY} `), 'the line that is logged carries the key');
+  vm.run(`HIDE, SHOWN = FILTERS[#FILTERS].fn(nil, "CHAT_MSG_SYSTEM", SENT[${before + 1}])`);
+  assert.equal(vm.evaluate('HIDE'), 'false');
+  assert.match(vm.evaluate('SHOWN'), /^CWX1 \.\.\. \d+ 1\/\d+ /);
+  assert.ok(!vm.evaluate('SHOWN').includes(KEY), 'no key on screen');
 });
 
 test('a watcher that starts in the middle of a line drops the rest of that line', () => {
@@ -186,6 +261,10 @@ test('stripOurLines never reads more than one chunk at a time, and leaves the le
     };
     const r = CL.stripOurLines(file, 256);
     assert.equal(r.grewMeanwhile, true);
+    const left = fs.readFileSync(file, 'latin1');
+    assert.equal(left.length, body.length + grown.length, 'the length is the game\'s own: nothing truncated');
+    assert.equal(left.slice(0, r.keptUpTo), '9/30 19:00:00.000  You feel rested.\r\n9/30 19:00:02.000  kept\r\n', 'the kept lines are whole at the front');
+    assert.equal(left.slice(r.keptUpTo, body.length), body.slice(r.keptUpTo), 'the stale bytes are the old ones, untouched');
     assert.ok(fs.readFileSync(file, 'latin1').endsWith(grown), 'the new line is still there');
   } finally {
     fs.readSync = realRead;
@@ -206,6 +285,11 @@ test('the bridge measures the buffer from the most common write size, takes the 
   for (let i = 0; i < 27; i++) logouts = CL.noteWrite(logouts, 49200 + i * 20);
   for (const bytes of [2600, 3100, 2950]) logouts = CL.noteWrite(logouts, bytes);
   assert.equal(CL.bufferSize(logouts), 49200, 'three small writes at logout do not lower it');
+  for (const bytes of [24700, 24900, 25300]) logouts = CL.noteWrite(logouts, bytes);
+  assert.equal(CL.bufferSize(logouts), 49260, 'three logout writes near half the size do not lower it either (the oldest three samples left the window)');
+  let grown = [];
+  for (const bytes of [60100, 60300, 60020, 60500]) grown = CL.noteWrite(grown, bytes);
+  assert.deepEqual(CL.calibratedFiller(grown, 50000), { filler: 61000, size: 60020, usable: true }, 'a larger buffer raises the padding');
   assert.equal(CL.calibratedFiller(logouts, 50000).filler, 50000);
 });
 
@@ -310,7 +394,7 @@ test('the bridge measures the client buffer from the sizes of its writes and set
   assert.deepEqual(CL.calibratedFiller(samples, 4096), { filler: 50000, size: 49204, usable: true });
   let small = [];
   for (const bytes of [4100, 4300, 4250, 2100]) small = CL.noteWrite(small, bytes);
-  assert.deepEqual(CL.calibratedFiller(small, 50000), { filler: 5000, size: 4100, usable: true }, 'a smaller buffer needs less padding');
+  assert.deepEqual(CL.calibratedFiller(small, 50000), { filler: 50000, size: 4100, usable: true }, 'the padding never goes below the configured size');
   let large = [];
   for (const bytes of [131072, 131500, 131900]) large = CL.noteWrite(large, bytes);
   assert.equal(CL.calibratedFiller(large, 50000).usable, false, 'a buffer past the padding limit turns the transport off');

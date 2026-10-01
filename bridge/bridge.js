@@ -1601,14 +1601,18 @@ function startScreenshotWatch() {
 let chatLogWatch = null;
 function chatLogSlot() {
   const measured = CL.calibratedFiller(Array.isArray(state.chatLogWrites) ? state.chatLogWrites : [], CHAT_LOG.filler);
-  return { enabled: CHAT_LOG.enabled && measured.usable, line: CHAT_LOG.line, filler: measured.filler, show: CHAT_LOG.show, bufferSize: measured.size, key: chatLogKey() };
+  return { enabled: CHAT_LOG.enabled && measured.usable, line: CHAT_LOG.line, filler: measured.filler, show: CHAT_LOG.show, bufferSize: measured.size, key: CHAT_LOG.enabled ? chatLogKey() : '' };
+}
+let refusedFrameToldAt = 0;
+function noteRefusedFrame() {
+  if (Date.now() - refusedFrameToldAt < SWEEP_MS) return;
+  refusedFrameToldAt = Date.now();
+  log('chat log transport: ignored a frame line with another key or in the old format. If it was yours, /reload the game so the addon reads the current key; the message goes out by screenshot meanwhile');
 }
 function chatLogKey() {
-  if (!/^[0-9a-f]{32}$/.test(String(state.chatLogKey || ''))) {
-    state.chatLogKey = crypto.randomBytes(16).toString('hex');
-    saveState();
-  }
-  return state.chatLogKey;
+  const made = CL.ensureKey(state, crypto.randomBytes);
+  if (made.created) saveState();
+  return made.key;
 }
 function noteChatLogWrite(bytes) {
   const before = chatLogSlot();
@@ -1628,7 +1632,7 @@ function cleanChatLog(why) {
   if (!r.cleaned || !r.removed) return;
   if (chatLogWatch) chatLogWatch.resync();
   if (r.grewMeanwhile) {
-    log(`chat log clean (${why}): ${path.basename(CHAT_LOG_FILE)} grew while it was cleaned, so it was left at full length; some lines near the end are now there twice`);
+    log(`chat log clean (${why}): ${path.basename(CHAT_LOG_FILE)} grew while it was cleaned, so it was left at full length: bytes ${r.keptUpTo} to ${r.before} are stale copies of older lines, starting inside a line. Nothing the game wrote is lost`);
     return;
   }
   log(`chat log clean (${why}): the game is closed; removed ${r.removed} transport line(s) from ${path.basename(CHAT_LOG_FILE)}, ${r.before} -> ${r.after} bytes`);
@@ -1645,7 +1649,7 @@ function handleLogFrame(frame) {
 function startChatLogWatch() {
   if (TRANSPORT !== 'screenshot' || !CHAT_LOG.enabled) return;
   if (!CHAT_LOG_FILE) { log('chat log transport: no addonDir in config.json, so no Logs folder to watch'); return; }
-  chatLogWatch = CL.watchChatLog(CHAT_LOG_FILE, handleLogFrame, { log, pollMs: CHAT_LOG.pollMs, onWrite: noteChatLogWrite, key: chatLogKey() });
+  chatLogWatch = CL.watchChatLog(CHAT_LOG_FILE, handleLogFrame, { log, pollMs: CHAT_LOG.pollMs, onWrite: noteChatLogWrite, key: chatLogKey(), onRefused: noteRefusedFrame });
   log(`chat log transport: watching ${CHAT_LOG_FILE} (lines of ${CHAT_LOG.line}, filler ${chatLogSlot().filler} bytes${CHAT_LOG.show ? ', lines shown in chat' : ''}); screenshots stay as the retry path`);
   if (!CHAT_LOG.clean) return;
   if (process.platform !== 'darwin') {
