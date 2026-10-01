@@ -55,6 +55,7 @@ const G = require('./gamefs');
 const SIG = require('./signals');
 const DM = require('./datamcp');
 const GD = require('./gamedata');
+const GR = require('./gamerefs');
 
 // The plugins this bridge has (docs/PLATFORM.md). Registration order is the
 // order match() is asked in, and the first one is the default unless
@@ -958,11 +959,11 @@ const core = {
   get claudeDir() { return CLAUDE_DIR; },
   runAgent,
   goals: (tool, args) => goalStore.call(tool, args),
+  gameData: () => GR.openFor(goalStore.home.data, (state.context && state.context.text) || ''),
   agentPids: () => [...running.values()].map(r => r.child).concat(T.titleChildren()).filter(Boolean).map(c => c.pid),
 };
 
 const goalStore = GOALS.createBridgeGoals({
-  home: HOME,
   context: () => state.context,
   streamOptions: () => core.options('stream'),
   log,

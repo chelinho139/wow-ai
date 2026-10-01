@@ -5,7 +5,12 @@ const KNOWN_KINDS = Object.freeze(['item', 'npc', 'quest', 'map', 'skill', 'fact
 const TOKEN = new RegExp(`\\{(${KNOWN_KINDS.join('|')}):([^{}\\n]{0,40})\\}`, 'g');
 const ID_ONLY = /^\s*(\d{1,9})\s*$/;
 const MAP_ARGS = /^\s*(\d{1,9})\s*,\s*(\d{1,3}(?:\.\d{1,2})?)\s*,\s*(\d{1,3}(?:\.\d{1,2})?)\s*$/;
-const SAFE_NAME = /^[A-Za-z0-9 ,.'\-:!?%()"]+$/;
+const SAFE_NAME = /^[A-Za-z0-9 ,.'\-:!?%]+$/;
+const PHRASE_MIN_WORDS = 2;
+const PHRASE_MAX_WORDS = 4;
+const PHRASE_ENTITIES = Object.freeze(['items', 'zones', 'uimaps', 'skilllines', 'flightpaths']);
+const GAME_PHRASES = Object.freeze(new Set(require('./game-phrases.json')));
+const phraseIndexes = new Map();
 const GLUE = /[\p{L}\p{N}{}]/u;
 const MODEL_TRUST = 'model';
 const TOKEN_SEPARATOR = ' ';
@@ -27,7 +32,7 @@ const REASON = Object.freeze({
   unsafeName: 'unsafeName',
 });
 const STORE_REASONS = Object.freeze(new Set([REASON.noData, REASON.buildMismatch, REASON.buildUnknown]));
-const PROBLEM = Object.freeze({ empty: 'empty', length: 'length', char: 'char', glued: 'glued', words: 'words', refs: 'refs' });
+const PROBLEM = Object.freeze({ empty: 'empty', length: 'length', char: 'char', glued: 'glued', words: 'words', phrases: 'phrases', refs: 'refs' });
 
 function parseRefs(text) {
   const refs = [];
@@ -183,7 +188,55 @@ function gluedToken(text, tokens) {
   return tokens.find(t => GLUE.test(text[t.index - 1] || '') || GLUE.test(text[t.index + t.token.length] || '')) || null;
 }
 
-function checkText(raw, { store = null, tokens: allowTokens = true, names = [], plainWords, charRe, maxLength }) {
+function phraseWords(name) {
+  return displayWords(String(name || '').normalize('NFKC')).map(w => w.replace(POSSESSIVE, ''));
+}
+
+function phraseRuns(words) {
+  const runs = [];
+  for (let i = 0; i < words.length; i++) {
+    for (let n = PHRASE_MIN_WORDS; n <= PHRASE_MAX_WORDS && i + n <= words.length; n++) runs.push(words.slice(i, i + n).join(' '));
+  }
+  return runs;
+}
+
+function dataPhrases(store) {
+  if (storeProblem(store)) return null;
+  const key = `${store.dir}|${store.build}`;
+  if (!phraseIndexes.has(key)) {
+    const index = new Set();
+    for (const entity of PHRASE_ENTITIES) {
+      for (const row of store.rows(entity)) {
+        const words = phraseWords(row.name);
+        if (words.length >= PHRASE_MIN_WORDS && words.length <= PHRASE_MAX_WORDS) index.add(words.join(' '));
+      }
+    }
+    phraseIndexes.set(key, index);
+  }
+  return phraseIndexes.get(key);
+}
+
+function refusedPhrases(text, tokens, known, index) {
+  const allowed = new Set((known || []).flatMap(k => [phraseWords(k).join(' '), ...phraseRuns(phraseWords(k))]));
+  const segments = [];
+  let at = 0;
+  for (const t of tokens) { segments.push(text.slice(at, t.index)); at = t.index + t.token.length; }
+  segments.push(text.slice(at));
+  const refused = [];
+  for (const segment of segments) {
+    for (const run of phraseRuns(phraseWords(segment))) {
+      if (allowed.has(run) || refused.includes(run)) continue;
+      if (GAME_PHRASES.has(run) || (index && index.has(run))) refused.push(run);
+    }
+  }
+  return refused;
+}
+
+function openFor(dataDir, contextText) {
+  return GD.openStore({ dataDir, clientBuild: GD.clientBuildOf(contextText || '') });
+}
+
+function checkText(raw, { store = null, tokens: allowTokens = true, names = [], known = names, plainWords, charRe, maxLength }) {
   const s = typeof raw === 'string' ? raw.normalize('NFKC').trim() : '';
   if (!s) return { ok: false, problem: PROBLEM.empty };
   const tokens = allowTokens ? parseRefs(s) : [];
@@ -196,22 +249,36 @@ function checkText(raw, { store = null, tokens: allowTokens = true, names = [], 
   if (glued) return { ok: false, problem: PROBLEM.glued, token: glued.token };
   const words = refusedWords(rest, names, plainWords, charRe);
   if (words.length) return { ok: false, problem: PROBLEM.words, words };
-  if (!tokens.length) return { ok: true, text: s, refs: [] };
   const opened = typeof store === 'function' ? store() : store;
+  const index = dataPhrases(opened);
+  const phrasesChecked = !!index;
+  const phrases = refusedPhrases(s, tokens, known, index);
+  if (phrases.length) return { ok: false, problem: PROBLEM.phrases, phrases, phrasesChecked };
+  if (!tokens.length) return { ok: true, text: s, refs: [], phrasesChecked };
   const expanded = createExpander(opened).expand(s);
   if (!expanded.ok) return { ok: false, problem: PROBLEM.refs, errors: expanded.errors, store: opened };
   const shownCh = refusedChar(expanded.text, charRe);
-  if (shownCh) return { ok: false, problem: PROBLEM.char, char: shownCh, expanded: true };
+  if (shownCh) {
+    const ref = expanded.refs.find(r => String(r.name).includes(shownCh));
+    return { ok: false, problem: PROBLEM.char, char: shownCh, expanded: true, token: ref ? ref.token : '', name: ref ? ref.name : '' };
+  }
   if (expanded.text.length > maxLength) return { ok: false, problem: PROBLEM.length, length: expanded.text.length, max: maxLength, expanded: true };
-  return { ok: true, text: expanded.text, refs: expanded.refs };
+  return { ok: true, text: expanded.text, refs: expanded.refs, phrasesChecked };
 }
+
+function phrasesText(phrases, checked) {
+  const data = checked ? '' : ' No game data is synced for the client\'s build, so only a short built-in list of ability, NPC and place phrases was checked.';
+  return `These word runs are game names: ${phrases.map(p => `"${p}"`).join(', ')}. Use a reference token or leave the name out.${data}`;
+}
+
+const PHRASES_UNCHECKED_TEXT = 'No game data is synced for the client\'s build, so multi-word names were checked only against the short built-in list.';
 
 function refSummary(refs) {
   return (refs || []).map(r => ({ kind: r.kind, id: r.id, name: r.name, trust: r.trust, build: r.build, ...(r.point ? { point: r.point } : {}) }));
 }
 
 module.exports = {
-  KNOWN_KINDS, REASON, PROBLEM, TOKEN_FORMS, TOKEN_TEXT_MAX,
-  parseRefs, withoutRefs, createExpander, storeProblem, errorsText, tokenHint, gluedText,
-  displayWords, refusedChar, refusedWords, checkText, refSummary,
+  KNOWN_KINDS, REASON, PROBLEM, TOKEN_FORMS, TOKEN_TEXT_MAX, GAME_PHRASES, PHRASES_UNCHECKED_TEXT,
+  parseRefs, withoutRefs, createExpander, storeProblem, errorsText, tokenHint, gluedText, phrasesText, openFor,
+  displayWords, refusedChar, refusedWords, refusedPhrases, checkText, refSummary,
 };

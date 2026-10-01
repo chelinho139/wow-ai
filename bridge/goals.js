@@ -144,8 +144,8 @@ function refusedWordsText(words, names) {
   return `The order uses words that are not allowed: ${words.map(w => `"${w}"`).join(', ')}. No zone, NPC, item or quest names. An order may use only numbers, plain words from the order vocabulary, and these reported names: ${namesText(names)}. ${GR.tokenHint()}`;
 }
 
-function expandedCharText(ch) {
-  return `A name from the game data has the character ${codePoint(ch)}, which orders may not show. Leave that name out.`;
+function expandedCharText(r) {
+  return `${r.token}: the name "${r.name}" in the game data has the character ${codePoint(r.char)}, which orders may not show. Leave that name out.`;
 }
 
 function validateOrderText(text, names = [], gameData = null) {
@@ -153,9 +153,10 @@ function validateOrderText(text, names = [], gameData = null) {
   if (r.ok) return r.refs.length ? { ok: true, text: r.text, refs: GR.refSummary(r.refs) } : done(r.text);
   if (r.problem === GR.PROBLEM.empty) return fail('The order text is empty.');
   if (r.problem === GR.PROBLEM.length) return fail(lengthText(r));
-  if (r.problem === GR.PROBLEM.char) return fail(r.expanded ? expandedCharText(r.char) : refusedCharText(r.char));
+  if (r.problem === GR.PROBLEM.char) return fail(r.expanded ? expandedCharText(r) : refusedCharText(r.char));
   if (r.problem === GR.PROBLEM.glued) return fail(GR.gluedText(r.token));
   if (r.problem === GR.PROBLEM.words) return fail(refusedWordsText(r.words, names));
+  if (r.problem === GR.PROBLEM.phrases) return fail(`The order was refused. ${GR.phrasesText(r.phrases, r.phrasesChecked)}`);
   return fail(`The whole order was refused and nothing was saved. ${GR.errorsText(r.errors, r.store)}`);
 }
 
@@ -259,13 +260,15 @@ function issueOrder(doc, args, snap, now, gameData) {
   }
   const stale = staleContextText(snap, stamp);
   if (stale) return fail(stale);
-  const checked = validateOrderText(args.text, knownNames(snap), () => gameData(snap.text));
+  let opened = null;
+  const checked = validateOrderText(args.text, knownNames(snap), () => (opened = gameData(snap.text)));
   if (!checked.ok) return checked;
+  const unchecked = GR.storeProblem(opened) ? ` ${GR.PHRASES_UNCHECKED_TEXT}` : '';
   const goalId = args.goalId === undefined || args.goalId === null || args.goalId === '' ? null : String(args.goalId);
   if (goalId && !doc.goals.some(g => g.id === goalId)) return fail(`There is no goal ${goalId}. goal_list shows the ids.`);
   retireOrder(doc, 'superseded', stamp);
   doc.orders.current = { id: `o_${doc.rev + 1}`, text: checked.text, goalId, issuedAt: stamp, ...(checked.refs ? { refs: checked.refs } : {}) };
-  return done(`Issued order ${doc.orders.current.id}: "${checked.text}".`);
+  return done(`Issued order ${doc.orders.current.id}: "${checked.text}".${unchecked}`);
 }
 
 function goalView(goal, snap) {
@@ -357,21 +360,23 @@ function createGoals(opts) {
 
 function openGameData(dataDir, contextText, log) {
   try {
-    return GD.openStore({ dataDir, clientBuild: GD.clientBuildOf(contextText || '') });
+    return GR.openFor(dataDir, contextText);
   } catch (e) {
     log(`goals: cannot open the synced game data for reference tokens (${e.message})`);
     return null;
   }
 }
 
-function createBridgeGoals({ home, context, streamOptions, log = () => {} }) {
-  return createGoals({
+function createBridgeGoals({ env = process.env, context, streamOptions, log = () => {} }) {
+  const home = require('./home').resolve(env);
+  const goals = createGoals({
     dir: home.goals,
     context,
     streamOptions,
     gameData: contextText => openGameData(home.data, contextText, log),
     log,
   });
+  return { ...goals, home };
 }
 
 function toolSchemas() {

@@ -87,6 +87,8 @@ Data first, router last. Each step must pay off on its own before the next one s
 - [x] Wiring: Claude `ask` runs only (`runAgent(job, { gameData: true })`), and only when data is synced. No `--strict-mcp-config` (decision 5). `alwaysLoad` is a real stdio config key in Claude Code 2.1.286.
 - [x] Proof on 2026-09-30: a real sync of 1.60.1.70094 (38,704 rows, 0 dropped), the server over stdio, and one headless `claude -p --model haiku --allowedTools mcp__wowdata --mcp-config …` run that called `wow_flights` with no permission denial and returned The Sepulcher (TaxiNodes 10) at 45.56, 42.42 on uiMap 1421.
 - [x] R1 for orders and the roast card: orders go through `gamerefs.checkText` (tokens expand, unknown IDs refuse the whole order, the word allowlist runs on the rest); the roast card line takes no tokens and passes the same word allowlist.
+- [x] Phrase check for orders and the roast card: 2 to 4 word runs against the synced names and `bridge/game-phrases.json`.
+- [ ] Next: sync SpellName and creature names so the phrase check covers abilities and NPCs, and drop the hand-kept phrase list.
 - [ ] Next: route reply text through `gamerefs` (R1), add `{npc:ID}` and `{quest:ID}` names when a source exists, and wire the server for the other agents (Codex `mcp add`) and the live session.
 
 ## 6. Step 4: `wow-data` skill and prompt change

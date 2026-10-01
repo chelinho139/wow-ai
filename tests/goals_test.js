@@ -362,40 +362,78 @@ test('order tokens: a token glued to a letter, a digit or another token is refus
   assert.equal(G.validateOrderText('buy 2 {item:501}, {item:502}.', NAMES, store).text, 'buy 2 Fixture Blade, Fixture Letter.');
 });
 
-test('order tokens: the expanded text goes through the order character set again', () => {
-  const store = fixtureData();
-  const quoted = { ...store, byId: (entity, id) => (entity === 'items' && id === 501 ? { id: 501, name: 'Fixture (Rare)' } : store.byId(entity, id)) };
-  const r = G.validateOrderText('buy {item:501}', NAMES, quoted);
+test('order tokens: a data name with a character the order set refuses is refused per token', async () => {
+  const r = G.validateOrderText('buy {item:506}', NAMES, fixtureData());
   assert.equal(r.ok, false);
-  assert.match(r.text, /A name from the game data has the character U\+0028, which orders may not show/);
+  assert.match(r.text, /\{item:506\}: the name in the data has characters that cannot be shown/);
+  const tight = GR.checkText('buy {item:502}', { store: fixtureData(), names: [], plainWords: G.ORDER_WORDS, charRe: /^[A-KM-Za-z0-9 ]$/, maxLength: 90 });
+  assert.deepEqual({ problem: tight.problem, char: tight.char, token: tight.token, name: tight.name }, { problem: 'char', char: 'L', token: '{item:502}', name: 'Fixture Letter' }, 'a caller with a tighter set gets the expanded text checked again, naming the token');
 });
 
-test('order tokens: the game data is opened only when the order has a token', async () => {
+test('order phrases: a run of plain words that names something in the synced data is refused, unless a token, the character or a reported profession made it', async () => {
+  const store = fixtureData();
+  const refused = G.validateOrderText('take the low road to 150', NAMES, store);
+  assert.equal(refused.ok, false);
+  assert.equal(refused.text, 'The order was refused. These word runs are game names: "low road". Use a reference token or leave the name out.');
+  assert.equal(G.validateOrderText('take the {map:9004,10,10} to 150', NAMES, store).text, 'take the Low Road to 150', 'the same name through a token is fine');
+  assert.equal(G.validateOrderText('raise first aid to 100', ['First Aid', 'Bone'], store).ok, true, 'a reported profession that is also in the data and the built-in list');
+  assert.equal(G.validateOrderText('take the low road to 150', ['Low Road', 'Bone'], store).ok, true, 'a reported name made of plain words is not refused as a data phrase');
+  assert.equal(G.validateOrderText('take the low road to 150', NAMES, null).ok, true, 'without data the data phrases are skipped');
+});
+
+test('order phrases: the built-in list refuses well-known ability and place names made of plain words, with or without data', () => {
+  for (const data of [null, fixtureData()]) {
+    const r = G.validateOrderText('go to old town', NAMES, data);
+    assert.equal(r.ok, false);
+    assert.match(r.text, /"old town"/);
+  }
+  assert.equal(G.validateOrderText('go to the town', NAMES, null).ok, true, 'precondition: the words alone are plain');
+});
+
+test('order_issue says when the data phrase check was skipped for lack of synced data', async () => {
+  const none = rig();
+  try {
+    const res = await none.store.call('order_issue', { text: 'take the low road to 150' });
+    assert.equal(res.ok, true, res.text);
+    assert.match(res.text, /No game data is synced for the client's build, so multi-word names were checked only against the short built-in list\./);
+  } finally { none.cleanup(); }
+  const synced = rig({ gameData: openFixtureData });
+  try {
+    const res = await synced.store.call('order_issue', { text: 'skin 10' });
+    assert.equal(res.ok, true);
+    assert.doesNotMatch(res.text, /No game data is synced/);
+  } finally { synced.cleanup(); }
+});
+
+test('order tokens: an order refused by its words never opens the game data; a passing one opens it once', async () => {
   let opened = 0;
   const r = rig({ gameData: text => { opened += 1; return openFixtureData(text); } });
   try {
-    assert.equal((await r.store.call('order_issue', { text: 'Raise Leatherworking to 150' })).ok, true);
     assert.equal((await r.store.call('order_issue', { text: 'go to Silverpine' })).ok, false);
-    assert.equal(opened, 0, 'a plain or refused-by-words order never opens the data');
+    assert.equal(opened, 0, 'a refused-by-words order never opens the data');
     assert.equal((await r.store.call('order_issue', { text: 'buy 2 {item:501}' })).ok, true);
     assert.equal(opened, 1);
   } finally { r.cleanup(); }
 });
 
-test('order tokens through the store the bridge builds: CLAUDE_WOW_HOME data and the context client build expand {item:501}', async () => {
+test('order tokens through the store the bridge builds: CLAUDE_WOW_HOME from the environment, its data and the context client build expand {item:501}', async () => {
   const dir = tmpDir('bridgegoals');
+  const before = process.env.CLAUDE_WOW_HOME;
+  process.env.CLAUDE_WOW_HOME = dir;
   try {
-    const home = require('../bridge/home').resolve({ CLAUDE_WOW_HOME: dir });
-    fs.cpSync(WOWDATA, home.data, { recursive: true });
-    const store = G.createBridgeGoals({ home, context: () => ({ text: BONE_CONTEXT, at: NOW, receivedAt: Date.now() }), streamOptions: () => ({ ...ST.INERT_OPTIONS }) });
+    const store = G.createBridgeGoals({ context: () => ({ text: BONE_CONTEXT, at: NOW, receivedAt: Date.now() }), streamOptions: () => ({ ...ST.INERT_OPTIONS }) });
+    assert.equal(store.home.dir, dir);
+    assert.equal(store.home.data, path.join(dir, 'data'));
+    fs.cpSync(WOWDATA, store.home.data, { recursive: true });
     const res = await store.call('order_issue', { text: 'Buy 2 {item:501}' });
     assert.equal(res.ok, true, res.text);
-    const saved = JSON.parse(fs.readFileSync(path.join(home.goals, BONE_KEY, G.GOALS_FILE), 'utf8'));
+    const saved = JSON.parse(fs.readFileSync(path.join(store.home.goals, BONE_KEY, G.GOALS_FILE), 'utf8'));
     assert.equal(saved.orders.current.text, 'Buy 2 Fixture Blade');
     assert.equal(saved.orders.current.refs[0].build, FIXTURE_BUILD);
-    const bridgeSrc = fs.readFileSync(BRIDGE, 'utf8');
-    assert.match(bridgeSrc, /const goalStore = GOALS\.createBridgeGoals\(\{\s*home: HOME,/, 'bridge.js builds its goal store with this factory and its home');
-  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  } finally {
+    if (before === undefined) delete process.env.CLAUDE_WOW_HOME; else process.env.CLAUDE_WOW_HOME = before;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('order tokens: without synced data, or with data for another build or an unknown client build, no token expands and the order says why', async () => {
