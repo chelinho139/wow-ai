@@ -67,11 +67,13 @@ local function WholeNumber(v)
 end
 
 function T.CharacterKey()
-	local name = Try(GetUnitName, "player", true)
-	if type(name) ~= "string" or name == "" then name = Try(UnitName, "player") end
+	local name = Try(UnitName, "player")
 	local realm = Try(GetRealmName)
-	if type(name) ~= "string" or name == "" or type(realm) ~= "string" or realm == "" then return nil end
-	local key = (name:gsub("%-.*$", "") .. "-" .. realm):gsub("[^%w_%-\128-\255]", "")
+	if type(name) ~= "string" or type(realm) ~= "string" then return nil end
+	name = name:match("^[^%s,%(]+")
+	realm = realm:gsub("%s+", "")
+	if not name or realm == "" then return nil end
+	local key = (name .. "-" .. realm):gsub("[^%w_%-\128-\255]", "")
 	if key == "" or #key > T.KEY_MAX_BYTES or key:sub(1, 1) == "-" then return nil end
 	return key
 end

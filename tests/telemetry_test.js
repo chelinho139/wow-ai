@@ -7,6 +7,7 @@ const path = require('path');
 const { lua, lauxlib, lualib, to_luastring, to_jsstring } = require('fengari');
 const TL = require('../bridge/telemetry');
 const P = require('../bridge/protocol');
+const G = require('../bridge/goals');
 
 const BRIDGE_SOURCE = path.join(__dirname, '..', 'bridge', 'bridge.js');
 const CHARACTER = 'Bone-Forever';
@@ -314,4 +315,20 @@ test('watchFrom takes a target map or a plain list, caps both lists, and drops w
   assert.deepEqual(TL.watchFrom(undefined), { items: new Map(), factions: [] });
   assert.equal(TL.telemetryEnabled(undefined), true);
   assert.equal(TL.telemetryEnabled({ enabled: false }), false);
+});
+
+test('a gs record and a goal for the same character land in the same folder', async () => {
+  const dir = tmpDir('samefolder');
+  try {
+    const context = 'Game: World of Warcraft: Forever\nCharacter: Bone on Forever Realm, level 20 Orc Rogue (Horde)\nProfessions: Skinning 75/75';
+    const key = G.characterOf(context).key;
+    const { t } = store(dir);
+    assert.equal(t.submit(gsJob('s1', 1, { money: '5' }, key)).status, 'applied');
+    const goals = G.createGoals({ dir, context: () => ({ text: context, at: Date.now(), receivedAt: Date.now() }), streamOptions: () => ({ enabled: false }) });
+    const r = await goals.call('goal_set', { profession: 'Skinning', rank: 150 });
+    assert.equal(r.ok, true, r.text);
+    assert.equal(path.dirname(t.snapshotFile(key)), path.dirname(goals.file(key)));
+    assert.ok(fs.existsSync(t.snapshotFile(key)) && fs.existsSync(goals.file(key)));
+    assert.deepEqual(fs.readdirSync(dir), [key], 'one folder for the character');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

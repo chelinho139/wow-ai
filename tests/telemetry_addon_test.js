@@ -6,6 +6,7 @@ const path = require('path');
 const { lua, lauxlib, lualib, to_luastring, to_jsstring } = require('fengari');
 const P = require('../bridge/protocol');
 const TL = require('../bridge/telemetry');
+const G = require('../bridge/goals');
 
 const ADDON = path.join(__dirname, '..', 'addon', 'ClaudeWoW');
 const CELLS_PER_ROW = 200;
@@ -355,11 +356,15 @@ test('deaths and recipes belong to the character: an alt on the same account sta
   assert.equal(alt.num(`ClaudeWoWDB.telemetry.chars["${CHARACTER}"].deaths`), 1, 'the main keeps its own');
 });
 
-test('a two-part name keeps both parts in the character key', () => {
-  const vm = ready({ extra: GAME_STUB + '\nfunction GetUnitName(unit, showServer) return "Bone Sleeve" end\nfunction GetRealmName() return "Forever" end' });
-  const [gs] = gsJobs(shoot(vm));
-  assert.equal(gs.name, 'BoneSleeve-Forever');
-  assert.match(gs.name, TL.CHARACTER_KEY_RE);
+test('the record names the character with the key goals.js derives from the game context, so telemetry and goals share one folder', () => {
+  for (const [extra, expected] of [['', 'Testchar-TestRealm'], ['\nfunction GetUnitName(unit, showServer) return "Bone Sleeve" end\nfunction UnitName(unit) return "Bone" end\nfunction GetRealmName() return "Forever Realm" end', 'Bone-ForeverRealm'], ['\nfunction GetRealmName() return "Forever\'s Realm" end', 'Testchar-ForeversRealm']]) {
+    const vm = ready({ extra: GAME_STUB + extra });
+    const [gs] = gsJobs(shoot(vm));
+    const fromContext = G.characterOf(vm.evaluate('ClaudeWoW.GameContext()'));
+    assert.equal(gs.name, fromContext.key, 'the same key goals.js reads off the Character line');
+    assert.equal(gs.name, expected);
+    assert.match(gs.name, TL.CHARACTER_KEY_RE);
+  }
 });
 
 test('a record whose shot fails is sent again, and a message retry never carries a record', () => {

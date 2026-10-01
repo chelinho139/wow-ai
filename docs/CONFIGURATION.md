@@ -183,7 +183,7 @@ The bridge's banner prints the folder it chose (`home :`). The one-line installe
 
 ## Game state telemetry
 
-The addon sends quiet `kind=gs` records with the character's game state: money, level and XP, zone (uiMapID), profession ranks, watched item counts and free bag slots, equipped item IDs, watched factions, deaths and learned recipes. Only IDs and numbers, never names. Each record names its character (`Name-Realm`, both parts of a two-part name, spaces dropped). The bridge merges them into `goals/<character>/snapshot.json` and appends changes to `events.jsonl`. See [ARCHITECTURE.md](ARCHITECTURE.md#game-state-records-kindgs) for the transport rules.
+The addon sends quiet `kind=gs` records with the character's game state: money, level and XP, zone (uiMapID), profession ranks, watched item counts and free bag slots, equipped item IDs, watched factions, deaths and learned recipes. Only IDs and numbers, never names. Each record names its character with the key goals use (`Bone-Forever`: the first part of the name, the realm without spaces), so telemetry and `goals.json` share one folder. Two characters on one realm whose names share a first part share that folder, a known limit. The bridge merges them into `goals/<character>/snapshot.json` and appends changes to `events.jsonl`. See [ARCHITECTURE.md](ARCHITECTURE.md#game-state-records-kindgs) for the transport rules.
 
 | Key | Default | Meaning |
 |---|---|---|
