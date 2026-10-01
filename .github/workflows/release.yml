@@ -1,0 +1,72 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths:
+      - '.pkgmeta'
+      - '.github/workflows/release.yml'
+      - 'addon/**'
+      - 'package.json'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: package.json, the toc and the tag name one version
+        run: |
+          pkg=$(node -p "require('./package.json').version")
+          toc=$(sed -n 's/^## Version: *//p' addon/ClaudeWoW/ClaudeWoW.toc | tr -d '\r')
+          echo "package.json $pkg, ClaudeWoW.toc $toc"
+          test "$pkg" = "$toc"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            echo "tag $GITHUB_REF_NAME"
+            test "$GITHUB_REF_NAME" = "v$pkg"
+          fi
+
+  addon:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: BigWigsMods/packager@v2
+        with:
+          args: ${{ github.ref_type == 'tag' && '' || '-d' }}
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          WAGO_API_TOKEN: ${{ secrets.WAGO_API_TOKEN }}
+          GITHUB_OAUTH: ${{ github.ref_type == 'tag' && secrets.GITHUB_TOKEN || '' }}
+      - name: the zip holds only the ClaudeWoW folder, with its toc
+        run: |
+          zip=$(ls .release/*.zip)
+          unzip -Z1 "$zip" | tee files.txt
+          test -z "$(grep -v '^ClaudeWoW/' files.txt)"
+          grep -qx 'ClaudeWoW/ClaudeWoW.toc' files.txt
+          test -z "$(grep -E '^ClaudeWoW/(bridge|tests|dev|docs|build)/' files.txt)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: addon-zip
+          path: .release/*.zip
+
+  bridge:
+    needs: addon
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun build.js
+      - run: ./dist/claude-wow-linux-x64 service help
+      - run: gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
