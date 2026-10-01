@@ -260,21 +260,25 @@ function itemProblem(store, slot, itemID) {
   return { row };
 }
 
+function countTitle(n) {
+  return `${GEARSET_TITLE_PREFIX}${n} item${n === 1 ? '' : 's'}`;
+}
+
 function gearsetTitle(store, refs) {
   const expander = GR.createExpander(store);
   const counts = new Map();
   for (const ref of refs) {
     const shown = expander.expand(`{item:${ref.id}}`);
-    if (!shown.ok) return fail(`The gearset was refused and nothing was saved. ${GR.errorsText(shown.errors, store)}`);
+    if (!shown.ok) return countTitle(refs.length);
     counts.set(shown.text, (counts.get(shown.text) || 0) + 1);
   }
-  const parts = [...counts].map(([name, n]) => (n > 1 ? `${n}x ${name}` : name));
-  for (let k = parts.length; k >= 1; k--) {
-    const rest = parts.length - k;
-    const text = `${GEARSET_TITLE_PREFIX}${parts.slice(0, k).join(', ')}${rest ? ` and ${rest} more` : ''}`;
-    if (text.length <= GOAL_TITLE_MAX) return done(text);
+  const groups = [...counts].map(([name, n]) => ({ text: n > 1 ? `${n}x ${name}` : name, n }));
+  for (let k = groups.length; k >= 1; k--) {
+    const hidden = groups.slice(k).reduce((sum, g) => sum + g.n, 0);
+    const text = `${GEARSET_TITLE_PREFIX}${groups.slice(0, k).map(g => g.text).join(', ')}${hidden ? ` and ${hidden} more` : ''}`;
+    if (text.length <= GOAL_TITLE_MAX) return text;
   }
-  return done(`${GEARSET_TITLE_PREFIX}${refs.length} items`);
+  return countTitle(refs.length);
 }
 
 function checkGearset(args, snap, gameData) {
@@ -300,9 +304,7 @@ function checkGearset(args, snap, gameData) {
   }
   if (rows[MAIN_HAND_SLOT] && rows[MAIN_HAND_SLOT].inventoryType === TWO_HAND_TYPE && rows[OFF_HAND_SLOT]) problems.push(`slot ${OFF_HAND_SLOT}: slot ${MAIN_HAND_SLOT} holds a two-hand item, so slot ${OFF_HAND_SLOT} stays empty.`);
   if (problems.length) return fail(`The gearset was refused and nothing was saved. ${problems.join(' ')}`);
-  const title = gearsetTitle(store, refs);
-  if (!title.ok) return title;
-  return { ok: true, goal: { id: GEARSET_ID, type: GEARSET_TYPE, target: { slots }, title: title.text, refs }, label: 'the gear set' };
+  return { ok: true, goal: { id: GEARSET_ID, type: GEARSET_TYPE, target: { slots }, title: gearsetTitle(store, refs), refs }, label: 'the gear set' };
 }
 
 function checkProfession(args, snap) {
@@ -631,6 +633,7 @@ function createGoals(opts) {
     if (!TOOL_NAMES.includes(tool)) return fail(`Unknown goal tool: ${tool}`);
     const args = rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs) ? rawArgs : {};
     const snap = currentSnap();
+    if (tool === TOOL.voteClose && args.adopt !== true) return takeVote(args, snap).result;
     if (!snap.character) return fail('The game has not reported a character yet. Log in with the addon running, or send any message from the game first.');
     const file = storeFile(root, snap.character.key);
     if (tool === TOOL.voteOpen) return openVote(args, snap, file);

@@ -20,6 +20,7 @@ const RECONNECTS_MAX = 5;
 const CONNECT_TIMEOUT_MS = 10000;
 const IDLE_TIMEOUT_MS = 6 * 60 * 1000;
 const END_OF_NAMES = '366';
+const SHUTDOWN_PUSH_WAIT_MS = 1000;
 const UNKNOWN_ACTION_RE = /unknown action/i;
 
 const CHANNEL_RE = /^[a-z0-9_]{3,25}$/;
@@ -113,6 +114,16 @@ function resultText(r) {
   return `${lines.join('; ')}. ${r.total} voter${r.total === 1 ? '' : 's'}. ${outcome}${capped}${missed}`;
 }
 
+function settleWithin(promise, ms, timers = { set: setTimeout }) {
+  return Promise.race([
+    Promise.resolve(promise).catch(() => {}),
+    new Promise(resolve => {
+      const t = timers.set(resolve, ms);
+      if (t && typeof t.unref === 'function') t.unref();
+    }),
+  ]);
+}
+
 function createVotes(opts) {
   const config = opts.config || (() => null);
   const connect = opts.connect || (() => tls.connect({ host: IRC_HOST, port: IRC_PORT, servername: IRC_HOST }));
@@ -148,10 +159,11 @@ function createVotes(opts) {
     log(`votes: the stream service did not take the vote display (${why})`);
   }
 
-  async function pushDisplay(vote, isOpen) {
+  async function pushDisplay(vote, isOpen, withWinner = true) {
     const options = streamOptions() || {};
     if (!ST.isEnabled(options)) return;
-    const command = displayCommand(vote.ballot.result(), isOpen);
+    const r = vote.ballot.result();
+    const command = displayCommand(withWinner ? r : { ...r, winner: null }, isOpen);
     try {
       const answer = await post(ST.serviceUrl(options), command);
       if (!(answer && answer.ok)) noteRefused(vote, answer && answer.message ? answer.message : `status ${answer ? answer.status : '?'}`);
@@ -183,11 +195,9 @@ function createVotes(opts) {
     if (!msg) return;
     if (msg.type === 'ping') { write(vote, `PONG :${msg.arg}`); return; }
     if (msg.channel !== vote.channel) return;
-    if (msg.type === 'joined') {
-      vote.joined = true;
-      if (vote.connectTimer) { timers.clear(vote.connectTimer); vote.connectTimer = null; }
-      return;
-    }
+    vote.joined = true;
+    if (vote.connectTimer) { timers.clear(vote.connectTimer); vote.connectTimer = null; }
+    if (msg.type === 'joined') return;
     const choice = voteChoice(msg.text, vote.options.length);
     if (!choice) return;
     const r = vote.ballot.cast(msg.user, choice);
@@ -305,11 +315,12 @@ function createVotes(opts) {
   }
 
   function stop() {
-    if (!open) return;
+    if (!open) return Promise.resolve();
     const vote = open;
     open = null;
-    pushDisplay(vote, false);
+    const closing = pushDisplay(vote, false, false);
     release(vote);
+    return closing;
   }
 
   return {
@@ -320,12 +331,11 @@ function createVotes(opts) {
     last: () => last,
     markAdopted: () => { if (last) last.adopted = true; },
     voters: () => (open ? open.ballot.voters() : 0),
-    buffered: () => (open && typeof open.buffer === 'string' ? open.buffer.length : 0),
   };
 }
 
 module.exports = {
   IRC_HOST, IRC_PORT, ANON_NICK_PREFIX, OVERLAY_ACTION, OPTIONS_MIN, OPTIONS_MAX, SECONDS_MIN, SECONDS_MAX, VOTERS_MAX, TITLE_MAX, LINE_MAX_BYTES, RECONNECTS_MAX,
-  CONNECT_TIMEOUT_MS, IDLE_TIMEOUT_MS,
-  channelOf, parseIrcLine, voteChoice, createBallot, displayCommand, resultText, createVotes,
+  CONNECT_TIMEOUT_MS, IDLE_TIMEOUT_MS, SHUTDOWN_PUSH_WAIT_MS,
+  channelOf, parseIrcLine, voteChoice, createBallot, resultText, createVotes, settleWithin,
 };

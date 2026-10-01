@@ -46,7 +46,7 @@ test('gearset: item IDs are checked against the synced data and stored with thei
     assert.equal(res.ok, true, res.text);
     const goal = r.read().goals[0];
     assert.equal(goal.id, G.GEARSET_ID);
-    assert.equal(goal.title, 'Gear set: Tablet of the Stars, Rending Claw and 1 more', 'names until the 60-character cap, then a count');
+    assert.equal(goal.title, 'Gear set: Tablet of the Stars, Rending Claw and 2 more', 'names until the 60-character cap, then a count of the hidden items');
     assert.ok(goal.title.length <= G.GOAL_TITLE_MAX);
     assert.deepEqual(goal.target, { slots: { 1: HELM, 11: RING, 16: BLADE, 17: BLADE } });
     assert.deepEqual(goal.refs.map(ref => [ref.id, ref.slot, ref.trust, ref.build]), [[HELM, 1, 'client-data', '1.60.1.200'], [RING, 11, 'client-data', '1.60.1.200'], [BLADE, 16, 'client-data', '1.60.1.200'], [BLADE, 17, 'client-data', '1.60.1.200']]);
@@ -74,7 +74,6 @@ test('gearset: unknown IDs, wrong slots, items that cannot be worn, bad slot num
     await refuse({ 1: UNTYPED }, /slot 1: the synced data does not say where \{item:509\} is worn/);
     await refuse({ 16: TWO_HAND, 17: BLADE }, /slot 17: slot 16 holds a two-hand item, so slot 17 stays empty\./);
     await refuse({ 17: TWO_HAND }, /slot 17: \{item:507\} goes in slot 16, not 17\./);
-    await refuse({ 1: 504 }, /\{item:504\}: the name in the data has characters that cannot be shown/);
     await refuse({}, /needs slots/);
     await refuse([BLADE], /needs slots/);
     assert.equal(fs.existsSync(r.file), false, 'nothing was written');
@@ -89,6 +88,17 @@ test('gearset: unknown IDs, wrong slots, items that cannot be worn, bad slot num
   try {
     assert.match((await otherBuild.store.call('goal_set', { type: 'gearset', slots: { 16: BLADE } })).text, /not in the client's build family/);
   } finally { otherBuild.cleanup(); }
+});
+
+test('gearset: an item whose synced name cannot be shown falls back to a count title', async () => {
+  const r = rig();
+  try {
+    const one = await r.store.call('goal_set', { type: 'gearset', slots: { 1: 504 } });
+    assert.equal(one.ok, true, one.text);
+    assert.equal(r.read().goals[0].title, 'Gear set: 1 item');
+    await r.store.call('goal_set', { type: 'gearset', slots: { 1: 504, 16: BLADE } });
+    assert.equal(r.read().goals[0].title, 'Gear set: 2 items');
+  } finally { r.cleanup(); }
 });
 
 test('gearset progress: counts set items the telemetry reports equipped, in any matching slot, each equipped item once', () => {

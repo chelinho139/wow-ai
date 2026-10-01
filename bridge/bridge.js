@@ -408,12 +408,13 @@ function shutdown(sig) {
   if (shuttingDown) return;
   shuttingDown = true;
   stopPlugins();
-  try { voteBox.stop(); } catch {}
+  let voteClosing = Promise.resolve();
+  try { voteClosing = VOTES.settleWithin(voteBox.stop(), VOTES.SHUTDOWN_PUSH_WAIT_MS); } catch {}
   const kids = [...running.values()].map(r => r.child).concat(T.titleChildren()).filter(Boolean);
   if (captureChild) kids.push(captureChild);
   const n = kids.filter(PR.alive).length;
   log(`${sig}: stopping${n ? `; ending ${n} child process${n === 1 ? '' : 'es'} (SIGTERM, SIGKILL after ${KILL_GRACE_MS} ms)` : ''}`);
-  PR.killAll(kids, { graceMs: KILL_GRACE_MS, log }, () => process.exit(sig === 'SIGINT' ? 130 : 143));
+  PR.killAll(kids, { graceMs: KILL_GRACE_MS, log }, () => voteClosing.then(() => process.exit(sig === 'SIGINT' ? 130 : 143)));
 }
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));

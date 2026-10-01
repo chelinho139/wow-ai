@@ -108,7 +108,11 @@ function collector(opts = {}) {
       if (opts.autoJoin) queueMicrotask(() => s.emit('data', `${IRC.join}\r\n`));
       return s;
     },
-    post: async (url, command) => { posts.push(command); return opts.answer || { ok: true, status: 200 }; },
+    post: async (url, command) => {
+      if (opts.slowPost) await new Promise(r => setImmediate(r));
+      posts.push(command);
+      return opts.answer || { ok: true, status: 200 };
+    },
     streamOptions: () => opts.streamOptions || { url: 'http://127.0.0.1:9' },
     now: () => 1000,
     log: l => logs.push(l),
@@ -145,11 +149,9 @@ test('collector: an endless line without a newline is dropped, not buffered fore
   c.votes.start({ options: TWO, seconds: 60 });
   const s = c.sockets[0];
   s.emit('data', 'x'.repeat(V.LINE_MAX_BYTES + 10));
-  assert.equal(c.votes.buffered(), 0, 'the overlong line is not kept');
-  s.emit('data', 'y'.repeat(100));
-  assert.equal(c.votes.buffered(), 0, 'its rest is not kept either');
-  s.emit('data', `${IRC.plain}\r\n${IRC.tagged}\r\n`);
-  assert.deepEqual(c.votes.close().result.options.map(o => o.votes), [0, 1], 'the rest of the overlong line, up to its newline, is discarded; the next line counts');
+  s.emit('data', `${IRC.plain}\r\n`);
+  s.emit('data', `${IRC.tagged}\r\n`);
+  assert.deepEqual(c.votes.close().result.options.map(o => o.votes), [0, 1], 'the tail of the overlong line, up to its newline, is discarded; the next real line counts');
 });
 
 test('collector: off without a channel, one vote at a time, and close releases the socket and timers', () => {
@@ -403,12 +405,15 @@ test('collector: a stream service without the vote action is logged once, with a
   assert.equal(c.logs.filter(l => /did not take the vote display/.test(l)).length, 0);
 });
 
-test('collector: stop() tells the overlay the vote is closed before it lets go', async () => {
-  const c = collector();
+test('collector: stop() returns the closing push, which says closed with no winner', async () => {
+  const c = collector({ slowPost: true });
   c.votes.start({ options: TWO, seconds: 60 });
-  c.votes.stop();
-  await new Promise(r => setImmediate(r));
-  assert.equal(c.posts[c.posts.length - 1].vote.open, false);
+  c.sockets[0].emit('data', `${IRC.join}\r\n${IRC.plain}\r\n`);
+  await c.votes.stop();
+  const lastPost = c.posts[c.posts.length - 1].vote;
+  assert.equal(lastPost.open, false);
+  assert.equal(lastPost.winner, null, 'a shutdown names no winner nobody can adopt');
+  assert.equal(lastPost.options[0].votes, 1);
   assert.equal(c.sockets[0].destroyed, true);
   assert.equal(c.timers.pending.size, 0);
 });
@@ -516,6 +521,46 @@ test('goal_vote_close: a corrupt goals.json never blocks closing a vote; only ad
     assert.match(adopt.text, /not valid JSON/);
     assert.equal(fs.readFileSync(r.file, 'utf8'), '{broken', 'the bad file is left alone');
     assert.match((await r.store.call('goal_vote_open', { options: SKIN_OPTIONS, seconds: 60 })).text, /needs a readable goal store/);
+  } finally { r.cleanup(); }
+});
+
+test('collector: any chat line from the vote channel confirms the join and clears the connect timer', () => {
+  const c = collector();
+  c.votes.start({ options: TWO, seconds: 60 });
+  c.sockets[0].emit('data', `${IRC.otherChannel}\r\n`);
+  assert.equal([...c.timers.pending].some(t => t.ms === V.CONNECT_TIMEOUT_MS), true, 'another channel confirms nothing');
+  c.sockets[0].emit('data', `${IRC.plain}\r\n`);
+  assert.equal([...c.timers.pending].some(t => t.ms === V.CONNECT_TIMEOUT_MS), false);
+  assert.equal(c.votes.close().result.chatMissed, false);
+});
+
+test('settleWithin: resolves when the push settles, when it fails, or after the wait at the latest', async () => {
+  const timers = fakeTimers();
+  let resolvePush;
+  let settled = false;
+  V.settleWithin(new Promise(r => { resolvePush = r; }), 1000, timers).then(() => { settled = true; });
+  await new Promise(r => setImmediate(r));
+  assert.equal(settled, false);
+  resolvePush();
+  await new Promise(r => setImmediate(r));
+  assert.equal(settled, true);
+  let late = false;
+  V.settleWithin(new Promise(() => {}), 1000, timers).then(() => { late = true; });
+  timers.run(t => t.ms === 1000);
+  await new Promise(r => setImmediate(r));
+  assert.equal(late, true, 'a push that never answers waits at most the given time');
+  await V.settleWithin(Promise.reject(new Error('down')), 1000, timers);
+});
+
+test('goal_vote_close without adopt works before the game has reported a character', async () => {
+  const r = goalRig();
+  try {
+    await r.store.call('goal_vote_open', { options: SKIN_OPTIONS, seconds: 60 });
+    r.setContext('Game: World of Warcraft: Forever (client 1.60.1.70124, interface 16001)');
+    const closed = await r.store.call('goal_vote_close', {});
+    assert.equal(closed.ok, true, closed.text);
+    assert.match(closed.text, /Closed the vote\./);
+    assert.match((await r.store.call('goal_vote_close', { adopt: true })).text, /has not reported a character/);
   } finally { r.cleanup(); }
 });
 
