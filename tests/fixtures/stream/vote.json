@@ -1,0 +1,13 @@
+{
+  "action": "vote",
+  "vote": {
+    "open": true,
+    "options": [
+      { "n": 1, "title": "Skinning 225", "votes": 4 },
+      { "n": 2, "title": "Level to 21", "votes": 3 }
+    ],
+    "total": 7,
+    "endsAt": 1790000000000,
+    "winner": null
+  }
+}

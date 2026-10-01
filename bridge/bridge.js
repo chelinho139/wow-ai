@@ -72,6 +72,7 @@ const LP = require('./liveproto');
 const T = require('./titles');
 const GOALS = require('./goals');
 const TL = require('./telemetry');
+const VOTES = require('./votes');
 
 const HERE = __dirname;
 // Config, state, transcripts, log and scratch live in the home folder (home.js:
@@ -407,11 +408,13 @@ function shutdown(sig) {
   if (shuttingDown) return;
   shuttingDown = true;
   stopPlugins();
+  let voteClosing = Promise.resolve();
+  try { voteClosing = VOTES.settleWithin(voteBox.stop(), VOTES.SHUTDOWN_PUSH_WAIT_MS); } catch {}
   const kids = [...running.values()].map(r => r.child).concat(T.titleChildren()).filter(Boolean);
   if (captureChild) kids.push(captureChild);
   const n = kids.filter(PR.alive).length;
   log(`${sig}: stopping${n ? `; ending ${n} child process${n === 1 ? '' : 'es'} (SIGTERM, SIGKILL after ${KILL_GRACE_MS} ms)` : ''}`);
-  PR.killAll(kids, { graceMs: KILL_GRACE_MS, log }, () => process.exit(sig === 'SIGINT' ? 130 : 143));
+  PR.killAll(kids, { graceMs: KILL_GRACE_MS, log }, () => voteClosing.then(() => process.exit(sig === 'SIGINT' ? 130 : 143)));
 }
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
@@ -981,11 +984,19 @@ const core = {
   agentPids: () => [...running.values()].map(r => r.child).concat(T.titleChildren()).filter(Boolean).map(c => c.pid),
 };
 
+const voteBox = VOTES.createVotes({
+  config: () => cfg.votes,
+  streamOptions: () => core.options('stream'),
+  log,
+});
+
 const goalStore = GOALS.createBridgeGoals({
   home: HOME,
   context: () => state.context,
   streamOptions: () => core.options('stream'),
   onChange: () => publishNow(true, { refresh: true }),
+  equipped: TL.equippedReader(telemetry, TELEMETRY_ON),
+  votes: voteBox,
   log,
 });
 

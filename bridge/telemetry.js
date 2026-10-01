@@ -539,8 +539,16 @@ function createTelemetry(opts) {
   return { submit, luaGs, handled, snapshot: load, snapshotFile };
 }
 
+function equippedReader(telemetry, enabled) {
+  return characterKey => {
+    if (!enabled) return null;
+    const section = telemetry.snapshot(characterKey).sections.equip;
+    return section ? section.value.slots : null;
+  };
+}
+
 module.exports = {
   KIND, RECORD_VERSION, GS_SLOT_VERSION, GS_CHARACTERS_MAX, SECTION_NAMES, RECORD_TEXT_MAX, SNAPSHOT_FILE, EVENTS_FILE, EVENTS_ROTATED_FILE, EVENTS_ROTATE_BYTES,
   HANDLED_PER_SESSION, WATCH_ITEMS_MAX, WATCH_FACTIONS_MAX, WATCH_THRESHOLDS, IMPORTANCE, CHARACTER_KEY_RE,
-  parseRecord, isTelemetry, watchFrom, telemetryEnabled, thresholdCrossed, diffSection, appendEvents, readSnapshot, luaGsTable, createTelemetry,
+  parseRecord, isTelemetry, equippedReader, watchFrom, telemetryEnabled, thresholdCrossed, diffSection, appendEvents, readSnapshot, luaGsTable, createTelemetry,
 };

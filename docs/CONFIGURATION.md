@@ -119,6 +119,7 @@ These sizes are baked into the files `install-slots.js` creates, and the addon h
 | `claude-wow data sync [--build <a.b.c.d>] [--force]` | Fetches the Forever client tables from wago.tools (product `wow_cn_beta`, the newest `1.60.1` build it lists unless `--build` names one) into `data/forever/<build>/` in the home folder. Nothing runs it on its own yet, and it never starts from game text. A build that is already current is skipped unless `--force`. Moving `current` to another build family needs `--build`. Exit codes: `0` done, `1` failed (the previous build stays current), `2` usage (unknown option, bad `--build`), `3` another sync holds the lock. See [Game data](#game-data). |
 | `claude-wow data-mcp [--data <dir>] [--client-build <a.b.c.d>]` | The read-only `wowdata` MCP server on stdio. The bridge starts it for Claude `ask` runs; you do not run it by hand. See [The wowdata server](#the-wowdata-server). |
 | `claude-wow events [--follow] [--min N] [--character Name-Realm]` | Game events from the telemetry (`goals/<Name-Realm>/events.jsonl`), one JSON line each. Without `--follow` it prints the last 50 and exits; with it, it waits for new ones. See [Game state telemetry](#game-state-telemetry). Exit codes: `0` done, `1` no events file yet, `2` usage. |
+| `claude-wow report [--day [YYYY-MM-DD]] [--character Name-Realm]` | One local calendar day (default today) for one character (default the newest events folder): level, money, deaths, zone, skill, recipe and watched item changes, the orders issued that day and each goal's progress. See [Daily report](#daily-report). Exit codes: `0` done, `1` no events or no folder, `2` usage. |
 | `claude-wow --version` | The version and the runtime: `claude-wow 0.4.0 (node 24.21.0)`, `(bun 1.4.2)` or `(claude-wow binary (bun 1.4.2))`. |
 
 Environment: `CLAUDE_WOW_SERVICE=1` is set by the service definitions and tells the supervisor to write its output to the service log and a pid file instead of a terminal; `CLAUDE_WOW_HOME` (below) is passed through to the service when set.
@@ -195,6 +196,21 @@ The addon sends quiet `kind=gs` records with the character's game state: money, 
 In the game, `/claude config telemetry off` (or **Send game state to Claude** in the chat list's gear menu) stops it, and so does `/claude config context off`. Records ride on screenshots the addon takes anyway for messages; a screenshot of its own happens at most once every 2 minutes, after a change, or within 5 s of a level up, death or new recipe. Like every message shot, a telemetry-only shot makes the client show its own "screen captured" text: in the `forever` UI source, `Blizzard_ActionStatus` (both its Classic and Mainline files) shows `SCREENSHOT_SUCCESS` on `SCREENSHOT_SUCCEEDED` and fades it out over 2 s, and plays no sound; the addon does not hide it. Not yet checked in the game which of the two files Forever loads.
 
 Event importance: 1 money and item ticks, skill, gear and reputation changes; 2 a watched count crossing a threshold, a zone change, bags full, a new reputation rank; 3 level up, death, a new recipe, a watched item reaching its target (`goal_complete`, once per target). `claude-wow events --follow` merges events that arrive within 10 s into one burst (per kind: the first `from`, the last `to`), prints one JSON line per event, and prints at most 40 bursts an hour; later events wait, merged, until the hour frees a slot.
+
+### Daily report
+
+`claude-wow report --day 2026-10-01` reads only the character's `events.jsonl` and `events.1.jsonl`, `snapshot.json` and `goals.json`; it needs no model and no network. Game things appear by ID (`Skill 393`, `Item 2318`, `maps 1420`), never by name, and an event whose fields are not whole numbers is skipped. Every order text and goal title goes through the order text validator again before it prints, with the character's first name, the bridge's own profession names and the names an order or goal stored in its checked `refs` as the only allowed names; a text that fails prints `(not shown: it fails the text check)`. Only the last 20 orders are kept, so a busy day can show fewer orders than were issued. Goal progress comes from the snapshot's `skills` and `equip` sections.
+
+Nothing schedules it. Two ways to run it daily, neither installed by the bridge:
+
+- **launchd (macOS):** a LaunchAgent with `ProgramArguments` `["/usr/local/bin/claude-wow", "report", "--day"]`, `StartCalendarInterval` `{ "Hour": 23, "Minute": 55 }` and `StandardOutPath` set to a file you choose, loaded with `launchctl bootstrap gui/$(id -u) <plist>`. It runs on this machine, where the goals folder is.
+- **A live session:** `/loop 24h run claude-wow report --day and summarize it` in the Claude Code session that has the channel. Cloud routines cannot reach `~/.claude-wow`.
+
+## Twitch votes
+
+| Key | Default | Meaning |
+|---|---|---|
+| `votes.channel` | none (votes off) | The Twitch channel name whose chat counts `!1` to `!3` while a `goal_vote_open` vote runs (3 to 25 letters, digits or `_`; a leading `#` is dropped). The bridge connects only while a vote is open, anonymously and read-only. Read at bridge start. See [LIVE-SESSION.md](LIVE-SESSION.md#gear-sets-and-twitch-votes-phase-3). |
 
 ## Game data
 
