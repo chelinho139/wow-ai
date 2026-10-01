@@ -1,0 +1,8 @@
+Name_lang,Pos_0,Pos_1,Pos_2,ID,ContinentID,Flags
+"Fixture Town Roost",500,450,12.5,601,7,2
+"Fixture Vale Roost",100,900,3,602,7,1
+"Nowhere Roost",100,100,0,603,99,0
+"Broken Roost",abc,100,0,604,7,0
+"Long Roost Long Roost Long Roost Long Roost Long Roost Long Roost Long Roost Long Roost Long Roost Long Roost Long Roost Long",1,1,1,605,7,0
+"Twin Roost",1,1,1,601,7,0
+"Short Row",1,1

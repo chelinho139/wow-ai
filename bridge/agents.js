@@ -70,22 +70,14 @@ function claudeWindow(ev) {
   return w.length ? Math.max(...w) : 0;
 }
 
-// What a run would have cost at API list prices. A Max or Pro subscription is
-// not billed by the token, so the addon shows this as "≈$2.41 API": a
-// comparison, never a bill. Rates are USD per million tokens, Anthropic's
-// first-party list prices as the claude-api skill's model table has them
-// (cached 2026-06-24; https://docs.claude.com/en/docs/about-claude/pricing).
-// Cache writes cost 1.25x the input rate (5-minute) or 2x (1-hour), cache
-// reads 0.1x, unless a model lists its own read rate (cacheRead). Checked
-// against Claude Code's own total_cost_usd for a real haiku run (tests).
-// A model not in this table gets no cost, only its tokens. Update here.
 const CLAUDE_RATES = [
   { match: /claude-fable-5-1\b/, input: 10, output: 50, cacheRead: 0.25 },
   { match: /claude-fable-5\b(?!-1)/, input: 10, output: 50 },
-  { match: /claude-opus-5\b/, input: 5, output: 25 },
-  { match: /claude-opus-4-[678]\b/, input: 5, output: 25 },
+  { match: /claude-opus-5-5\b/, input: 4, output: 20, cacheRead: 0.2 },
+  { match: /claude-opus-5\b(?!-5\b)/, input: 5, output: 25 },
+  { match: /claude-opus-4-[5678]\b/, input: 5, output: 25 },
   { match: /claude-sonnet-5\b/, input: 2, output: 10 },
-  { match: /claude-sonnet-4-6\b/, input: 3, output: 15 },
+  { match: /claude-sonnet-4-[56]\b/, input: 3, output: 15 },
   { match: /claude-haiku-4-5\b/, input: 1, output: 5 },
 ];
 const CACHE_WRITE_5M = 1.25, CACHE_WRITE_1H = 2, CACHE_READ = 0.1;

@@ -1,0 +1,6 @@
+Name_lang,ID,ParentUiMapID,Flags,System,Type
+"Fixture World",9001,0,0,0,2
+"Fixture Vale",9002,9001,2,0,3
+"Fixture Town",9003,9002,0,0,3
+"Bad|Pipe",9004,9001,0,0,3
+Broken,abc,0,0,0,3

@@ -1,0 +1,3 @@
+ID,SpellID,Reagent_0,Reagent_1,Reagent_2,Reagent_3,Reagent_4,Reagent_5,Reagent_6,Reagent_7,ReagentCount_0,ReagentCount_1,ReagentCount_2,ReagentCount_3,ReagentCount_4,ReagentCount_5,ReagentCount_6,ReagentCount_7
+401,4001,501,502,0,0,0,0,0,0,2,1,0,0,0,0,0,0
+402,4002,501,0,0,0,0,0,0,0,-1,0,0,0,0,0,0,0
