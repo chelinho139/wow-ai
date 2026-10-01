@@ -338,6 +338,18 @@ const nativeVM = () => {
 const shownHeaders = (vm) => vm.evaluate('(function() local t = {} for _, h in ipairs(ClaudeWoW.UI.questList.headers) do if h.shown then table.insert(t, h.text:GetText()) end end return table.concat(t, "|") end)()');
 const shownRows = (vm) => vm.evaluate('(function() local t = {} for _, r in ipairs(ClaudeWoW.UI.questList.rows) do if r.shown then table.insert(t, r.label:GetText()) end end return table.concat(t, "|") end)()');
 
+test('on Classic Era the window keeps only the atlases that client draws, and plain fills replace the Forever quest-log art', () => {
+  const vm = newVM({ before: NATIVE_TEMPLATES + '\nfunction GetBuildInfo() return "1.15.9", "70003", "Sep 1 2026", 11509 end' });
+  open(vm);
+  vm.run('ClaudeWoW.Render()');
+  assert.equal(vm.evaluate('ClaudeWoW.UI.art.parchment'), 'QuestBG-Parchment');
+  assert.equal(vm.evaluate('ClaudeWoW.UI.art.gear'), 'questlog-icon-setting');
+  assert.equal(vm.evaluate('ClaudeWoW.UI.art.filigree'), null, 'no frame edge, so no filigree on top of it');
+  for (const key of ['listBg', 'frame', 'header', 'poi', 'rowGlow']) {
+    assert.equal(vm.evaluate(`ClaudeWoW.UI.art.${key}`), 'false', `${key} is not drawn on Era`);
+  }
+});
+
 test('the window is built from Blizzard frame templates where the client has them: portrait, title bar, close button, parchment and a quest-log chat list', () => {
   const vm = nativeVM();
   assert.equal(vm.evaluate('ClaudeWoWFrame.template'), 'ButtonFrameTemplate');

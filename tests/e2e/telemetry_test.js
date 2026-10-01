@@ -1,0 +1,228 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('fs');
+const path = require('path');
+const SB = require('../../dev/sandbox');
+const SIG = require('../../bridge/signals');
+const TL = require('../../bridge/telemetry');
+const { encodePng, luaQuote } = require('../../dev/wow/client');
+const { makeRoot, gameRunner } = require('./helpers');
+
+const ROOT = makeRoot('telemetry');
+const withGame = gameRunner(ROOT);
+const RECORDS = 300;
+const PER_FRAME = 20;
+const CELL = 4;
+const CELLS = 200;
+const WIDTH = 1920;
+const HEIGHT = 1080;
+const SLOTS = 200;
+const CHARACTER = 'Testchar-TestRealm';
+
+function spentSlots(sb, kind) {
+  const out = [];
+  for (let slot = 1; slot <= SLOTS; slot++) if (!fs.existsSync(SIG.signalFile(sb.addons, kind, slot))) out.push(slot);
+  return out;
+}
+
+const slotOfId = n => ((n - 1) % SLOTS) + 1;
+
+function quietClient(h) {
+  h.client.runLua('ClaudeWoWDB.stream = ClaudeWoWDB.stream or {}; ClaudeWoWDB.stream.follow = false');
+}
+
+function assertSpends(h, { session, before, kind, messageId, issuedFrom, issuedTo, logFrom }) {
+  const spent = spentSlots(h.sb, kind).filter(s => !before.includes(s));
+  const own = slotOfId(messageId);
+  assert.ok(spent.includes(own), `the message spent its ${kind} file`);
+  const log = h.bridge.output.slice(logFrom);
+  for (const s of spent.filter(x => x !== own)) {
+    const real = [];
+    for (let r = issuedFrom; r <= issuedTo; r++) {
+      if (r !== messageId && slotOfId(r) === s && (new RegExp(`(?<!gs )#${r}@${session}[ :]`).test(log) || /hello from session /.test(log))) real.push(r);
+    }
+    assert.ok(real.length, `${kind} slot ${s} was spent by a record the addon itself sent (ids ${issuedFrom}..${issuedTo}), never by a gs seq`);
+  }
+  return spent;
+}
+
+function gsRecord(session, seq) {
+  const money = String(1000 + seq);
+  const hash = String(seq).padStart(8, '0');
+  return [session, '', String(seq), '', 'kind=gs', CHARACTER, `gs1\nmoney:${hash}:${money}`].join('\x1F');
+}
+
+function stripCells(client, payload) {
+  return client.luaValue(`(function() local c = ClaudeWoW_Codec.Encode(0, ${luaQuote(payload)}, 1); local t = {}; for i = 1, #c do t[i] = c[i] end; return table.concat(t, ",") end)()`).split(',').map(Number);
+}
+
+function writeShot(sb, client, payload, n) {
+  const cells = stripCells(client, payload);
+  const rgb = Buffer.alloc(WIDTH * HEIGHT * 3);
+  cells.forEach((v, i) => {
+    const r = Math.floor(i / CELLS), c = i % CELLS;
+    const lv = [(v >> 2) & 1, (v >> 1) & 1, v & 1].map(b => (b ? 255 : 0));
+    for (let y = 0; y < CELL; y++) for (let x = 0; x < CELL; x++) {
+      const o = ((r * CELL + y) * WIDTH + c * CELL + x) * 3;
+      rgb[o] = lv[0]; rgb[o + 1] = lv[1]; rgb[o + 2] = lv[2];
+    }
+  });
+  const file = path.join(sb.screenshots, `WoWScrnShot_010199_${String(n).padStart(6, '0')}.png`);
+  fs.writeFileSync(SB.assertSafe(file), encodePng(WIDTH, HEIGHT, rgb));
+  return file;
+}
+
+async function sendRecords(h, session, seqs, frameNo) {
+  for (let i = 0; i < seqs.length; i += PER_FRAME) {
+    const payload = seqs.slice(i, i + PER_FRAME).map(seq => gsRecord(session, seq)).join('\x1E');
+    const file = writeShot(h.sb, h.client, payload, frameNo++);
+    await h.client.waitFor(() => !fs.existsSync(file), { timeoutMs: 20000, label: `the bridge to read ${path.basename(file)}` });
+  }
+  return frameNo;
+}
+
+test('300 gs records whose seqs overlap the message ids spend no ack or sig file, leave lastId alone, and a message sent between them is answered', async () => {
+  await withGame({}, async h => {
+    h.client.runLua('ClaudeWoWTelemetry.Take = function() return nil end');
+    quietClient(h);
+    const first = await h.client.say('before the telemetry');
+    assert.match(first.text, /before the telemetry/);
+    await h.bridge.waitForLine(/game context updated: Character: Testchar/);
+    const session = h.client.db().session;
+    const ackBefore = spentSlots(h.sb, 'ack');
+    const sigBefore = spentSlots(h.sb, 'sig');
+    const lastIdBefore = h.state().lastId;
+    const issuedFrom = h.client.lastSeq() + 1;
+    const logFrom = h.bridge.output.length;
+    assert.ok(lastIdBefore < RECORDS, `message ids (${lastIdBefore}) sit inside the gs seq range, the case a shared id space would break`);
+
+    const seqs = Array.from({ length: RECORDS }, (_, i) => i + 1);
+    let frameNo = await sendRecords(h, session, seqs.slice(0, RECORDS / 2), 1);
+    const between = await h.client.say('sent between the records');
+    assert.match(between.text, /sent between the records/, 'the real message was not taken for a duplicate');
+    assert.ok(between.id <= RECORDS / 2, `its id ${between.id} was already used as a gs seq`);
+    frameNo = await sendRecords(h, session, seqs.slice(RECORDS / 2), frameNo);
+
+    const snapFile = path.join(h.sb.home, 'goals', CHARACTER, TL.SNAPSHOT_FILE);
+    const snap = await h.client.waitFor(() => {
+      try { const s = JSON.parse(fs.readFileSync(snapFile, 'utf8')); return s.seq === RECORDS ? s : null; } catch { return null; }
+    }, { timeoutMs: 20000, label: 'the snapshot at seq 300' });
+    assert.deepEqual(snap.sections.money.value, { copper: 1000 + RECORDS });
+    assert.equal(snap.session, session);
+    const events = fs.readFileSync(path.join(h.sb.home, 'goals', CHARACTER, TL.EVENTS_FILE), 'utf8').trim().split('\n');
+    assert.equal(events.length, RECORDS - 1, 'one money event per record after the baseline');
+
+    const slotB = ((between.id - 1) % SLOTS) + 1;
+    const issuedTo = h.client.lastSeq();
+    assertSpends(h, { session, before: ackBefore, kind: 'ack', messageId: between.id, issuedFrom, issuedTo, logFrom });
+    const sigs = spentSlots(h.sb, 'sig').filter(s => !sigBefore.includes(s));
+    for (const s of sigs.filter(x => x !== slotB)) assert.ok(Array.from({ length: issuedTo - issuedFrom + 1 }, (_, k) => issuedFrom + k).some(id => id !== between.id && slotOfId(id) === s), `sig slot ${s} belongs to a record the addon itself sent`);
+    const state = h.state();
+    assert.ok(state.lastId >= between.id && state.lastId <= issuedTo, `lastId ${state.lastId} is an id the addon sent (${issuedFrom}..${issuedTo}), never a gs seq up to ${RECORDS}`);
+    assert.ok(Object.keys(state.handled[session]).every(id => Number(id) <= issuedTo), 'no gs seq in the message dedupe map');
+    assert.equal(h.agentCalls().length, 2, 'no gs record ever reached an agent');
+    assert.doesNotMatch(h.bridge.output, /gs1/, 'no gs text was logged or run as a prompt');
+    const published = new RegExp(`\\{ character = "${CHARACTER}", session = "${session}", seq = ${RECORDS}, hashes = \\{ money = "${String(RECORDS).padStart(8, '0')}" \\} \\}`);
+    await h.client.say('publish the slots');
+    await h.client.waitFor(() => published.test(fs.readFileSync(path.join(h.sb.addons, 'ClaudeWoW_S001', 'Inbox.lua'), 'utf8')), { timeoutMs: 45000, label: 'the slot files to publish the gs hashes' });
+  });
+});
+
+test('the real addon sends its game state on a telemetry-only screenshot once the bridge advertises gs, and the bridge keeps it', async () => {
+  await withGame({}, async h => {
+    await h.client.say('hello');
+    const snapFile = path.join(h.sb.home, 'goals', CHARACTER, TL.SNAPSHOT_FILE);
+    const snap = await h.client.waitFor(() => {
+      try { const s = JSON.parse(fs.readFileSync(snapFile, 'utf8')); return s.sections.level ? s : null; } catch { return null; }
+    }, { timeoutMs: 60000, label: 'the first gs record in snapshot.json' });
+    assert.equal(snap.session, h.client.db().session);
+    assert.deepEqual(snap.sections.level.value, { level: 23, xp: 1234, xpMax: 5000 });
+    assert.deepEqual(snap.sections.zone.value, { mapID: 1431 });
+    assert.ok(Array.isArray(snap.sections.cap.value.missing));
+    await h.bridge.waitForLine(/telemetry: Testchar-TestRealm's game client is missing /);
+    assert.equal(h.agentCalls().length, 1);
+  });
+});
+
+test('a frame of [message, gs rider] from the real addon and a frame of [gs, message] each answer the message and spend exactly its one ack and one sig', async () => {
+  await withGame({ client: { speed: 8 }, speed: 8 }, async h => {
+    await h.client.say('warm up');
+    const snapFile = path.join(h.sb.home, 'goals', CHARACTER, TL.SNAPSHOT_FILE);
+    const readSnap = () => { try { return JSON.parse(fs.readFileSync(snapFile, 'utf8')); } catch { return null; } };
+    await h.client.waitFor(() => { const s = readSnap(); return s && s.sections.money; }, { timeoutMs: 60000, label: 'the first gs record' });
+    await new Promise(r => setTimeout(r, 5000));
+    const session = h.client.db().session;
+
+    quietClient(h);
+    const slotOf = n => ((n - 1) % SLOTS) + 1;
+    const RIDER_TRIES = 5;
+    let round = null;
+    for (let attempt = 1; attempt <= RIDER_TRIES; attempt++) {
+      if (attempt > 1) await new Promise(r => setTimeout(r, 5000));
+      const ackBefore = spentSlots(h.sb, 'ack');
+      const sigBefore = spentSlots(h.sb, 'sig');
+      const nowSec = Math.floor(Date.now() / 1000);
+      const gsSlots = new Set(Array.from({ length: 120 }, (_, k) => slotOf(nowSec - 10 + k)));
+      let messageId = h.client.lastSeq() + 1;
+      const firstTry = messageId;
+      while (gsSlots.has(slotOf(messageId)) || ackBefore.includes(slotOf(messageId)) || sigBefore.includes(slotOf(messageId))) {
+        messageId += 1;
+        assert.ok(messageId - firstTry < SLOTS, 'a slot clear of the gs seqs and of every spent signal exists');
+      }
+      h.client.runLua(`ClaudeWoWDB.lastSeq = ${messageId - 1}`);
+      h.client.runLua('STUB.money = STUB.money + 77');
+      const money = Number(h.client.luaValue('STUB.money'));
+      const mark = h.bridge.output.length;
+      const ridden = await h.client.say(`message with a rider ${attempt}`);
+      assert.match(ridden.text, /message with a rider/);
+      assert.equal(ridden.id, messageId);
+      await h.bridge.waitForLine(new RegExp(`telemetry: gs #\\d+@${session} for ${CHARACTER}: money`), { from: mark });
+      const after = h.bridge.output.slice(mark).split('\n');
+      const frameAt = after.findIndex(l => new RegExp(`strip #${ridden.id % 65536} \\(screenshot `).test(l));
+      assert.ok(frameAt >= 0, 'the message went out on a screenshot frame');
+      const nextFrame = after.findIndex((l, i) => i > frameAt && /strip #\d+ \(screenshot /.test(l));
+      const frameLines = after.slice(frameAt, nextFrame < 0 ? undefined : nextFrame);
+      const gsLine = frameLines.find(l => /telemetry: gs #\d+@/.test(l));
+      assert.ok(gsLine, 'a gs record rode in the same frame as the message');
+      const gsSeq = Number(/telemetry: gs #(\d+)@/.exec(gsLine)[1]);
+      assert.equal(readSnap().sections.money.value.copper, money);
+      const slotA = slotOf(ridden.id);
+      const issuedTo = h.client.lastSeq();
+      const newAcks = assertSpends(h, { session, before: ackBefore, kind: 'ack', messageId, issuedFrom: messageId, issuedTo, logFrom: mark });
+      const newSigs = assertSpends(h, { session, before: sigBefore, kind: 'sig', messageId, issuedFrom: messageId, issuedTo, logFrom: mark });
+      const gsSlot = slotOf(gsSeq);
+      const realSlots = Array.from({ length: issuedTo - messageId + 1 }, (_, k) => slotOf(messageId + k));
+      if (!realSlots.includes(gsSlot) && !ackBefore.includes(gsSlot) && !sigBefore.includes(gsSlot)) { round = { gsSlot, newAcks, newSigs }; break; }
+    }
+    assert.ok(round, `within ${RIDER_TRIES} rider records one gs seq landed on a slot whose ack and sig files were still armed`);
+    assert.ok(!round.newAcks.includes(round.gsSlot) && !round.newSigs.includes(round.gsSlot), 'the gs seq spent nothing');
+
+    const ackMid = spentSlots(h.sb, 'ack');
+    const sigMid = spentSlots(h.sb, 'sig');
+    const calls = h.agentCalls().length;
+    const issuedFromB = h.client.lastSeq() + 1;
+    const logFromB = h.bridge.output.length;
+    const id = h.client.lastSeq() + 50;
+    const chat = h.client.activeChat().id;
+    const message = [session, chat, String(id), '', '', 'Chat 1', 'gs first, then this'].join('\x1F');
+    let craftedSeq = 2000000000;
+    const nearby = new Set(Array.from({ length: 40 }, (_, k) => slotOf(issuedFromB + k)));
+    while (slotOf(craftedSeq) === slotOf(id) || nearby.has(slotOf(craftedSeq)) || ackMid.includes(slotOf(craftedSeq)) || sigMid.includes(slotOf(craftedSeq))) craftedSeq += 1;
+    const file = writeShot(h.sb, h.client, [gsRecord(session, craftedSeq), message].join('\x1E'), 900);
+    await h.client.waitFor(() => !fs.existsSync(file), { timeoutMs: 20000, label: 'the bridge to read the crafted frame' });
+    await h.client.waitFor(() => h.agentCalls().length > calls, { timeoutMs: 30000, label: 'the message after the gs record to run' });
+    const slotB = slotOf(id);
+    await h.client.waitFor(() => !fs.existsSync(SIG.signalFile(h.sb.addons, 'sig', slotB)), { timeoutMs: 30000, label: 'its reply signal' });
+    const issuedToB = h.client.lastSeq();
+    assert.ok(issuedToB - issuedFromB < 40, 'the addon sent fewer records than the window kept clear for the crafted seq');
+    const newAcksB = assertSpends(h, { session, before: ackMid, kind: 'ack', messageId: id, issuedFrom: issuedFromB, issuedTo: issuedToB, logFrom: logFromB });
+    const newSigsB = assertSpends(h, { session, before: sigMid, kind: 'sig', messageId: id, issuedFrom: issuedFromB, issuedTo: issuedToB, logFrom: logFromB });
+    assert.ok(!newAcksB.includes(slotOf(craftedSeq)) && !newSigsB.includes(slotOf(craftedSeq)), 'the crafted gs seq spent nothing');
+    assert.ok(h.state().lastId >= id, 'lastId follows the messages');
+  });
+});
+
+test.after(() => {
+  fs.rmSync(ROOT, { recursive: true, force: true });
+});

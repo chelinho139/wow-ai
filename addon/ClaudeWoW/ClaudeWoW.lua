@@ -840,6 +840,20 @@ function ClaudeWoW.ChatLog.Status()
 		stats and string.format("; %d frames, %d lines written, %d acknowledged first time, %d only after the screenshot retry", stats.frames, stats.lines, stats.acked, stats.late) or "")
 end
 
+local Tm = {}
+
+function Tm.Settle(outcome, rec)
+	local telemetry = ClaudeWoWTelemetry
+	if rec and type(telemetry) == "table" and type(telemetry[outcome]) == "function" then pcall(telemetry[outcome], rec) end
+end
+
+function Tm.CallOff()
+	if run.shot and not run.shot.fired then
+		Tm.Settle("Lost", run.shot.telemetry)
+		run.shot = nil
+	end
+end
+
 -- ok = true (SCREENSHOT_SUCCEEDED), false (SCREENSHOT_FAILED or the call raised),
 -- nil (no event within SHOT_TIMEOUT: the file may or may not exist).
 local function ScreenshotDone(ok)
@@ -847,6 +861,7 @@ local function ScreenshotDone(ok)
 	if not shot then return end
 	run.shot = nil
 	HideStrip()
+	Tm.Settle(ok == true and "Delivered" or "Lost", shot.telemetry)
 	local stats = ShotStats()
 	if ok == true then stats.ok = stats.ok + 1
 	elseif ok == false then stats.failed = stats.failed + 1
@@ -909,6 +924,20 @@ local function TakeScreenshot()
 	return gen
 end
 
+function Tm.Record(room, solo)
+	local telemetry = ClaudeWoWTelemetry
+	if type(telemetry) ~= "table" or type(telemetry.Take) ~= "function" then return nil end
+	if room <= 0 or ShotsPaused(true) or run.shotOverride then return nil end
+	local ok, rec = pcall(telemetry.Take, room, solo)
+	if ok and type(rec) == "string" and rec ~= "" and #rec <= room then return rec end
+	return nil
+end
+
+function ClaudeWoW.TelemetryShot()
+	if not db or not ScreenshotMode() or run.shot then return end
+	RefreshStrip()
+end
+
 -- Redraw the strip from every outbound message the bridge hasn't acknowledged.
 RefreshStrip = function()
 	local ids = {}
@@ -918,8 +947,18 @@ RefreshStrip = function()
 	if #ids == 0 then
 		-- Nothing left to send. A shot still counting frames is called off; one
 		-- the client is already writing keeps the strip until its event.
-		if run.shot and not run.shot.fired then run.shot = nil end
-		if not run.shot then HideStrip() end
+		if run.shot and not run.shot.solo then Tm.CallOff() end
+		if not run.shot then
+			local solo = ScreenshotMode() and Tm.Record(Codec.MAX_PAYLOAD, true)
+			if solo then
+				ShowStrip(0, solo)
+				TakeScreenshot()
+				run.shot.telemetry = solo
+				run.shot.solo = true
+				return
+			end
+			HideStrip()
+		end
 		return
 	end
 	table.sort(ids)
@@ -939,7 +978,7 @@ RefreshStrip = function()
 			if not rec.shot then unsent = true end
 		end
 		if not unsent or ClaudeWoW.ChatLog.Write(latest, table.concat(parts, RS)) then
-			if run.shot and not run.shot.fired then run.shot = nil end
+			Tm.CallOff()
 			if not run.shot then HideStrip() end
 			if unsent then
 				for _, rec in ipairs(included) do
@@ -953,7 +992,7 @@ RefreshStrip = function()
 	end
 	if not ScreenshotMode() then
 		-- A shot still counting frames (the transport just changed) is called off.
-		if run.shot and not run.shot.fired then run.shot = nil end
+		Tm.CallOff()
 		if NoScreenshot() and not run.noShotTold then
 			-- The bridge wants screenshots and this client has no Screenshot():
 			-- the strip stays up pixel-style, the retries and then the reload
@@ -971,7 +1010,7 @@ RefreshStrip = function()
 		-- Screenshot() is missing, so the usual retries and then the reload
 		-- fallback take the message from here; nothing is dropped. Said once,
 		-- when a shot is actually withheld; Tick says when shooting resumes.
-		if run.shot and not run.shot.fired then run.shot = nil end
+		Tm.CallOff()
 		if not run.shotsPaused then
 			run.shotsPaused = true
 			local age = GetTime() - (run.bridgeSeen or run.startedAt or GetTime())
@@ -994,8 +1033,19 @@ RefreshStrip = function()
 		-- another for the records still unshot.
 		return
 	end
+	local retry = false
+	for _, rec in ipairs(included) do
+		if (rec.tries or 1) > 1 or rec.shotFails then retry = true end
+	end
+	local room = Codec.MAX_PAYLOAD - size - 1
+	local waiting = run.shot and not run.shot.fired and run.shot.telemetry
+	local keep = waiting and not retry and #waiting <= room
+	if waiting and not keep then Tm.Settle("Lost", waiting) end
+	local rider = keep and waiting or (not retry and Tm.Record(room, false)) or nil
+	if rider then table.insert(parts, rider) end
 	ShowStrip(latest, table.concat(parts, RS))
 	local gen = TakeScreenshot()
+	run.shot.telemetry = rider
 	for _, rec in ipairs(included) do rec.shot = gen end
 end
 
@@ -1692,6 +1742,7 @@ local function TryLoadSlot(why)
 	if type(data) == "table" and data.achievements and ClaudeWoWAchievements then ClaudeWoWAchievements.Sync(data.achievements, data.now) end
 	if type(data) == "table" and data.goals and ClaudeWoWOrders then ClaudeWoWOrders.SyncSlot(data.goals, data.now) end
 	if type(data) == "table" and data.widgets and ClaudeWoWWidgets then ClaudeWoWWidgets.Sync(data.widgets) end
+	if type(data) == "table" and ClaudeWoWTelemetry then ClaudeWoWTelemetry.Sync(data.gs) end
 	if why == "signal" and not matched then
 		run.signalUnreliable = true
 	end
@@ -1852,6 +1903,7 @@ local function ProcessInbox()
 	if inbox.achievements and ClaudeWoWAchievements then ClaudeWoWAchievements.Sync(inbox.achievements, inbox.now) end
 	if inbox.goals and ClaudeWoWOrders then ClaudeWoWOrders.SyncInbox(inbox.goals, inbox.now) end
 	if inbox.widgets and ClaudeWoWWidgets then ClaudeWoWWidgets.Sync(inbox.widgets) end
+	if ClaudeWoWTelemetry then ClaudeWoWTelemetry.SyncInbox(inbox.gs, inbox.now) end
 end
 
 local quietReplyHandlers = {}
@@ -1945,6 +1997,7 @@ local PROFESSION_SKILL_IDS = {
 	[164] = true, [165] = true, [171] = true, [182] = true, [186] = true, [197] = true, [202] = true,
 	[333] = true, [393] = true, [129] = true, [185] = true, [356] = true,
 }
+ClaudeWoW.PROFESSION_SKILL_IDS = PROFESSION_SKILL_IDS
 
 -- The character's skill lines as { name, isHeader, rank, maxRank, skillID }.
 -- Forever only has C_SkillInfo (one table per line); the classic globals
@@ -2041,6 +2094,26 @@ function ClaudeWoW.TalentTrees()
 	return type(trees) == "table" and trees or {}
 end
 
+function ClaudeWoW.CharacterLine()
+	local name = Try(UnitName, "player")
+	if not name then return nil end
+	local realm = Try(GetRealmName)
+	local level = Try(UnitLevel, "player")
+	local race = Try(UnitRace, "player")
+	local class = Try(UnitClass, "player")
+	local faction = Try(UnitFactionGroup, "player")
+	local guild = Try(GetGuildInfo, "player")
+	local who = tostring(name) .. (realm and (" on " .. tostring(realm)) or "")
+	local desc = {}
+	if level then table.insert(desc, "level " .. tostring(level)) end
+	if race then table.insert(desc, tostring(race)) end
+	if class then table.insert(desc, tostring(class)) end
+	if #desc > 0 then who = who .. ", " .. table.concat(desc, " ") end
+	if faction then who = who .. " (" .. tostring(faction) .. ")" end
+	if guild then who = who .. ", guild <" .. tostring(guild) .. ">" end
+	return who
+end
+
 function ClaudeWoW.GameContext()
 	local lines = {}
 	local version, build, _, toc = Try(GetBuildInfo)
@@ -2054,24 +2127,8 @@ function ClaudeWoW.GameContext()
 	end
 	table.insert(lines, "Game: " .. game .. client)
 
-	local name = Try(UnitName, "player")
-	if name then
-		local realm = Try(GetRealmName)
-		local level = Try(UnitLevel, "player")
-		local race = Try(UnitRace, "player")
-		local class = Try(UnitClass, "player")
-		local faction = Try(UnitFactionGroup, "player")
-		local guild = Try(GetGuildInfo, "player")
-		local who = "Character: " .. tostring(name) .. (realm and (" on " .. tostring(realm)) or "")
-		local desc = {}
-		if level then table.insert(desc, "level " .. tostring(level)) end
-		if race then table.insert(desc, tostring(race)) end
-		if class then table.insert(desc, tostring(class)) end
-		if #desc > 0 then who = who .. ", " .. table.concat(desc, " ") end
-		if faction then who = who .. " (" .. tostring(faction) .. ")" end
-		if guild then who = who .. ", guild <" .. tostring(guild) .. ">" end
-		table.insert(lines, who)
-	end
+	local who = ClaudeWoW.CharacterLine()
+	if who then table.insert(lines, "Character: " .. who) end
 
 	local zone = Try(GetZoneText)
 	local sub = Try(GetSubZoneText)
@@ -4467,9 +4524,20 @@ function Q.AtlasExists(name)
 	return C_Texture and C_Texture.GetAtlasExists and C_Texture.GetAtlasExists(name) and true or false
 end
 
+Q.CLASSIC_ERA_ART = { parchment = true, gear = true, reply = true }
+
+function Q.IsClassicEra()
+	local toc = tonumber(select(4, Try(GetBuildInfo)))
+	return toc ~= nil and toc >= 11500 and toc < 11600
+end
+
+function Q.ArtAllowed(key)
+	return not Q.IsClassicEra() or Q.CLASSIC_ERA_ART[key] == true
+end
+
 function Q.SetArt(tex, key, useSize)
 	local name = Q.QUEST_ART[key]
-	local ok = name ~= nil and Q.AtlasExists(name) and pcall(tex.SetAtlas, tex, name, useSize)
+	local ok = name ~= nil and Q.ArtAllowed(key) and Q.AtlasExists(name) and pcall(tex.SetAtlas, tex, name, useSize)
 	ui.art = ui.art or {}
 	ui.art[key] = ok and name or false
 	return ok and true or false
@@ -4843,6 +4911,7 @@ function Q.ListSettingsMenu(anchor)
 		local shown = pcall(MenuUtil.CreateContextMenu, anchor, function(_, root)
 			root:CreateCheckbox("Show message previews", Q.PreviewsOn, TogglePreviews)
 			if ClaudeWoWOrders then root:CreateCheckbox("Show the Orders card", ClaudeWoWOrders.IsOn, ClaudeWoWOrders.Toggle) end
+			if ClaudeWoWTelemetry then root:CreateCheckbox("Send game state to Claude", ClaudeWoWTelemetry.IsOn, ClaudeWoWTelemetry.Toggle) end
 			root:CreateDivider()
 			root:CreateButton("Commands and tips", function() ClaudeWoW.ShowHelp() end)
 			root:CreateButton("Expand all folders", function() SetAll(false) end)
@@ -5618,7 +5687,7 @@ HELP = table.concat({
 	"/claude --agent <name> [text]      which CLI runs the chat: claude, codex, grok, agy or hermes",
 	"    Flags come before the text and combine: /claude --model opus fix the build starts a new chat on opus. With -c they change the current chat. --flag=value and \"quoted values\" work, a value of - clears a setting, and a flag with no value shows it. The bridge tells you when an agent has no such option",
 	"/claude orders [on|off]            show or hide the Orders card under the quest tracker",
-	"/claude config [key] [value]       settings: voice, roast, whisper, echo, vision, roll, achievements, orders, ui, map, macro, context, signal, mode, longchat, auto, bind, diag. Alone it lists them with their values",
+	"/claude config [key] [value]       settings: voice, roast, whisper, echo, vision, roll, achievements, orders, telemetry, ui, map, macro, context, signal, mode, longchat, auto, bind, diag. Alone it lists them with their values",
 	"/claude config ui [setting]        the tabs and the window: whisper on|off, dim <10-100>|off, dodge on|off, autohide on|off, reset",
 	"/claude cd <folder>                folder this chat's agent works in (relative to the bridge's folder; alone = the default). A chat with a folder is a coding session there, one without is general in-game chat",
 	"/claude look <question>            send one message to the current chat with a picture of your screen",
@@ -5669,6 +5738,7 @@ local COMMAND_ARGS = {
 	vision = { [""] = true, on = true, off = true },
 	look = true,
 	roast = { [""] = true, on = true, off = true },
+	telemetry = { [""] = true, on = true, off = true },
 	auto = OnOffOrNumber,
 	echo = function(rest) return rest == "" or rest == "summary" or rest == "full" or rest == "short" or rest == "off" or tonumber(rest) ~= nil end,
 	bind = 1, agent = 1, plugin = 1, live = 0,
@@ -5695,7 +5765,7 @@ Cli.CLAUDE_VERBS = {
 }
 
 Cli.CONFIG_KEYS = {
-	"voice", "roast", "whisper", "echo", "vision", "roll", "achievements", "orders", "context", "signal",
+	"voice", "roast", "whisper", "echo", "vision", "roll", "achievements", "orders", "telemetry", "context", "signal",
 	"mode", "longchat", "auto", "plugin", "ui", "map", "macro", "bind", "diag",
 }
 Cli.CONFIG_ALIASES = { toasts = "achievements", ctx = "context" }
@@ -5861,6 +5931,7 @@ function Cli.ConfigValue(key)
 	if key == "roll" then return s.lootRoll == false and "off" or "on" end
 	if key == "achievements" then return s.toasts == false and "toasts off" or "toasts on" end
 	if key == "orders" then return ClaudeWoWOrders and ClaudeWoWOrders.Status() or "" end
+	if key == "telemetry" then return ClaudeWoWTelemetry and ClaudeWoWTelemetry.Status() or "" end
 	if key == "context" then return (s.context and "on" or "off") .. ", " .. ContextThresholdLabel() end
 	if key == "signal" then return s.signal and "on" or "off" end
 	if key == "mode" then return tostring(s.mode) end
@@ -5879,6 +5950,7 @@ Cli.CONFIG_HELP = {
 	roll = "on|off: a denied command pops a Need/Greed/Pass roll, or an Allow & retry button",
 	achievements = "on|off|test: achievement toasts; alone it lists what you earned",
 	orders = "on|off: the Orders card under the quest tracker (also /claude orders and the chat list's gear menu)",
+	telemetry = "on|off: send game state (money, level, zone, professions, watched items, gear, reputation) to the bridge; also the chat list's gear menu",
 	context = "on|off|<tokens>: the game context the agent gets, and the context-size warning (0 = never)",
 	signal = "on|off: the cheap sound-file readiness check",
 	mode = "pixel|reload: the transport",
@@ -6736,6 +6808,8 @@ RunCommand = function(cmd, rest)
 		if ClaudeWoWAchievements then ClaudeWoWAchievements.Command(rest) else print("|cff66ccff[Claude WoW]|r the achievements module did not load") end
 	elseif cmd == "orders" then
 		if ClaudeWoWOrders then ClaudeWoWOrders.Command(rest) else print("|cff66ccff[Claude WoW]|r the orders module did not load") end
+	elseif cmd == "telemetry" then
+		if ClaudeWoWTelemetry then ClaudeWoWTelemetry.Command(rest) else print("|cff66ccff[Claude WoW]|r the telemetry module did not load") end
 	elseif cmd == "ui" then
 		Cli.Ui(c, rest)
 	elseif cmd == "agent" then

@@ -73,6 +73,8 @@ registry.register(require('./plugins/live'));
 const LP = require('./liveproto');
 const T = require('./titles');
 const GOALS = require('./goals');
+const TL = require('./telemetry');
+const VOTES = require('./votes');
 
 const HERE = __dirname;
 // Config, state, transcripts, log and scratch live in the home folder (home.js:
@@ -253,6 +255,13 @@ for (const [k, v] of Object.entries(state.handled)) {
   }
 }
 
+const TELEMETRY_ON = TL.telemetryEnabled(cfg.telemetry);
+const telemetry = TL.createTelemetry({
+  dir: HOME.goals,
+  log,
+  watch: () => TL.watchFrom(cfg.telemetry),
+});
+
 // Bridge-side transcripts. The beta client sometimes wipes addon saved data; since
 // every prompt and reply passes through here, this copy lets the addon recover.
 const TRANSCRIPT_FILE = HOME.transcripts;
@@ -403,11 +412,13 @@ function shutdown(sig) {
   if (shuttingDown) return;
   shuttingDown = true;
   stopPlugins();
+  let voteClosing = Promise.resolve();
+  try { voteClosing = VOTES.settleWithin(voteBox.stop(), VOTES.SHUTDOWN_PUSH_WAIT_MS); } catch {}
   const kids = [...running.values()].map(r => r.child).concat(T.titleChildren()).filter(Boolean);
   if (captureChild) kids.push(captureChild);
   const n = kids.filter(PR.alive).length;
   log(`${sig}: stopping${n ? `; ending ${n} child process${n === 1 ? '' : 'es'} (SIGTERM, SIGKILL after ${KILL_GRACE_MS} ms)` : ''}`);
-  PR.killAll(kids, { graceMs: KILL_GRACE_MS, log }, () => process.exit(sig === 'SIGINT' ? 130 : 143));
+  PR.killAll(kids, { graceMs: KILL_GRACE_MS, log }, () => voteClosing.then(() => process.exit(sig === 'SIGINT' ? 130 : 143)));
 }
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
@@ -508,7 +519,11 @@ function slotFile(globalName, records, urgent = true) {
   const lp = livePlugin();
   const liveInfo = lp ? { sessions: lp.status(), start: liveStartCommand() } : null;
   const goalsLua = goalStore.slotLua();
-  return P.luaTable(globalName, records, { live: liveInfo, sessions: sessionList(), cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), plugin: DEFAULT_PLUGIN, plugins: registry.ids(), map, widgets, transport: TRANSPORT, levels: LEVELS, codec: STRIP_CODEC, chatlog: chatLogSlot(), transportNote, achievementsLua, goalsLua, presence: presenceInfo() });
+  let gsLua = '';
+  if (TELEMETRY_ON) {
+    try { gsLua = telemetry.luaGs(); } catch (e) { log(`telemetry: slot field gs left out (${e && e.message ? e.message : e})`); }
+  }
+  return P.luaTable(globalName, records, { live: liveInfo, sessions: sessionList(), cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), plugin: DEFAULT_PLUGIN, plugins: registry.ids(), map, widgets, transport: TRANSPORT, levels: LEVELS, codec: STRIP_CODEC, chatlog: chatLogSlot(), transportNote, achievementsLua, goalsLua, gsLua, presence: presenceInfo() });
 }
 
 function recentClaudeSessions() {
@@ -814,6 +829,11 @@ function allowRules(agentId, rules) {
 // ---------------------------------------------------------------------------
 
 function submit(job) {
+  if (TL.isTelemetry(job)) {
+    if (!TELEMETRY_ON) return;
+    try { telemetry.submit(job); } catch (e) { log(`telemetry: gs #${job.id} not applied (${e && e.message ? e.message : e})`); }
+    return;
+  }
   if (job.shot) fallbackToPixel(job.shot, job); // even for a message already handled: the report stands
   noteSignalReport(job);
   if (alreadyHandled(job)) return;
@@ -969,11 +989,19 @@ const core = {
   agentPids: () => [...running.values()].map(r => r.child).concat(T.titleChildren()).filter(Boolean).map(c => c.pid),
 };
 
+const voteBox = VOTES.createVotes({
+  config: () => cfg.votes,
+  streamOptions: () => core.options('stream'),
+  log,
+});
+
 const goalStore = GOALS.createBridgeGoals({
   home: HOME,
   context: () => state.context,
   streamOptions: () => core.options('stream'),
   onChange: () => publishNow(true, { refresh: true }),
+  equipped: TL.equippedReader(telemetry, TELEMETRY_ON),
+  votes: voteBox,
   log,
 });
 
@@ -1059,7 +1087,8 @@ function runAgent(job, opts = {}) {
   }
   const dataServer = opts.gameData && agentId === 'claude' ? gameDataServer(tag) : null;
   const runOnlyRules = dataServer ? [...grantOnce.rules, ...dataServer.rules] : grantOnce.rules;
-  const acfg = A.withChatSettings(P.withRunDeniedRules(P.withRunOnlyRules(A.agentConfig(cfg, agentId), runOnlyRules), inGameDeniedTools()), agentId, chosen);
+  const baseCfg = A.withPluginSettings(A.agentConfig(cfg, agentId), agentId, core.options(plugin.id));
+  const acfg = A.withChatSettings(P.withRunDeniedRules(P.withRunOnlyRules(baseCfg, runOnlyRules), inGameDeniedTools()), agentId, chosen);
   const runDirs = [...grantForGood.dirs, ...grantOnce.dirs].map(d => P.resolveCwd(d, DEFAULT_CWD));
   if (runDirs.length) {
     acfg.addDirs = [...new Set([...A.addDirs(acfg), ...runDirs])];

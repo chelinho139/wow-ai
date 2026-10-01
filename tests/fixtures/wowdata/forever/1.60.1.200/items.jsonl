@@ -1,10 +1,10 @@
-{"id":501,"name":"Fixture Blade","quality":2}
-{"id":502,"name":"Fixture Letter","quality":1}
+{"id":501,"name":"Fixture Blade","quality":2,"inventoryType":13}
+{"id":502,"name":"Fixture Letter","quality":1,"inventoryType":0}
 {"id":503,"name":"Fixture​Hidden","quality":1}
-{"id":504,"name":"Fixture <b>Bold</b>","quality":1}
-{"id":505,"name":"Rending Claw","quality":1}
+{"id":504,"name":"Fixture <b>Bold</b>","quality":1,"inventoryType":1}
+{"id":505,"name":"Rending Claw","quality":1,"inventoryType":11}
 {"id":506,"name":"Fixture (Rare)","quality":1}
-{"id":507,"name":"Lucky Day","quality":1}
+{"id":507,"name":"Lucky Day","quality":1,"inventoryType":17}
 {"id":508,"name":"Book: Quick Hands","quality":1}
 {"id":509,"name":"Rune of Quick Feet","quality":1}
-{"id":510,"name":"Tablet of the Stars","quality":1}
+{"id":510,"name":"Tablet of the Stars","quality":1,"inventoryType":1}
