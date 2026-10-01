@@ -1690,6 +1690,7 @@ local function TryLoadSlot(why)
 	if type(data) == "table" and data.restore then ImportRestore(data.restore) end
 	if type(data) == "table" and data.map and ClaudeWoWMap then ClaudeWoWMap.Sync(data.map) end
 	if type(data) == "table" and data.achievements and ClaudeWoWAchievements then ClaudeWoWAchievements.Sync(data.achievements, data.now) end
+	if type(data) == "table" and data.goals and ClaudeWoWOrders then ClaudeWoWOrders.SyncSlot(data.goals, data.now) end
 	if type(data) == "table" and data.widgets and ClaudeWoWWidgets then ClaudeWoWWidgets.Sync(data.widgets) end
 	if why == "signal" and not matched then
 		run.signalUnreliable = true
@@ -1849,6 +1850,7 @@ local function ProcessInbox()
 	if inbox.restore then ImportRestore(inbox.restore) end
 	if inbox.map and ClaudeWoWMap then ClaudeWoWMap.Sync(inbox.map) end
 	if inbox.achievements and ClaudeWoWAchievements then ClaudeWoWAchievements.Sync(inbox.achievements, inbox.now) end
+	if inbox.goals and ClaudeWoWOrders then ClaudeWoWOrders.SyncInbox(inbox.goals, inbox.now) end
 	if inbox.widgets and ClaudeWoWWidgets then ClaudeWoWWidgets.Sync(inbox.widgets) end
 end
 
@@ -2016,8 +2018,15 @@ end
 function ClaudeWoW.TabTalentTrees()
 	local trees = {}
 	local tabs = Try(GetNumTalentTabs)
+	local specInfo = C_SpecializationInfo and C_SpecializationInfo.GetSpecializationInfo
 	for i = 1, (type(tabs) == "number" and tabs or 0) do
-		local tname, _, points = Try(GetTalentTabInfo, i)
+		local tname, points
+		if specInfo then
+			local _, specName, _, _, _, _, spent = Try(specInfo, i)
+			tname, points = specName, spent
+		else
+			tname, _, points = Try(GetTalentTabInfo, i)
+		end
 		if type(tname) == "string" and type(points) == "number" then
 			table.insert(trees, { name = tname, points = points })
 		end
@@ -2037,7 +2046,8 @@ function ClaudeWoW.GameContext()
 	local version, build, _, toc = Try(GetBuildInfo)
 	toc = tonumber(toc)
 	local game = "World of Warcraft"
-	if toc and toc >= 16000 and toc < 20000 then game = "World of Warcraft: Forever" end
+	if toc and toc >= 16000 and toc < 20000 then game = "World of Warcraft: Forever"
+	elseif toc and toc >= 11500 and toc < 11600 then game = "World of Warcraft Classic" end
 	local client = ""
 	if version then
 		client = " (client " .. tostring(version) .. (build and ("." .. tostring(build)) or "") .. (toc and (", interface " .. toc) or "") .. ")"
@@ -4832,6 +4842,7 @@ function Q.ListSettingsMenu(anchor)
 	if type(MenuUtil) == "table" and type(MenuUtil.CreateContextMenu) == "function" then
 		local shown = pcall(MenuUtil.CreateContextMenu, anchor, function(_, root)
 			root:CreateCheckbox("Show message previews", Q.PreviewsOn, TogglePreviews)
+			if ClaudeWoWOrders then root:CreateCheckbox("Show the Orders card", ClaudeWoWOrders.IsOn, ClaudeWoWOrders.Toggle) end
 			root:CreateDivider()
 			root:CreateButton("Commands and tips", function() ClaudeWoW.ShowHelp() end)
 			root:CreateButton("Expand all folders", function() SetAll(false) end)
@@ -5606,7 +5617,8 @@ HELP = table.concat({
 	"/claude --add-dir <path> [text]    one more folder the agent may use (repeat the flag for more)",
 	"/claude --agent <name> [text]      which CLI runs the chat: claude, codex, grok, agy or hermes",
 	"    Flags come before the text and combine: /claude --model opus fix the build starts a new chat on opus. With -c they change the current chat. --flag=value and \"quoted values\" work, a value of - clears a setting, and a flag with no value shows it. The bridge tells you when an agent has no such option",
-	"/claude config [key] [value]       settings: voice, roast, whisper, echo, vision, roll, achievements, ui, map, macro, context, signal, mode, longchat, auto, bind, diag. Alone it lists them with their values",
+	"/claude orders [on|off]            show or hide the Orders card under the quest tracker",
+	"/claude config [key] [value]       settings: voice, roast, whisper, echo, vision, roll, achievements, orders, ui, map, macro, context, signal, mode, longchat, auto, bind, diag. Alone it lists them with their values",
 	"/claude config ui [setting]        the tabs and the window: whisper on|off, dim <10-100>|off, dodge on|off, autohide on|off, reset",
 	"/claude cd <folder>                folder this chat's agent works in (relative to the bridge's folder; alone = the default). A chat with a folder is a coding session there, one without is general in-game chat",
 	"/claude look <question>            send one message to the current chat with a picture of your screen",
@@ -5667,6 +5679,7 @@ local COMMAND_ARGS = {
 	voice = function(rest) return ClaudeWoWVoice ~= nil and ClaudeWoWVoice.IsCommand(rest) end,
 	achievements = { [""] = true, on = true, off = true, test = true, list = true },
 	toasts = { [""] = true, on = true, off = true, test = true },
+	orders = { [""] = true, on = true, off = true },
 	ui = function(rest) return Cli.IsUi(rest) end,
 	probe = function(rest)
 		local which, arg = rest:lower():match("^(%S*)%s*(.-)$")
@@ -5678,11 +5691,11 @@ local COMMAND_ARGS = {
 Cli.CLAUDE_VERBS = {
 	help = true, diag = true, cancel = true, copy = true, clear = true, rename = true, delete = true,
 	cd = true, hide = true, quit = true, mini = true, min = true, reload = true, refresh = true,
-	resend = true, slots = true, look = true, reset = true, probe = true,
+	resend = true, slots = true, look = true, reset = true, probe = true, orders = true,
 }
 
 Cli.CONFIG_KEYS = {
-	"voice", "roast", "whisper", "echo", "vision", "roll", "achievements", "context", "signal",
+	"voice", "roast", "whisper", "echo", "vision", "roll", "achievements", "orders", "context", "signal",
 	"mode", "longchat", "auto", "plugin", "ui", "map", "macro", "bind", "diag",
 }
 Cli.CONFIG_ALIASES = { toasts = "achievements", ctx = "context" }
@@ -5847,6 +5860,7 @@ function Cli.ConfigValue(key)
 	if key == "vision" then return s.vision and "on" or "off" end
 	if key == "roll" then return s.lootRoll == false and "off" or "on" end
 	if key == "achievements" then return s.toasts == false and "toasts off" or "toasts on" end
+	if key == "orders" then return ClaudeWoWOrders and ClaudeWoWOrders.Status() or "" end
 	if key == "context" then return (s.context and "on" or "off") .. ", " .. ContextThresholdLabel() end
 	if key == "signal" then return s.signal and "on" or "off" end
 	if key == "mode" then return tostring(s.mode) end
@@ -5864,6 +5878,7 @@ Cli.CONFIG_HELP = {
 	vision = "on|off: a picture of your screen with each message (screenshot transport)",
 	roll = "on|off: a denied command pops a Need/Greed/Pass roll, or an Allow & retry button",
 	achievements = "on|off|test: achievement toasts; alone it lists what you earned",
+	orders = "on|off: the Orders card under the quest tracker (also /claude orders and the chat list's gear menu)",
 	context = "on|off|<tokens>: the game context the agent gets, and the context-size warning (0 = never)",
 	signal = "on|off: the cheap sound-file readiness check",
 	mode = "pixel|reload: the transport",
@@ -6719,6 +6734,8 @@ RunCommand = function(cmd, rest)
 		ClaudeWoWVoice.Command(rest)
 	elseif cmd == "achievements" or cmd == "toasts" then
 		if ClaudeWoWAchievements then ClaudeWoWAchievements.Command(rest) else print("|cff66ccff[Claude WoW]|r the achievements module did not load") end
+	elseif cmd == "orders" then
+		if ClaudeWoWOrders then ClaudeWoWOrders.Command(rest) else print("|cff66ccff[Claude WoW]|r the orders module did not load") end
 	elseif cmd == "ui" then
 		Cli.Ui(c, rest)
 	elseif cmd == "agent" then

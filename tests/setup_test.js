@@ -280,6 +280,55 @@ test('node setup.js --wow <fake client>: migrates the chats, installs ClaudeWoW 
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('node setup.js --wow <another client> on an existing config points it at that client and replaces the old tocInterface default', () => {
+  const { spawnSync } = require('child_process');
+  const dir = scratch('switch');
+  const forever = path.join(dir, '_classic_beta_');
+  const era = path.join(dir, '_classic_era_');
+  const home = path.join(dir, 'home');
+  const project = path.join(dir, 'project');
+  fs.mkdirSync(project, { recursive: true });
+  fakeClient(forever, 'WoWAI', { slots: 1 });
+  const eraClient = fakeClient(era, 'WoWClaude', { slots: 1 });
+  const run = (...extra) => spawnSync(process.execPath, [path.join(__dirname, '..', 'setup.js'), ...extra], {
+    encoding: 'utf8', env: { ...process.env, CLAUDE_WOW_HOME: home }, timeout: 120000,
+  });
+  const readCfg = () => JSON.parse(fs.readFileSync(path.join(home, 'config.json'), 'utf8'));
+
+  const first = run('--wow', forever, '--project', project);
+  assert.equal(first.status, 0, first.stdout + first.stderr);
+  const cfg = readCfg();
+  assert.equal(cfg.tocInterface, P.TOC_INTERFACE);
+  cfg.tocInterface = '16001';
+  cfg.defaultCwd = project;
+  cfg.capture.processName = 'stale';
+  fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify(cfg, null, 2) + '\n');
+
+  const switched = run('--wow', era);
+  assert.equal(switched.status, 0, switched.stdout + switched.stderr);
+  assert.match(switched.stdout, /updated \(tocInterface, client\); everything else kept/);
+  const after = readCfg();
+  assert.equal(after.addonDir, eraClient.addons);
+  assert.equal(after.inboxFile, path.join(eraClient.addons, P.ADDON, 'Inbox.lua'));
+  assert.equal(after.savedVariablesFile, path.join(eraClient.saved, `${P.ADDON}.lua`));
+  assert.equal(after.capture.processName, 'World of Warcraft.app');
+  assert.equal(after.tocInterface, P.TOC_INTERFACE);
+  assert.equal(after.defaultCwd, project, 'the rest of the config is kept');
+  assert.match(fs.readFileSync(path.join(eraClient.addons, 'ClaudeWoW_S001', 'ClaudeWoW_S001.toc'), 'utf8'), /^## Interface: 11509, 16001$/m);
+
+  const same = run('--wow', era);
+  assert.equal(same.status, 0, same.stdout + same.stderr);
+  assert.match(same.stdout, /already exists, keeping it/, 'the same client again changes nothing');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('the addon toc and the slot default declare the same interface list', () => {
+  const toc = fs.readFileSync(path.join(__dirname, '..', 'addon', P.ADDON, `${P.ADDON}.toc`), 'utf8');
+  assert.equal(/^## Interface: (.+)$/m.exec(toc)[1], P.TOC_INTERFACE);
+  const example = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bridge', 'config.example.json'), 'utf8'));
+  assert.equal(example.tocInterface, P.TOC_INTERFACE);
+});
+
 test('transportReport: the screenshot transport unless capture.mode says pixel, which is reported as deprecated', () => {
   const lines = [];
   const orig = console.log;

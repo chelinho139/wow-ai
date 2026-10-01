@@ -3,6 +3,8 @@
 const fs = require('fs');
 const path = require('path');
 const ST = require('./plugins/stream');
+const GR = require('./gamerefs');
+const { luaStr } = require('./protocol');
 
 const STORE_VERSION = 1;
 const GOALS_FILE = 'goals.json';
@@ -11,6 +13,8 @@ const ORDER_HISTORY_MAX = 20;
 const ORDER_TEXT_MAX = 90;
 const GOAL_TITLE_MAX = 60;
 const OVERLAY_GOALS_MAX = 3;
+const SLOT_GOALS_MAX = 3;
+const SLOT_LUA_MAX_BYTES = 640;
 const TARGET_RANK_LIMIT = 999;
 const PROFESSION_TYPE = 'profession';
 const OVERLAY_ACTION = 'orders';
@@ -37,9 +41,6 @@ const PROFESSION_SKILL_IDS = Object.freeze({
 const ORDER_WORDS = Object.freeze(new Set(require('./order-words.json')));
 const ORDER_CHARS_TEXT = "letters A-Z, digits, spaces and , . ' - : ! ? %";
 const ORDER_CHAR_RE = /^[A-Za-z0-9 ,.'\-:!?%]$/;
-const ORDER_WORD_SPLIT_RE = /[^a-z0-9']+/;
-const NUMBER_WORD_RE = /^\d+(?:st|nd|rd|th|x|g|s|c|k)?$/;
-const POSSESSIVE_RE = /'s$/;
 const CONTEXT_STALE_MS = 15 * 60 * 1000;
 const ADDON_CONTEXT_MAX_BYTES = 900;
 
@@ -117,50 +118,17 @@ function knownNames(snap) {
 }
 
 function orderWords(text) {
-  return String(text || '').toLowerCase().split(ORDER_WORD_SPLIT_RE)
-    .map(w => w.replace(/^'+|'+$/g, ''))
-    .filter(Boolean);
-}
-
-function nameWordLists(names) {
-  const usable = (names || []).map(n => String(n || '').normalize('NFKC').trim()).filter(n => n && !refusedChar(n));
-  const lists = usable.map(n => orderWords(n)).filter(words => words.length);
-  return lists.sort((a, b) => b.length - a.length);
-}
-
-function nameAt(words, i, lists) {
-  const plain = w => w.replace(POSSESSIVE_RE, '');
-  return lists.find(list => list.every((w, k) => i + k < words.length && (words[i + k] === w || (k === list.length - 1 && plain(words[i + k]) === w)))) || null;
-}
-
-function plainWord(word) {
-  return NUMBER_WORD_RE.test(word) || ORDER_WORDS.has(word) || ORDER_WORDS.has(word.replace(POSSESSIVE_RE, ''));
-}
-
-function refusedWords(text, names) {
-  const words = orderWords(text);
-  const lists = nameWordLists(names);
-  const refused = [];
-  for (let i = 0; i < words.length;) {
-    const name = nameAt(words, i, lists);
-    if (name) { i += name.length; continue; }
-    if (!plainWord(words[i]) && !refused.includes(words[i])) refused.push(words[i]);
-    i += 1;
-  }
-  return refused;
+  return GR.displayWords(text);
 }
 
 function codePoint(ch) {
   return `U+${ch.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}`;
 }
 
-function refusedChar(s) {
-  return [...s].find(ch => !ORDER_CHAR_RE.test(ch)) || null;
-}
-
 function refusedCharText(ch) {
   const shown = /^[\x21-\x7e]$/.test(ch) ? `"${ch}"` : codePoint(ch);
-  const why = ch === '/' ? ' Orders are advice only: no slash commands.' : '';
+  const braces = ch === '{' || ch === '}' ? ` Braces may only open and close a whole reference token: ${GR.TOKEN_FORMS}.` : '';
+  const why = ch === '/' ? ' Orders are advice only: no slash commands.' : braces;
   return `The order text has the character ${shown}, which orders may not use. Allowed: ${ORDER_CHARS_TEXT}.${why}`;
 }
 
@@ -169,17 +137,30 @@ function namesText(names) {
   return shown.length ? shown.join(', ') : 'none reported yet';
 }
 
-function validateOrderText(text, names = []) {
-  const s = typeof text === 'string' ? text.normalize('NFKC').trim() : '';
-  if (!s) return fail('The order text is empty.');
-  if (s.length > ORDER_TEXT_MAX) return fail(`The order text is ${s.length} characters; the limit is ${ORDER_TEXT_MAX}.`);
-  const ch = refusedChar(s);
-  if (ch) return fail(refusedCharText(ch));
-  const refused = refusedWords(s, names);
-  if (refused.length) {
-    return fail(`The order uses words that are not allowed: ${refused.map(w => `"${w}"`).join(', ')}. No zone, NPC, item or quest names. An order may use only numbers, plain words from the order vocabulary, and these reported names: ${namesText(names)}.`);
-  }
-  return done(s);
+function lengthText(r) {
+  if (r.expanded) return `The order is ${r.length} characters once its tokens are expanded; the limit is ${r.max}.`;
+  return `The order text is ${r.length} characters; the limit is ${r.max}.`;
+}
+
+function refusedWordsText(words, names) {
+  return `The order uses words that are not allowed: ${words.map(w => `"${w}"`).join(', ')}. No zone, NPC, item or quest names. An order may use only numbers, plain words from the order vocabulary, and these reported names: ${namesText(names)}. ${GR.tokenHint()}`;
+}
+
+function expandedCharText(r) {
+  return `${r.token}: the name "${r.name}" in the game data has the character ${codePoint(r.char)}, which orders may not show. Leave that name out.`;
+}
+
+function validateOrderText(text, names = [], gameData = null, onPhraseNote = () => {}) {
+  const r = GR.checkText(text, { store: gameData, names, plainWords: ORDER_WORDS, charRe: ORDER_CHAR_RE, maxLength: ORDER_TEXT_MAX });
+  if (r.phrasesNote) onPhraseNote(r.phrasesNote);
+  if (r.ok) return r.refs.length ? { ok: true, text: r.text, refs: GR.refSummary(r.refs) } : done(r.text);
+  if (r.problem === GR.PROBLEM.empty) return fail('The order text is empty.');
+  if (r.problem === GR.PROBLEM.length) return fail(lengthText(r));
+  if (r.problem === GR.PROBLEM.char) return fail(r.expanded ? expandedCharText(r) : refusedCharText(r.char));
+  if (r.problem === GR.PROBLEM.glued) return fail(GR.gluedText(r.token));
+  if (r.problem === GR.PROBLEM.words) return fail(refusedWordsText(r.words, names));
+  if (r.problem === GR.PROBLEM.phrases) return fail(`The order was refused. ${GR.phrasesText(r.phrases, r.phrasesNote)}`);
+  return fail(`The whole order was refused and nothing was saved. ${GR.errorsText(r.errors, r.store)}`);
 }
 
 function emptyStore(character) {
@@ -273,7 +254,7 @@ function retireOrder(doc, status, stamp) {
   doc.orders.current = null;
 }
 
-function issueOrder(doc, args, snap, now) {
+function issueOrder(doc, args, snap, now, gameData) {
   const stamp = now();
   if (args.clear === true) {
     if (!doc.orders.current) return fail('There is no current order to clear.');
@@ -282,13 +263,15 @@ function issueOrder(doc, args, snap, now) {
   }
   const stale = staleContextText(snap, stamp);
   if (stale) return fail(stale);
-  const checked = validateOrderText(args.text, knownNames(snap));
+  let phraseNote = '';
+  const checked = validateOrderText(args.text, knownNames(snap), () => gameData(snap.text), note => { phraseNote = note; });
   if (!checked.ok) return checked;
+  const unchecked = phraseNote ? ` ${phraseNote}` : '';
   const goalId = args.goalId === undefined || args.goalId === null || args.goalId === '' ? null : String(args.goalId);
   if (goalId && !doc.goals.some(g => g.id === goalId)) return fail(`There is no goal ${goalId}. goal_list shows the ids.`);
   retireOrder(doc, 'superseded', stamp);
-  doc.orders.current = { id: `o_${doc.rev + 1}`, text: checked.text, goalId, issuedAt: stamp };
-  return done(`Issued order ${doc.orders.current.id}: "${checked.text}".`);
+  doc.orders.current = { id: `o_${doc.rev + 1}`, text: checked.text, goalId, issuedAt: stamp, ...(checked.refs ? { refs: checked.refs } : {}) };
+  return done(`Issued order ${doc.orders.current.id}: "${checked.text}".${unchecked}`);
 }
 
 function goalView(goal, snap) {
@@ -330,6 +313,69 @@ function overlayCommand(doc, snap) {
   return { action: OVERLAY_ACTION, orders: overlayPayload(doc, snap) };
 }
 
+const ORDER_ID_RE = /^o_\d{1,9}$/;
+
+function slotPct(pct) {
+  return pct === null || pct === undefined ? null : Math.max(0, Math.min(100, Math.floor(Number(pct) || 0)));
+}
+
+function slotTitle(goal, names) {
+  const checked = validateOrderText(goal && goal.title, names);
+  return checked.ok && checked.text.length <= GOAL_TITLE_MAX ? checked.text : null;
+}
+
+function storedRefNames(current) {
+  return (Array.isArray(current.refs) ? current.refs : []).map(ref => ref && ref.name).filter(name => typeof name === 'string' && name);
+}
+
+function slotOrder(doc, snap, names, orderGoal) {
+  const current = doc.orders.current;
+  if (!current) return { order: null };
+  const checked = validateOrderText(current.text, names.concat(storedRefNames(current)));
+  if (!checked.ok) return { order: null, withheld: `order ${current.id} is not shown: ${checked.text}` };
+  return { order: {
+    id: ORDER_ID_RE.test(String(current.id)) ? String(current.id) : `o_${doc.rev}`,
+    text: checked.text,
+    pct: orderGoal ? slotPct(progressOf(orderGoal, snap).pct) : null,
+  } };
+}
+
+function slotPayload(doc, snap) {
+  const names = knownNames(snap);
+  const current = doc.orders.current;
+  const orderGoal = current && current.goalId ? doc.goals.find(g => g.id === current.goalId) || null : null;
+  const { order, withheld } = slotOrder(doc, snap, names, orderGoal);
+  const shownWithOrder = order ? orderGoal : null;
+  const goals = doc.goals
+    .filter(g => g !== shownWithOrder)
+    .map(g => ({ title: slotTitle(g, names), pct: slotPct(progressOf(g, snap).pct) }))
+    .filter(g => g.title && g.pct !== null)
+    .slice(0, SLOT_GOALS_MAX);
+  return { rev: Math.max(0, Math.floor(Number(doc.rev) || 0)), char: snap.character ? snap.character.key : '', order, goals, ...(withheld ? { withheld } : {}) };
+}
+
+function luaSlotOrder(order) {
+  if (!order) return '';
+  const pct = order.pct === null ? '' : `, pct = ${order.pct}`;
+  return `order = { id = ${luaStr(order.id)}, text = ${luaStr(order.text)}${pct} }, `;
+}
+
+function luaGoals(payload) {
+  const order = luaSlotOrder(payload.order);
+  const goals = payload.goals.slice(0, SLOT_GOALS_MAX);
+  const render = () => `\tgoals = { rev = ${payload.rev}, char = ${luaStr(payload.char || '')}, ${order}goals = { ${goals.map(g => `{ title = ${luaStr(g.title)}, pct = ${g.pct} }`).join(', ')} } },`;
+  let lua = render();
+  while (Buffer.byteLength(lua, 'utf8') > SLOT_LUA_MAX_BYTES && goals.length) {
+    goals.pop();
+    lua = render();
+  }
+  return Buffer.byteLength(lua, 'utf8') <= SLOT_LUA_MAX_BYTES ? lua : '';
+}
+
+function fileStamp(stat) {
+  return [stat.mtimeMs, stat.ctimeMs, stat.size, stat.ino].join(':');
+}
+
 function storeFile(root, characterKey) {
   return path.join(root, characterKey, GOALS_FILE);
 }
@@ -341,6 +387,51 @@ function createGoals(opts) {
   const post = opts.post || ST.postControl;
   const now = opts.now || Date.now;
   const log = opts.log || (() => {});
+  const gameData = opts.gameData || (() => null);
+  const onChange = opts.onChange || (() => {});
+  let cached = { file: '', stamp: '', doc: null };
+  let lastSlotProblem = '';
+
+  function slotProblem(text) {
+    if (text !== lastSlotProblem) log(`goals: the slot files hide the Orders card (${text})`);
+    lastSlotProblem = text;
+  }
+
+  function storedDoc(file, key) {
+    let stat;
+    try { stat = fs.statSync(file); } catch (e) {
+      if (e.code === 'ENOENT') return emptyStore(key);
+      throw new Error(`cannot read ${file}: ${e.message}`);
+    }
+    const stamp = fileStamp(stat);
+    if (cached.file === file && cached.stamp === stamp) return cached.doc;
+    const doc = readStore(file, key);
+    cached = { file, stamp, doc };
+    return doc;
+  }
+
+  function hiddenCard(key, why) {
+    slotProblem(why);
+    return luaGoals({ rev: 0, char: key, order: null, goals: [] });
+  }
+
+  function slotLua() {
+    const snap = snapshotOf(context());
+    if (!snap.character) return '';
+    const key = snap.character.key;
+    let lua;
+    let payload;
+    try {
+      payload = slotPayload(storedDoc(storeFile(root, key), key), snap);
+      lua = luaGoals(payload);
+    } catch (e) {
+      return hiddenCard(key, e.message);
+    }
+    if (!lua) return hiddenCard(key, `the field is over ${SLOT_LUA_MAX_BYTES} bytes`);
+    if (payload.withheld) slotProblem(payload.withheld);
+    else lastSlotProblem = '';
+    return lua;
+  }
 
   async function push(doc, snap) {
     const options = streamOptions() || {};
@@ -366,15 +457,38 @@ function createGoals(opts) {
     let doc;
     try { doc = readStore(file, snap.character.key); } catch (e) { return fail(e.message); }
     if (tool === TOOL.list) return done(JSON.stringify(listView(doc, snap), null, 2));
-    const change = tool === TOOL.set ? setGoal(doc, args, snap, now) : issueOrder(doc, args, snap, now);
+    const change = tool === TOOL.set ? setGoal(doc, args, snap, now) : issueOrder(doc, args, snap, now, gameData);
     if (!change.ok) return change;
     doc.rev += 1;
     try { writeStore(file, doc); } catch (e) { return fail(`Could not save ${file}: ${e.message}`); }
+    cached = { file: '', stamp: '', doc: null };
     log(`goals: ${tool} for ${snap.character.key}, rev ${doc.rev}`);
+    onChange();
     return done(`${change.text} ${await push(doc, snap)}`);
   }
 
-  return { call, file: key => storeFile(root, key) };
+  return { call, slotLua, file: key => storeFile(root, key) };
+}
+
+function openGameData(dataDir, contextText, log) {
+  try {
+    return GR.openFor(dataDir, contextText);
+  } catch (e) {
+    log(`goals: cannot open the synced game data for reference tokens (${e.message})`);
+    return null;
+  }
+}
+
+function createBridgeGoals({ home, context, streamOptions, onChange, log = () => {} }) {
+  const goals = createGoals({
+    dir: home.goals,
+    context,
+    streamOptions,
+    onChange,
+    gameData: contextText => openGameData(home.data, contextText, log),
+    log,
+  });
+  return { ...goals, home };
 }
 
 function toolSchemas() {
@@ -399,11 +513,11 @@ function toolSchemas() {
     },
     {
       name: TOOL.order,
-      description: `Issue the one current order shown on the stream overlay, or clear it. Advice only. The text may not name any zone, NPC, item or quest, in any letter case. It may use only the character's name, the professions in the game's Professions line, numbers, and plain English words from a fixed vocabulary; any other word is refused and the error names it. At most ${ORDER_TEXT_MAX} characters, using only ${ORDER_CHARS_TEXT}, so no slash commands or macros. Refused when the game context is more than ${CONTEXT_STALE_MS / 60000} minutes old.`,
+      description: `Issue the one current order shown on the stream overlay, or clear it. Advice only. Never type a zone, NPC, item or quest name, in any letter case. Name a game thing only with a reference token, which the bridge expands to its real name from the synced Forever client data: ${GR.TOKEN_FORMS}. A map token shows only the map's name; its x and y (0 to 100) are kept with the order as your estimate, never shown as fact. Put a space or punctuation on both sides of each token. Take each ID from the wowdata tools, never from memory or Classic; an ID the data does not have refuses the whole order. {npc:ID}, {quest:ID} and {faction:ID} have no name source yet and are refused. Without synced data no token works and only reported names may appear. Every other word must be the character's name, a profession in the game's Professions line, a number, or a plain English word from a fixed vocabulary; any other word is refused and the error names it. The text you send may be up to ${GR.TOKEN_TEXT_MAX} characters with its tokens (${ORDER_TEXT_MAX} without any); the order as shown, after expansion, is at most ${ORDER_TEXT_MAX} characters. Use only ${ORDER_CHARS_TEXT}, so no slash commands or macros. Refused when the game context is more than ${CONTEXT_STALE_MS / 60000} minutes old.`,
       inputSchema: {
         type: 'object',
         properties: {
-          text: { type: 'string', maxLength: ORDER_TEXT_MAX, description: 'The order in plain words, for example "Skin 30 more, then train Skinning"' },
+          text: { type: 'string', maxLength: GR.TOKEN_TEXT_MAX, description: 'The order in plain words with reference tokens for game names, for example "Skin 30 more, then train Skinning" or "Buy 20 {item:ID} at {map:ID,45.6,42.4}"' },
           goalId: { type: 'string', description: 'The goal this order serves (an id from goal_list)' },
           clear: { type: 'boolean', description: 'true clears the current order' },
         },
@@ -414,7 +528,8 @@ function toolSchemas() {
 
 module.exports = {
   STORE_VERSION, GOALS_FILE, ACTIVE_GOALS_MAX, ORDER_HISTORY_MAX, ORDER_TEXT_MAX, GOAL_TITLE_MAX, OVERLAY_GOALS_MAX, TARGET_RANK_LIMIT,
+  SLOT_GOALS_MAX, SLOT_LUA_MAX_BYTES,
   TOOL, TOOL_NAMES, WRITE_TOOL_NAMES, PROFESSION_SKILL_IDS, ORDER_WORDS, CONTEXT_STALE_MS, ADDON_CONTEXT_MAX_BYTES,
   parseProfessions, characterOf, snapshotOf, skillIdForName, validateOrderText, orderWords,
-  readStore, writeStore, overlayPayload, overlayCommand, listView, storeFile, createGoals, toolSchemas,
+  readStore, writeStore, overlayPayload, overlayCommand, slotPayload, luaGoals, listView, storeFile, createGoals, createBridgeGoals, toolSchemas,
 };

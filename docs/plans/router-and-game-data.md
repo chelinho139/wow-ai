@@ -14,7 +14,7 @@ Status: draft, revision 3 (2026-09-30). Step 2 is built for wago.tools only (§4
 - No stored NPC data. Sightings is removed by PR #23 (`chore/remove-sightings`), which is a prerequisite and not part of this plan.
 - No transport, map, macro or widget protocol changes.
 - No hosted service. Data is fetched and cached on the user's machine.
-- v1 is **Forever only**. The addon declares `## Interface: 16001` only, so other clients do not load it and never send a `Game:` line. Other flavors wait until the addon supports them.
+- v1 data is **Forever only**. The addon also loads in Classic Era (`## Interface: 11509, 16001`), whose `Game:` line names client 1.15.x. That build is outside the 1.60.1 family, so the wowdata answers are labeled build-mismatch and reference tokens are refused there. A `classic_era` data flavor is a later step.
 
 ## 2. Order of work
 
@@ -86,7 +86,10 @@ Data first, router last. Each step must pay off on its own before the next one s
 - [x] One `buildCheck` per answer: `exact`, `family`, `build-mismatch`, `unknown`, `no-data`. The client build comes from the `Game:` line of the situation block.
 - [x] Wiring: Claude `ask` runs only (`runAgent(job, { gameData: true })`), and only when data is synced. No `--strict-mcp-config` (decision 5). `alwaysLoad` is a real stdio config key in Claude Code 2.1.286.
 - [x] Proof on 2026-09-30: a real sync of 1.60.1.70094 (38,704 rows, 0 dropped), the server over stdio, and one headless `claude -p --model haiku --allowedTools mcp__wowdata --mcp-config …` run that called `wow_flights` with no permission denial and returned The Sepulcher (TaxiNodes 10) at 45.56, 42.42 on uiMap 1421.
-- [ ] Next: route reply text through `gamerefs.expand` (R1), add `{npc:ID}` and `{quest:ID}` names when a source exists, and wire the server for the other agents (Codex `mcp add`).
+- [x] R1 for orders and the roast card: orders go through `gamerefs.checkText` (tokens expand, unknown IDs refuse the whole order, the word allowlist runs on the rest); the roast card line takes no tokens and passes the same word allowlist.
+- [x] Phrase check for orders and the roast card: 2 to 4 word runs against the synced names and `bridge/game-phrases.json`.
+- [ ] Next: sync SpellName and creature names so the phrase check covers abilities and NPCs, and drop the hand-kept phrase list.
+- [ ] Next: route reply text through `gamerefs` (R1), add `{npc:ID}` and `{quest:ID}` names when a source exists, and wire the server for the other agents (Codex `mcp add`) and the live session.
 
 ## 6. Step 4: `wow-data` skill and prompt change
 

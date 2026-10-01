@@ -15,6 +15,7 @@ import addonStream from '../addon/ClaudeWoW/Stream.lua' with { type: 'file' };
 import addonVoice from '../addon/ClaudeWoW/Voice.lua' with { type: 'file' };
 import addonLootRoll from '../addon/ClaudeWoW/LootRoll.lua' with { type: 'file' };
 import addonAchievements from '../addon/ClaudeWoW/Achievements.lua' with { type: 'file' };
+import addonOrders from '../addon/ClaudeWoW/Orders.lua' with { type: 'file' };
 import addonWidgets from '../addon/ClaudeWoW/Widgets.lua' with { type: 'file' };
 import addonWindow from '../addon/ClaudeWoW/Window.lua' with { type: 'file' };
 import addonBindings from '../addon/ClaudeWoW/Bindings.xml' with { type: 'file' };
@@ -36,6 +37,7 @@ require('../bridge/assets').embed({
   'addon/ClaudeWoW/Voice.lua': addonVoice,
   'addon/ClaudeWoW/LootRoll.lua': addonLootRoll,
   'addon/ClaudeWoW/Achievements.lua': addonAchievements,
+  'addon/ClaudeWoW/Orders.lua': addonOrders,
   'addon/ClaudeWoW/Widgets.lua': addonWidgets,
   'addon/ClaudeWoW/Window.lua': addonWindow,
   'addon/ClaudeWoW/Bindings.xml': addonBindings,
