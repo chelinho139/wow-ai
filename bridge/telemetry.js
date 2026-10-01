@@ -315,11 +315,16 @@ function diffSection(name, prev, next, watch) {
   return SECTION_DIFFS[name](prev, next, watch);
 }
 
-function onceCompleted(snap, name, events, watch) {
-  if (name !== 'items') return events;
+function pruneCompleted(snap, watch) {
+  let pruned = false;
   for (const id of Object.keys(snap.completed)) {
-    if (watch.items.get(Number(id)) !== snap.completed[id]) delete snap.completed[id];
+    if (watch.items.get(Number(id)) !== snap.completed[id]) { delete snap.completed[id]; pruned = true; }
   }
+  return pruned;
+}
+
+function onceCompleted(snap, name, events) {
+  if (name !== 'items') return events;
   return events.filter(e => {
     if (e.type !== 'goal_complete') return true;
     if (snap.completed[e.data.id] === e.data.target) return false;
@@ -403,13 +408,17 @@ function luaHashes(snap) {
     .join(', ');
 }
 
-function luaGsTable(snapshots, watch) {
+function luaQuote(s) {
+  return '"' + String(s).replace(/[\\"]/g, c => '\\' + c).replace(/[\x00-\x1f\x7f]/g, c => '\\' + String(c.charCodeAt(0)).padStart(3, '0')) + '"';
+}
+
+function luaGsTable(snapshots, watch, refused = []) {
   const chars = (snapshots || [])
     .filter(s => s && CHARACTER_KEY_RE.test(s.character) && SESSION_RE.test(s.session || ''))
     .slice(0, GS_CHARACTERS_MAX)
     .map(s => `{ character = "${s.character}", session = "${s.session || ''}", seq = ${Math.max(0, Math.floor(Number(s.seq) || 0))}, hashes = { ${luaHashes(s)} } }`);
   const items = [...watch.items.keys()];
-  return `\tgs = { v = ${GS_SLOT_VERSION}, watch = { items = { ${items.join(', ')} }, factions = { ${watch.factions.join(', ')} } }, chars = { ${chars.join(', ')} } },`;
+  return `\tgs = { v = ${GS_SLOT_VERSION}, watch = { items = { ${items.join(', ')} }, factions = { ${watch.factions.join(', ')} } }, chars = { ${chars.join(', ')} }, refused = { ${refused.map(luaQuote).join(', ')} } },`;
 }
 
 function createTelemetry(opts) {
@@ -484,18 +493,22 @@ function createTelemetry(opts) {
     const applied = [];
     const events = [];
     const w = watch();
+    const pruned = pruneCompleted(snap, w);
     const stamp = now();
     for (const name of SECTION_NAMES) {
       const incoming = parsed.sections[name];
       if (!incoming) continue;
       const prev = snap.sections[name];
       if (prev && prev.seq >= seq) continue;
-      events.push(...onceCompleted(snap, name, diffSection(name, prev && prev.value, incoming.value, w), w));
+      events.push(...onceCompleted(snap, name, diffSection(name, prev && prev.value, incoming.value, w)));
       snap.sections[name] = { seq, hash: incoming.hash, at: stamp, data: incoming.data, value: incoming.value };
       applied.push(name);
       if (name === 'cap') noteMissing(character, incoming.value);
     }
-    if (!applied.length) return { status: 'stale', events: [] };
+    if (!applied.length) {
+      if (pruned) { try { writeAtomic(snapshotFile(character), JSON.stringify(snap, null, 2) + '\n'); } catch {} }
+      return { status: 'stale', events: [] };
+    }
     snap.seq = Math.max(snap.seq, seq);
     snap.updatedAt = stamp;
     try {
@@ -511,8 +524,10 @@ function createTelemetry(opts) {
 
   function luaGs() {
     prime();
+    const w = watch();
+    for (const snap of snapshots.values()) pruneCompleted(snap, w);
     const recent = [...snapshots.values()].filter(s => s.session).sort((a, b) => b.updatedAt - a.updatedAt);
-    return luaGsTable(recent, watch());
+    return luaGsTable(recent, w, [...rejectedKeys]);
   }
 
   return { submit, luaGs, handled, snapshot: load, snapshotFile };

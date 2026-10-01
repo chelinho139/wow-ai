@@ -150,8 +150,10 @@ test('a frame of [message, gs rider] from the real addon and a frame of [gs, mes
     const slotA = slotOf(ridden.id);
     const newAcks = spentSlots(h.sb, 'ack').filter(s => !ackBefore.includes(s));
     const newSigs = spentSlots(h.sb, 'sig').filter(s => !sigBefore.includes(s));
-    assert.ok(newAcks.includes(slotA) && newSigs.includes(slotA), 'the message spent its ack and sig');
-    if (slotOf(gsSeq) !== slotA) assert.ok(!newAcks.includes(slotOf(gsSeq)) && !newSigs.includes(slotOf(gsSeq)), 'the gs seq spent nothing');
+    assert.deepEqual(newAcks, [slotA], 'only the message spent an ack file');
+    assert.deepEqual(newSigs, [slotA], 'only the message spent a sig file');
+    if (slotOf(gsSeq) === slotA) console.warn(`SKIPPED: gs seq ${gsSeq} shares slot ${slotA} with the message, so its own spend cannot be told apart this run`);
+    else assert.ok(!newAcks.includes(slotOf(gsSeq)) && !newSigs.includes(slotOf(gsSeq)), 'the gs seq spent nothing');
 
     const ackMid = spentSlots(h.sb, 'ack');
     const sigMid = spentSlots(h.sb, 'sig');
@@ -159,7 +161,8 @@ test('a frame of [message, gs rider] from the real addon and a frame of [gs, mes
     const id = h.client.lastSeq() + 50;
     const chat = h.client.activeChat().id;
     const message = [session, chat, String(id), '', '', 'Chat 1', 'gs first, then this'].join('\x1F');
-    const craftedSeq = 2000000000;
+    let craftedSeq = 2000000000;
+    while (slotOf(craftedSeq) === slotOf(id)) craftedSeq += 1;
     const file = writeShot(h.sb, h.client, [gsRecord(session, craftedSeq), message].join('\x1E'), 900);
     await h.client.waitFor(() => !fs.existsSync(file), { timeoutMs: 20000, label: 'the bridge to read the crafted frame' });
     await h.client.waitFor(() => h.agentCalls().length > calls, { timeoutMs: 30000, label: 'the message after the gs record to run' });
@@ -167,9 +170,9 @@ test('a frame of [message, gs rider] from the real addon and a frame of [gs, mes
     await h.client.waitFor(() => !fs.existsSync(SIG.signalFile(h.sb.addons, 'sig', slotB)), { timeoutMs: 30000, label: 'its reply signal' });
     const newAcksB = spentSlots(h.sb, 'ack').filter(s => !ackMid.includes(s));
     const newSigsB = spentSlots(h.sb, 'sig').filter(s => !sigMid.includes(s));
-    assert.ok(newAcksB.includes(slotB) && newSigsB.includes(slotB), 'the message after the gs record spent its ack and sig');
-    if (slotOf(craftedSeq) !== slotB) assert.ok(!newAcksB.includes(slotOf(craftedSeq)) && !newSigsB.includes(slotOf(craftedSeq)), 'the gs seq spent nothing');
-    assert.ok(h.state().lastId >= id && h.state().lastId < craftedSeq, 'lastId follows the messages, never the gs seq');
+    assert.deepEqual(newAcksB, [slotB], 'only the message after the gs record spent an ack file');
+    assert.deepEqual(newSigsB, [slotB], 'only the message after the gs record spent a sig file');
+    assert.notEqual(slotOf(craftedSeq), slotB);
     assert.equal(h.state().lastId, id);
   });
 });

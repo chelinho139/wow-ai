@@ -1921,6 +1921,26 @@ function ClaudeWoW.TalentTrees()
 	return type(trees) == "table" and trees or {}
 end
 
+function ClaudeWoW.CharacterLine()
+	local name = Try(UnitName, "player")
+	if not name then return nil end
+	local realm = Try(GetRealmName)
+	local level = Try(UnitLevel, "player")
+	local race = Try(UnitRace, "player")
+	local class = Try(UnitClass, "player")
+	local faction = Try(UnitFactionGroup, "player")
+	local guild = Try(GetGuildInfo, "player")
+	local who = tostring(name) .. (realm and (" on " .. tostring(realm)) or "")
+	local desc = {}
+	if level then table.insert(desc, "level " .. tostring(level)) end
+	if race then table.insert(desc, tostring(race)) end
+	if class then table.insert(desc, tostring(class)) end
+	if #desc > 0 then who = who .. ", " .. table.concat(desc, " ") end
+	if faction then who = who .. " (" .. tostring(faction) .. ")" end
+	if guild then who = who .. ", guild <" .. tostring(guild) .. ">" end
+	return who
+end
+
 function ClaudeWoW.GameContext()
 	local lines = {}
 	local version, build, _, toc = Try(GetBuildInfo)
@@ -1933,24 +1953,8 @@ function ClaudeWoW.GameContext()
 	end
 	table.insert(lines, "Game: " .. game .. client)
 
-	local name = Try(UnitName, "player")
-	if name then
-		local realm = Try(GetRealmName)
-		local level = Try(UnitLevel, "player")
-		local race = Try(UnitRace, "player")
-		local class = Try(UnitClass, "player")
-		local faction = Try(UnitFactionGroup, "player")
-		local guild = Try(GetGuildInfo, "player")
-		local who = "Character: " .. tostring(name) .. (realm and (" on " .. tostring(realm)) or "")
-		local desc = {}
-		if level then table.insert(desc, "level " .. tostring(level)) end
-		if race then table.insert(desc, tostring(race)) end
-		if class then table.insert(desc, tostring(class)) end
-		if #desc > 0 then who = who .. ", " .. table.concat(desc, " ") end
-		if faction then who = who .. " (" .. tostring(faction) .. ")" end
-		if guild then who = who .. ", guild <" .. tostring(guild) .. ">" end
-		table.insert(lines, who)
-	end
+	local who = ClaudeWoW.CharacterLine()
+	if who then table.insert(lines, "Character: " .. who) end
 
 	local zone = Try(GetZoneText)
 	local sub = Try(GetSubZoneText)

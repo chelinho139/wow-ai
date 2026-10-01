@@ -235,3 +235,44 @@ test('switching between character files keeps each file\'s half-read line', () =
     assert.ok(out.lines().map(e => e.type).includes('death'), 'the line split across the switch is read whole');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('a chunk boundary inside a multi-byte character never corrupts a Cyrillic character name', () => {
+  const dir = tmpGoals('utf8');
+  const file = path.join(dir, 'Боне-Вечность', TL.EVENTS_FILE);
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, '');
+    const now = clock();
+    const out = sink();
+    const f = EV.follow({ file, min: 1, out, err: sink(), now, pollMs: 0, chunk: 7 });
+    appendEvents(file, [{ ...ev('death', 3, { at: 1 }), character: 'Боне-Вечность' }]);
+    for (let i = 0; i < 60; i++) f.tick();
+    now.advance(EV.BURST_WINDOW_MS);
+    f.tick();
+    assert.deepEqual(out.lines().map(e => e.character), ['Боне-Вечность']);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a file that rotated while another character was followed is drained from where it was left', () => {
+  const dir = tmpGoals('resumeinode');
+  try {
+    const bone = path.join(dir, 'Bone-Forever', TL.EVENTS_FILE);
+    const alt = path.join(dir, 'Alt-Forever', TL.EVENTS_FILE);
+    appendEvents(bone, [ev('zone', 2, { from: 1, to: 2 })]);
+    appendEvents(alt, [ev('zone', 2, { from: 3, to: 4 })]);
+    const now = clock();
+    const out = sink();
+    let newest = alt;
+    const f = EV.follow({ file: () => newest, list: () => [bone, alt], min: 1, out, err: sink(), now, pollMs: 0, resolveEvery: 1 });
+    newest = bone;
+    f.tick();
+    appendEvents(alt, [ev('death', 3, { at: 7 })]);
+    fs.renameSync(alt, path.join(path.dirname(alt), TL.EVENTS_ROTATED_FILE));
+    appendEvents(alt, [ev('level_up', 3, { from: 20, to: 21 })]);
+    newest = alt;
+    f.tick();
+    now.advance(EV.BURST_WINDOW_MS);
+    f.tick();
+    assert.deepEqual(out.lines().map(e => e.type), ['death', 'level_up']);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

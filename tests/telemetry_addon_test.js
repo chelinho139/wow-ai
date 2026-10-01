@@ -578,3 +578,40 @@ test('when a record head does not fit the room left, the change still waits for 
   assert.ok(solo, 'the pending change still has a hint and goes on its own shot');
   assert.deepEqual(Object.keys(sectionsOf(solo).sections), ['money']);
 });
+
+test('a failing Screenshot() gets one urgent retry, then normal pacing: the third try waits for the 2-minute window', () => {
+  const vm = ready();
+  shoot(vm);
+  vm.run('STUB.level = 24; STUB.FireEvent("PLAYER_LEVEL_UP", 24)');
+  tick(vm, 5);
+  assert.ok(gsJobs(shoot(vm, 'SCREENSHOT_FAILED')).length, 'first try, failed');
+  assert.ok(gsJobs(shoot(vm, 'SCREENSHOT_FAILED')).length, 'the one urgent retry, failed again');
+  assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'false', 'no third try at once');
+  tick(vm, 5);
+  tick(vm, 5);
+  assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'false', 'nor on the next ticks');
+  tick(vm, 125);
+  const third = gsJobs(shoot(vm));
+  assert.equal(third.length, 1, 'after the window the record goes again');
+  assert.ok(sectionsOf(third[0]).sections.level);
+});
+
+test('the addon stops sending when the slot lists its own character key as refused', () => {
+  const vm = ready({ gs: `{ v = 1, watch = { items = { 2589 }, factions = { 530 } }, chars = {}, refused = { "${CHARACTER}" } }` });
+  assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'false', 'no telemetry-only shot for a refused key');
+  vm.run('STUB.FireEvent("PLAYER_DEAD")');
+  tick(vm, 130);
+  assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'false');
+  assert.equal(vm.evaluate('ClaudeWoWTelemetry.Active()'), 'false');
+  const other = ready({ gs: '{ v = 1, watch = { items = { 2589 }, factions = { 530 } }, chars = {}, refused = { "Someone-Else" } }' });
+  assert.ok(gsJobs(shoot(other)).length, 'another character\'s refused key does not stop this one');
+});
+
+test('the character line comes from ClaudeWoW.CharacterLine, the same text GameContext uses', () => {
+  const vm = newVM();
+  const line = vm.evaluate('ClaudeWoW.CharacterLine()');
+  assert.ok(vm.evaluate('ClaudeWoW.GameContext()').split('\n').includes(`Character: ${line}`));
+  vm.run('function UnitName() error("boom") end');
+  assert.equal(vm.evaluate('ClaudeWoW.CharacterLine()'), null);
+  assert.equal(vm.evaluate('ClaudeWoWTelemetry.CharacterKey()'), null);
+});

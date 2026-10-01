@@ -42,7 +42,7 @@ T.KEY_MAX_BYTES = 256
 T.INFLIGHT_MAX = 4
 
 local US = "\31"
-local state = { bridge = false, known = {}, sentAt = {}, sentSeq = {}, sent = {}, inflight = {}, urgent = false, hint = false, watch = { items = {}, factions = {} } }
+local state = { bridge = false, known = {}, sentAt = {}, sentSeq = {}, sent = {}, inflight = {}, urgent = false, urgentRestored = false, refusedMine = false, hint = false, watch = { items = {}, factions = {} } }
 
 local function Try(fn, ...)
 	if type(fn) ~= "function" then return nil end
@@ -99,13 +99,11 @@ function T.KeyFromCharacterLine(line)
 end
 
 function T.CharacterKey()
-	local context = ClaudeWoW and ClaudeWoW.GameContext and Try(ClaudeWoW.GameContext)
-	if type(context) ~= "string" then return nil end
-	for line in (context .. "\n"):gmatch("([^\n]*)\n") do
-		local value = line:match("^[Cc][Hh][Aa][Rr][Aa][Cc][Tt][Ee][Rr]%s*:%s*(.+)$")
-		if value then return T.KeyFromCharacterLine(Trim(value)) end
-	end
-	return nil
+	local line = ClaudeWoW and ClaudeWoW.CharacterLine and Try(ClaudeWoW.CharacterLine)
+	if type(line) ~= "string" then return nil end
+	line = Trim((line:gsub("[\30\31]", " ")))
+	if line == "" then return nil end
+	return T.KeyFromCharacterLine(line)
 end
 
 local function Root()
@@ -270,6 +268,7 @@ end
 local function Enabled()
 	return state.bridge and type(ClaudeWoWDB) == "table" and type(ClaudeWoWDB.session) == "string"
 		and not (type(ClaudeWoWDB.settings) == "table" and ClaudeWoWDB.settings.context == false)
+		and not state.refusedMine
 end
 
 local function SentLastHour(now)
@@ -329,7 +328,8 @@ function T.Take(room, solo)
 	if not rec then return nil end
 	state.lastAt = now
 	if solo then state.lastSoloAt = now end
-	local wasUrgent = state.urgent
+	local restoreUrgent = state.urgent and not state.urgentRestored
+	state.urgentRestored = false
 	state.urgent = false
 	state.sent[#state.sent + 1] = now
 	for name, hash in pairs(sent) do
@@ -337,7 +337,7 @@ function T.Take(room, solo)
 		state.sentAt[name] = now
 		state.sentSeq[name] = seq
 	end
-	table.insert(state.inflight, { rec = rec, sent = sent, urgent = wasUrgent })
+	table.insert(state.inflight, { rec = rec, sent = sent, urgent = restoreUrgent })
 	while #state.inflight > T.INFLIGHT_MAX do table.remove(state.inflight, 1) end
 	return rec
 end
@@ -355,7 +355,10 @@ local function Settle(rec, lost)
 					end
 				end
 				state.hint = true
-				if f.urgent then state.urgent = true end
+				if f.urgent then
+					state.urgent = true
+					state.urgentRestored = true
+				end
 			end
 			return true
 		end
@@ -391,6 +394,11 @@ function T.Sync(gs)
 	local items, factions = IdList(watch.items, T.WATCH_ITEMS_MAX), IdList(watch.factions, T.WATCH_FACTIONS_MAX)
 	if table.concat(items, ",") ~= table.concat(state.watch.items, ",") or table.concat(factions, ",") ~= table.concat(state.watch.factions, ",") then changed = true end
 	state.watch = { items = items, factions = factions }
+	local key = T.CharacterKey()
+	state.refusedMine = false
+	for _, refused in ipairs(type(gs.refused) == "table" and gs.refused or {}) do
+		if key and refused == key then state.refusedMine = true end
+	end
 	local entry = Entry(gs)
 	local hashes = entry and entry.hashes or {}
 	local bridgeSeq = entry and WholeNumber(entry.seq) or 0
@@ -416,7 +424,12 @@ function T.Pump()
 end
 
 function T.OnEvent(event, ...)
-	if T.URGENT_EVENTS[event] then state.urgent = true else state.hint = true end
+	if T.URGENT_EVENTS[event] then
+		state.urgent = true
+		state.urgentRestored = false
+	else
+		state.hint = true
+	end
 	if event ~= "PLAYER_DEAD" and event ~= "NEW_RECIPE_LEARNED" then return end
 	local mine = Mine()
 	if not mine then return end

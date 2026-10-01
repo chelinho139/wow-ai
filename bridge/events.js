@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { StringDecoder } = require('string_decoder');
 const TL = require('./telemetry');
 
 const BURST_WINDOW_MS = 10000;
@@ -116,22 +117,42 @@ function follow(opts) {
   let offset = 0;
   let inode = null;
   let partial = '';
+  let decoder = new StringDecoder('utf8');
   let heldSaid = false;
   let ticks = 0;
 
   function noteNewFiles(atStart) {
-    for (const f of list()) if (!resume.has(f)) resume.set(f, { offset: atStart && !opts.fromStart ? sizeOf(f) : 0, partial: '' });
+    for (const f of list()) {
+      if (resume.has(f)) continue;
+      let st = null;
+      try { st = fs.statSync(f); } catch {}
+      resume.set(f, { offset: st && atStart && !opts.fromStart ? st.size : 0, inode: st ? st.ino : null, partial: '', decoder: new StringDecoder('utf8') });
+    }
+  }
+
+  function startFresh() {
+    offset = 0;
+    partial = '';
+    decoder = new StringDecoder('utf8');
   }
 
   function attach(found, atStart) {
     file = found;
     let st = null;
     try { st = fs.statSync(file); } catch {}
-    inode = st ? st.ino : null;
     const saved = resume.get(file);
-    offset = saved ? saved.offset : st && atStart && !opts.fromStart ? st.size : 0;
-    partial = saved ? saved.partial : '';
-    if (st && offset > st.size) { offset = 0; partial = ''; }
+    if (saved) {
+      offset = saved.offset;
+      partial = saved.partial;
+      decoder = saved.decoder;
+      inode = saved.inode;
+      if (st && inode !== null && st.ino !== inode) { drainRotated(); startFresh(); }
+      else if (st && offset > st.size) startFresh();
+    } else {
+      startFresh();
+      if (st && atStart && !opts.fromStart) offset = st.size;
+    }
+    inode = st ? st.ino : null;
   }
 
   function feed(text) {
@@ -145,12 +166,12 @@ function follow(opts) {
 
   function readRange(target, from, to) {
     if (to <= from) return 0;
-    const len = Math.min(to - from, chunk);
-    const buf = Buffer.alloc(len);
+    const buf = Buffer.alloc(Math.min(to - from, chunk));
     const fd = fs.openSync(target, 'r');
-    try { fs.readSync(fd, buf, 0, len, from); } finally { fs.closeSync(fd); }
-    feed(buf.toString('utf8'));
-    return len;
+    let n = 0;
+    try { n = fs.readSync(fd, buf, 0, buf.length, from); } finally { fs.closeSync(fd); }
+    if (n > 0) feed(decoder.write(buf.subarray(0, n)));
+    return n;
   }
 
   function drainRotated() {
@@ -164,13 +185,14 @@ function follow(opts) {
       if (!got) break;
       at += got;
     }
+    feed(decoder.end());
   }
 
   function readNew() {
     let st;
     try { st = fs.statSync(file); } catch { return; }
-    if (inode !== null && st.ino !== inode) { drainRotated(); offset = 0; partial = ''; }
-    else if (st.size < offset) { offset = 0; partial = ''; }
+    if (inode !== null && st.ino !== inode) { drainRotated(); startFresh(); }
+    else if (st.size < offset) startFresh();
     inode = st.ino;
     offset += readRange(file, offset, st.size);
   }
@@ -179,7 +201,7 @@ function follow(opts) {
     noteNewFiles(atStart);
     const found = resolve();
     if (!found || found === file) return;
-    if (file) { readNew(); resume.set(file, { offset, partial }); }
+    if (file) { readNew(); resume.set(file, { offset, inode, partial, decoder }); }
     attach(found, atStart);
   }
 
