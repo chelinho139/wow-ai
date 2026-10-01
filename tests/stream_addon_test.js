@@ -316,3 +316,57 @@ test('stream: saved data stays bounded to the follow flag and the chat id', () =
   assert.equal(vm.evaluate('ClaudeWoWDB.stream.chat'), 'abc');
   assert.equal(vm.num('#STUB.actionBlocked'), 0);
 });
+
+test('stream: a chat made while the quiet stream chat is active does not inherit the stream plugin', () => {
+  const vm = ready();
+  slash(vm, 'game');
+  vm.run('ClaudeWoW.SwitchChat(StreamChatForTest().id)');
+  vm.run('NEW = ClaudeWoW.NewChat("After stream")');
+  assert.equal(vm.evaluate('NEW.plugin'), '');
+  assert.equal(vm.evaluate('NEW.quiet'), null);
+});
+
+test('stream: saved chats that inherited the stream plugin are repaired at load, and the quiet chat is never the active one', () => {
+  const vm = newVM();
+  vm.run(`ClaudeWoWDB = {
+    settings = { pluginsV1 = true },
+    activeChat = "s1",
+    stream = { follow = false, chat = "s1" },
+    chats = {
+      { id = "s1", name = "Stream control", cwd = "", plugin = "stream", quiet = true, history = {}, unread = 0 },
+      { id = "u1", name = "Is there anything for", cwd = "", plugin = "stream", history = {}, unread = 0 },
+      { id = "u2", name = "Coding", cwd = "every", plugin = "claude-code", history = {}, unread = 0 },
+    },
+  }`);
+  vm.run('STUB.FireEvent("ADDON_LOADED", "ClaudeWoW"); STUB.FireEvent("PLAYER_LOGIN")');
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].plugin'), 'stream', 'the quiet chat keeps its plugin');
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[2].plugin'), '', 'the user chat goes back to the bridge default');
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[3].plugin'), 'claude-code');
+  assert.equal(vm.evaluate('ClaudeWoWDB.activeChat'), 'u1');
+});
+
+test('stream: saved data with only the quiet chat gets a new active chat on the default plugin', () => {
+  const vm = newVM();
+  vm.run(`ClaudeWoWDB = {
+    settings = { pluginsV1 = true },
+    activeChat = "s1",
+    stream = { follow = false, chat = "s1" },
+    chats = { { id = "s1", name = "Stream control", cwd = "", plugin = "stream", quiet = true, history = {}, unread = 0 } },
+  }`);
+  vm.run('STUB.FireEvent("ADDON_LOADED", "ClaudeWoW"); STUB.FireEvent("PLAYER_LOGIN")');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 2);
+  assert.notEqual(vm.evaluate('ClaudeWoWDB.activeChat'), 's1');
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[2].plugin'), '');
+});
+
+test('stream: deleting the only user chat clears it instead of making the quiet chat active', () => {
+  const vm = ready();
+  slash(vm, 'game');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 2);
+  vm.run('for _, c in ipairs(ClaudeWoWDB.chats) do if not c.quiet then USER = c end end');
+  vm.run('ClaudeWoW.SwitchChat(USER.id); ClaudeWoW.DeleteChat(USER.id)');
+  assert.equal(vm.num('#ClaudeWoWDB.chats'), 2, 'the last user chat is cleared, not removed');
+  assert.equal(vm.evaluate('ClaudeWoWDB.activeChat == USER.id'), 'true');
+  vm.run('SECOND = ClaudeWoW.NewChat("Second"); ClaudeWoW.SwitchChat(USER.id); ClaudeWoW.DeleteChat(USER.id)');
+  assert.equal(vm.evaluate('ClaudeWoWDB.activeChat == SECOND.id'), 'true', 'the next active chat is a user chat');
+});

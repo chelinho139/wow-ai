@@ -13,6 +13,7 @@
     "enabled": true,
     "mode": "screenshot",
     "screenshotLevels": { "off": 0, "on": 60 },
+    "chatLog": { "enabled": false, "line": 900, "filler": 50000, "show": false },
     "processName": "WowB",
     "cellPx": 4,
     "cellsPerRow": 200,

@@ -132,3 +132,54 @@ then `tail -c 300 "/Applications/World of Warcraft/_classic_beta_/Logs/WoWChatLo
 **C. `Logs/AddOnLoad.log` via `addonLoadDebugging` (weak).** CVar help text: "1: Enable addon load logging to AddOnLoad.log"; line formats `Loading AddOn (Mode: %s, Chain: %s): %s` and `Error(%s): %s`. If a `C_AddOns.LoadAddOn("<any string>")` for a missing addon logs the requested name, the name is the payload. Unverified whether a missing addon is logged at all. Probe: `/run SetCVar("addonLoadDebugging","1"); C_AddOns.LoadAddOn("WOWAI-PROBE-"..time())` then grep `Logs/AddOnLoad.log`.
 
 **Confirmations of the table from the binary and the file system.** `LoggingCombat`/`LoggingChat`, `SaveBindings(1||2)`, `SetBinding("KEY"[,"COMMAND","CONTEXT"])`, `CreateMacro(name, iconFileName, body, perCharacter)`, `C_CVar.RegisterCVar`, `C_EditMode.SaveLayouts`, `SetChatWindowName` all exist. `Errors/*.txt` are crash dumps from `Blizzard Error.app` (C++ asserts), not Lua errors; no Lua error file exists. Every AccountData cache (`config-cache.wtf`, `bindings-cache.wtf`, `chat-cache.txt`, `layout-local.txt`, `click-bindings-cache.txt`, Edit Mode) carries an mtime equal to a `/reload` or logout instant (the `EditMode.log` "Saving" timestamps and `QuestCache.log` "Opened for Append" lines are the same list), so none of them flush mid-session; `Config.wtf` likewise. `QuestCache.log` is written live with the quest ID of every uncached `C_QuestLog` lookup (`id=N r=IsComplete`), which is technically an addon-chosen integer per line, but it spams the server and carries a few bytes per call: not a transport. `C_Log.LogMessage` remains as row 2 describes; note `DeveloperLog.log` (its likely sink, `Blizzard_DeveloperLog`) is 0 bytes here and the binary contains "Developer Log encountered an error and was prevented from opening", which may be the error the user saw.
+
+## Addendum (2026-09-30): four research lanes, and what was built from them
+
+Evidence tags: VERIFIED = seen on this machine (client 1.60.1.70124, macOS), SOURCED = cited, INFERRED = reasoning only.
+
+### Chat log (row 6 and Addendum B): reopened
+
+The earlier verdict, "written only at logout", came from a test that logged a few hundred bytes. That test cannot tell a logout-only writer from a buffered one.
+
+- VERIFIED: the client holds `Logs/WoWChatLog.txt` open and its file offset equals the file size, so it made no write since it opened the file (`lsof -o`).
+- VERIFIED: `SendSystemMessage` text is logged. The 9/28 probe line is in the file, complete at 120 characters. `AddMessage` lines from the same handler are not.
+- VERIFIED: `/reload` and `/chatlog` off do not flush.
+- VERIFIED: the binary imports `fopen`, `fputs`, `fflush`, `setvbuf`; the file's block size is 4096. The code section is encrypted, so the buffer size cannot be read from it.
+- SOURCED: two public reports give a 2-4 KB buffer that writes when full (https://www.wowinterface.com/forums/showthread.php?t=43380, 2012, macOS; https://github.com/Yumash/BabelChat, current retail).
+- INFERRED: a 4096-byte buffer that reaches disk when full. If so, a frame followed by 4096 bytes of local padding lines is on disk in one frame.
+- VERIFIED later the same day, against that inference: 31,627 bytes (447 lines stamped 17:59:02-18:02:26) reached disk in one write at 18:38:03, 36 minutes later, when the AFK character left the world. The game process was the same before and after. A 4096-byte size trigger is refuted. What is left: a buffer larger than 32 KB, or a write only when the character leaves the world.
+- VERIFIED at 21:56 with `/claude probe chatlog` (16 KB) then `/claude probe chatlog 65536`: the 16 KB run wrote nothing; the second run made the file grow by 49,297 bytes in the same second, and ordinary chat pushed out 49,204 more 24 s later. Both are the first line boundary past 49,152 (48 KiB). Rule: a line is appended to a buffer, and a buffer of 49,152 bytes or more is written and emptied. All 343 probe lines arrived, the 1,000-character line whole, and the 256 lines hidden by the chat filter were logged.
+- Result: the chat log transport works with `filler` 50,000.
+
+### `AsyncFile.log`: verified from addon code
+
+`/claude probe asyncfile` at 21:56: a shown texture given `SetTexture(id)` then `SetTexture(nil)` logs `Cancel requested` and `Cancel processed` for that id in the same millisecond batch. 96 of 96 burst ids arrived. Order inside a batch is not kept. The same id set twice in one frame logs once. A hidden texture, a nonexistent id (8999999) and one icon (133975) logged nothing; `SetBlockingLoadsRequested(true)` logged `Wait Started`/`Wait Finished` for a single id. It is a working channel of about 4 bits a line pair with position coding, kept as the second choice because the chat log carries text.
+
+Built: the chat log transport (`capture.chatLog`, see ARCHITECTURE.md), off by default, with the screenshot as its retry.
+
+### `Logs/AsyncFile.log`: a second live log
+
+- VERIFIED: the client writes one line per event with millisecond stamps and the file mtime equals the last line's stamp: `Cancel requested -- FileData ID N`, `Cancel processed`, `Wait Started`, `Wait Finished`. An idle game writes nothing.
+- VERIFIED: the 271 ids seen are textures, models and map files, never sounds, although the addon's `PlaySoundFile` probes were running. The same id is logged again on a later request.
+- INFERRED: a load that finishes logs nothing; a cancelled in-flight load logs `Cancel`, a blocking load logs `Wait`. `SetTexture(fileID)` then `SetTexture(nil)`, or `SetBlockingLoadsRequested(true)` with `SetTexture(fileID)`, would then log an addon-chosen id: 12-15 bits a symbol from a table of icon ids, under 1 s.
+- Unproven until `/claude probe asyncfile` runs: that an addon texture request logs at all.
+- `QuestCache.log`, `AccountData.log` and `EditMode.log` buffer their writes; earlier "written live" notes about them were wrong.
+
+### Combat log: closed
+
+VERIFIED from the 46 MB 9/28 file: 37 event types, no addon-chosen text, and the file was 0 bytes 28 s after logging started. SOURCED: retail holds the log until combat ends since 10.2.
+
+### OS side channels (macOS)
+
+- Clipboard: `CopyToClipboard` exists and is protected (SOURCED, warcraft.wiki.gg). Dead.
+- Unified log: the client's entries come from Apple frameworks only. Dead.
+- Gamepad vibration and LED, text to speech: callable, but no receiver without a device, an audio permission or a signed driver. A custom OS speech engine that receives `C_VoiceChat.SpeakText` text is an unverified idea.
+- Cursor image and window size: readable from outside, visible to the player, slow.
+- File-access observation (which pre-existing addon file the client reads): not pursued.
+
+### Prior art and policy
+
+- SOURCED: ApplicantScout, a public retail addon (12.0.5-12.1.5), uses the same `Screenshot()` transport with a QR code and a companion that reads and deletes the files (https://github.com/Antrakt92/ApplicantScout-Addon). Its source calls the chat log "buffered and unsuitable"; it does not try padding.
+- SOURCED: no published way to flush SavedVariables mid-session.
+- SOURCED: every documented Blizzard action is against input automation, client modification or real-time combat information. None is against a program that only reads files the client writes. The 2023 combat-log overlay problem was fixed in the client, with no ban wave. The EULA's data-mining clause still covers all of these on paper.
+- Risk order from that evidence, lowest first: SavedVariables + reload; reading a client log file; `Screenshot()` files; continuous screen capture; whisper-to-self through the chat servers.

@@ -38,12 +38,14 @@ const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
 const os = require('os');
+const crypto = require('crypto');
 const { spawnSync } = require('child_process');
 const PR = require('./procs');  // the children (agent runs, the capture script): their process groups, and ending them for good (tests/procs_test.js)
 const P = require('./protocol'); // the pure protocol code, unit-tested in tests/bridge_test.js
 const A = require('./agents');   // how each agent is launched and read, unit-tested in tests/agents_test.js
 const D = require('./decode');   // PNG/TGA reader + strip decoder for the screenshot transport (tests/decode_test.js)
 const S = require('./screenshots'); // the Screenshots folder watcher (tests/screenshots_test.js)
+const CL = require('./chatlog');
 const V = require('./vision');   // vision: the screenshot's game view, cropped and downscaled for the agent (tests/vision_test.js)
 const PL = require('./plugins'); // the plugin registry and routing (tests/plugins_test.js)
 const H = require('./home');     // where config, state and logs live (tests/home_test.js)
@@ -223,6 +225,8 @@ if (!chosen.transport) {
 let TRANSPORT = chosen.transport;
 let TRANSPORT_SOURCE = chosen.source; // 'config' | 'default' | 'fallback'
 const SCREENSHOT_DIR = S.screenshotDir(cfg);
+const CHAT_LOG = CL.options(cap.chatLog);
+const CHAT_LOG_FILE = CL.chatLogFile(cfg);
 // Vision: a chat that turned it on (/claude-wow vision on, flag "v") gets the rest
 // of the screenshot, strip cropped off and scaled to vision.maxWidth, attached
 // to its run as an image. Screenshot transport only: the pixel capture never
@@ -519,7 +523,7 @@ function slotFile(globalName, records, urgent = true) {
   if (TELEMETRY_ON) {
     try { gsLua = telemetry.luaGs(); } catch (e) { log(`telemetry: slot field gs left out (${e && e.message ? e.message : e})`); }
   }
-  return P.luaTable(globalName, records, { live: liveInfo, sessions: sessionList(), cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), plugin: DEFAULT_PLUGIN, plugins: registry.ids(), map, widgets, transport: TRANSPORT, levels: LEVELS, codec: STRIP_CODEC, transportNote, achievementsLua, goalsLua, gsLua, presence: presenceInfo() });
+  return P.luaTable(globalName, records, { live: liveInfo, sessions: sessionList(), cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), plugin: DEFAULT_PLUGIN, plugins: registry.ids(), map, widgets, transport: TRANSPORT, levels: LEVELS, codec: STRIP_CODEC, chatlog: chatLogSlot(), transportNote, achievementsLua, goalsLua, gsLua, presence: presenceInfo() });
 }
 
 function recentClaudeSessions() {
@@ -601,6 +605,7 @@ function fallbackToPixel(reason, job) {
   if (chosen.source === 'config') log(`  capture.mode is "screenshot" in ${CONFIG_FILE}, so every start tries the screenshot transport first and falls back again when the addon reports this; set it to "pixel" to skip the wait.`);
   else log(`  remembered in ${STATE_FILE}: the next start goes straight to the pixel transport. To choose for good, set capture.mode in ${CONFIG_FILE} to "pixel" (no more note) or "screenshot" (try again).`);
   if (shotWatch) { shotWatch.close(); shotWatch = null; }
+  if (chatLogWatch) { chatLogWatch.close(); chatLogWatch = null; }
   publishNow(); // the slot files now say "pixel", with the note; the addon follows on its next slot read
   if (cap.enabled && !exitWhenIdle) startCapture();
 }
@@ -1626,6 +1631,69 @@ function startScreenshotWatch() {
   if (sweeper.unref) sweeper.unref();
 }
 
+let chatLogWatch = null;
+function chatLogSlot() {
+  const measured = CL.calibratedFiller(Array.isArray(state.chatLogWrites) ? state.chatLogWrites : [], CHAT_LOG.filler);
+  return { enabled: CHAT_LOG.enabled && measured.usable, line: CHAT_LOG.line, filler: measured.filler, show: CHAT_LOG.show, bufferSize: measured.size, key: CHAT_LOG.enabled ? chatLogKey() : '' };
+}
+let refusedFrameToldAt = 0;
+function noteRefusedFrame() {
+  if (Date.now() - refusedFrameToldAt < SWEEP_MS) return;
+  refusedFrameToldAt = Date.now();
+  log('chat log transport: ignored a frame line with another key or in the old format. If it was yours, /reload the game so the addon reads the current key; the message goes out by screenshot meanwhile');
+}
+function chatLogKey() {
+  const made = CL.ensureKey(state, crypto.randomBytes);
+  if (made.created) saveState();
+  return made.key;
+}
+function noteChatLogWrite(bytes) {
+  const before = chatLogSlot();
+  state.chatLogWrites = CL.noteWrite(Array.isArray(state.chatLogWrites) ? state.chatLogWrites : [], bytes);
+  const after = chatLogSlot();
+  if (after.filler === before.filler && after.enabled === before.enabled) return;
+  log(after.enabled
+    ? `chat log transport: the client writes its chat log every ${after.bufferSize} bytes; padding is now ${after.filler} bytes (was ${before.filler})`
+    : `chat log transport: the client writes its chat log every ${after.bufferSize} bytes, more than the padding limit; off until that changes, messages go by screenshot`);
+  saveState();
+  publishNow();
+}
+function cleanChatLog(why) {
+  if (!CHAT_LOG.clean) return;
+  let r;
+  try { r = CL.cleanWhenClosed(CHAT_LOG_FILE, CL.clientFolder(cfg)); } catch (e) { log(`chat log clean (${why}): failed (${e.message})`); return; }
+  if (!r.cleaned || !r.removed) return;
+  if (chatLogWatch) chatLogWatch.resync();
+  if (r.grewMeanwhile) {
+    log(`chat log clean (${why}): ${path.basename(CHAT_LOG_FILE)} grew while it was cleaned, so it was left at full length: bytes ${r.keptUpTo} to ${r.before} are stale copies of older lines, starting inside a line. Nothing the game wrote is lost`);
+    return;
+  }
+  log(`chat log clean (${why}): the game is closed; removed ${r.removed} transport line(s) from ${path.basename(CHAT_LOG_FILE)}, ${r.before} -> ${r.after} bytes`);
+}
+function handleLogFrame(frame) {
+  if (frame.error) {
+    log(`chat log: frame #${frame.lineId} (${frame.chunks} line(s)) rejected: ${frame.error}`);
+    return;
+  }
+  const jobs = jobsFromStrip(frame.id, frame.text).map(job => ({ ...job, via: 'chatlog' }));
+  log(`strip #${frame.id} (chat log, ${frame.chunks} line(s)): ${jobs.length} message(s)`);
+  for (const job of jobs) submit(job);
+}
+function startChatLogWatch() {
+  if (TRANSPORT !== 'screenshot' || !CHAT_LOG.enabled) return;
+  if (!CHAT_LOG_FILE) { log('chat log transport: no addonDir in config.json, so no Logs folder to watch'); return; }
+  chatLogWatch = CL.watchChatLog(CHAT_LOG_FILE, handleLogFrame, { log, pollMs: CHAT_LOG.pollMs, onWrite: noteChatLogWrite, key: chatLogKey(), onRefused: noteRefusedFrame });
+  log(`chat log transport: watching ${CHAT_LOG_FILE} (lines of ${CHAT_LOG.line}, filler ${chatLogSlot().filler} bytes${CHAT_LOG.show ? ', lines shown in chat' : ''}); screenshots stay as the retry path`);
+  if (!CHAT_LOG.clean) return;
+  if (process.platform !== 'darwin') {
+    log(`chat log transport: WARNING, the bridge cannot tell on ${process.platform} whether the game is running, so it never removes its lines from ${path.basename(CHAT_LOG_FILE)}: the file grows by about ${Math.round(chatLogSlot().filler / 1000)} KB per message. The transport is measured on macOS only.`);
+    return;
+  }
+  cleanChatLog('startup');
+  const cleaner = setInterval(() => cleanChatLog('periodic'), SWEEP_MS);
+  if (cleaner.unref) cleaner.unref();
+}
+
 function agentLine(id) {
   const acfg = A.agentConfig(cfg, id);
   const cmd = A.resolveCommand(id, acfg);
@@ -1644,6 +1712,7 @@ function banner() {
   console.log(`  addon    : ${addonInstalled() ? 'installed' : 'NOT INSTALLED - run: node setup.js, then restart WoW'}`);
   console.log(`  slots    : ${slotsInstalled() ? SLOTS + ' installed' : 'NOT INSTALLED - run: node setup.js (or node bridge/install-slots.js), then restart WoW'}`);
   console.log(`  capture  : ${!cap.enabled ? 'off' : TRANSPORT === 'screenshot' ? 'screenshot transport' + (TRANSPORT_SOURCE === 'default' ? ' (the default; no screen capture, no permissions, no python)' : ' (capture.mode in config.json)') + ': ' + SCREENSHOT_DIR + ', strip codec ' + STRIP_CODEC + ': ' + stripGeometry() : 'pixel transport, DEPRECATED (' + (TRANSPORT_SOURCE === 'fallback' ? 'FALLBACK: ' + P.transportNote(state.transportFallback) : 'capture.mode in config.json; kept only until Screenshot() is confirmed on Windows and Linux/Wine') + '): screen capture of ' + cap.processName + ', ' + cap.cellsPerRow + 'x' + cap.maxRows + ' cells of ' + cap.cellPx + 'px'}`);
+  console.log(`  chat log : ${TRANSPORT === 'screenshot' && CHAT_LOG.enabled ? CHAT_LOG_FILE + ' (capture.chatLog; the first try of each message, with the screenshot as the retry)' : 'off (capture.chatLog in config.json; experimental)'}`);
   console.log(`  vision   : ${TRANSPORT === 'screenshot' ? 'per chat (/claude config vision on, or /claude look <question>); the game view goes out up to ' + vis.maxWidth + 'px wide' : 'needs capture.mode "screenshot" (the pixel capture never sees more than the strip)'}`);
   console.log(`  parallel : up to ${MAX_PARALLEL} chats at once`);
   console.log(`  fallback : ${SAVED_VARS}`);
@@ -1688,8 +1757,10 @@ if (inject !== null) {
     // transport this bridge listens on (its hello can't reach a screenshot-mode
     // bridge until it knows to take a screenshot).
     publishNow();
-    if (cap.enabled && TRANSPORT === 'screenshot') startScreenshotWatch();
-    else if (cap.enabled) {
+    if (cap.enabled && TRANSPORT === 'screenshot') {
+      startScreenshotWatch();
+      startChatLogWatch();
+    } else if (cap.enabled) {
       if (TRANSPORT_SOURCE === 'fallback') log(`transport: ${P.transportNote(state.transportFallback)}`);
       startCapture();
     }
