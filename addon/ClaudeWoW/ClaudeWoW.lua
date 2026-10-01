@@ -4033,7 +4033,7 @@ local function GetBubble(i)
 	b.accent:SetPoint("BOTTOMLEFT", b, "BOTTOMLEFT", 0, 0)
 	b.accent:SetWidth(3)
 	local onParchment = ui.parchment ~= nil
-	b.who = b:CreateFontString(nil, "OVERLAY", onParchment and Q.FontObject("QuestFontNormalSmall", "GameFontNormalSmall") or "GameFontNormalSmall")
+	b.who = b:CreateFontString(nil, "OVERLAY", onParchment and Q.FontObject("QuestTitleFont", Q.FontObject("QuestFontNormalSmall", "GameFontNormalSmall")) or "GameFontNormalSmall")
 	b.who:SetPoint("TOPLEFT", b, "TOPLEFT", 10, -6)
 	b.who:SetJustifyH("LEFT")
 	b.when = b:CreateFontString(nil, "OVERLAY", onParchment and Q.FontObject("QuestFontNormalSmall", "GameFontDisableSmall") or "GameFontDisableSmall")
@@ -4157,7 +4157,8 @@ function ClaudeWoW.Render()
 				shownRows = k
 			end
 			for k = shownRows + 1, #b.rowBtns do b.rowBtns[k]:Hide() end
-			b:SetHeight(6 + 12 + 4 + h + 8 + extra)
+			local whoH = math.max(12, Try(b.who.GetStringHeight, b.who) or 12)
+			b:SetHeight(6 + whoH + 4 + h + 8 + extra)
 			b:ClearAllPoints()
 			b:SetPoint("TOPLEFT", ui.content, "TOPLEFT", 0, -y)
 			b.text = text
@@ -4732,17 +4733,45 @@ end
 
 Q.CLASSIC_ERA_ART = { parchment = true, reply = true }
 Q.CLASSIC_ERA_GEAR = "Interface\\Icons\\INV_Misc_Gear_01"
-Q.CLASSIC_PARCHMENT = "Interface\\QuestFrame\\UI-QuestGreeting-TopLeft"
-Q.CLASSIC_PARCHMENT_COORDS = { 32 / 256, 248 / 256, 92 / 256, 248 / 256 }
+Q.CLASSIC_PAGE = {
+	{ file = "Interface\\QuestFrame\\UI-QuestLog-TopLeft", coords = { 21 / 256, 1, 177 / 256, 1 } },
+	{ file = "Interface\\QuestFrame\\UI-QuestLog-TopRight", coords = { 0, 61 / 128, 177 / 256, 1 } },
+	{ file = "Interface\\QuestFrame\\UI-QuestLog-BotLeft", coords = { 21 / 256, 1, 0, 179 / 256 } },
+	{ file = "Interface\\QuestFrame\\UI-QuestLog-BotRight", coords = { 0, 61 / 128, 0, 179 / 256 } },
+}
+Q.CLASSIC_PAGE_SPLIT_X, Q.CLASSIC_PAGE_SPLIT_Y = 235 / 296, 79 / 258
 
-function Q.ClassicParchment(tex)
+function Q.LayoutClassicPage(page, w, h)
+	local wl, ht = math.floor(w * Q.CLASSIC_PAGE_SPLIT_X + 0.5), math.floor(h * Q.CLASSIC_PAGE_SPLIT_Y + 0.5)
+	local spots = { { 0, 0, wl, ht }, { wl, 0, w - wl, ht }, { 0, -ht, wl, h - ht }, { wl, -ht, w - wl, h - ht } }
+	for i, piece in ipairs(page.pieces) do
+		local spot = spots[i]
+		piece:ClearAllPoints()
+		piece:SetPoint("TOPLEFT", page, "TOPLEFT", spot[1], spot[2])
+		piece:SetSize(math.max(1, spot[3]), math.max(1, spot[4]))
+	end
+end
+
+function Q.ClassicParchment(tex, inset)
 	if not Q.IsClassicEra() then return false end
-	local ok = pcall(tex.SetTexture, tex, Q.CLASSIC_PARCHMENT)
-	if not ok then return false end
-	local c = Q.CLASSIC_PARCHMENT_COORDS
-	tex:SetTexCoord(c[1], c[2], c[3], c[4])
+	inset = inset or 0
+	local holder = tex:GetParent()
+	local page = CreateFrame("Frame", nil, holder)
+	page:SetPoint("TOPLEFT", holder, "TOPLEFT", inset, -inset)
+	page:SetPoint("BOTTOMRIGHT", holder, "BOTTOMRIGHT", -inset, inset)
+	page:SetFrameLevel(math.max(0, (Try(holder.GetFrameLevel, holder) or 1)))
+	page.pieces = {}
+	for i, spec in ipairs(Q.CLASSIC_PAGE) do
+		local piece = i == 1 and tex or holder:CreateTexture(nil, "BACKGROUND", nil, 1)
+		if not pcall(piece.SetTexture, piece, spec.file) then return false end
+		piece:SetTexCoord(spec.coords[1], spec.coords[2], spec.coords[3], spec.coords[4])
+		page.pieces[i] = piece
+	end
+	page:SetScript("OnSizeChanged", function(self, w, h) Q.LayoutClassicPage(self, w, h) end)
+	Q.LayoutClassicPage(page, Try(page.GetWidth, page) or 300, Try(page.GetHeight, page) or 300)
 	ui.art = ui.art or {}
-	ui.art.parchment = Q.CLASSIC_PARCHMENT
+	ui.art.parchment = Q.CLASSIC_PAGE[1].file
+	ui.classicPage = page
 	return true
 end
 
@@ -5126,16 +5155,27 @@ function ClaudeWoW.RenderQuestList()
 	ui.chatCount:SetText("Chats: |cffffffff" .. #db.chats .. "|r")
 end
 
+function Q.LastActive(c)
+	for i = #(c.history or {}), 1, -1 do
+		local t = tonumber(c.history[i].t)
+		if t then return t end
+	end
+	return nil
+end
+
 function Q.NewestFirst(chats)
 	local sorted, rank = {}, {}
 	for i, c in ipairs(chats) do
-		local last = c.history and c.history[#c.history]
-		rank[c] = { t = tonumber(last and last.t) or tonumber(c.created) or 0, i = i }
+		local active = Q.LastActive(c)
+		local tier = (c.id == db.activeChat and not active) and 3 or (active and 2 or 1)
+		rank[c] = { tier = tier, t = active or tonumber(c.created) or 0, i = i }
 		table.insert(sorted, c)
 	end
 	table.sort(sorted, function(a, b)
-		if rank[a].t ~= rank[b].t then return rank[a].t > rank[b].t end
-		return rank[a].i > rank[b].i
+		local ra, rb = rank[a], rank[b]
+		if ra.tier ~= rb.tier then return ra.tier > rb.tier end
+		if ra.t ~= rb.t then return ra.t > rb.t end
+		return ra.i > rb.i
 	end)
 	return sorted
 end
@@ -5317,7 +5357,7 @@ function Q.BuildQuestFrames(f)
 	local paper = parchment:CreateTexture(nil, "BACKGROUND", nil, 1)
 	paper:SetPoint("TOPLEFT", parchment, "TOPLEFT", 3, -3)
 	paper:SetPoint("BOTTOMRIGHT", parchment, "BOTTOMRIGHT", -3, 3)
-	if not Q.SetArt(paper, "parchment") and not Q.ClassicParchment(paper) then paper:SetColorTexture(0.80, 0.70, 0.52, 1) end
+	if not Q.SetArt(paper, "parchment") and not Q.ClassicParchment(paper, 3) then paper:SetColorTexture(0.80, 0.70, 0.52, 1) end
 	ui.parchment = parchment
 	ui.transcriptPanel = parchment
 
