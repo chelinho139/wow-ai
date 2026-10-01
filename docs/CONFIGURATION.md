@@ -117,6 +117,7 @@ These sizes are baked into the files `install-slots.js` creates, and the addon h
 | `claude-wow install-slots` | `install-slots.js` alone (setup runs it for you); from the binary, how setup runs it. |
 | `claude-wow data sync [--build <a.b.c.d>] [--force]` | Fetches the Forever client tables from wago.tools (product `wow_cn_beta`, the newest `1.60.1` build it lists unless `--build` names one) into `data/forever/<build>/` in the home folder. Nothing runs it on its own yet, and it never starts from game text. A build that is already current is skipped unless `--force`. Moving `current` to another build family needs `--build`. Exit codes: `0` done, `1` failed (the previous build stays current), `2` usage (unknown option, bad `--build`), `3` another sync holds the lock. See [Game data](#game-data). |
 | `claude-wow data-mcp [--data <dir>] [--client-build <a.b.c.d>]` | The read-only `wowdata` MCP server on stdio. The bridge starts it for Claude `ask` runs; you do not run it by hand. See [The wowdata server](#the-wowdata-server). |
+| `claude-wow events [--follow] [--min N] [--character Name-Realm]` | Game events from the telemetry (`goals/<Name-Realm>/events.jsonl`), one JSON line each. Without `--follow` it prints the last 50 and exits; with it, it waits for new ones. See [Game state telemetry](#game-state-telemetry). Exit codes: `0` done, `1` no events file yet, `2` usage. |
 | `claude-wow --version` | The version and the runtime: `claude-wow 0.4.0 (node 24.21.0)`, `(bun 1.4.2)` or `(claude-wow binary (bun 1.4.2))`. |
 
 Environment: `CLAUDE_WOW_SERVICE=1` is set by the service definitions and tells the supervisor to write its output to the service log and a pid file instead of a terminal; `CLAUDE_WOW_HOME` (below) is passed through to the service when set.
@@ -174,11 +175,25 @@ The bridge's banner prints the folder it chose (`home :`). The one-line installe
 | `~/.claude-wow/transcripts.json` | The last 200 messages of every chat, with the agent that wrote each reply, so the addon can recover its chats after the client wipes saved data. |
 | `~/.claude-wow/uijobs/` | One widget command file per running job (`CLAUDE_WOW_UI_FILE`), read and deleted when the job ends. The widgets themselves live in `state.json` (`widgets`). |
 | `~/.claude-wow/mapjobs/` | One map command file per running job (`CLAUDE_WOW_MAP_FILE`), read and deleted when the job ends. Map layers themselves live in `state.json` (`map`). |
-| `~/.claude-wow/goals/` | One folder per character (`<Name-Realm>/goals.json`): the profession goals and the current order plus the last 20, written only by the bridge when a live session calls `goal_set` or `order_issue`. A file the bridge cannot read is left alone. In-game agent runs may not edit this folder (`--disallowedTools`). See [LIVE-SESSION.md](LIVE-SESSION.md#goals-and-orders-phase-0). |
+| `~/.claude-wow/goals/` | One folder per character (`<Name-Realm>/goals.json`): the profession goals and the current order plus the last 20, written only by the bridge when a live session calls `goal_set` or `order_issue`. A file the bridge cannot read is left alone. In-game agent runs may not edit this folder (`--disallowedTools`). See [LIVE-SESSION.md](LIVE-SESSION.md#goals-and-orders-phase-0). The same folder holds `snapshot.json` (the latest game state, one entry per section with its sequence and hash) and `events.jsonl` (rotated to `events.1.jsonl` at 5 MB; 2 files kept), both written only by the bridge. See [Game state telemetry](#game-state-telemetry). |
 | `~/.claude-wow/live.token` | The live-session token, fresh on every bridge start (mode `0600`). In-game agent runs may not read it with the Read tool. |
 | `~/.claude-wow/bridge.log` | Every line the bridge logs, with timestamps. Rotated by the supervisor at 5 MB (`bridge.log.1` … `.5` kept), so it never grows without bound. Under the background service the bridge's full output (banner, log lines, crashes) also goes to the service log: `~/Library/Logs/claude-wow/bridge.log` on macOS, `$XDG_STATE_HOME/claude-wow/bridge.log` (default `~/.local/state/claude-wow`) on Linux, `%LocalAppData%\claude-wow\logs\bridge.log` on Windows, rotated the same way; `claude-wow service logs` shows whichever applies. |
 | `~/.claude-wow/tmp/` | Prompt files for agents that read the prompt from disk (Grok). Each is deleted when its run ends. |
 | `~/.claude-wow/data/forever/` | Game data from `claude-wow data sync`: one folder per client build, a `current` file naming the build in use, and `.sync.lock` while a sync runs. See [Game data](#game-data). |
+
+## Game state telemetry
+
+The addon sends quiet `kind=gs` records with the character's game state: money, level and XP, zone (uiMapID), profession ranks, watched item counts and free bag slots, equipped item IDs, watched factions, deaths and learned recipes. Only IDs and numbers, never names. The bridge merges them into `goals/<Name-Realm>/snapshot.json` and appends changes to `events.jsonl`. See [ARCHITECTURE.md](ARCHITECTURE.md#game-state-records-kindgs) for the transport rules.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `telemetry.enabled` | `true` | `false` stops advertising `gs` in the slot files, so the addon sends no game state. Records that still arrive are dropped. |
+| `telemetry.watch.items` | none | Items to count in the bags: `{ "<itemID>": <target> }` (target `0` for none) or a plain list of item IDs. At most 20. A count wakes `events --min 2` only when it crosses 25, 50, 75 or 100% of its target. |
+| `telemetry.watch.factions` | none | Faction IDs to report standing for, at most 10. The faction on the player's reputation bar is always reported too. |
+
+`/claude config context off` in the game also stops the telemetry.
+
+Event importance: 1 money and item ticks, skill, gear and reputation changes; 2 a watched count crossing a threshold, a zone change, bags full, a new reputation rank; 3 level up, death, a new recipe. `claude-wow events --follow` merges events that arrive within 10 s into one burst (per kind: the first `from`, the last `to`), prints one JSON line per event, and prints at most 40 bursts an hour; later events wait, merged, until the hour frees a slot.
 
 ## Game data
 

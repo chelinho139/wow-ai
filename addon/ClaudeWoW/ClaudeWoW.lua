@@ -770,6 +770,20 @@ local function TakeScreenshot()
 	return gen
 end
 
+local function TelemetryRecord(room, solo)
+	local telemetry = ClaudeWoWTelemetry
+	if type(telemetry) ~= "table" or type(telemetry.Take) ~= "function" then return nil end
+	if room <= 0 or ShotsPaused(true) or run.shotOverride then return nil end
+	local ok, rec = pcall(telemetry.Take, room, solo)
+	if ok and type(rec) == "string" and rec ~= "" and #rec <= room then return rec end
+	return nil
+end
+
+function ClaudeWoW.TelemetryShot()
+	if not db or not ScreenshotMode() or run.shot then return end
+	RefreshStrip()
+end
+
 -- Redraw the strip from every outbound message the bridge hasn't acknowledged.
 RefreshStrip = function()
 	local ids = {}
@@ -779,8 +793,17 @@ RefreshStrip = function()
 	if #ids == 0 then
 		-- Nothing left to send. A shot still counting frames is called off; one
 		-- the client is already writing keeps the strip until its event.
-		if run.shot and not run.shot.fired then run.shot = nil end
-		if not run.shot then HideStrip() end
+		if run.shot and not run.shot.fired and not run.shot.telemetry then run.shot = nil end
+		if not run.shot then
+			local solo = ScreenshotMode() and TelemetryRecord(Codec.MAX_PAYLOAD, true)
+			if solo then
+				ShowStrip(0, solo)
+				TakeScreenshot()
+				run.shot.telemetry = solo
+				return
+			end
+			HideStrip()
+		end
 		return
 	end
 	table.sort(ids)
@@ -837,8 +860,13 @@ RefreshStrip = function()
 		-- another for the records still unshot.
 		return
 	end
+	local room = Codec.MAX_PAYLOAD - size - 1
+	local waiting = run.shot and not run.shot.fired and run.shot.telemetry
+	local rider = (waiting and #waiting <= room) and waiting or TelemetryRecord(room, false)
+	if rider then table.insert(parts, rider) end
 	ShowStrip(latest, table.concat(parts, RS))
 	local gen = TakeScreenshot()
+	run.shot.telemetry = rider
 	for _, rec in ipairs(included) do rec.shot = gen end
 end
 
@@ -1531,6 +1559,7 @@ local function TryLoadSlot(why)
 	if type(data) == "table" and data.achievements and ClaudeWoWAchievements then ClaudeWoWAchievements.Sync(data.achievements, data.now) end
 	if type(data) == "table" and data.goals and ClaudeWoWOrders then ClaudeWoWOrders.SyncSlot(data.goals, data.now) end
 	if type(data) == "table" and data.widgets and ClaudeWoWWidgets then ClaudeWoWWidgets.Sync(data.widgets) end
+	if type(data) == "table" and ClaudeWoWTelemetry then ClaudeWoWTelemetry.Sync(data.gs) end
 	if why == "signal" and not matched then
 		run.signalUnreliable = true
 	end
@@ -1779,6 +1808,7 @@ local PROFESSION_SKILL_IDS = {
 	[164] = true, [165] = true, [171] = true, [182] = true, [186] = true, [197] = true, [202] = true,
 	[333] = true, [393] = true, [129] = true, [185] = true, [356] = true,
 }
+ClaudeWoW.PROFESSION_SKILL_IDS = PROFESSION_SKILL_IDS
 
 -- The character's skill lines as { name, isHeader, rank, maxRank, skillID }.
 -- Forever only has C_SkillInfo (one table per line); the classic globals
