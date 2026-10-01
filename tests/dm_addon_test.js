@@ -98,7 +98,7 @@ function dmLua({ rev = 1, char = CHAR, beat = null, manual = false, now = 'time(
 }
 
 const BEAT1 = { id: 'b1', title: 'A story begins', lines: ['Someone left a letter in your pack.', 'Nobody saw who.'] };
-const BEAT2 = { id: 'b2', title: 'The quiet road', lines: ['The road into Silverpine Forest is quiet.'] };
+const BEAT2 = { id: 'b2', title: 'The quiet road', lines: ['The road into Fixture Pines is quiet.'] };
 
 function nextSlot(vm, dm, repliesLua = '') {
   const field = dm ? `, dm = ${dm}` : '';
@@ -176,7 +176,7 @@ test('dm frame: appears on the natural slot load that carries a beat, drawn like
   assert.ok(vm.num('STUB.loads') >= 1);
   assert.equal(shown(vm), true, 'a new beat opens the frame');
   assert.equal(vm.evaluate('ClaudeWoWDMFrame.beatTitle.text'), 'A story begins');
-  assert.equal(vm.evaluate('ClaudeWoWDMFrame.body.text'), 'Someone left a letter in your pack.\n\nNobody saw who.');
+  assert.equal(vm.evaluate('ClaudeWoWDMFrame.body.text'), 'Someone left a letter in your pack.\nNobody saw who.');
   assert.equal(vm.evaluate('ClaudeWoWDMFrame.hint.shown'), 'false', 'the next beat does not wait for /dm next');
   assert.equal(vm.evaluate('ClaudeWoWDM.debug.parchment'), 'QuestBG-Parchment');
   assert.equal(vm.evaluate('ClaudeWoWDM.debug.native.frame'), 'false', 'no C_XMLUtil in the stub: the plain frame');
@@ -196,11 +196,55 @@ test('dm frame: ButtonFrameTemplate when the client has it; a missing atlas fall
   assert.equal(native.evaluate('ClaudeWoWDMFrame.titleText'), 'Dungeon Master');
   assert.equal(native.evaluate('ClaudeWoWDMFrame.Inset.shown'), 'false');
   assert.equal(native.evaluate('ClaudeWoWDMFrame.portrait'), 'Interface\\AddOns\\ClaudeWoW\\Portrait');
-  const noAtlas = newVM({ prelude: 'C_Texture.GetAtlasExists = function() return false end' });
-  nextSlot(noAtlas, dmLua({ beat: BEAT1 }));
-  tick(noAtlas);
-  assert.equal(noAtlas.evaluate('ClaudeWoWDM.debug.parchment'), 'color');
-  assert.equal(shown(noAtlas), true);
+});
+
+const TEXTURE_STUB = `
+do
+  local probe = CreateFrame("Frame")
+  local mt = getmetatable(probe)
+  local base = mt.__index
+  mt.__index = function(t, k)
+    if k == "SetTexture" then return function(self, file) if STUB.noTextureFile then return false end self.file = file return true end end
+    if k == "SetMaxLines" then return function(self, n) self.maxLines = n end end
+    return base(t, k)
+  end
+end
+`;
+
+test('dm frame: every fallback branch draws; the parchment goes atlas, then the quest page file, then a color', () => {
+  const cases = [
+    ['no template, no atlas', 'C_Texture.GetAtlasExists = function() return nil end', { frame: 'false', plain: 'false', template: null, close: 'none', parchment: 'Interface\\QuestFrame\\UI-QuestGreeting-TopLeft' }],
+    ['Classic Era: the frame template, no parchment atlas', 'C_XMLUtil = { GetTemplateInfo = function(n) if n == "ButtonFrameTemplate" then return {} end end }; C_Texture.GetAtlasExists = function() return false end', { frame: 'true', plain: null, template: 'ButtonFrameTemplate', close: null, parchment: 'Interface\\QuestFrame\\UI-QuestGreeting-TopLeft' }],
+    ['no file either', 'C_Texture.GetAtlasExists = function() return nil end; STUB.noTextureFile = true', { frame: 'false', plain: 'false', template: null, close: 'none', parchment: 'color' }],
+    ['plain templates only', 'C_XMLUtil = { GetTemplateInfo = function(n) if n == "BackdropTemplate" or n == "UIPanelCloseButton" then return {} end end }', { frame: 'false', plain: 'true', template: 'BackdropTemplate', close: 'UIPanelCloseButton', parchment: 'QuestBG-Parchment' }],
+    ['GetTemplateInfo answers nil for all', 'C_XMLUtil = { GetTemplateInfo = function() return nil end }', { frame: 'false', plain: 'false', template: null, close: 'none', parchment: 'QuestBG-Parchment' }],
+  ];
+  for (const [why, prelude, want] of cases) {
+    const vm = newVM({ prelude: `${TEXTURE_STUB}\n${prelude}` });
+    nextSlot(vm, dmLua({ beat: BEAT1 }));
+    tick(vm);
+    assert.equal(shown(vm), true, `${why}: drawn`);
+    assert.equal(vm.evaluate('ClaudeWoWDM.debug.native.frame'), want.frame, why);
+    assert.equal(vm.evaluate('ClaudeWoWDM.debug.native.plain'), want.plain, why);
+    assert.equal(vm.evaluate('ClaudeWoWDMFrame.template'), want.template, why);
+    assert.equal(vm.evaluate('ClaudeWoWDM.debug.close'), want.close, why);
+    assert.equal(vm.evaluate('ClaudeWoWDM.debug.parchment'), want.parchment, why);
+    assert.equal(vm.evaluate('ClaudeWoWDM.debug.lastError'), null, why);
+  }
+});
+
+test('dm frame: the body is bounded so the largest beat stays on the parchment', () => {
+  const vm = newVM({ prelude: TEXTURE_STUB });
+  const L = name => vm.num(`ClaudeWoWDM.LAYOUT.${name}`);
+  const bottom = L('parchmentTop') + L('textTop') + L('titleHeight') + L('lineGap') + L('bodyHeight');
+  assert.ok(bottom <= L('parchmentTop') + L('parchmentHeight'), `the body ends at ${bottom}, inside the parchment`);
+  assert.ok(bottom <= L('frameHeight') - L('hintSpace'), 'and above the hint');
+  assert.ok(L('bodyMaxLines') * L('bodyLineHeight') <= L('bodyHeight'), 'the line cap fits the height');
+  const huge = Array.from({ length: 8 }, () => 'quiet '.repeat(66).trim());
+  nextSlot(vm, dmLua({ beat: { ...BEAT1, lines: huge } }));
+  tick(vm);
+  assert.equal(vm.num('ClaudeWoWDMFrame.body.height'), L('bodyHeight'));
+  assert.equal(vm.num('ClaudeWoWDMFrame.body.maxLines'), L('bodyMaxLines'), 'longer text is cut by the client with an ellipsis');
 });
 
 test('dm frame: same data does not redraw; a new beat redraws and opens; a closed frame stays closed for new lines', () => {
@@ -281,7 +325,7 @@ test('dm frame: data is bounded and escaped', () => {
   const title = vm.evaluate('ClaudeWoWDMFrame.beatTitle.text');
   assert.ok(title.startsWith('a||cffff0000b'), 'a pipe cannot start an escape sequence');
   assert.ok(title.length <= 61, `${title.length}`);
-  assert.equal(vm.evaluate('ClaudeWoWDMFrame.body.text').split('\n\n').length, 8);
+  assert.equal(vm.evaluate('ClaudeWoWDMFrame.body.text').split('\n').length, 8);
   vm.run(`ClaudeWoWDM.Sync("x"); ClaudeWoWDM.Sync({ char = "${CHAR}", beat = { title = 7 } })`);
   assert.equal(shown(vm), false, 'a beat without a title is no beat');
 });

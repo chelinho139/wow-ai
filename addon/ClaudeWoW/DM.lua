@@ -27,8 +27,22 @@ local PARCHMENT_FALLBACK_COLOR = { 0.80, 0.70, 0.52, 1 }
 local INK = { 0.18, 0.12, 0.06 }
 local INK_DIM = { 0.38, 0.30, 0.20 }
 
-T.TEMPLATES = { frame = "ButtonFrameTemplate" }
+T.LAYOUT = {
+	frameHeight = FRAME_HEIGHT,
+	parchmentTop = -PARCHMENT_Y,
+	parchmentHeight = PARCHMENT_FALLBACK_HEIGHT,
+	textTop = -TEXT_Y,
+	titleHeight = 24,
+	lineGap = LINE_GAP,
+	bodyHeight = 320,
+	bodyLineHeight = 15,
+	bodyMaxLines = 21,
+	hintSpace = HINT_Y + 18,
+}
+T.TEMPLATES = { frame = "ButtonFrameTemplate", plain = "BackdropTemplate", close = "UIPanelCloseButton" }
 T.ATLAS = { parchment = "QuestBG-Parchment" }
+T.FILES = { parchment = "Interface\\QuestFrame\\UI-QuestGreeting-TopLeft" }
+T.PARCHMENT_FILE_COORDS = { 32 / 256, 248 / 256, 92 / 256, 248 / 256 }
 T.FONTS = {
 	title = { "QuestTitleFont", "GameFontNormalLarge" },
 	body = { "QuestFont", "GameFontHighlight" },
@@ -125,7 +139,8 @@ local function BuildFrame()
 		end
 	end
 	T.debug.native.frame = false
-	return CreateFrame("Frame", FRAME_NAME, UIParent, "BackdropTemplate")
+	T.debug.native.plain = T.TemplateExists(T.TEMPLATES.plain)
+	return CreateFrame("Frame", FRAME_NAME, UIParent, T.debug.native.plain and T.TEMPLATES.plain or nil)
 end
 
 local function DecorateNative(f)
@@ -144,8 +159,18 @@ local function DecoratePlain(f)
 	local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
 	title:SetPoint("TOP", f, "TOP", 0, -14)
 	title:SetText(FRAME_TITLE)
-	local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
-	close:SetPoint("TOPRIGHT", f, "TOPRIGHT", -4, -4)
+	if T.TemplateExists(T.TEMPLATES.close) then
+		local close = CreateFrame("Button", nil, f, T.TEMPLATES.close)
+		close:SetPoint("TOPRIGHT", f, "TOPRIGHT", -4, -4)
+		T.debug.close = T.TEMPLATES.close
+	else
+		T.debug.close = "none"
+	end
+end
+
+local function TextureFileSet(tex, file)
+	local ok, set = pcall(tex.SetTexture, tex, file)
+	return ok and set ~= false and set ~= nil
 end
 
 local function BuildParchment(f)
@@ -153,12 +178,24 @@ local function BuildParchment(f)
 	paper:SetPoint("TOPLEFT", f, "TOPLEFT", PARCHMENT_X, PARCHMENT_Y)
 	if T.AtlasExists(T.ATLAS.parchment) and pcall(paper.SetAtlas, paper, T.ATLAS.parchment, true) then
 		T.debug.parchment = T.ATLAS.parchment
+		return paper
+	end
+	paper:SetSize(PARCHMENT_FALLBACK_WIDTH, PARCHMENT_FALLBACK_HEIGHT)
+	if TextureFileSet(paper, T.FILES.parchment) then
+		local c = T.PARCHMENT_FILE_COORDS
+		paper:SetTexCoord(c[1], c[2], c[3], c[4])
+		T.debug.parchment = T.FILES.parchment
 	else
-		paper:SetSize(PARCHMENT_FALLBACK_WIDTH, PARCHMENT_FALLBACK_HEIGHT)
 		paper:SetColorTexture(PARCHMENT_FALLBACK_COLOR[1], PARCHMENT_FALLBACK_COLOR[2], PARCHMENT_FALLBACK_COLOR[3], PARCHMENT_FALLBACK_COLOR[4])
 		T.debug.parchment = "color"
 	end
 	return paper
+end
+
+local function BoundBody(body)
+	body:SetHeight(T.LAYOUT.bodyHeight)
+	if type(body.SetMaxLines) == "function" then pcall(body.SetMaxLines, body, T.LAYOUT.bodyMaxLines) end
+	T.debug.bodyMaxLines = T.LAYOUT.bodyMaxLines
 end
 
 local function BuildParts(f)
@@ -175,6 +212,8 @@ local function BuildParts(f)
 	f.paper = BuildParchment(f)
 	f.beatTitle = TextString(f, T.FONTS.title, INK)
 	f.body = TextString(f, T.FONTS.body, INK)
+	f.body:SetJustifyV("TOP")
+	BoundBody(f.body)
 	f.hint = TextString(f, T.FONTS.hint, INK_DIM)
 	f.hint:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", HINT_X, HINT_Y)
 	f:SetScript("OnHide", function() PlayQuestSound("IG_QUEST_LIST_CLOSE") end)
@@ -195,7 +234,7 @@ local function Layout(view)
 	frame.beatTitle:SetText(view.beat.title)
 	frame.body:ClearAllPoints()
 	frame.body:SetPoint("TOPLEFT", frame.beatTitle, "BOTTOMLEFT", 0, -LINE_GAP)
-	frame.body:SetText(table.concat(view.beat.lines, "\n\n"))
+	frame.body:SetText(table.concat(view.beat.lines, "\n"))
 	frame.hint:SetText(HINT_TEXT)
 	frame.hint:SetShown(view.manual)
 end

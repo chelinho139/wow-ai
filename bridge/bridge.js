@@ -783,7 +783,6 @@ function setContext(job) {
   saveState();
   const who = (text.split('\n').find(l => /^Character:/i.test(l)) || text.split('\n')[0] || '').slice(0, 100);
   log(`#${job.id}${job.session ? '@' + job.session : ''} game context ${text ? 'updated: ' + who : 'cleared'}`);
-  try { campaignStore.onContext(prev, text); } catch (e) { log(`campaign: quest turn-in check failed (${e && e.message ? e.message : e})`); }
 }
 
 function noteContextHeard() {
@@ -868,7 +867,7 @@ function submit(job) {
     if (!TELEMETRY_ON) return;
     let applied = null;
     try { applied = telemetry.submit(job); } catch (e) { log(`telemetry: gs #${job.id} not applied (${e && e.message ? e.message : e})`); }
-    if (applied && applied.events && applied.events.length) {
+    if (applied && applied.status === 'applied') {
       try { campaignStore.onEvents(job.name, applied.events); } catch (e) { log(`campaign: beat trigger check failed (${e && e.message ? e.message : e})`); }
     }
     return;
@@ -1081,6 +1080,7 @@ const campaignStore = CAMPAIGN.createBridgeCampaigns({
   home: HOME,
   context: () => state.context,
   onChange: () => publishNow(true, { refresh: true }),
+  standing: TL.standingReader(telemetry, TELEMETRY_ON),
   log,
 });
 

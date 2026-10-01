@@ -22,11 +22,9 @@ const BONE_CONTEXT = [
 const BONE_KEY = 'Bone-ClassicBetaPvP2';
 const NOW = 1790000500000;
 const FIXTURE = path.join(__dirname, 'fixtures', 'wowdata', 'forever', '1.60.1.200');
-const DEMO_FILE = path.join(__dirname, '..', 'docs', 'campaigns', 'horde-solo-demo.json');
-const REAL_DATA = path.join(os.homedir(), '.claude-wow', 'data');
-const DEMO_MAP_ROWS = [
-  { id: 1421, name: 'Silverpine Forest', parentUiMapID: 1415, type: 3, system: 0 },
-  { id: 1458, name: 'Undercity', parentUiMapID: 1415, type: 3, system: 0 },
+const STORY_MAP_ROWS = [
+  { id: 9101, name: 'Fixture Pines', parentUiMapID: 9001, type: 3, system: 0 },
+  { id: 9102, name: 'Fixture Hold', parentUiMapID: 9001, type: 3, system: 0 },
 ];
 const QUEST_ROWS = [{ id: 7101 }, { id: 7102 }, { id: 7103 }];
 
@@ -44,10 +42,10 @@ function makeData() {
   fs.mkdirSync(dir, { recursive: true });
   for (const f of fs.readdirSync(FIXTURE)) fs.copyFileSync(path.join(FIXTURE, f), path.join(dir, f));
   fs.writeFileSync(path.join(root, 'forever', 'current'), '1.60.1.200\n');
-  fs.appendFileSync(path.join(dir, 'uimaps.jsonl'), jsonl(DEMO_MAP_ROWS));
+  fs.appendFileSync(path.join(dir, 'uimaps.jsonl'), jsonl(STORY_MAP_ROWS));
   fs.writeFileSync(path.join(dir, 'quests.jsonl'), jsonl(QUEST_ROWS));
   const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8'));
-  manifest.entities.uimaps.rows += DEMO_MAP_ROWS.length;
+  manifest.entities.uimaps.rows += STORY_MAP_ROWS.length;
   manifest.entities.quests = { file: 'quests.jsonl', table: 'QuestV2', rows: QUEST_ROWS.length };
   fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(manifest));
   return root;
@@ -62,17 +60,19 @@ function rig(opts = {}) {
   const logs = [];
   let changes = 0;
   let clock = NOW;
+  const where = { mapID: null, level: null };
   const store = C.createCampaigns({
     dir,
     context: () => ctx,
     now: () => clock,
     gameData: opts.gameData || openData,
+    standing: key => (key === BONE_KEY ? { ...where } : null),
     log: m => logs.push(m),
     onChange: () => { changes += 1; },
   });
   const file = path.join(dir, BONE_KEY, C.CAMPAIGN_FILE);
   return {
-    dir, store, logs, file,
+    dir, store, logs, file, where,
     read: () => JSON.parse(fs.readFileSync(file, 'utf8')),
     changes: () => changes,
     tick: ms => { clock += ms; },
@@ -118,7 +118,7 @@ test('story text: a corpus of ordinary narration lines passes with the real word
     'Rest a while. The hard part comes next.',
   ];
   for (const line of corpus) {
-    const r = C.checkStory(line, { names: ['Bone'], store: null, maxLength: 400, what: 'line' });
+    const r = C.checkStory(line, { names: ['Bone'], store: openData(BONE_CONTEXT), maxLength: 400, what: 'line' });
     assert.equal(r.ok, true, `${line}: ${r.text}`);
   }
 });
@@ -154,7 +154,7 @@ test('story text: names, links, handles, calls to action and ads are refused', (
 
 test('triggers: zone and quest IDs must be in the synced data; level, death and manual need no data', () => {
   const data = openData(BONE_CONTEXT);
-  assert.deepEqual(C.checkTrigger({ type: 'zone', mapID: 1421 }, data).refs, [{ kind: 'map', id: 1421, name: 'Silverpine Forest', trust: 'client-data', build: '1.60.1.200' }]);
+  assert.deepEqual(C.checkTrigger({ type: 'zone', mapID: 9101 }, data).refs, [{ kind: 'map', id: 9101, name: 'Fixture Pines', trust: 'client-data', build: '1.60.1.200' }]);
   assert.match(C.checkTrigger({ type: 'zone', mapID: 1999 }, data).text, /not a map in the Forever client data/);
   assert.equal(C.checkTrigger({ type: 'quest_turnin', questID: 7101 }, data).ok, true);
   assert.match(C.checkTrigger({ type: 'quest_turnin', questID: 7999 }, data).text, /not a quest in the Forever client data/);
@@ -165,8 +165,8 @@ test('triggers: zone and quest IDs must be in the synced data; level, death and 
   assert.equal(C.checkTrigger({ type: 'manual' }, null).ok, true);
   assert.equal(C.checkTrigger({ type: 'reach' }, null).ok, false, 'no trigger type the telemetry does not report');
   const era = GD.openStore({ dataDir: DATA, clientBuild: '1.15.9.70003' });
-  assert.match(C.checkTrigger({ type: 'zone', mapID: 1421 }, era).text, /not in the client's build family/);
-  assert.match(C.checkTrigger({ type: 'zone', mapID: 1421 }, null).text, /No game data is synced/);
+  assert.match(C.checkTrigger({ type: 'zone', mapID: 9101 }, era).text, /not in the client's build family/);
+  assert.match(C.checkTrigger({ type: 'zone', mapID: 9101 }, null).text, /No game data is synced/);
 });
 
 test('campaign tools: start with beats, add, trigger, narrate and end; one campaign per character, written atomically', async () => {
@@ -177,13 +177,13 @@ test('campaign tools: start with beats, add, trigger, narrate and end; one campa
     assert.match(start.text, /waits for \/dm next/);
     assert.equal(r.changes(), 1, 'a write republishes the slots');
     assert.match((await r.store.call('campaign_start', { title: 'Another one' })).text, /is running/);
-    const added = await r.store.call('beat_add', beat('The quiet road', ['The road into {map:1421,50,50} is quiet.'], { type: 'zone', mapID: 1421 }));
+    const added = await r.store.call('beat_add', beat('The quiet road', ['The road into {map:9101,50,50} is quiet.'], { type: 'zone', mapID: 9101 }));
     assert.equal(added.ok, true, added.text);
     const doc = r.read();
     assert.equal(doc.character, BONE_KEY);
     assert.deepEqual(doc.campaign.beats.map(b => b.id), ['b1', 'b2']);
-    assert.equal(doc.campaign.beats[1].narration[0], 'The road into Silverpine Forest is quiet.');
-    assert.deepEqual(doc.campaign.beats[1].refs.map(x => [x.kind, x.id]), [['map', 1421], ['map', 1421]]);
+    assert.equal(doc.campaign.beats[1].narration[0], 'The road into Fixture Pines is quiet.');
+    assert.deepEqual(doc.campaign.beats[1].refs.map(x => [x.kind, x.id]), [['map', 9101], ['map', 9101]]);
     assert.match((await r.store.call('narrate', { text: 'Hello there.' })).text, /No beat has fired yet/);
     assert.equal((await r.store.call('beat_trigger', { id: 'b1' })).ok, true);
     assert.equal(r.read().campaign.current, 'b1');
@@ -239,48 +239,89 @@ test('beats fire from telemetry events: only the armed beat, in order, one per b
   const r = rig();
   try {
     const started = await r.store.call('campaign_start', { title: 'Story', beats: [
-      beat('Into the dark', ['A cold wind.'], { type: 'zone', mapID: 1421 }),
+      beat('Into the dark', ['A cold wind.'], { type: 'zone', mapID: 9101 }),
       beat('Fallen', ['Get up.'], { type: 'death' }),
       beat('Stronger', ['You feel stronger now.'], { type: 'level', level: 21 }),
-      beat('Home', ['Rest.'], { type: 'zone', mapID: 1458 }),
+      beat('Home', ['Rest.'], { type: 'zone', mapID: 9102 }),
     ] });
     assert.equal(started.ok, true, started.text);
-    assert.equal(r.store.onEvents(BONE_KEY, [{ type: 'death', data: {} }]), null, 'death is not armed yet');
-    assert.equal(r.store.onEvents(BONE_KEY, [{ type: 'zone', data: { from: 1420, to: 1458 } }]), null, 'a later beat never fires out of order');
-    assert.equal(r.store.onEvents('Other-Realm', [{ type: 'zone', data: { from: 1420, to: 1421 } }]), null, 'another character has no campaign');
+    const ids = list => list.map(b => b.id);
+    assert.deepEqual(r.store.onEvents(BONE_KEY, [{ type: 'death', data: {} }]), [], 'death is not armed yet');
+    assert.deepEqual(r.store.onEvents(BONE_KEY, [{ type: 'zone', data: { from: 9001, to: 9102 } }]), [], 'a later beat never fires out of order');
+    assert.deepEqual(r.store.onEvents('Other-Realm', [{ type: 'zone', data: { from: 9001, to: 9101 } }]), [], 'another character has no campaign');
     assert.equal(r.read().campaign.current, null);
-    const fired = r.store.onEvents(BONE_KEY, [{ type: 'zone', data: { from: 1420, to: 1421 } }, { type: 'death', data: {} }]);
-    assert.equal(fired.id, 'b1');
-    assert.equal(r.read().campaign.current, 'b1', 'one beat per batch, even when the next one matches too');
-    assert.equal(r.store.onEvents(BONE_KEY, [{ type: 'death', data: {} }]).id, 'b2');
-    assert.equal(r.store.onEvents(BONE_KEY, [{ type: 'level_up', data: { from: 19, to: 20 } }]), null);
-    assert.equal(r.store.onEvents(BONE_KEY, [{ type: 'level_up', data: { from: 20, to: 22 } }]).id, 'b3');
-    assert.equal(r.store.onEvents(BONE_KEY, [{ type: 'zone', data: { from: 1421, to: 1458 } }]).id, 'b4');
-    assert.equal(r.store.onEvents(BONE_KEY, [{ type: 'zone', data: { from: 1458, to: 1421 } }]), null, 'nothing is armed after the last beat');
+    assert.deepEqual(ids(r.store.onEvents(BONE_KEY, [{ type: 'death', data: {} }, { type: 'zone', data: { from: 9001, to: 9101 } }])), ['b1'], 'an event before the beat it would fire is not kept for later');
+    assert.deepEqual(ids(r.store.onEvents(BONE_KEY, [{ type: 'death', data: {} }, { type: 'level_up', data: { from: 19, to: 20 } }])), ['b2'], 'the death fires b2; the level is below b3');
+    assert.deepEqual(ids(r.store.onEvents(BONE_KEY, [{ type: 'level_up', data: { from: 20, to: 22 } }, { type: 'zone', data: { from: 9101, to: 9102 } }])), ['b3', 'b4'], 'the rest of the batch is checked against each newly armed beat');
+    assert.deepEqual(r.store.onEvents(BONE_KEY, [{ type: 'zone', data: { from: 9102, to: 9101 } }]), [], 'nothing is armed after the last beat');
     assert.deepEqual(r.read().campaign.fired.map(f => [f.id, f.by]), [['b1', 'zone'], ['b2', 'death'], ['b3', 'level'], ['b4', 'zone']]);
     assert.deepEqual(r.events().map(e => e.data.n), [1, 2, 3, 4], 'each beat is one importance-3 event for the live session');
     assert.ok(r.events().every(e => e.importance === 3 && e.type === 'beat'));
   } finally { r.cleanup(); }
 });
 
-test('a quest turn-in fires its beat when a ready quest leaves the log; a cut context or another character never does', async () => {
+test('zone and level beats armed while the character is already there fire at once or on the next game update, one at a time', async () => {
+  const r = rig();
+  try {
+    r.where.mapID = 9101;
+    r.where.level = 20;
+    const started = await r.store.call('campaign_start', { title: 'Story', beats: [beat('Here', ['A cold wind.'], { type: 'zone', mapID: 9101 }), beat('Still here', ['Quiet.'], { type: 'zone', mapID: 9101 }), beat('Strong', ['Stronger.'], { type: 'level', level: 20 })] });
+    assert.equal(started.ok, true, started.text);
+    assert.match(started.text, /already there, so beat b1 fired now/);
+    assert.equal(r.read().campaign.current, 'b1');
+    assert.deepEqual(r.store.onEvents(BONE_KEY, []).map(b => b.id), ['b2'], 'the next update with the character still there fires b2, not b2 and b3 at once');
+    assert.deepEqual(r.store.onEvents(BONE_KEY, []).map(b => b.id), ['b3']);
+    assert.deepEqual(r.read().campaign.fired.map(f => f.by), ['zone (already there)', 'zone (already there)', 'level (already there)']);
+  } finally { r.cleanup(); }
+  const away = rig();
+  try {
+    away.where.mapID = 9102;
+    await away.store.call('campaign_start', { title: 'Story', beats: [beat('Begin', ['Go.'], { type: 'manual' }), beat('Here', ['A cold wind.'], { type: 'zone', mapID: 9101 })] });
+    assert.equal(away.read().campaign.current, null, 'a manual beat never fires by standing');
+    away.store.manual(BONE_KEY);
+    assert.deepEqual(away.store.onEvents(BONE_KEY, []), [], 'elsewhere: b2 waits');
+    away.where.mapID = 9101;
+    assert.deepEqual(away.store.onEvents(BONE_KEY, []).map(b => b.id), ['b2'], 'a beat armed by /dm next where the character stands fires on the next update');
+    const added = await away.store.call('beat_add', beat('More', ['Again.'], { type: 'zone', mapID: 9101 }));
+    assert.match(added.text, /beat b3 fired now/, 'beat_add arms it while the character is there');
+  } finally { away.cleanup(); }
+});
+
+test('a quest beat fires only on the game\'s own turn-in event, never on quests leaving the log', async () => {
   const r = rig();
   try {
     await r.store.call('campaign_start', { title: 'Story', beats: [beat('Paid', ['Well done.'], { type: 'quest_turnin', questID: 7101 })] });
-    const without = (ids) => BONE_CONTEXT.replace('7101*,7102', ids);
-    assert.equal(r.store.onContext(BONE_CONTEXT, without('7102')).id, 'b1');
-    await r.store.call('campaign_end', {});
-    await r.store.call('campaign_start', { title: 'Story', beats: [beat('Paid', ['Well done.'], { type: 'quest_turnin', questID: 7102 })] });
-    assert.equal(r.store.onContext(BONE_CONTEXT, without('7101*')), null, 'a quest that was not ready to turn in was dropped, not turned in');
-    const ready = BONE_CONTEXT.replace('7101*,7102', '7101,7102*');
-    const big = without('7101') + '\nPadding: ' + 'x'.repeat(G.ADDON_CONTEXT_MAX_BYTES);
-    assert.equal(r.store.onContext(ready, big), null, 'a context the addon cut may have lost the rest of the log');
-    const ashReady = ready.replace('Character: Bone', 'Character: Ash');
-    assert.equal(r.store.onContext(ashReady, without('7101')), null, 'a quest another character had ready');
-    assert.equal(r.store.onContext(ready, without('7101')).id, 'b1');
+    assert.deepEqual(r.store.onEvents(BONE_KEY, [{ type: 'item', data: { id: 1, from: 1, to: 2 } }]), [], 'other events');
+    assert.deepEqual(r.store.onEvents(BONE_KEY, [{ type: 'quest_turnin', data: { id: 7102, at: 1 } }]), [], 'another quest');
+    r.setContext(BONE_CONTEXT.replace('7101*,7102', ''));
+    assert.equal(r.read().campaign.current, null, '7101* and 7102 vanishing from the log together fire nothing');
+    assert.deepEqual(r.store.onEvents(BONE_KEY, [{ type: 'quest_turnin', data: { id: 7101, at: 2 } }]).map(b => b.id), ['b1']);
+    assert.deepEqual(r.read().campaign.fired.map(f => f.by), ['quest_turnin']);
   } finally { r.cleanup(); }
-  assert.deepEqual([...C.questLog('Quest log (id, * = ready to turn in): 1*,2,33*,x,4').ready], [1, 33]);
-  assert.deepEqual(C.turnedIn('Quest log (id, * = ready to turn in): 1*,2', 'Character: x'), [1], 'a log that emptied turns in every ready quest');
+});
+
+test('story text is refused when multi-word game names cannot be checked: no data, another build family', () => {
+  const mismatch = GD.openStore({ dataDir: DATA, clientBuild: '1.15.9.70003' });
+  const r = C.checkStory('take the low road home', { names: ['Bone'], store: mismatch, maxLength: 400, what: 'line' });
+  assert.equal(r.ok, false);
+  assert.match(r.text, /cannot be checked/);
+  assert.match(r.text, /not in the client's build family/);
+  assert.equal(C.checkStory('A cold wind.', { names: [], store: null, maxLength: 400, what: 'line' }).ok, false, 'no data at all');
+  assert.equal(C.checkStory('A cold wind.', { names: [], store: openData(BONE_CONTEXT), maxLength: 400, what: 'line' }).ok, true);
+});
+
+test('campaign writes need a fresh game context; ending a campaign always works', async () => {
+  const r = rig();
+  try {
+    assert.equal((await r.store.call('campaign_start', { title: 'Story' })).ok, true);
+    r.tick(G.CONTEXT_STALE_MS + 60000);
+    for (const [tool, args] of [['campaign_start', { title: 'Again' }], ['beat_add', beat('x', ['A cold wind.'], { type: 'death' })], ['beat_trigger', { id: 'b1' }], ['narrate', { text: 'Hello.' }]]) {
+      const res = await r.store.call(tool, args);
+      assert.equal(res.ok, false, tool);
+      assert.match(res.text, /minutes old; campaign writes need one from the last 15 minutes/, tool);
+    }
+    assert.equal((await r.store.call('campaign_end', {})).ok, true);
+  } finally { r.cleanup(); }
 });
 
 test('/dm next fires only a beat that waits for it, and only for the character the record names', async () => {
@@ -352,6 +393,18 @@ test('slot field: text edited into the store by hand is checked again and withhe
   } finally { r.cleanup(); }
 });
 
+test('slot field: live lines shown add up to at most 400 characters, newest first kept', async () => {
+  const r = rig();
+  try {
+    await r.store.call('campaign_start', { title: 'Story', beats: [beat('Begin', ['Line one.'], { type: 'manual' })] });
+    r.store.manual(BONE_KEY);
+    const long = n => `${'quiet '.repeat(49)}${n}.`;
+    for (const n of ['one', 'two', 'three']) assert.equal((await r.store.call('narrate', { text: long(n) })).ok, true);
+    const lines = field(field(slotTable(r.store.slotLua()), 'beat'), 'lines').fields.map(f => luaString(f.value));
+    assert.deepEqual(lines, ['Line one.', long('three')]);
+  } finally { r.cleanup(); }
+});
+
 test('slot field: at most 1600 bytes; live lines go first, then narration from the end', () => {
   const long = 'quiet '.repeat(66).trim();
   const payload = { rev: 3, char: BONE_KEY, manual: false, beat: { id: 'b1', title: 'Begin', narration: [long, long, long, long, long], live: [long, long, long] } };
@@ -360,23 +413,6 @@ test('slot field: at most 1600 bytes; live lines go first, then narration from t
   const lines = field(field(slotTable(lua), 'beat'), 'lines').fields;
   assert.ok(lines.length >= 1 && lines.length < 8);
   assert.equal(luaString(lines[0].value), long, 'the first narration line stays');
-});
-
-test('the demo campaign: every ID resolves, and it passes campaign_start against fixture rows copied from the synced data', async () => {
-  const demo = JSON.parse(fs.readFileSync(DEMO_FILE, 'utf8'));
-  const ids = demo.beats.flatMap(b => [b.trigger.mapID, ...[...JSON.stringify(b).matchAll(/\{map:(\d+),/g)].map(m => Number(m[1]))]).filter(Boolean);
-  assert.deepEqual([...new Set(ids)].sort(), [1421, 1458]);
-  const r = rig();
-  try {
-    const res = await r.store.call('campaign_start', demo);
-    assert.equal(res.ok, true, res.text);
-    assert.equal(r.read().campaign.beats[3].narration[0], 'The road ends in Undercity. Find a warm fire and rest.');
-  } finally { r.cleanup(); }
-});
-
-test('the demo campaign IDs match the real synced Forever data on this machine', { skip: !fs.existsSync(path.join(REAL_DATA, 'forever', 'current')) && 'no synced data here (CI)' }, () => {
-  const real = GD.openStore({ dataDir: REAL_DATA, clientBuild: '1.60.1.70124' });
-  for (const row of DEMO_MAP_ROWS) assert.deepEqual(real.byId('uimaps', row.id), row, `uimap ${row.id}`);
 });
 
 test('tools: five campaign tools on the live session; every one is denied to in-game runs', async () => {

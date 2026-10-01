@@ -13,6 +13,7 @@ const CAMPAIGN_FILE = 'campaign.json';
 const BEATS_MAX = 12;
 const NARRATION_LINES_MAX = 5;
 const LIVE_LINES_MAX = 3;
+const LIVE_TEXT_MAX = 400;
 const NARRATION_MAX = 400;
 const TITLE_MAX = 60;
 const LEVEL_LIMIT = 100;
@@ -22,8 +23,6 @@ const BEAT_EVENT = 'beat';
 const BEAT_IMPORTANCE = 3;
 const MANUAL_KIND = 'dm';
 const MANUAL_TEXT = 'next';
-const QUEST_LINE_RE = /^Quest log \(id, \* = ready to turn in\):\s*(.*)$/m;
-const QUEST_ENTRY_RE = /^(\d{1,9})(\*?)$/;
 const NARRATE_CHAR_RE = /^[A-Za-z0-9 ,.'\-:!?%]$/;
 const NARRATE_CHARS_TEXT = "letters A-Z, digits, spaces and , . ' - : ! ? %";
 const AD_WORDS = Object.freeze(['tip', 'tips', 'donated', 'donation', 'discount', 'click', 'stream', 'viewers', 'chat', 'bits']);
@@ -31,7 +30,7 @@ const NARRATE_WORDS = Object.freeze(new Set([...ROAST_WORDS].filter(w => !AD_WOR
 
 const TRIGGER = Object.freeze({ zone: 'zone', questTurnIn: 'quest_turnin', level: 'level', death: 'death', manual: 'manual' });
 const TRIGGER_TYPES = Object.freeze(Object.values(TRIGGER));
-const TRIGGER_WORDS = Object.freeze({ zone: 'entering a map', quest_turnin: 'a quest turn-in', level: 'a level', death: 'a death', manual: '/dm next' });
+const TRIGGER_WORDS = Object.freeze({ zone: 'being on a map', quest_turnin: 'a quest turn-in', level: 'a level', death: 'a death', manual: '/dm next' });
 
 const TOOL = Object.freeze({ start: 'campaign_start', end: 'campaign_end', add: 'beat_add', trigger: 'beat_trigger', narrate: 'narrate' });
 const TOOL_NAMES = Object.freeze(Object.values(TOOL));
@@ -66,7 +65,16 @@ function refusalText(r, what, names) {
 function checkStory(text, { names, store, maxLength, what }) {
   const r = GR.checkText(text, { store, names, plainWords: NARRATE_WORDS, charRe: NARRATE_CHAR_RE, maxLength });
   if (!r.ok) return fail(refusalText(r, what, names));
+  if (r.phrasesNote) return fail(`${what} was not saved: multi-word game names cannot be checked. ${r.phrasesNote}`);
   return { ok: true, text: r.text, refs: GR.refSummary(r.refs) };
+}
+
+function staleContextText(snap, nowMs, tool) {
+  const minutes = G.CONTEXT_STALE_MS / 60000;
+  if (!snap.receivedAt) return `The bridge does not know when the game sent its context. Send any message from the game, then call ${tool} again.`;
+  const age = nowMs - snap.receivedAt;
+  if (age <= G.CONTEXT_STALE_MS) return '';
+  return `The game context is ${Math.floor(age / 60000)} minutes old; campaign writes need one from the last ${minutes} minutes. Wait for the player's next message from the game, then call ${tool} again.`;
 }
 
 function characterNames(snap) {
@@ -153,36 +161,11 @@ function checkBeat(raw, names, data, label) {
   return { ok: true, beat: { title: title.text, trigger: trigger.trigger, narration: shown, refs: [...trigger.refs, ...refs] } };
 }
 
-function questLog(text) {
-  const m = QUEST_LINE_RE.exec(String(text || ''));
-  if (!m) return { ids: new Set(), ready: new Set() };
-  const ids = new Set();
-  const ready = new Set();
-  for (const part of m[1].split(',')) {
-    const e = QUEST_ENTRY_RE.exec(part.trim());
-    if (!e) continue;
-    ids.add(Number(e[1]));
-    if (e[2]) ready.add(Number(e[1]));
-  }
-  return { ids, ready };
-}
-
-function contextCut(text) {
-  return Buffer.byteLength(String(text || ''), 'utf8') >= G.ADDON_CONTEXT_MAX_BYTES;
-}
-
-function turnedIn(prevText, nextText) {
-  if (contextCut(nextText)) return [];
-  const before = questLog(prevText);
-  const after = questLog(nextText);
-  return [...before.ready].filter(id => !after.ids.has(id));
-}
-
 function matches(trigger, happening) {
   if (!trigger || trigger.type !== happening.type) return false;
   if (trigger.type === TRIGGER.zone) return happening.mapID === trigger.mapID;
   if (trigger.type === TRIGGER.level) return happening.level >= trigger.level;
-  if (trigger.type === TRIGGER.questTurnIn) return happening.questIDs.includes(trigger.questID);
+  if (trigger.type === TRIGGER.questTurnIn) return happening.questID === trigger.questID;
   return true;
 }
 
@@ -193,7 +176,16 @@ function happeningsFrom(events) {
     if (e.type === 'zone' && Number.isInteger(d.to)) out.push({ type: TRIGGER.zone, mapID: d.to });
     else if (e.type === 'level_up' && Number.isInteger(d.to)) out.push({ type: TRIGGER.level, level: d.to });
     else if (e.type === 'death') out.push({ type: TRIGGER.death });
+    else if (e.type === 'quest_turnin' && Number.isInteger(d.id)) out.push({ type: TRIGGER.questTurnIn, questID: d.id });
   }
+  return out;
+}
+
+function standingHappenings(standing) {
+  const s = standing && typeof standing === 'object' ? standing : {};
+  const out = [];
+  if (Number.isInteger(s.mapID)) out.push({ type: TRIGGER.zone, mapID: s.mapID });
+  if (Number.isInteger(s.level)) out.push({ type: TRIGGER.level, level: s.level });
   return out;
 }
 
@@ -233,8 +225,15 @@ function slotPayload(doc, snap) {
   const title = recheck(beat.title, names, TITLE_MAX);
   if (!title) return { ...out, withheld: `beat ${beat.id} is not shown: its title fails the story text check` };
   const narration = (beat.narration || []).map(l => recheck(l, names, NARRATION_MAX)).filter(Boolean);
-  const live = (Array.isArray(c.live) ? c.live : []).map(l => recheck(l.text, characterNames(snap).concat(l.names || []), NARRATION_MAX)).filter(Boolean);
-  const dropped = (beat.narration || []).length + (c.live || []).length - narration.length - live.length;
+  const checkedLive = (Array.isArray(c.live) ? c.live : []).map(l => recheck(l && l.text, characterNames(snap).concat((l && l.names) || []), NARRATION_MAX)).filter(Boolean);
+  const dropped = (beat.narration || []).length + (c.live || []).length - narration.length - checkedLive.length;
+  const live = [];
+  let liveChars = 0;
+  for (const line of [...checkedLive].reverse()) {
+    if (liveChars + line.length > LIVE_TEXT_MAX) break;
+    live.unshift(line);
+    liveChars += line.length;
+  }
   return { ...out, beat: { id: String(beat.id), title, narration, live }, ...(dropped ? { withheld: `${dropped} line(s) of beat ${beat.id} failed the story text check` } : {}) };
 }
 
@@ -251,7 +250,7 @@ function luaDm(payload, nowSec) {
     else narration.pop();
     lua = render();
   }
-  return Buffer.byteLength(lua, 'utf8') <= SLOT_LUA_MAX_BYTES ? lua : `\tdm = { ${head} },`;
+  return lua;
 }
 
 function campaignView(doc) {
@@ -278,6 +277,7 @@ function createCampaigns(opts) {
   const log = opts.log || (() => {});
   const gameData = opts.gameData || (() => null);
   const onChange = opts.onChange || (() => {});
+  const standing = opts.standing || (() => null);
   let cached = { file: '', stamp: '', doc: null };
   let lastSlotProblem = '';
 
@@ -311,48 +311,56 @@ function createCampaigns(opts) {
     }
   }
 
-  function fireArmed(character, happening, by) {
+  function standingOf(character) {
+    try { return standing(character) || null; } catch (e) {
+      log(`campaign: cannot read where ${character} stands (${e.message})`);
+      return null;
+    }
+  }
+
+  function fireMatching(c, happenings, stamp, limit) {
+    const fired = [];
+    for (const h of happenings) {
+      const armed = armedBeat(c);
+      if (!armed || fired.length >= limit) break;
+      if (!matches(armed.trigger, h)) continue;
+      const index = c.beats.indexOf(armed);
+      fire(c, index, h.by || h.type, stamp);
+      fired.push(index);
+    }
+    return fired;
+  }
+
+  function fireFrom(character, edges, { standingToo }) {
     const file = storeFile(root, character);
     let doc;
     try { doc = readStore(file, character); } catch (e) {
       log(`campaign: ${e.message}`);
-      return null;
+      return [];
     }
     const c = doc.campaign;
-    const armed = armedBeat(c);
-    if (!armed || !matches(armed.trigger, happening)) return null;
-    const index = c.beats.indexOf(armed);
-    fire(c, index, by, now());
-    try { save(file, doc, `beat ${armed.id} fired by ${by}`, character); } catch (e) {
+    if (!armedBeat(c)) return [];
+    const stamp = now();
+    let fired = fireMatching(c, edges, stamp, Infinity);
+    if (!fired.length && standingToo) fired = fireMatching(c, standingHappenings(standingOf(character)).map(h => ({ ...h, by: `${h.type} (already there)` })), stamp, 1);
+    if (!fired.length) return [];
+    try { save(file, doc, `beat ${fired.map(i => c.beats[i].id).join(', ')} fired`, character); } catch (e) {
       log(`campaign: could not save ${file} (${e.message})`);
-      return null;
+      return [];
     }
-    noteBeatEvent(character, c, index);
-    return armed;
+    for (const index of fired) noteBeatEvent(character, c, index);
+    return fired.map(i => c.beats[i]);
   }
 
   function onEvents(character, events) {
-    if (!TL.CHARACTER_KEY_RE.test(String(character || ''))) return null;
-    for (const h of happeningsFrom(events)) {
-      const fired = fireArmed(character, h, h.type);
-      if (fired) return fired;
-    }
-    return null;
-  }
-
-  function onContext(prevText, nextText) {
-    const before = G.characterOf(prevText);
-    const after = G.characterOf(nextText);
-    if (!before || !after || before.key !== after.key) return null;
-    const questIDs = turnedIn(prevText, nextText);
-    if (!questIDs.length) return null;
-    return fireArmed(after.key, { type: TRIGGER.questTurnIn, questIDs }, TRIGGER.questTurnIn);
+    if (!TL.CHARACTER_KEY_RE.test(String(character || ''))) return [];
+    return fireFrom(character, happeningsFrom(events), { standingToo: true });
   }
 
   function manual(character) {
     if (!TL.CHARACTER_KEY_RE.test(String(character || ''))) return 'the record names no character';
-    const fired = fireArmed(character, { type: TRIGGER.manual }, TRIGGER.manual);
-    return fired ? `beat ${fired.id} fired` : 'the next beat does not wait for /dm next; nothing fired';
+    const fired = fireFrom(character, [{ type: TRIGGER.manual }], { standingToo: false });
+    return fired.length ? `beat ${fired[0].id} fired` : 'the next beat does not wait for /dm next; nothing fired';
   }
 
   function startCampaign(doc, args, snap, data, stamp) {
@@ -412,6 +420,10 @@ function createCampaigns(opts) {
     let doc;
     try { doc = readStore(file, key); } catch (e) { return fail(e.message); }
     const stamp = now();
+    if (tool !== TOOL.end) {
+      const stale = staleContextText(snap, stamp, tool);
+      if (stale) return fail(stale);
+    }
     const data = dataOnce(snap);
     let change;
     if (tool === TOOL.start) change = startCampaign(doc, args, snap, data, stamp);
@@ -426,7 +438,15 @@ function createCampaigns(opts) {
     if (!change.ok) return change;
     try { save(file, doc, tool, key); } catch (e) { return fail(`Could not save ${file}: ${e.message}`); }
     if (change.fired !== undefined) noteBeatEvent(key, doc.campaign, change.fired);
-    return done(`${change.text}\n${JSON.stringify(campaignView(doc))}`);
+    let text = change.text;
+    if (tool === TOOL.start || tool === TOOL.add) {
+      const already = fireFrom(key, [], { standingToo: true });
+      if (already.length) {
+        text += ` The character is already there, so beat ${already[0].id} fired now.`;
+        try { doc = readStore(file, key); } catch {}
+      }
+    }
+    return done(`${text}\n${JSON.stringify(campaignView(doc))}`);
   }
 
   function storedDoc(file, key) {
@@ -459,14 +479,15 @@ function createCampaigns(opts) {
     return luaDm(payload, nowSec);
   }
 
-  return { call, slotLua, onEvents, onContext, manual, file: key => storeFile(root, key) };
+  return { call, slotLua, onEvents, manual, file: key => storeFile(root, key) };
 }
 
-function createBridgeCampaigns({ home, context, onChange, log = () => {} }) {
+function createBridgeCampaigns({ home, context, onChange, standing, log = () => {} }) {
   return createCampaigns({
     dir: home.goals,
     context,
     onChange,
+    standing,
     gameData: contextText => {
       try { return GR.openFor(home.data, contextText); } catch (e) {
         log(`campaign: cannot open the synced game data (${e.message})`);
@@ -484,7 +505,7 @@ function storyRules() {
 function triggerSchema() {
   return {
     type: 'object',
-    description: `When the beat fires. Only the next unfired beat is armed. "zone": the telemetry reports the character on map mapID (a uiMapID in the synced data). "quest_turnin": questID (in the synced data) was ready to turn in and has left the quest log; seen at the next message or hello from the game. "level": the character reaches level. "death": the character dies. "manual": the player types /dm next.`,
+    description: `When the beat fires. Only the next unfired beat is armed. "zone": the character is on map mapID (a uiMapID in the synced data), on entering it or, when the beat is armed while the character is already there, at once or on the next game update. "level": the character is at level or higher, the same way. "quest_turnin": the game reports questID (in the synced data) turned in. "death": the character dies. "manual": the player types /dm next. Several beats can fire from one game update when its events match them in order; two zone beats for the same map fire one game update apart.`,
     properties: {
       type: { type: 'string', enum: TRIGGER_TYPES },
       mapID: { type: 'integer', minimum: 1 },
@@ -540,5 +561,5 @@ function toolSchemas() {
 module.exports = {
   STORE_VERSION, CAMPAIGN_FILE, BEATS_MAX, NARRATION_LINES_MAX, LIVE_LINES_MAX, NARRATION_MAX, TITLE_MAX, SLOT_LUA_MAX_BYTES, FIRED_MAX,
   TRIGGER, TRIGGER_TYPES, TOOL, TOOL_NAMES, WRITE_TOOL_NAMES, MANUAL_KIND, MANUAL_TEXT, AD_WORDS, NARRATE_WORDS, BEAT_EVENT,
-  isDmRecord, checkStory, checkTrigger, questLog, turnedIn, happeningsFrom, slotPayload, luaDm, readStore, storeFile, createCampaigns, createBridgeCampaigns, toolSchemas,
+  isDmRecord, checkStory, checkTrigger, happeningsFrom, standingHappenings, slotPayload, luaDm, readStore, storeFile, createCampaigns, createBridgeCampaigns, toolSchemas,
 };

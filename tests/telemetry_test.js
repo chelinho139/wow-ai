@@ -221,6 +221,12 @@ test('deaths and new recipes are importance 3; skill, gear and reputation change
     assert.deepEqual(r.events.map(e => [e.type, e.importance]).sort(), [['death', 3], ['equip', 1], ['recipe', 3], ['reputation', 2], ['skill', 1]].sort());
     const r2 = t.submit(gsJob('s1', 3, { recipes: '3275@1790000090', factions: '530=5/3100' }));
     assert.deepEqual(r2.events.map(e => [e.type, e.importance]), [['reputation', 1]], 'a known recipe is not new again');
+    t.submit(gsJob('s1', 4, { quests: '' }));
+    const r3 = t.submit(gsJob('s1', 5, { quests: '7101@1790000200' }));
+    assert.deepEqual(r3.events.map(e => [e.type, e.importance, e.data.id]), [['quest_turnin', 3, 7101]]);
+    const r4 = t.submit(gsJob('s1', 6, { quests: '7101@1790000200,7101@1790000900' }));
+    assert.deepEqual(r4.events.map(e => [e.type, e.data.at]), [['quest_turnin', 1790000900]], 'a repeatable quest turned in again is new; the old turn-in is not');
+    assert.equal(TL.parseRecord('gs1\nquests:00000000:1@1,2@2,3@3,4@4,5@5,6@6,7@7,8@8,9@9').errors.length, 1, 'at most 8 turn-ins');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 

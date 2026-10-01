@@ -233,7 +233,7 @@ test('the first record is a telemetry-only shot with every section, stamped with
   assert.equal(vm.num('ClaudeWoWDB.telemetry.seq'), gs.id);
   const r = sectionsOf(gs);
   assert.deepEqual(r.errors, []);
-  assert.deepEqual(Object.keys(r.sections), ['cap', 'level', 'zone', 'money', 'items', 'skills', 'equip', 'factions', 'life', 'recipes']);
+  assert.deepEqual(Object.keys(r.sections), ['cap', 'level', 'zone', 'money', 'items', 'skills', 'equip', 'factions', 'life', 'recipes', 'quests']);
   assert.deepEqual(r.sections.cap.value, { missing: [] });
   assert.deepEqual(r.sections.money.value, { copper: 12345 });
   assert.deepEqual(r.sections.level.value, { level: 23, xp: 1234, xpMax: 5000 });
@@ -270,6 +270,7 @@ test('a telemetry-only shot comes at most once every 2 minutes; level up, death 
     ['level', 'STUB.level = 24; STUB.FireEvent("PLAYER_LEVEL_UP", 24)'],
     ['life', 'STUB.FireEvent("PLAYER_DEAD")'],
     ['recipes', 'STUB.FireEvent("NEW_RECIPE_LEARNED", 3275)'],
+    ['quests', 'STUB.FireEvent("QUEST_TURNED_IN", 7101, 450, 0)'],
   ];
   for (const [section, fire] of urgentCases) {
     vm.run(fire);
@@ -782,4 +783,18 @@ test('the player\'s own screenshot event while a message strip is still being dr
   assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'true', 'the strip is still up');
   frames();
   assert.equal(vm.num('STUB.screenshots'), before + 1, 'and the message is shot');
+});
+
+test('QUEST_TURNED_IN keeps the last 8 turn-ins per character and sends them in the quests section', () => {
+  const vm = ready();
+  shoot(vm);
+  for (let id = 1; id <= 10; id++) vm.run(`STUB.FireEvent("QUEST_TURNED_IN", ${7100 + id}, 0, 0)`);
+  vm.run('STUB.FireEvent("QUEST_TURNED_IN", "junk", 0, 0)');
+  const mine = `ClaudeWoWDB.telemetry.chars["${CHARACTER}"]`;
+  assert.equal(vm.num(`#${mine}.turnedIn`), 8);
+  assert.equal(vm.num(`${mine}.turnedIn[1].id`), 7103);
+  tick(vm, 5);
+  const rec = gsJobs(shoot(vm));
+  assert.equal(rec.length, 1);
+  assert.equal(sectionsOf(rec[0]).sections.quests.value.turnedIn.map(q => q.id).join(','), '7103,7104,7105,7106,7107,7108,7109,7110');
 });

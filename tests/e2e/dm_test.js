@@ -19,7 +19,7 @@ function seedCampaign(home) {
     v: C.STORE_VERSION, rev: 1, character: CHARACTER,
     campaign: {
       id: 'c_1', title: 'A letter with no name', startedAt: 1, next: 0, current: null, live: [], fired: [], refs: [],
-      beats: [beat('b1', 'A story begins', ['Someone left a letter in your pack.', 'Nobody saw who.'], { type: 'manual' }), beat('b2', 'The quiet road', ['The road is quiet.'], { type: 'zone', mapID: 1421 })],
+      beats: [beat('b1', 'A story begins', ['Someone left a letter in your pack.', 'Nobody saw who.'], { type: 'manual' }), beat('b2', 'The quiet road', ['The road is quiet.'], { type: 'zone', mapID: 9101 })],
     },
   }));
   return file;
@@ -48,7 +48,7 @@ test('/dm next from the real addon fires the waiting beat in the bridge, runs no
     assert.match(h.client.prints().join('\n'), /starts on its own/, 'the zone beat does not wait for /dm next');
 
     const zoneMark = h.bridge.output.length;
-    h.client.runLua('C_Map.GetBestMapForUnit = function() return 1421 end; STUB.FireEvent("ZONE_CHANGED_NEW_AREA")');
+    h.client.runLua('C_Map.GetBestMapForUnit = function() return 9101 end; STUB.FireEvent("ZONE_CHANGED_NEW_AREA")');
     await h.client.say('where am I');
     await h.bridge.waitForLine(/campaign: beat b2 fired by zone for Testchar-TestRealm/, { from: zoneMark, timeoutMs: 45000 });
     await h.client.say('and now');
