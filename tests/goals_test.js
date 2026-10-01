@@ -568,7 +568,7 @@ test('order_issue is refused when the game context is older than 15 minutes; cle
 
 test('context cut by the addon at 900 bytes: the last Professions entry is dropped, so a cut rank never counts', async () => {
   const src = fs.readFileSync(ADDON, 'utf8');
-  assert.equal(Number((/^local CONTEXT_MAX = (\d+)/m.exec(src) || [])[1]), G.ADDON_CONTEXT_MAX_BYTES, 'mirrors CONTEXT_MAX in ClaudeWoW.lua');
+  assert.equal(Number((/^local CTX = \{ MAX = (\d+)/m.exec(src) || [])[1]), G.ADDON_CONTEXT_MAX_BYTES, 'mirrors CTX.MAX in ClaudeWoW.lua');
   const head = 'Character: Bone on Forever, level 20 Orc Rogue (Horde)\n';
   const tail = 'Professions: Leatherworking 107/150, Skinning 18';
   const cut = head + 'Money: 1g'.padEnd(G.ADDON_CONTEXT_MAX_BYTES - head.length - tail.length - 1, '.') + '\n' + tail;
