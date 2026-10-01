@@ -34,6 +34,7 @@ Codex also checks `CODEX_BIN` before searching `PATH`, so a newer launcher can o
 
 - **Install:** [claude.com/claude-code](https://claude.com/claude-code). Run `claude` once and log in. `claude --version` must work in a terminal.
 - **Command line:** `claude -p --output-format stream-json --verbose --permission-mode <mode> --allowedTools <rules…> [--model <m>] [--resume <session>] [--append-system-prompt <context>]`, prompt on stdin. The `CLAUDECODE` variable is removed from the environment so a bridge started from inside a Claude Code session can still launch it.
+- **Game data (`ask` runs):** when game data is synced, an `ask` run also gets `--mcp-config` with the read-only `wowdata` server (the bridge's own command, `alwaysLoad: true`) and `mcp__wowdata` added to `--allowedTools` for that run only. See [CONFIGURATION.md](CONFIGURATION.md#the-wowdata-server). The other agents do not get it yet.
 - **Permissions:** `permissionMode` and `allowedTools` are Claude's own concepts, passed as they are. Denied tools come back in the result as `permission_denials`; the bridge turns them into rules (`Bash(cargo:*)`, `WebSearch`) for the **Allow & retry** button.
 - **Session:** the `session_id` on the stream; `--resume` on later runs. Claude keeps sessions per folder.
 - **Progress:** one line per `tool_use` block (`edit player.gd`, `$ npm test`, `search: …`) and each text block as a snippet.

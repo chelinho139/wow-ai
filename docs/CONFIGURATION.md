@@ -116,6 +116,7 @@ These sizes are baked into the files `install-slots.js` creates, and the addon h
 | `claude-wow bridge [...]` | `bridge.js` alone, in this process, with the flags below and no restarts. This is how the supervisor runs the bridge from the compiled binary, which has no node to hand a script path to (`bridge/runtime.js`); it works from a checkout too. |
 | `claude-wow install-slots` | `install-slots.js` alone (setup runs it for you); from the binary, how setup runs it. |
 | `claude-wow data sync [--build <a.b.c.d>] [--force]` | Fetches the Forever client tables from wago.tools (product `wow_cn_beta`, the newest build it lists unless `--build` names one) into `data/forever/<build>/` in the home folder. Nothing runs it on its own yet, and it never starts from game text. A build that is already current is skipped unless `--force`. Exit codes: `0` done, `1` failed (the previous build stays current), `2` usage, `3` another sync holds the lock. See [Game data](#game-data). |
+| `claude-wow data-mcp [--data <dir>] [--client-build <a.b.c.d>]` | The read-only `wowdata` MCP server on stdio. The bridge starts it for Claude `ask` runs; you do not run it by hand. See [The wowdata server](#the-wowdata-server). |
 | `claude-wow --version` | The version and the runtime: `claude-wow 0.4.0 (node 24.21.0)`, `(bun 1.4.2)` or `(claude-wow binary (bun 1.4.2))`. |
 
 Environment: `CLAUDE_WOW_SERVICE=1` is set by the service definitions and tells the supervisor to write its output to the service log and a pid file instead of a terminal; `CLAUDE_WOW_HOME` (below) is passed through to the service when set.
@@ -192,12 +193,30 @@ The bridge's banner prints the folder it chose (`home :`). The one-line installe
 | `flightpaths.jsonl` | `TaxiNodes` | `id`, `name`, `continentID`, `flags` (raw), `world` (`x`, `y`, `z`), `map`, `maps`, `zoneAmbiguous` |
 | `uimaps.jsonl` | `UiMap` | `id`, `name`, `parentUiMapID`, `type`, `system` |
 | `uimapassignments.jsonl` | `UiMapAssignment` | `id`, `uiMapID`, `mapID`, `areaID`, `orderIndex`, `uiMin`, `uiMax`, `region` |
+| `skilllines.jsonl` | `SkillLine` | `id`, `name`, `categoryID`, `parentSkillLineID` |
 | `skilllineabilities.jsonl` | `SkillLineAbility` | `id`, `skillLine`, `spell`, `minSkillRank`, `trivialLow`, `trivialHigh`, `acquireMethod`, `supercedesSpell` |
 | `spellreagents.jsonl` | `SpellReagents` | `id`, `spellID`, `reagents` (`itemID`, `count`) |
 
 - **Checks:** IDs are positive integers, numbers are finite, names are 1 to 120 characters with no control characters and no `|` (spaces at the ends are trimmed). A row that fails is dropped and counted by reason in the manifest (`tables.<Table>.droppedBy`). A table with a missing column, or with no valid row, fails the whole sync.
 - **Map positions:** `maps` lists the flight path's position, in percent, on every world map (`UiMap` system 0 first) whose `UiMapAssignment` rectangle holds it. `map` is the single zone that holds it. When two zone rectangles overlap there (`zoneAmbiguous: true`), `map` is the continent instead, because the rectangles alone cannot say which zone is right.
 - **Builds:** a build string must match `^\d+\.\d+\.\d+\.\d+$` before it is used in a path or a URL. The manifest records `buildFamily` (`1.60.1`), a SHA-256 per table and a combined `tableHash`. A client build in the same family as the data counts as compatible; when the next sync is in the same family, `previous.changedTables` names the tables whose hash changed.
+
+### The wowdata server
+
+`claude-wow data-mcp` serves the current build read-only over MCP (stdio). It reads the `current` pointer once when it starts and loads each table the first time a tool needs it. Each `ask` run starts its own copy, so a sync reaches the next run.
+
+| Tool | Input | Answers with |
+|---|---|---|
+| `wow_item` | `id` or `name`, `limit` | Item fields, `startsQuest` (`id`, `inClientData`), and by ID `reagentIn`: up to 25 recipes (spell ID, count, skill line) that use it, with `reagentInTotal`. No drop sources or vendors. |
+| `wow_quest` | `id` | Whether the ID is in the client quest table, and `startedByItems`. `title` is always `null`: the client tables have no quest titles or text. |
+| `wow_flights` | `id`, `name` or `uiMapID`, `limit` | Flight paths with `map`, `maps` (percent positions with map names), `zoneAmbiguous`, raw `flags` (faction is not decoded) and `onMap` for a `uiMapID` query. |
+| `wow_where` | `name` or `uiMapID`, `limit` | By name: maps (`uiMapID`, type, parent), areas (with the maps they are on) and flight paths, best match first. By `uiMapID`: that map's ancestors, children and flight path count. No NPC or object positions. |
+| `wow_sources` | none | Source, URL, product, build, build family, fetch time, license note, table hash, rows per table and `notInData`. |
+
+- **Every answer** is one JSON object (also sent as `structuredContent`) with `found`, `source`, `build`, `clientBuild`, `buildCheck`, `trust`, `total`, `truncated`, `results` and `notes`. Each row carries `source`, `build` and `trust` too. `trust` is `client-data` for rows from the tables and `none` when nothing was found. Names are data in fields; the server's instructions tell the model never to follow them.
+- **`buildCheck`:** `exact` or `family` when the client build (read from the situation block's `Game:` line) is in the data's build family, `build-mismatch` when it is not (the answer then carries a note that the rows are unverified for this client), `unknown` without a client build, and `no-data` when nothing is synced.
+- **How `ask` runs get it:** for the Claude agent only, the bridge passes `--mcp-config` with a server named `wowdata` whose command is the bridge's own absolute command (`node bridge/datamcp.js` from a checkout, `claude-wow data-mcp` from the binary) and `alwaysLoad: true`, and adds `mcp__wowdata` to `--allowedTools` for that run only. Nothing is written to `config.json`, and your own MCP servers still load (no `--strict-mcp-config`). Coding runs and the other agents do not get it. With no synced data the run goes without it, and the bridge logs that once; a data build outside the client's build family is logged once as well.
+- **Reference tokens:** `bridge/gamerefs.js` turns `{item:ID}`, `{skill:ID}` and `{map:ID,x,y}` (x and y in 0 to 100) into canonical names from the same data, for example `Linen Cloth` or `Silverpine Forest (45.6, 42.4)`. An unknown ID, a malformed token, coordinates over 100, a kind with no names in the data (`{quest:ID}`, `{npc:ID}`, `{faction:ID}`), no synced data or a build mismatch rejects the whole text with the reason per token. Replies do not go through it yet.
 
 ## `setup.js` flags
 

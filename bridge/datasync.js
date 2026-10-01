@@ -267,6 +267,14 @@ const TABLES = Object.freeze([
     },
   },
   {
+    table: 'SkillLine',
+    entity: 'skilllines',
+    columns: ['ID', 'DisplayName_lang', 'CategoryID', 'ParentSkillLineID'],
+    convert(row) {
+      return { id: idOf(row), name: nameOf(row, 'DisplayName_lang'), categoryID: intOf(row, 'CategoryID'), parentSkillLineID: intOf(row, 'ParentSkillLineID') };
+    },
+  },
+  {
     table: 'SkillLineAbility',
     entity: 'skilllineabilities',
     columns: ['ID', 'SkillLine', 'Spell', 'MinSkillLineRank', 'TrivialSkillLineRankLow', 'TrivialSkillLineRankHigh', 'AcquireMethod', 'SupercedesSpell'],

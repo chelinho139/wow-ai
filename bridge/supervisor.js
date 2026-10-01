@@ -41,8 +41,10 @@ if (argv[0] === '--version' || argv[0] === '-v') {
   require('./install-slots');
 } else if (argv[0] === 'data') {
   require('./datasync').main(argv.slice(1)).then((code) => { process.exitCode = code; });
+} else if (argv[0] === 'data-mcp') {
+  require('./datamcp').main(argv.slice(1));
 } else {
-  if (argv.includes('--help') || argv.includes('-h')) console.log('claude-wow setup [...]   game-side install (setup.js)\nclaude-wow service <cmd> background service (install, uninstall, start, stop, restart, status, logs)\nclaude-wow bridge [...]  the bridge alone in this process, without the restarts\nclaude-wow channel      the live-session channel server Claude Code starts (docs/LIVE-SESSION.md)\nclaude-wow data sync    fetch the Forever client tables from wago.tools into the home folder\n');
+  if (argv.includes('--help') || argv.includes('-h')) console.log('claude-wow setup [...]   game-side install (setup.js)\nclaude-wow service <cmd> background service (install, uninstall, start, stop, restart, status, logs)\nclaude-wow bridge [...]  the bridge alone in this process, without the restarts\nclaude-wow channel      the live-session channel server Claude Code starts (docs/LIVE-SESSION.md)\nclaude-wow data sync    fetch the Forever client tables from wago.tools into the home folder\nclaude-wow data-mcp     the read-only wowdata MCP server the bridge gives ask runs\n');
   supervise();
 }
 

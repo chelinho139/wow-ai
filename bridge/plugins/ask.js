@@ -49,7 +49,7 @@ const plugin = {
     }
     // The chat's own folder, if it ever had one, is left alone: it is the coding
     // plugin's, and comes back with the chat if it is switched there.
-    core.runAgent(job, { cwd });
+    core.runAgent(job, { cwd, gameData: true });
   },
 };
 

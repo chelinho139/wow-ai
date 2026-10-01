@@ -77,6 +77,16 @@ Data first, router last. Each step must pay off on its own before the next one s
 - **Permissions:** `ask` runs are `claude -p --permission-mode acceptEdits --allowedTools <config>`, and headless runs deny MCP tools that are not listed. The bridge adds `mcp__wowdata` as a run-only rule in code (`P.withRunOnlyRules`), so no user config change is needed. Test it in `tests/agents_test.js`.
 - A client build newer than the cached one is expected. The server labels answers `build-mismatch` and the bridge logs it once. It does not trigger a sync.
 
+### 5.1 Step 3 status (built)
+
+- [x] `claude-wow data-mcp` in `bridge/datamcp.js` (MCP surface), `bridge/gamedata.js` (the store: `current` read once, tables on first use) and `bridge/gamerefs.js` (R1 tokens). Reference: [CONFIGURATION.md, The wowdata server](../CONFIGURATION.md#the-wowdata-server).
+- [x] Adjusted to the data: `wow_quest` takes an ID only and returns `title: null`, because `QuestV2` has no titles. `wow_sources` is provenance (source, build, license, row counts, `notInData`), not drop sources: there is no drop data without QuestieDB. `wow_where` covers maps, areas and flight paths; it says NPC and object positions are not in the data. `uiMapID` is an input of `wow_flights` and `wow_where` only.
+- [x] `SkillLine` added to the sync (154 rows on 1.60.1.70094) so `{skill:ID}` has names.
+- [x] One `buildCheck` per answer: `exact`, `family`, `build-mismatch`, `unknown`, `no-data`. The client build comes from the `Game:` line of the situation block.
+- [x] Wiring: Claude `ask` runs only (`runAgent(job, { gameData: true })`), and only when data is synced. No `--strict-mcp-config` (decision 5). `alwaysLoad` is a real stdio config key in Claude Code 2.1.286.
+- [x] Proof on 2026-09-30: a real sync of 1.60.1.70094 (38,704 rows, 0 dropped), the server over stdio, and one headless `claude -p --model haiku --allowedTools mcp__wowdata --mcp-config …` run that called `wow_flights` with no permission denial and returned The Sepulcher (TaxiNodes 10) at 45.56, 42.42 on uiMap 1421.
+- [ ] Next: route reply text through `gamerefs.expand` (R1), add `{npc:ID}` and `{quest:ID}` names when a source exists, and wire the server for the other agents (Codex `mcp add`).
+
 ## 6. Step 4: `wow-data` skill and prompt change
 
 - `WHERE_HINT` gains one line: use the `wowdata` tools first, cite `trust`, say "unverified" for web answers, say "I do not know, check in game" rather than invent coordinates. New Forever zones (Hyjal, Riverglades, Zephras, Shen'dralas) never use Classic data.

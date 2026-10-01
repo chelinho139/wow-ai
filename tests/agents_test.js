@@ -41,6 +41,15 @@ test('Claude Code: headless stream-json with the allowlist, resume and system pr
   assert.equal(env.PATH, 'x');
 });
 
+test('Claude Code with the wowdata server (ask runs): --mcp-config with the bridge\'s JSON and mcp__wowdata as a run-only rule', () => {
+  const P = require('../bridge/protocol');
+  const mcpConfig = JSON.stringify({ mcpServers: { wowdata: { type: 'stdio', command: '/x/claude-wow', args: ['data-mcp', '--data', '/h/data'], alwaysLoad: true } } });
+  const cfg = P.withRunOnlyRules({ allowedTools: ['WebSearch'] }, ['mcp__wowdata']);
+  assert.deepEqual(A.AGENTS.claude.args({ cfg, resume: 'r', system: SYS, cwd: 'x', mcpConfig }), ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits',
+    '--allowedTools', 'WebSearch', 'mcp__wowdata', '--mcp-config', mcpConfig, '--resume', 'r', '--append-system-prompt', SYS]);
+  assert.deepEqual(P.withRunOnlyRules({ allowedTools: ['mcp__wowdata'] }, ['mcp__wowdata']).allowedTools, ['mcp__wowdata']);
+});
+
 test('Claude Code with an image (vision): a stream-json user message with the picture as a content block', () => {
   const image = { file: '/b/tmp/vision-7-x.png', data: 'aGVsbG8=', mediaType: 'image/png', width: 1280, height: 712 };
   // Without images nothing changes: no --input-format, plain text on stdin.
