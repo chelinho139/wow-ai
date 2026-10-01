@@ -40,7 +40,10 @@ if (argv[0] === '--version' || argv[0] === '-v') {
   process.argv.splice(2, 1);
   require('./install-slots');
 } else if (argv[0] === 'data') {
-  require('./datasync').main(argv.slice(1)).then((code) => { process.exitCode = code; });
+  require('./datasync').main(argv.slice(1)).then((code) => { process.exitCode = code; }, (e) => {
+    process.stderr.write(`data sync failed: ${e && e.message ? e.message : String(e)}\n`);
+    process.exitCode = 1;
+  });
 } else if (argv[0] === 'data-mcp') {
   require('./datamcp').main(argv.slice(1));
 } else {

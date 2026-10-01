@@ -4,8 +4,10 @@ const path = require('path');
 const crypto = require('crypto');
 
 const BUILD_PATTERN = /^\d+\.\d+\.\d+\.\d+$/;
+const FAMILY_PATTERN = /^\d+\.\d+\.\d+$/;
+const POINTER_PATTERN = /^(\d+\.\d+\.\d+\.\d+)(?:-\d+)?$/;
 const FLAVORS = Object.freeze({
-  forever: Object.freeze({ product: 'wow_cn_beta' }),
+  forever: Object.freeze({ product: 'wow_cn_beta', family: '1.60.1' }),
 });
 const DEFAULT_FLAVOR = 'forever';
 const WAGO_ORIGIN = 'https://wago.tools';
@@ -17,17 +19,19 @@ const MAX_BODY_BYTES = 64 * 1024 * 1024;
 const FETCH_TIMEOUT_MS = 120000;
 const LOCK_STALE_MS = 30 * 60 * 1000;
 const LOCK_FILE = '.sync.lock';
+const LOCK_TAKEOVER_SUFFIX = '.takeover';
 const CURRENT_FILE = 'current';
 const MANIFEST_FILE = 'manifest.json';
+const STRAY_SUFFIXES = ['.tmp', '.old'];
 const UI_MAP_TYPE_CONTINENT = 2;
 const UI_MAP_TYPE_ZONE = 3;
-const UNSAFE_TEXT = /[\u0000-\u001f\u007f|]/;
-const EDGE_SPACES = /^ +| +$/g;
+const UNSAFE_TEXT = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}|]/u;
 const INTEGER_TEXT = /^-?\d+$/;
 const DECIMAL_TEXT = /^-?(\d+(\.\d*)?|\.\d+)(e[-+]?\d+)?$/i;
 
 class SyncError extends Error {}
 class LockedError extends SyncError {}
+class UsageError extends SyncError {}
 
 function isBuild(value) {
   return typeof value === 'string' && BUILD_PATTERN.test(value);
@@ -113,7 +117,7 @@ function toNumber(value) {
 
 function toName(value) {
   if (typeof value !== 'string' || UNSAFE_TEXT.test(value)) return null;
-  const name = value.replace(EDGE_SPACES, '');
+  const name = value.trim();
   if (name.length === 0 || name.length > MAX_NAME_LENGTH) return null;
   return name;
 }
@@ -277,6 +281,7 @@ const TABLES = Object.freeze([
   {
     table: 'SkillLineAbility',
     entity: 'skilllineabilities',
+    optional: true,
     columns: ['ID', 'SkillLine', 'Spell', 'MinSkillLineRank', 'TrivialSkillLineRankLow', 'TrivialSkillLineRankHigh', 'AcquireMethod', 'SupercedesSpell'],
     convert(row) {
       return {
@@ -294,6 +299,7 @@ const TABLES = Object.freeze([
   {
     table: 'SpellReagents',
     entity: 'spellreagents',
+    optional: true,
     columns: ['ID', 'SpellID', ...[0, 1, 2, 3, 4, 5, 6, 7].flatMap(k => [`Reagent_${k}`, `ReagentCount_${k}`])],
     convert(row) {
       const reagents = [];
@@ -315,7 +321,7 @@ function sha256(text) {
 
 function combinedTableHash(tables) {
   const h = crypto.createHash('sha256');
-  for (const name of Object.keys(tables).sort()) h.update(`${name}:${tables[name].sha256}\n`);
+  for (const name of Object.keys(tables).sort()) h.update(`${name}:${tables[name].sha256 || 'error'}\n`);
   return h.digest('hex');
 }
 
@@ -351,32 +357,51 @@ function convertTable(spec, text, ctx) {
   return { records, dropped };
 }
 
-async function fetchText(fetchImpl, url, { expect, filename }) {
-  let res;
-  try {
-    res = await fetchImpl(url, { headers: { 'user-agent': `claude-wow/${require('../package.json').version} (data sync)` }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
-  } catch (e) {
-    throw new SyncError(`${url}: ${e.message}`);
+async function readCappedBody(res, url, maxBytes) {
+  const declared = Number(res.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > maxBytes) throw new SyncError(`${url}: response is larger than ${maxBytes} bytes`);
+  if (!res.body || typeof res.body.getReader !== 'function') throw new SyncError(`${url}: response has no body`);
+  const reader = res.body.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      reader.cancel().catch(() => {});
+      throw new SyncError(`${url}: response is larger than ${maxBytes} bytes`);
+    }
+    chunks.push(value);
   }
-  if (!res || res.status !== 200) throw new SyncError(`${url}: HTTP ${res ? res.status : 'no response'}`);
-  const type = String(res.headers.get('content-type') || '');
-  if (!type.includes(expect)) throw new SyncError(`${url}: expected ${expect}, got ${type || 'no content type'}`);
-  if (filename) {
-    const disposition = String(res.headers.get('content-disposition') || '');
-    if (!disposition.includes(`filename="${filename}"`)) throw new SyncError(`${url}: wago.tools did not serve ${filename} (got ${disposition || 'no file name'})`);
-  }
-  const text = await res.text();
-  if (Buffer.byteLength(text) > MAX_BODY_BYTES) throw new SyncError(`${url}: response is larger than ${MAX_BODY_BYTES} bytes`);
-  return text;
+  return new TextDecoder().decode(Buffer.concat(chunks));
 }
 
-async function latestBuild(fetchImpl, flavor) {
-  const text = await fetchText(fetchImpl, buildsUrl(), { expect: 'json' });
+async function fetchText(fetchImpl, url, { expect, filename, maxBytes = MAX_BODY_BYTES }) {
+  try {
+    const res = await fetchImpl(url, { headers: { 'user-agent': `claude-wow/${require('../package.json').version} (data sync)` }, redirect: 'error', signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+    if (!res || res.status !== 200) throw new SyncError(`${url}: HTTP ${res ? res.status : 'no response'}`);
+    if (res.url && new URL(res.url).origin !== WAGO_ORIGIN) throw new SyncError(`${url}: the answer came from ${new URL(res.url).origin}, not ${WAGO_ORIGIN}`);
+    const type = String(res.headers.get('content-type') || '');
+    if (!type.includes(expect)) throw new SyncError(`${url}: expected ${expect}, got ${type || 'no content type'}`);
+    if (filename) {
+      const disposition = String(res.headers.get('content-disposition') || '');
+      if (!disposition.includes(`filename="${filename}"`)) throw new SyncError(`${url}: wago.tools did not serve ${filename} (got ${disposition || 'no file name'})`);
+    }
+    return await readCappedBody(res, url, maxBytes);
+  } catch (e) {
+    if (e instanceof SyncError) throw e;
+    throw new SyncError(`${url}: ${e && e.message ? e.message : String(e)}`);
+  }
+}
+
+async function latestBuild(fetchImpl, flavor, family, maxBytes) {
+  const text = await fetchText(fetchImpl, buildsUrl(), { expect: 'json', maxBytes });
   let list;
   try { list = JSON.parse(text)[flavor.product]; } catch { list = null; }
   if (!Array.isArray(list)) throw new SyncError(`${buildsUrl()}: no ${flavor.product} builds listed`);
-  const builds = list.map(b => b && b.version).filter(isBuild);
-  if (!builds.length) throw new SyncError(`${buildsUrl()}: no valid ${flavor.product} build string`);
+  const builds = list.map(b => b && b.version).filter(isBuild).filter(b => buildFamily(b) === family);
+  if (!builds.length) throw new SyncError(`${buildsUrl()}: no valid ${flavor.product} build in family ${family}`);
   return builds.sort(compareBuilds).pop();
 }
 
@@ -393,12 +418,15 @@ function flavorDir(dataDir, flavorName) {
 }
 
 function readCurrent(root) {
-  let build;
-  try { build = fs.readFileSync(path.join(root, CURRENT_FILE), 'utf8').trim(); } catch { return null; }
-  if (!isBuild(build)) return null;
+  let pointer;
+  try { pointer = fs.readFileSync(path.join(root, CURRENT_FILE), 'utf8').trim(); } catch { return null; }
+  const match = POINTER_PATTERN.exec(pointer);
+  if (!match) return null;
+  const build = match[1];
+  const dir = path.join(root, pointer);
   try {
-    const manifest = JSON.parse(fs.readFileSync(path.join(root, build, MANIFEST_FILE), 'utf8'));
-    return manifest && manifest.build === build ? { build, manifest } : null;
+    const manifest = JSON.parse(fs.readFileSync(path.join(dir, MANIFEST_FILE), 'utf8'));
+    return manifest && manifest.build === build ? { build, dir, manifest } : null;
   } catch {
     return null;
   }
@@ -409,30 +437,70 @@ function pidAlive(pid) {
   try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
 }
 
+function inspectLock(file) {
+  let mtimeMs;
+  try { mtimeMs = fs.statSync(file).mtimeMs; } catch (e) { if (e.code === 'ENOENT') return null; throw e; }
+  let raw = '';
+  try { raw = fs.readFileSync(file, 'utf8'); } catch (e) { if (e.code === 'ENOENT') return null; }
+  let held = null;
+  try { held = JSON.parse(raw); } catch {}
+  const readable = held && typeof held === 'object' && typeof held.startedAt === 'number';
+  return { raw, mtimeMs, held: readable ? held : null };
+}
+
+function lockIsStale(seen, now, alive) {
+  if (!seen.held) return now() - seen.mtimeMs >= LOCK_STALE_MS;
+  return now() - seen.held.startedAt >= LOCK_STALE_MS || !alive(seen.held.pid);
+}
+
+function removeIfUnchanged(file, seen, now) {
+  const guard = `${file}${LOCK_TAKEOVER_SUFFIX}`;
+  try {
+    fs.mkdirSync(guard);
+  } catch (e) {
+    if (e.code !== 'EEXIST') throw e;
+    let guardAge = 0;
+    try { guardAge = now() - fs.statSync(guard).mtimeMs; } catch {}
+    if (guardAge < LOCK_STALE_MS) throw new LockedError(`another data sync is taking over the lock file ${file}`);
+    fs.rmSync(guard, { recursive: true, force: true });
+    fs.mkdirSync(guard);
+  }
+  try {
+    const again = inspectLock(file);
+    if (again && again.raw === seen.raw && again.mtimeMs === seen.mtimeMs) fs.unlinkSync(file);
+  } finally {
+    fs.rmSync(guard, { recursive: true, force: true });
+  }
+}
+
 function acquireLock(root, now = Date.now, alive = pidAlive) {
   fs.mkdirSync(root, { recursive: true });
   const file = path.join(root, LOCK_FILE);
   const token = `${process.pid}-${crypto.randomBytes(6).toString('hex')}`;
-  const body = JSON.stringify({ pid: process.pid, startedAt: now(), token });
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      fs.writeFileSync(file, body, { flag: 'wx' });
-      return {
-        file,
-        release() {
-          try {
-            if (JSON.parse(fs.readFileSync(file, 'utf8')).token === token) fs.unlinkSync(file);
-          } catch {}
-        },
-      };
-    } catch (e) {
-      if (e.code !== 'EEXIST') throw e;
+  const staged = `${file}.${token}`;
+  fs.writeFileSync(staged, JSON.stringify({ pid: process.pid, startedAt: now(), token }));
+  try {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        fs.linkSync(staged, file);
+        return {
+          file,
+          release() {
+            try {
+              if (JSON.parse(fs.readFileSync(file, 'utf8')).token === token) fs.unlinkSync(file);
+            } catch {}
+          },
+        };
+      } catch (e) {
+        if (e.code !== 'EEXIST') throw e;
+      }
+      const seen = inspectLock(file);
+      if (!seen) continue;
+      if (!lockIsStale(seen, now, alive)) throw new LockedError(`another data sync is running (${seen.held ? `pid ${seen.held.pid}` : 'lock file not written yet'}); lock file ${file}`);
+      removeIfUnchanged(file, seen, now);
     }
-    let held = null;
-    try { held = JSON.parse(fs.readFileSync(file, 'utf8')); } catch {}
-    const fresh = held && typeof held.startedAt === 'number' && now() - held.startedAt < LOCK_STALE_MS;
-    if (held && fresh && alive(held.pid)) throw new LockedError(`another data sync is running (pid ${held.pid}); lock file ${file}`);
-    try { fs.unlinkSync(file); } catch {}
+  } finally {
+    try { fs.unlinkSync(staged); } catch {}
   }
   throw new LockedError(`could not take the lock file ${file}`);
 }
@@ -441,36 +509,61 @@ function writeJsonl(file, records) {
   fs.writeFileSync(file, records.length ? records.map(r => JSON.stringify(r)).join('\n') + '\n' : '');
 }
 
-function swapInto(root, build, tmpDir) {
-  const finalDir = path.join(root, build);
-  const oldDir = `${finalDir}.old`;
-  fs.rmSync(oldDir, { recursive: true, force: true });
-  if (fs.existsSync(finalDir)) fs.renameSync(finalDir, oldDir);
+function freshDirName(root, build) {
+  if (!fs.existsSync(path.join(root, build))) return build;
+  for (let k = 1; ; k++) if (!fs.existsSync(path.join(root, `${build}-${k}`))) return `${build}-${k}`;
+}
+
+function isRevisionOf(name, build) {
+  const match = POINTER_PATTERN.exec(name);
+  return !!match && match[1] === build;
+}
+
+function sweep(root, build, keep, log) {
+  let names = [];
+  try { names = fs.readdirSync(root); } catch (e) { log(`could not list ${root}: ${e.message}`); }
+  for (const name of names) {
+    if (name === keep) continue;
+    const stray = STRAY_SUFFIXES.some(s => name.endsWith(s));
+    if (!stray && !isRevisionOf(name, build)) continue;
+    try { fs.rmSync(path.join(root, name), { recursive: true, force: true }); } catch (e) { log(`could not remove ${path.join(root, name)}: ${e.message}`); }
+  }
+}
+
+function swapInto(root, build, tmpDir, log) {
+  const name = freshDirName(root, build);
+  const finalDir = path.join(root, name);
   fs.renameSync(tmpDir, finalDir);
-  fs.rmSync(oldDir, { recursive: true, force: true });
   const pointerTmp = path.join(root, `${CURRENT_FILE}.tmp`);
-  fs.writeFileSync(pointerTmp, build + '\n');
+  fs.writeFileSync(pointerTmp, name + '\n');
   fs.renameSync(pointerTmp, path.join(root, CURRENT_FILE));
+  sweep(root, build, name, log);
   return finalDir;
 }
 
 async function sync(opts = {}) {
   const flavorName = opts.flavor || DEFAULT_FLAVOR;
   const flavor = flavorOf(flavorName);
-  const fetchImpl = opts.fetch || globalThis.fetch;
+  const fetchImpl = opts.fetch;
   const now = opts.now || Date.now;
   const log = opts.log || (() => {});
+  const family = opts.family || flavor.family;
   if (!opts.dataDir) throw new SyncError('no data folder given');
+  if (typeof fetchImpl !== 'function') throw new SyncError('no fetch function given');
+  if (!FAMILY_PATTERN.test(family)) throw new SyncError(`bad build family ${JSON.stringify(family)}: it must look like 1.60.1`);
   if (opts.build !== undefined) assertBuild(opts.build);
   const root = flavorDir(opts.dataDir, flavorName);
   const lock = acquireLock(root, now, opts.pidAlive);
   try {
-    const build = opts.build || await latestBuild(fetchImpl, flavor);
+    const build = opts.build || await latestBuild(fetchImpl, flavor, family, opts.maxBodyBytes);
     assertBuild(build);
     const before = readCurrent(root);
     if (!opts.force && before && before.build === build) {
       log(`${flavorName} data is already at ${build}; nothing to do (--force syncs it again)`);
-      return { status: 'current', build, dir: path.join(root, build), manifest: before.manifest };
+      return { status: 'current', build, dir: before.dir, manifest: before.manifest };
+    }
+    if (!opts.build && before && compatibility(before.build, build) === 'mismatch') {
+      throw new SyncError(`current data is ${before.build} (family ${buildFamily(before.build)}); the newest ${family} build is ${build}. Name it with --build to switch families`);
     }
     const tmpDir = path.join(root, `${build}.tmp`);
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -487,8 +580,18 @@ async function sync(opts = {}) {
       for (const spec of TABLES) {
         const url = tableUrl(spec.table, build);
         log(`fetch ${url}`);
-        const text = await fetchText(fetchImpl, url, { expect: 'csv', filename: `${spec.table}.${build}.csv` });
-        const { records, dropped } = convertTable(spec, text, ctx);
+        let text;
+        let converted;
+        try {
+          text = await fetchText(fetchImpl, url, { expect: 'csv', filename: `${spec.table}.${build}.csv`, maxBytes: opts.maxBodyBytes });
+          converted = convertTable(spec, text, ctx);
+        } catch (e) {
+          if (!spec.optional || !(e instanceof SyncError)) throw e;
+          tables[spec.table] = { url, entity: spec.entity, error: e.message };
+          log(`${spec.entity}: skipped, ${e.message}`);
+          continue;
+        }
+        const { records, dropped } = converted;
         const file = `${spec.entity}.jsonl`;
         writeJsonl(path.join(tmpDir, file), records);
         const droppedCount = Object.values(dropped).reduce((s, n) => s + n, 0);
@@ -508,8 +611,8 @@ async function sync(opts = {}) {
         buildFamily: family,
         fetchedAt: new Date(now()).toISOString(),
         license: LICENSE_NOTE,
-        rows: Object.values(tables).reduce((s, t) => s + t.rows, 0),
-        dropped: Object.values(tables).reduce((s, t) => s + t.dropped, 0),
+        rows: Object.values(tables).reduce((s, t) => s + (t.rows || 0), 0),
+        dropped: Object.values(tables).reduce((s, t) => s + (t.dropped || 0), 0),
         tableHash,
         tables,
         entities,
@@ -523,7 +626,7 @@ async function sync(opts = {}) {
         };
       }
       fs.writeFileSync(path.join(tmpDir, MANIFEST_FILE), JSON.stringify(manifest, null, 2) + '\n');
-      const dir = swapInto(root, build, tmpDir);
+      const dir = swapInto(root, build, tmpDir, log);
       return { status: 'synced', build, dir, manifest };
     } catch (e) {
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -534,7 +637,7 @@ async function sync(opts = {}) {
   }
 }
 
-const USAGE = 'claude-wow data sync [--build <a.b.c.d>] [--force]\n  Fetches the Forever client tables from wago.tools into <CLAUDE_WOW_HOME>/data/forever/<build>/.\n  --build  a build other than the newest one wago.tools lists\n  --force  fetch again when that build is already current\n';
+const USAGE = `claude-wow data sync [--build <a.b.c.d>] [--force]\n  Fetches the Forever client tables from wago.tools into <CLAUDE_WOW_HOME>/data/forever/<build>/.\n  --build  a build other than the newest ${FLAVORS[DEFAULT_FLAVOR].family} build wago.tools lists; needed to switch build families\n  --force  fetch again when that build is already current\n`;
 
 function parseArgs(argv) {
   const opts = { force: false };
@@ -543,12 +646,9 @@ function parseArgs(argv) {
     if (a === '--force') opts.force = true;
     else if (a === '--build') opts.build = argv[++k] ?? '';
     else if (a.startsWith('--build=')) opts.build = a.slice('--build='.length);
-    else if (a === '--flavor') opts.flavor = argv[++k] ?? '';
-    else if (a.startsWith('--flavor=')) opts.flavor = a.slice('--flavor='.length);
-    else throw new SyncError(`unknown option ${JSON.stringify(a)}`);
+    else throw new UsageError(`unknown option ${JSON.stringify(a)}`);
   }
-  if (opts.build !== undefined) assertBuild(opts.build);
-  if (opts.flavor !== undefined) flavorOf(opts.flavor);
+  if (opts.build !== undefined && !isBuild(opts.build)) throw new UsageError(`bad build string ${JSON.stringify(opts.build)}: it must look like 1.60.1.70094`);
   return opts;
 }
 
@@ -562,19 +662,19 @@ async function main(argv, deps = {}) {
   try {
     const opts = parseArgs(rest);
     const home = require('./home').resolve(deps.env || process.env);
-    const result = await sync({ ...opts, dataDir: home.data, fetch: deps.fetch, now: deps.now, log: line => out(line + '\n') });
+    const result = await sync({ ...opts, dataDir: home.data, fetch: deps.fetch || globalThis.fetch, now: deps.now, log: line => out(line + '\n') });
     if (result.status === 'synced') out(`${result.manifest.rows} rows kept, ${result.manifest.dropped} dropped; current build ${result.build} in ${result.dir}\n`);
     return 0;
   } catch (e) {
-    if (!(e instanceof SyncError)) throw e;
-    err(`data sync failed: ${e.message}\n`);
+    err(`data sync failed: ${e && e.message ? e.message : String(e)}\n`);
+    if (e instanceof UsageError) return 2;
     return e instanceof LockedError ? 3 : 1;
   }
 }
 
 module.exports = {
   BUILD_PATTERN, FLAVORS, TABLES, MAX_NAME_LENGTH, LOCK_FILE, LOCK_STALE_MS, CURRENT_FILE, MANIFEST_FILE,
-  SyncError, LockedError,
+  SyncError, LockedError, UsageError,
   isBuild, assertBuild, buildFamily, compatibility, compareBuilds, buildsUrl, tableUrl,
   parseCsv, toInt, toNumber, toName, convertTable, placeOnMap,
   acquireLock, readCurrent, flavorDir, sync, parseArgs, main,
