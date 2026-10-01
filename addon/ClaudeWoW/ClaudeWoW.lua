@@ -722,7 +722,7 @@ ClaudeWoW.ChatLog = { MISSES_BEFORE_PAUSE = 2, RETRY_SECONDS = 8, SLOW_RETRY_SEC
 
 function ClaudeWoW.ChatLog.RetrySeconds()
 	local L = ClaudeWoW.ChatLog
-	if Presence.Channel() and not run.signalUnreliable then return L.RETRY_SECONDS end
+	if ClaudeWoW.PresenceWorks() and not run.signalUnreliable then return L.RETRY_SECONDS end
 	return L.SLOW_RETRY_SECONDS
 end
 

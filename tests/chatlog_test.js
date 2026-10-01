@@ -44,6 +44,7 @@ function loggedIn(slot = SLOT, clientApi = CLIENT_LOG_API, { ackHello = true } =
   const vm = newVM(clientApi);
   vm.run('STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW\\\\ctl\\\\valid.wav"] = true; STUB.armed = true');
   vm.run('STUB.FireEvent("ADDON_LOADED", "ClaudeWoW"); STUB.FireEvent("PLAYER_LOGIN")');
+  vm.run('ClaudeWoW.PresenceWorks = function() return true end');
   vm.run('STUB.RunTimers()');
   vm.run(`STUB.onLoadAddOn = function(name) ClaudeWoW_SlotData = ${slot} end`);
   vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
@@ -568,9 +569,9 @@ test('chat log transport: a hello the bridge never acknowledges is retried by sc
   assert.equal(vm.num('STUB.screenshots'), 1, 'the hello went out again by screenshot');
 });
 
-test('chat log transport: without the sound channel the ack comes from a slot poll, so the screenshot retry waits 15 s', () => {
+test('chat log transport: on a client where the signal files are not proven (Classic Era: a deleted file still reads present), the ack comes from a slot poll, so the screenshot retry waits 15 s', () => {
   const vm = loggedIn();
-  vm.run('ClaudeWoWDB.settings.signal = false');
+  vm.run('ClaudeWoW.PresenceWorks = function() return false end');
   vm.run('ClaudeWoW.NewChat("Slow"); ClaudeWoW.Send("no sound channel")');
   vm.run('STUB.now = STUB.now + 9; STUB.Tick()');
   shotFrames(vm, 2);
