@@ -1,0 +1,7 @@
+ID,SkillLine,Spell,MinSkillLineRank,ClassMask,SupercedesSpell,AcquireMethod,TrivialSkillLineRankHigh,TrivialSkillLineRankLow,Flags,NumSkillUps,UniqueBit,TradeSkillCategoryID,Field_5_5_4_67090_013,Field_5_5_4_67090_014_0,Field_5_5_4_67090_014_1,RaceMask_0,RaceMask_1
+9418,9182,92366,1,0,0,0,0,0,0,1,0,0,0,0,0,0,0
+9419,9182,92368,1,0,0,0,0,0,0,1,0,0,0,0,0,0,0
+9766,9393,98613,1,0,0,0,0,0,0,1,0,0,0,0,0,0,0
+9767,9393,98617,1,0,98613,0,0,0,0,1,0,0,0,0,0,0,0
+9768,9393,98699,1,0,0,1,0,0,0,1,0,0,0,0,0,0,0
+9301,9040,94001,1,0,0,0,25,10,0,1,0,0,0,0,0,0,0

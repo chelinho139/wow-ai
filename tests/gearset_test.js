@@ -84,7 +84,7 @@ test('gearset: unknown IDs, wrong slots, items that cannot be worn, bad slot num
     assert.equal(res.ok, false);
     assert.match(res.text, /checked against the synced game data\. No game data is synced/);
   } finally { nodata.cleanup(); }
-  const otherBuild = rig({ ctx: BONE_CONTEXT.replace('1.60.1.70124', '1.61.0.1') });
+  const otherBuild = rig({ ctx: BONE_CONTEXT.replace('1.60.1.70124', '1.60.2.1') });
   try {
     assert.match((await otherBuild.store.call('goal_set', { type: 'gearset', slots: { 16: BLADE } })).text, /not in the client's build family/);
   } finally { otherBuild.cleanup(); }

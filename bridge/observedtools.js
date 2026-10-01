@@ -196,7 +196,7 @@ function toolSchemas() {
   return [
     {
       name: TOOL.farm,
-      description: `Where the player's own loot dropped an item: for each loot source (an NPC by ID, a gathering object by ID, or fishing in a zone), the observed drop rate with its sample size n, the maps where it dropped and the average spot there. Only data the game reported to this bridge (trust "observed") and the synced Forever client data (item and map names). Sources with fewer than ${OB.MIN_SAMPLES} loot windows show no rate. Rates of different sources are never added together. NPC and object names have no verified source: refer to them only by what the player sees. An itemID the game data does not have is refused.`,
+      description: `Where the player's own loot dropped an item: for each loot source (an NPC by ID, a gathering object by ID, or fishing in a zone), the observed drop rate with its sample size n, the maps where it dropped and the average spot there. Only data the game reported to this bridge (trust "observed") and the synced client data of the player's game (item and map names). Sources with fewer than ${OB.MIN_SAMPLES} loot windows show no rate. Rates of different sources are never added together. NPC and object names have no verified source: refer to them only by what the player sees. An itemID the game data does not have is refused.`,
       inputSchema: {
         type: 'object',
         properties: { itemID: { type: 'integer', minimum: 1, description: 'The item ID, from the wowdata tools' } },
@@ -214,7 +214,7 @@ function toolSchemas() {
     },
     {
       name: TOOL.route,
-      description: `Draw one ordered route on the player's world map, replacing the last one, or clear it. Each point is a map token {map:ID,x,y} with the uiMapID from the wowdata tools and x, y from 0 to 100. A map ID the synced Forever data does not have refuses the whole route. Your x and y are shown in game only as a model estimate. At most ${ROUTE_POINTS_MAX} points. The route reaches the game on the next slot it loads anyway; no slot is spent for it. Advice only: it moves nothing and acts for no one.`,
+      description: `Draw one ordered route on the player's world map, replacing the last one, or clear it. Each point is a map token {map:ID,x,y} with the uiMapID from the wowdata tools and x, y from 0 to 100. A map ID the synced client data of the player's game does not have refuses the whole route. Your x and y are shown in game only as a model estimate. At most ${ROUTE_POINTS_MAX} points. The route reaches the game on the next slot it loads anyway; no slot is spent for it. Advice only: it moves nothing and acts for no one.`,
       inputSchema: {
         type: 'object',
         properties: {

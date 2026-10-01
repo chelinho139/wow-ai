@@ -7,7 +7,8 @@ const BUILD_PATTERN = /^\d+\.\d+\.\d+\.\d+$/;
 const FAMILY_PATTERN = /^\d+\.\d+\.\d+$/;
 const POINTER_PATTERN = /^(\d+\.\d+\.\d+\.\d+)(?:-\d+)?$/;
 const FLAVORS = Object.freeze({
-  forever: Object.freeze({ product: 'wow_cn_beta', family: '1.60.1' }),
+  forever: Object.freeze({ product: 'wow_cn_beta', family: '1.60.1', clientLine: '1.60', label: 'Forever' }),
+  classic_era: Object.freeze({ product: 'wow_classic_era', family: '1.15.9', clientLine: '1.15', label: 'Classic Era' }),
 });
 const DEFAULT_FLAVOR = 'forever';
 const WAGO_ORIGIN = 'https://wago.tools';
@@ -45,6 +46,21 @@ function assertBuild(value) {
 function flavorOf(name) {
   if (!Object.prototype.hasOwnProperty.call(FLAVORS, name)) throw new SyncError(`unknown flavor ${JSON.stringify(name)}: use ${Object.keys(FLAVORS).join(', ')}`);
   return FLAVORS[name];
+}
+
+function flavorForBuild(build) {
+  if (!isBuild(build)) return null;
+  const line = build.split('.').slice(0, 2).join('.');
+  return Object.keys(FLAVORS).find(name => FLAVORS[name].clientLine === line) || null;
+}
+
+function assertFlavorBuild(flavorName, build) {
+  const owner = flavorForBuild(build);
+  if (owner && owner !== flavorName) throw new SyncError(`build ${build} is a ${FLAVORS[owner].label} build, not ${FLAVORS[flavorName].label}; sync it with --flavor ${owner}`);
+}
+
+function syncCommand(flavorName) {
+  return flavorName === DEFAULT_FLAVOR ? 'claude-wow data sync' : `claude-wow data sync --flavor ${flavorName}`;
 }
 
 function buildFamily(build) {
@@ -426,7 +442,10 @@ function readCurrent(root) {
   const dir = path.join(root, pointer);
   try {
     const manifest = JSON.parse(fs.readFileSync(path.join(dir, MANIFEST_FILE), 'utf8'));
-    return manifest && manifest.build === build ? { build, dir, manifest } : null;
+    if (!manifest || manifest.build !== build) return null;
+    const flavorName = path.basename(root);
+    if (Object.prototype.hasOwnProperty.call(FLAVORS, flavorName) && manifest.flavor !== undefined && manifest.flavor !== flavorName) return null;
+    return { build, dir, manifest };
   } catch {
     return null;
   }
@@ -552,11 +571,13 @@ async function sync(opts = {}) {
   if (typeof fetchImpl !== 'function') throw new SyncError('no fetch function given');
   if (!FAMILY_PATTERN.test(family)) throw new SyncError(`bad build family ${JSON.stringify(family)}: it must look like 1.60.1`);
   if (opts.build !== undefined) assertBuild(opts.build);
+  if (opts.build !== undefined) assertFlavorBuild(flavorName, opts.build);
   const root = flavorDir(opts.dataDir, flavorName);
   const lock = acquireLock(root, now, opts.pidAlive);
   try {
     const build = opts.build || await latestBuild(fetchImpl, flavor, family, opts.maxBodyBytes);
     assertBuild(build);
+    assertFlavorBuild(flavorName, build);
     const before = readCurrent(root);
     if (!opts.force && before && before.build === build) {
       log(`${flavorName} data is already at ${build}; nothing to do (--force syncs it again)`);
@@ -637,7 +658,8 @@ async function sync(opts = {}) {
   }
 }
 
-const USAGE = `claude-wow data sync [--build <a.b.c.d>] [--force]\n  Fetches the Forever client tables from wago.tools into <CLAUDE_WOW_HOME>/data/forever/<build>/.\n  --build  a build other than the newest ${FLAVORS[DEFAULT_FLAVOR].family} build wago.tools lists; needed to switch build families\n  --force  fetch again when that build is already current\n`;
+const FLAVOR_LINES = Object.entries(FLAVORS).map(([name, f]) => `    ${name.padEnd(12)}${f.label} clients ${f.clientLine}.* (wago.tools product ${f.product}, newest ${f.family} build by default)`).join('\n');
+const USAGE = `claude-wow data sync [--flavor <name>] [--build <a.b.c.d>] [--force]\n  Fetches one game's client tables from wago.tools into <CLAUDE_WOW_HOME>/data/<flavor>/<build>/.\n  The bridge uses the flavor that matches the client build the game reports, never another one.\n  --flavor  which game (default ${DEFAULT_FLAVOR}):\n${FLAVOR_LINES}\n  --build   a build other than the newest one in the flavor's default family; needed to switch build families\n  --force   fetch again when that build is already current\n`;
 
 function parseArgs(argv) {
   const opts = { force: false };
@@ -646,9 +668,12 @@ function parseArgs(argv) {
     if (a === '--force') opts.force = true;
     else if (a === '--build') opts.build = argv[++k] ?? '';
     else if (a.startsWith('--build=')) opts.build = a.slice('--build='.length);
+    else if (a === '--flavor') opts.flavor = argv[++k] ?? '';
+    else if (a.startsWith('--flavor=')) opts.flavor = a.slice('--flavor='.length);
     else throw new UsageError(`unknown option ${JSON.stringify(a)}`);
   }
   if (opts.build !== undefined && !isBuild(opts.build)) throw new UsageError(`bad build string ${JSON.stringify(opts.build)}: it must look like 1.60.1.70094`);
+  if (opts.flavor !== undefined && !Object.prototype.hasOwnProperty.call(FLAVORS, opts.flavor)) throw new UsageError(`unknown flavor ${JSON.stringify(opts.flavor)}: use ${Object.keys(FLAVORS).join(', ')}`);
   return opts;
 }
 
@@ -663,7 +688,7 @@ async function main(argv, deps = {}) {
     const opts = parseArgs(rest);
     const home = require('./home').resolve(deps.env || process.env);
     const result = await sync({ ...opts, dataDir: home.data, fetch: deps.fetch || globalThis.fetch, now: deps.now, log: line => out(line + '\n') });
-    if (result.status === 'synced') out(`${result.manifest.rows} rows kept, ${result.manifest.dropped} dropped; current build ${result.build} in ${result.dir}\n`);
+    if (result.status === 'synced') out(`${result.manifest.rows} rows kept, ${result.manifest.dropped} dropped; current build ${result.build} (${result.manifest.flavor}) in ${result.dir}\n`);
     return 0;
   } catch (e) {
     err(`data sync failed: ${e && e.message ? e.message : String(e)}\n`);
@@ -675,7 +700,7 @@ async function main(argv, deps = {}) {
 module.exports = {
   BUILD_PATTERN, FLAVORS, TABLES, MAX_NAME_LENGTH, LOCK_FILE, LOCK_STALE_MS, CURRENT_FILE, MANIFEST_FILE,
   SyncError, LockedError, UsageError,
-  isBuild, assertBuild, buildFamily, compatibility, compareBuilds, buildsUrl, tableUrl,
+  DEFAULT_FLAVOR, isBuild, assertBuild, flavorForBuild, syncCommand, buildFamily, compatibility, compareBuilds, buildsUrl, tableUrl,
   parseCsv, toInt, toNumber, toName, convertTable, placeOnMap,
   acquireLock, readCurrent, flavorDir, sync, parseArgs, main,
 };

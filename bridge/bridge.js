@@ -57,6 +57,7 @@ const G = require('./gamefs');
 const SIG = require('./signals');
 const DM = require('./datamcp');
 const GD = require('./gamedata');
+const DSYNC = require('./datasync');
 const GR = require('./gamerefs');
 
 // The plugins this bridge has (docs/PLATFORM.md). Registration order is the
@@ -791,6 +792,12 @@ function gameContext() {
 }
 
 const loggedDataChecks = new Set();
+function noGameDataLine(clientBuild) {
+  const flavor = DSYNC.flavorForBuild(clientBuild);
+  if (!clientBuild) return 'wowdata: the game has not reported its client build, so no game data is picked; ask runs go without it';
+  if (!flavor) return `wowdata: client ${clientBuild} is neither Forever (1.60.*) nor Classic Era (1.15.*); ask runs go without game data`;
+  return `wowdata: no synced game data for ${DSYNC.FLAVORS[flavor].label} under ${HOME.data}; ask runs go without it (${DSYNC.syncCommand(flavor)})`;
+}
 function gameDataServer(tag) {
   let server = null;
   try {
@@ -799,10 +806,11 @@ function gameDataServer(tag) {
     log(`${tag} wowdata unavailable: ${e.message}`);
     return null;
   }
-  const check = server ? `${server.build}:${server.clientBuild}:${server.buildCheck}` : 'none';
+  const clientBuild = GD.clientBuildOf((state.context && state.context.text) || '');
+  const check = server ? `${server.flavor}:${server.build}:${server.clientBuild}:${server.buildCheck}` : `none:${clientBuild}`;
   if (!loggedDataChecks.has(check)) {
     loggedDataChecks.add(check);
-    if (!server) log(`wowdata: no synced game data under ${HOME.data}; ask runs go without it (claude-wow data sync)`);
+    if (!server) log(noGameDataLine(clientBuild));
     else if (server.buildCheck === GD.BUILD_CHECK.mismatch) log(`wowdata: data build ${server.build} is not in the client's build family (${server.clientBuild}); answers are labeled build-mismatch`);
   }
   return server;
@@ -1215,7 +1223,7 @@ function runAgent(job, opts = {}) {
     } catch (e) { log(`${tag} ui file unavailable: ${e.message}`); }
   }
 
-  const picked = [acfg.model && 'model ' + acfg.model, acfg.effort && 'effort ' + acfg.effort, chosen.permissionMode && 'mode ' + acfg.permissionMode, (acfg.addDirs || []).length && '+' + acfg.addDirs.length + ' dir(s)', dataServer && 'wowdata ' + dataServer.build].filter(Boolean).join(', ');
+  const picked = [acfg.model && 'model ' + acfg.model, acfg.effort && 'effort ' + acfg.effort, chosen.permissionMode && 'mode ' + acfg.permissionMode, (acfg.addDirs || []).length && '+' + acfg.addDirs.length + ' dir(s)', dataServer && 'wowdata ' + dataServer.build + ' ' + dataServer.flavor].filter(Boolean).join(', ');
   log(`${tag} (${job.via}) [${plugin.id}] ${agent.name} starting in ${cwd}${picked ? ' [' + picked + ']' : ''}${resume ? ' (resume ' + resume.slice(0, 8) + ')' : ' (new session)'}${ctx ? ' [game context]' : ''}${image ? ` [screen ${image.width}x${image.height}, ${Math.round(image.bytes / 1024)} KB]` : ''}${running.size ? ' [' + (running.size + 1) + ' running]' : ''}`);
   const startedAt = Date.now(); // a fresh session's clock starts here (the footer's elapsed time)
   const child = PR.spawnChild(cmd.file, args, { cwd, env, windowsHide: true, stdio: [input.stdin !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'] });

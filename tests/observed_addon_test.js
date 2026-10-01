@@ -323,3 +323,74 @@ test('round trip: the addon\'s observed sections land in observed.jsonl through 
     assert.ok(lines.every(l => l.trust === 'observed' && l.n === 1));
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+const ERA_FACTION = 76;
+const ERA_CLIENT = `
+C_SkillInfo = nil
+C_AuctionHouse = nil
+C_MerchantFrame = { GetBuybackItemID = function() return nil end }
+C_Reputation = { GetWatchedFactionData = function() return nil end }
+function GetMerchantItemInfo(i)
+  local m = STUB.merchant[i]
+  if not m then return nil end
+  return "Merchant Item " .. i, 134400, m.price, m.stack, -1, true, true, m.ext or false, m.currency
+end
+STUB.auctions = {}
+STUB.ahCalls = {}
+for _, name in ipairs({ "QueryAuctionItems", "PlaceAuctionBid", "SortAuctionItems", "CanSendAuctionQuery" }) do
+  _G[name] = function() table.insert(STUB.ahCalls, name) return true end
+end
+function GetNumAuctionItems(kind) if kind ~= "list" then return 0, 0 end return #STUB.auctions, #STUB.auctions end
+function GetAuctionItemInfo(kind, i)
+  local a = kind == "list" and STUB.auctions[i]
+  if not a then return nil end
+  return "Auction Item", 134400, a.count, 1, true, 10, nil, 5, 1, a.buyout, 0, false, nil, "Seller", nil, 0, a.id, true
+end
+function GetFactionInfoByID(id)
+  local f = STUB.factions and STUB.factions[id]
+  if not f then return nil end
+  return "Faction " .. id, "", f.standing, 3000, 9000, f.value, false, true, false, false, true, false, false, f.reportedID or id, false, false
+end
+`;
+
+function eraGs(factions = '') {
+  return `{ v = 1, watch = { items = {}, factions = { ${factions} } }, chars = {}, obs = 1, gather = { [${GATHER_SPELL}] = ${GATHER_SPELL} } }`;
+}
+
+test('Classic Era vendor window: prices come from GetMerchantItemInfo, extended-cost and currency items are left out', () => {
+  const vm = ready({ extra: ERA_CLIENT, gs: eraGs() });
+  vm.run('STUB.FireEvent("MERCHANT_SHOW")');
+  const r = nextRecord(vm);
+  assert.ok(r && r.sections.vendor, 'the vendor section went out');
+  assert.deepEqual(r.errors, []);
+  assert.deepEqual(r.sections.vendor.value.visit.items, [{ itemID: 501, price: 600, stack: 1 }, { itemID: 505, price: 25, stack: 5 }]);
+});
+
+test('Classic Era auction list: the lowest exact unit buyout per item on the page the player searched, never a bid-only or uneven-stack price, and no query from addon code', () => {
+  const vm = ready({ extra: ERA_CLIENT, gs: eraGs() });
+  vm.run(`STUB.auctions = {
+    { id = 501, count = 1, buyout = 1500 }, { id = 501, count = 1, buyout = 1400 }, { id = 501, count = 1, buyout = 1400 },
+    { id = 505, count = 20, buyout = 140 }, { id = 505, count = 5, buyout = 100 }, { id = 505, count = 3, buyout = 20 },
+    { id = 2589, count = 3, buyout = 100 }, { id = 4000, count = 1, buyout = 0 },
+  }`);
+  vm.run('STUB.FireEvent("AUCTION_ITEM_LIST_UPDATE"); STUB.FireEvent("AUCTION_ITEM_LIST_UPDATE")');
+  const r = nextRecord(vm);
+  assert.deepEqual(r.sections.ah.value.quotes.map(q => [q.itemID, q.price, q.quantity]), [[501, 1400, 2], [505, 7, 20]]);
+  for (let i = 0; i < 30; i++) tick(vm, 60);
+  assert.equal(vm.evaluate('#STUB.ahCalls'), '0', 'no search, sort or bid call from addon code, ever');
+});
+
+test('Classic Era factions: standing from GetFactionInfoByID, and a row for another faction is never reported', () => {
+  const vm = ready({ extra: ERA_CLIENT, gs: eraGs(`${ERA_FACTION}, 81`) });
+  vm.run(`STUB.factions = { [${ERA_FACTION}] = { standing = 5, value = 3200 }, [81] = { standing = 4, value = 10, reportedID = 530 } }`);
+  vm.run('STUB.FireEvent("UPDATE_FACTION")');
+  const r = nextRecord(vm);
+  assert.deepEqual(r.sections.factions.value.factions, { [ERA_FACTION]: { reaction: 5, standing: 3200 } });
+});
+
+test('on Classic Era the capability probe names only what has no Era equivalent', () => {
+  const vm = ready({ extra: ERA_CLIENT, gs: eraGs() });
+  assert.equal(vm.evaluate('table.concat(ClaudeWoWTelemetry.Missing(), ",")'), 'C_SkillInfo.GetNumSkillLines,C_SkillInfo.GetSkillLineInfo');
+  const none = ready({ extra: `${ERA_CLIENT}\nGetMerchantItemInfo = nil\nGetFactionInfoByID = nil\nGetAuctionItemInfo = nil\nGetNumAuctionItems = nil`, gs: eraGs() });
+  assert.equal(none.evaluate('table.concat(ClaudeWoWTelemetry.Missing(), ",")'), 'C_SkillInfo.GetNumSkillLines,C_SkillInfo.GetSkillLineInfo,C_Reputation.GetFactionDataByID,C_MerchantFrame.GetItemInfo,C_AuctionHouse.GetBrowseResults,C_AuctionHouse.GetCommoditySearchResultInfo', 'with neither API, the modern name is reported');
+});
