@@ -86,7 +86,11 @@ class WowClient {
       fileIndex: 'launch',
       deletionVisible: true,
       chatDock: false,
+      hasChatLog: true,
+      chatLogBufferBytes: 49152,
     }, opts);
+    this.chatLogFile = assertSafe(path.join(sb.client, 'Logs', 'WoWChatLog.txt'));
+    this.chatLogBuffer = '';
     this.clientRoot = assertSafe(sb.client);
     this.L = null;
     this.timer = null;
@@ -216,6 +220,7 @@ class WowClient {
     this.runLua(`for _, n in ipairs({${this.indexed.map(luaQuote).join(',')}}) do DEV.indexed[n] = true end`);
     this.runLua(`for _, n in ipairs({${(o.disabled || []).map(luaQuote).join(',')}}) do DEV.disabled[n] = true end`);
     if (!o.hasScreenshot) this.runLua('Screenshot = nil');
+    if (!o.hasChatLog) this.runLua('SendSystemMessage = nil; LoggingChat = nil');
     if (o.chatDock) this.runLua('STUB.ChatDock()');
     this.syncClock();
     this.runLua(`
@@ -257,6 +262,7 @@ class WowClient {
     if (!crash) {
       this.runLua('DEV.Fire("PLAYER_LOGOUT")');
       this.saveVariables();
+      this.writeChatLog(true);
     }
     this.L = null;
     this.note(crash ? 'client crashed' : 'client quit');
@@ -284,6 +290,7 @@ class WowClient {
     this.syncClock();
     this.runLua(`DEV.RunFrame(${dt.toFixed(4)})`);
     this.takeShots();
+    this.writeChatLog(false);
     this.fireDueEvents();
     if (this.luaValue('DEV.reloadRequested') === 'true') this.reload();
   }
@@ -317,6 +324,34 @@ class WowClient {
       fs.writeFileSync(assertSafe(file), data);
       this.pendingEvents.push({ at: Date.now() + this.opts.shotDelayMs, ev: 'SCREENSHOT_SUCCEEDED' });
     }
+  }
+
+  writeChatLog(closing) {
+    if (!this.L) return;
+    const queued = Number(this.luaValue('#DEV.chatLogQueue'));
+    const lines = queued ? this.json('DEV.chatLogQueue') : [];
+    const size = this.opts.chatLogBufferBytes;
+    let out = '';
+    if (lines.length) {
+      this.runLua('DEV.chatLogQueue = {}');
+      const d = new Date();
+      const p = (n, w = 2) => String(n).padStart(w, '0');
+      const stamp = `${d.getMonth() + 1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}  `;
+      for (const line of lines) {
+        this.chatLogBuffer += stamp + line + '\r\n';
+        if (size > 0 && this.chatLogBuffer.length >= size) {
+          out += this.chatLogBuffer;
+          this.chatLogBuffer = '';
+        }
+      }
+    }
+    if (closing) {
+      out += this.chatLogBuffer;
+      this.chatLogBuffer = '';
+    }
+    if (!out) return;
+    fs.mkdirSync(path.dirname(this.chatLogFile), { recursive: true });
+    fs.appendFileSync(this.chatLogFile, out, 'latin1');
   }
 
   fireDueEvents() {

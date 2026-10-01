@@ -760,6 +760,10 @@ function luaTable(globalName, records, opts = {}) {
   if (transport === 'screenshot') {
     const lv = screenshotLevels(opts.levels);
     lines.splice(lines.length - 1, 0, `\tstrip = { on = ${lv.on}, off = ${lv.off}, codec = ${stripCodec(opts.codec)} },`);
+    const cl = opts.chatlog;
+    if (cl && cl.enabled === true && Number.isInteger(cl.line) && Number.isInteger(cl.filler)) {
+      lines.splice(lines.length - 1, 0, `\tchatlog = { line = ${cl.line}, filler = ${cl.filler}${cl.show ? ', show = true' : ''} },`);
+    }
   }
   // Why a bridge is on the pixel transport when nobody asked for it (transportFallback);
   // the addon shows it in /claude-wow diag.

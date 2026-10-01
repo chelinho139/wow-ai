@@ -106,6 +106,29 @@ test('message ids past the slot count still get acked and answered without marki
   });
 });
 
+test('with capture.chatLog on, a message goes out through the chat log file and no screenshot is taken', async () => {
+  await withGame({ capture: { chatLog: { enabled: true } } }, async h => {
+    await h.bridge.waitForLine(/chat log transport: watching/);
+    const r = await h.client.say('hello through the chat log');
+    assert.match(r.text, /echo \(turn 1\): hello through the chat log/);
+    assert.match(h.bridge.output, /strip #\d+ \(chat log, \d+ line\(s\)\): \d+ message\(s\)/);
+    assert.match(h.bridge.output, /#\d+@\S+ \(chatlog\)/);
+    assert.ok(!/\(screenshot WoWScrnShot/.test(h.bridge.output), 'no strip came from a screenshot');
+    assert.deepEqual(h.screenshots(), []);
+    assert.match(h.client.diag(), /chat log transport: on, lines of 900, filler 50000 bytes; \d+ frames, \d+ lines written, [1-9]\d* acknowledged first time, 0 only after the screenshot retry/);
+  });
+});
+
+test('a client whose chat log only reaches disk at exit still delivers: the retry is a screenshot', async () => {
+  await withGame({ capture: { chatLog: { enabled: true } }, speed: 8, client: { speed: 8, chatLogBufferBytes: 0 } }, async h => {
+    const r = await h.client.say('the log never flushes here', { timeoutMs: 60000 });
+    assert.match(r.text, /the log never flushes here/);
+    assert.ok(!/\(chat log, /.test(h.bridge.output), 'nothing was read from the chat log');
+    assert.match(h.bridge.output, /\(screenshot WoWScrnShot/);
+    assert.match(h.client.diag(), /0 acknowledged first time, [1-9]\d* only after the screenshot retry/);
+  });
+});
+
 test.after(() => {
   fs.rmSync(ROOT, { recursive: true, force: true });
 });

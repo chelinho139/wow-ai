@@ -301,6 +301,7 @@ end
 
 local function AddChat(name, cwd)
 	local current = ActiveChat()
+	if current and current.quiet then current = nil end
 	local c = {
 		id = NewId(),
 		name = name or ("Chat " .. (#db.chats + 1)),
@@ -320,6 +321,20 @@ local function AnyPending()
 		if c.pendingId then return true end
 	end
 	return false
+end
+
+function ClaudeWoW.RepairQuietChats(data)
+	local quietPlugins = {}
+	local active, firstUserChat
+	for _, c in ipairs(data.chats) do
+		if c.quiet and c.plugin ~= "" then quietPlugins[c.plugin] = true end
+		if c.id == data.activeChat then active = c end
+		if not c.quiet and not firstUserChat then firstUserChat = c end
+	end
+	for _, c in ipairs(data.chats) do
+		if not c.quiet and quietPlugins[c.plugin] then c.plugin = "" end
+	end
+	if active and active.quiet and firstUserChat then data.activeChat = firstUserChat.id end
 end
 
 local function InitDB()
@@ -396,6 +411,8 @@ local function InitDB()
 		end
 	end
 	for _, c in ipairs(db.chats) do c.plugin = c.plugin or "" end
+	ClaudeWoW.RepairQuietChats(db)
+	if FindChat(db.activeChat).quiet then db.activeChat = AddChat().id end
 	ClaudeWoW.MigrateWhisper(s, fresh)
 	if s.dim == nil then s.dim = Cli.DIM_DEFAULT end
 	if s.dodge == nil then s.dodge = true end
@@ -701,6 +718,116 @@ local function TellPlayer(msg)
 	if ui.frame then ClaudeWoW.Render() end
 end
 
+ClaudeWoW.ChatLog = { MISSES_BEFORE_PAUSE = 2, RETRY_SECONDS = 8, FIRST_PAUSE_SECONDS = 600, MAX_PAUSE_SECONDS = 3600 }
+
+function ClaudeWoW.ChatLog.Paused()
+	local pause = run.chatlogPause
+	return pause ~= nil and GetTime() - pause.at < pause.wait
+end
+
+function ClaudeWoW.ChatLog.Pause(reason)
+	local L = ClaudeWoW.ChatLog
+	local earlier = run.chatlogPause
+	local wait = earlier and math.min(earlier.wait * 2, L.MAX_PAUSE_SECONDS) or L.FIRST_PAUSE_SECONDS
+	run.chatlogPause = { at = GetTime(), wait = wait, reason = reason }
+	run.chatlogMisses = 0
+	return wait, earlier == nil
+end
+
+function ClaudeWoW.ChatLog.Resume()
+	run.chatlogPause = nil
+	run.chatlogMisses = 0
+end
+
+function ClaudeWoW.ChatLog.Spec(data)
+	local spec = type(data) == "table" and data.chatlog
+	if type(spec) ~= "table" or type(spec.line) ~= "number" or type(spec.filler) ~= "number" then return nil end
+	local line, filler = math.floor(spec.line), math.floor(spec.filler)
+	if line < 60 or line > 1000 or filler < 0 or filler > 65536 then return nil end
+	return { line = line, filler = filler, show = spec.show == true or nil }
+end
+
+function ClaudeWoW.ChatLog.Same(a, b)
+	if a == nil or b == nil then return a == b end
+	return a.line == b.line and a.filler == b.filler and a.show == b.show
+end
+
+function ClaudeWoW.ChatLog.Mode()
+	return db ~= nil and db.settings.mode == "pixel" and db.settings.transport == "screenshot"
+		and type(db.settings.chatlog) == "table" and not ClaudeWoW.ChatLog.Paused()
+		and type(SendSystemMessage) == "function" and type(LoggingChat) == "function"
+end
+
+function ClaudeWoW.ChatLog.Fits(records)
+	for _, rec in ipairs(records) do
+		if (rec.tries or 1) > 1 then return false end
+		if (";" .. (rec.flags or "") .. ";"):find(";v;", 1, true) then return false end
+	end
+	return true
+end
+
+function ClaudeWoW.ChatLog.Hide(_, _, msg)
+	return type(msg) == "string" and msg:sub(1, #Codec.LOG_TAG + 1) == Codec.LOG_TAG .. " "
+end
+
+function ClaudeWoW.ChatLog.InstallFilter()
+	local L = ClaudeWoW.ChatLog
+	if L.filtered then return end
+	local add = (type(ChatFrameUtil) == "table" and ChatFrameUtil.AddMessageEventFilter) or ChatFrame_AddMessageEventFilter
+	if type(add) == "function" then L.filtered = pcall(add, "CHAT_MSG_SYSTEM", L.Hide) end
+end
+
+function ClaudeWoW.ChatLog.Write(id, payload)
+	local spec = db.settings.chatlog
+	local ok, err = pcall(function()
+		if not LoggingChat() then LoggingChat(true) end
+		if not spec.show then ClaudeWoW.ChatLog.InstallFilter() end
+		local lines = Codec.LogLines(id, payload, spec.line, spec.filler)
+		for i = 1, #lines do SendSystemMessage(lines[i]) end
+		run.chatlogStats = run.chatlogStats or { frames = 0, lines = 0, acked = 0, late = 0 }
+		run.chatlogStats.frames = run.chatlogStats.frames + 1
+		run.chatlogStats.lines = run.chatlogStats.lines + #lines
+	end)
+	if not ok then
+		ClaudeWoW.ChatLog.Pause("error: " .. tostring(err))
+	end
+	return ok
+end
+
+function ClaudeWoW.ChatLog.Acked(rec)
+	if not rec.logged then return end
+	local stats = run.chatlogStats
+	if (rec.tries or 1) == 1 then
+		if stats then stats.acked = stats.acked + 1 end
+		ClaudeWoW.ChatLog.Resume()
+		return
+	end
+	if stats then stats.late = stats.late + 1 end
+	run.chatlogMisses = (run.chatlogMisses or 0) + 1
+	if run.chatlogPause or run.chatlogMisses >= ClaudeWoW.ChatLog.MISSES_BEFORE_PAUSE then
+		local wait, first = ClaudeWoW.ChatLog.Pause("the bridge read the last message only from the screenshot retry")
+		if first then
+			TellPlayer("the bridge did not read the chat log in time. Messages go out by screenshot; the chat log is tried again in " .. FmtDur(wait) .. ".")
+		end
+	end
+end
+
+function ClaudeWoW.ChatLog.Status()
+	local s = db.settings
+	if type(s.chatlog) ~= "table" then return "chat log transport: off (the bridge did not ask for it)" end
+	local stats = run.chatlogStats
+	local pause = run.chatlogPause
+	local state = ClaudeWoW.ChatLog.Mode() and (pause and "on trial after a pause" or "on") or "unavailable in this client"
+	if ClaudeWoW.ChatLog.Paused() then
+		state = "PAUSED, next try in " .. FmtDur(pause.wait - (GetTime() - pause.at)) .. " (" .. tostring(pause.reason) .. ")"
+	end
+	return string.format("chat log transport: %s, lines of %d, filler %d bytes%s%s",
+		state,
+		s.chatlog.line, s.chatlog.filler,
+		s.chatlog.show and ", lines shown in chat" or "",
+		stats and string.format("; %d frames, %d lines written, %d acknowledged first time, %d only after the screenshot retry", stats.frames, stats.lines, stats.acked, stats.late) or "")
+end
+
 -- ok = true (SCREENSHOT_SUCCEEDED), false (SCREENSHOT_FAILED or the call raised),
 -- nil (no event within SHOT_TIMEOUT: the file may or may not exist).
 local function ScreenshotDone(ok)
@@ -794,6 +921,24 @@ RefreshStrip = function()
 		table.insert(included, rec)
 		size = size + #r + 1
 	end
+	if ClaudeWoW.ChatLog.Mode() and not ShotsPaused(true) and ClaudeWoW.ChatLog.Fits(included) then
+		local unsent = false
+		for _, rec in ipairs(included) do
+			if not rec.shot then unsent = true end
+		end
+		if not unsent or ClaudeWoW.ChatLog.Write(latest, table.concat(parts, RS)) then
+			if run.shot and not run.shot.fired then run.shot = nil end
+			if not run.shot then HideStrip() end
+			if unsent then
+				for _, rec in ipairs(included) do
+					rec.shot = "log"
+					rec.logged = true
+					rec.loggedAt = GetTime()
+				end
+			end
+			return
+		end
+	end
 	if not ScreenshotMode() then
 		-- A shot still counting frames (the transport just changed) is called off.
 		if run.shot and not run.shot.fired then run.shot = nil end
@@ -865,9 +1010,12 @@ local function ApplyTransport(data)
 	local lv = StripLevels(data)
 	local cur = db.settings.stripLevels
 	local sameLevels = (lv == nil and cur == nil) or (lv ~= nil and cur ~= nil and lv.on == cur.on and lv.off == cur.off and lv.codec == (cur.codec or 1))
-	if db.settings.transport == t and sameLevels then return end
+	local logSpec = ClaudeWoW.ChatLog.Spec(data)
+	if db.settings.transport == t and sameLevels and ClaudeWoW.ChatLog.Same(logSpec, db.settings.chatlog) then return end
 	db.settings.transport = t
 	db.settings.stripLevels = lv
+	if not ClaudeWoW.ChatLog.Same(logSpec, db.settings.chatlog) then ClaudeWoW.ChatLog.Resume() end
+	db.settings.chatlog = logSpec
 	SyncScreenshotMode()
 	-- Whatever is still unacknowledged goes out again the new way.
 	for _, rec in pairs(run.outbound) do rec.shot = nil end
@@ -1379,6 +1527,7 @@ end
 -- what the bridge knows, so later messages only carry it again if it changes.
 local function NoteAcked(rec)
 	rec.acked = true
+	ClaudeWoW.ChatLog.Acked(rec)
 	if rec.ctx ~= nil then run.contextSent = rec.ctx end
 end
 
@@ -1617,6 +1766,11 @@ local function Tick()
 		if rec.acked then
 			if rec.forget then db.forget[rec.forget] = nil end
 			run.outbound[id] = nil
+			changed = true
+		elseif rec.shot == "log" and now - (rec.loggedAt or rec.sentAt) >= ClaudeWoW.ChatLog.RETRY_SECONDS then
+			rec.tries = (rec.tries or 1) + 1
+			rec.sentAt = now
+			rec.shot = nil
 			changed = true
 		elseif rec.hello and now - rec.sentAt >= 20 then
 			run.outbound[id] = nil
@@ -2480,7 +2634,7 @@ local function WhisperAgentChat(target)
 	if target == "" then return nil end
 	local best
 	for _, c in ipairs(db.chats) do
-		if ChatAgentName(c):lower() == target then
+		if not c.quiet and ChatAgentName(c):lower() == target then
 			if c.id == db.activeChat then return c end
 			if c.id == run.lastReplyChat or not best then best = c end
 		end
@@ -3238,7 +3392,11 @@ function ClaudeWoW.DeleteChat(id)
 	if not c then return end
 	ForgetOnBridge(c)
 	Whisper.Close(c)
-	if #db.chats == 1 then
+	local otherUserChats = 0
+	for _, ch in ipairs(db.chats) do
+		if ch ~= c and not ch.quiet then otherUserChats = otherUserChats + 1 end
+	end
+	if #db.chats == 1 or (otherUserChats == 0 and not c.quiet) then
 		wipe(c.history)
 		c.pendingId, c.progress, c.unread, c.draft = nil, nil, 0, nil
 		c.name = "Chat 1"
@@ -3248,7 +3406,16 @@ function ClaudeWoW.DeleteChat(id)
 	end
 	table.remove(db.chats, idx)
 	if db.activeChat == c.id then
-		ClaudeWoW.SwitchChat(db.chats[math.min(idx, #db.chats)].id)
+		local nextChat = db.chats[math.min(idx, #db.chats)]
+		if nextChat.quiet then
+			for _, ch in ipairs(db.chats) do
+				if not ch.quiet then
+					nextChat = ch
+					break
+				end
+			end
+		end
+		ClaudeWoW.SwitchChat(nextChat.id)
 	else
 		ClaudeWoW.RenderChatList()
 	end
@@ -5441,7 +5608,8 @@ HELP = table.concat({
 	"/claude reload                     reload now (also frees the slot pool)",
 	"/claude slots                      how many reply slots are still free this session",
 	"/claude diag                       transport diagnostics",
-	"/claude hide | mini                hide the window, or collapse it to the small bar",
+	"/claude probe [chatlog|asyncfile]  write test lines to the client's own logs so the bridge can measure them",
+	"/claude hide | mini               hide the window, or collapse it to the small bar",
 	"/claude help                       this list",
 	"/r <text>                          reply to the chat that answered last, until a real player whispers you",
 	"/w <agent> <text>                  send to that agent's chat when whisper tabs are on",
@@ -5488,12 +5656,17 @@ local COMMAND_ARGS = {
 	achievements = { [""] = true, on = true, off = true, test = true, list = true },
 	toasts = { [""] = true, on = true, off = true, test = true },
 	ui = function(rest) return Cli.IsUi(rest) end,
+	probe = function(rest)
+		local which, arg = rest:lower():match("^(%S*)%s*(.-)$")
+		if which == "chatlog" then return arg == "" or tonumber(arg) ~= nil end
+		return arg == "" and (which == "" or which == "all" or which == "asyncfile")
+	end,
 }
 
 Cli.CLAUDE_VERBS = {
 	help = true, diag = true, cancel = true, copy = true, clear = true, rename = true, delete = true,
 	cd = true, hide = true, quit = true, mini = true, min = true, reload = true, refresh = true,
-	resend = true, slots = true, look = true, reset = true,
+	resend = true, slots = true, look = true, reset = true, probe = true,
 }
 
 Cli.CONFIG_KEYS = {
@@ -6382,6 +6555,108 @@ function ClaudeWoW.Cancel(c)
 	ClaudeWoW.Render()
 end
 
+ClaudeWoW.Probe = {
+	TAG = "CWLOG",
+	CANCEL_BURST_FIRST = 135000,
+	WAIT_BURST_FIRST = 135100,
+	BURST_COUNT = 48,
+}
+
+function ClaudeWoW.Probe.HideLine(_, _, msg)
+	return type(msg) == "string" and msg:find("^CWLOG%d+ H ") ~= nil
+end
+
+function ClaudeWoW.Probe.ChatLog(target)
+	local P = ClaudeWoW.Probe
+	if type(LoggingChat) ~= "function" or type(SendSystemMessage) ~= "function" then
+		return "chatlog: LoggingChat or SendSystemMessage is missing in this client"
+	end
+	target = math.min(math.max(tonumber(target) or 16384, 1024), 262144)
+	local tag = P.TAG .. time()
+	local wasOn = LoggingChat()
+	if not wasOn then LoggingChat(true) end
+	if not P.filtered then
+		local add = (type(ChatFrameUtil) == "table" and ChatFrameUtil.AddMessageEventFilter) or ChatFrame_AddMessageEventFilter
+		if type(add) == "function" then P.filtered = pcall(add, "CHAT_MSG_SYSTEM", P.HideLine) end
+	end
+	SendSystemMessage(tag .. " LONG " .. string.rep("L", 1000))
+	local pad = string.rep("z", 200)
+	local lines = math.ceil(target / 240)
+	for i = 1, lines do
+		SendSystemMessage(string.format("%s %s %05d %s", tag, i % 4 == 1 and "V" or "H", i, pad))
+	end
+	SendSystemMessage(tag .. " END " .. lines)
+	return string.format("chatlog: tag=%s lines=%d bytes=%d wasOn=%s filter=%s", tag, lines, target, tostring(wasOn), tostring(P.filtered or false))
+end
+
+function ClaudeWoW.Probe.AsyncFile(done)
+	local P = ClaudeWoW.Probe
+	local out = {}
+	local function step(name, fn)
+		local ok, a, b = pcall(fn)
+		out[#out + 1] = name .. "=" .. tostring(ok) .. ":" .. tostring(a) .. ":" .. tostring(b)
+	end
+	if not P.host then
+		P.host = CreateFrame("Frame", nil, UIParent)
+		P.host:SetSize(2, 2)
+		P.host:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", 0, 0)
+		P.host:Show()
+		P.shown = P.host:CreateTexture(nil, "BACKGROUND")
+		P.shown:SetAllPoints()
+		P.blocking = P.host:CreateTexture(nil, "BACKGROUND")
+		P.blocking:SetAllPoints()
+		P.hiddenHost = CreateFrame("Frame")
+		P.hiddenHost:Hide()
+		P.hidden = P.hiddenHost:CreateTexture()
+	end
+	local shown, hidden, blocking = P.shown, P.hidden, P.blocking
+	step("A1_shown_cancel_133975", function() local s = shown:SetTexture(133975); shown:SetTexture(nil); return s end)
+	step("A2_twice_133888", function() shown:SetTexture(133888); shown:SetTexture(nil); local s = shown:SetTexture(133888); shown:SetTexture(nil); return s end)
+	step("A3_hidden_cancel_134120", function() local s = hidden:SetTexture(134120); hidden:SetTexture(nil); return s end)
+	step("A4_missing_8999999", function() local s = shown:SetTexture(8999999); shown:SetTexture(nil); return s end)
+	step("A5_blocking_134188", function() blocking:SetBlockingLoadsRequested(true); local s = blocking:SetTexture(134188); return s, blocking:IsBlockingLoadRequested() end)
+	step("A6_keep_134336", function() return shown:SetTexture(134336) end)
+	C_Timer.After(2, function()
+		step("A7_reuse_after_complete_134336", function() shown:SetTexture(nil); local s = shown:SetTexture(134336); shown:SetTexture(nil); return s end)
+	end)
+	C_Timer.After(4, function()
+		step("A8_cancel_burst_" .. P.CANCEL_BURST_FIRST, function()
+			for i = 0, P.BURST_COUNT - 1 do
+				shown:SetTexture(P.CANCEL_BURST_FIRST + i)
+				shown:SetTexture(nil)
+			end
+			return P.BURST_COUNT
+		end)
+	end)
+	C_Timer.After(6, function()
+		step("A9_wait_burst_" .. P.WAIT_BURST_FIRST, function()
+			blocking:SetBlockingLoadsRequested(true)
+			for i = 0, P.BURST_COUNT - 1 do
+				blocking:SetTexture(P.WAIT_BURST_FIRST + i)
+			end
+			blocking:SetTexture(nil)
+			return P.BURST_COUNT
+		end)
+		done("asyncfile: " .. table.concat(out, " "))
+	end)
+end
+
+function ClaudeWoW.Probe.Run(rest)
+	local P = ClaudeWoW.Probe
+	local which, arg = Trim(rest or ""):lower():match("^(%S*)%s*(.-)$")
+	if which == "" then which = "all" end
+	local function say(line) ClaudeWoW.Print("probe " .. line) end
+	say("start " .. which .. " at " .. time())
+	if which == "all" or which == "chatlog" then
+		local ok, line = pcall(P.ChatLog, arg)
+		say(ok and line or ("chatlog: error " .. tostring(line)))
+	end
+	if which == "all" or which == "asyncfile" then
+		local ok, err = pcall(P.AsyncFile, say)
+		if not ok then say("asyncfile: error " .. tostring(err)) end
+	end
+end
+
 RunCommand = function(cmd, rest)
 	local s = db.settings
 	local c = ActiveChat()
@@ -6565,6 +6840,8 @@ RunCommand = function(cmd, rest)
 		end
 		ClaudeWoW.Render()
 		Cli.Show(c)
+	elseif cmd == "probe" then
+		ClaudeWoW.Probe.Run(rest)
 	elseif cmd == "diag" then
 		local free = 0
 		for i = 1, SLOT_COUNT do
@@ -6588,6 +6865,7 @@ RunCommand = function(cmd, rest)
 				.. (run.shotStats and string.format(", screenshots: %d taken, %d confirmed, %d failed, %d without event", run.shotStats.taken, run.shotStats.ok, run.shotStats.failed, run.shotStats.timeouts) or "")
 				.. (run.shotsPaused and ", screenshots PAUSED (bridge not seen for " .. FmtDur(GetTime() - (run.bridgeSeen or run.startedAt or GetTime())) .. ")" or "")
 				.. (s.shotFormatSaved and (", screenshotFormat saved: " .. s.shotFormatSaved) or ""),
+			ClaudeWoW.ChatLog.Status(),
 			"vision: " .. (s.vision and "on" or "off") .. (s.vision and s.transport ~= "screenshot" and " (needs the screenshot transport; the pixel capture never sees more than the strip)" or ""),
 			"plugin: " .. ((c.plugin and c.plugin ~= "") and c.plugin or ("bridge default, " .. (run.bridgePlugin or "unknown until connected"))) .. " (bridge has: " .. PluginList() .. ")",
 			"context: " .. ContextThresholdLabel(),

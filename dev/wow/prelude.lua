@@ -132,6 +132,20 @@ function Screenshot()
 	table.insert(DEV.shotQueue, DEV.shots)
 end
 
+DEV.loggingChat = false
+DEV.chatLogQueue = {}
+DEV.systemMessages = 0
+
+function LoggingChat(on)
+	if on ~= nil then DEV.loggingChat = on and true or false end
+	return DEV.loggingChat
+end
+
+function SendSystemMessage(text)
+	DEV.systemMessages = DEV.systemMessages + 1
+	if DEV.loggingChat then table.insert(DEV.chatLogQueue, tostring(text)) end
+end
+
 function DEV.StripCells()
 	local s = _G.ClaudeWoWStrip
 	if not s or not DEV.Visible(s) then return "" end

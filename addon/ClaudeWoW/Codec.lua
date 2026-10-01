@@ -47,14 +47,10 @@ function C.Fletcher16(bytes, from, to)
 	return s1, s2
 end
 
--- Returns an array of cell values (0 .. 2^bits - 1, the ramp first for codec 2)
--- and the number of bytes encoded. `codec` is 1 (the default) or 2.
-function C.Encode(id, payload, codec)
-	codec = codec == 2 and 2 or 1
-	local geo = C.GEOMETRY[codec]
+function C.FrameBytes(id, payload, magic2)
 	local len = #payload
 	local bytes = {
-		C.MAGIC1, codec == 2 and C.MAGIC2_DENSE or C.MAGIC2,
+		C.MAGIC1, magic2,
 		math.floor(id / 256) % 256, id % 256,
 		math.floor(len / 256) % 256, len % 256,
 	}
@@ -64,6 +60,50 @@ function C.Encode(id, payload, codec)
 	local s1, s2 = C.Fletcher16(bytes, 3, 6 + len)
 	bytes[#bytes + 1] = s1
 	bytes[#bytes + 1] = s2
+	return bytes
+end
+
+C.MAGIC2_LOG = 0x3A
+C.LOG_TAG = "CWX1"
+C.BASE64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+function C.Base64(bytes)
+	local digits = C.BASE64
+	local out = {}
+	for i = 1, #bytes, 3 do
+		local b, c = bytes[i + 1], bytes[i + 2]
+		local n = bytes[i] * 65536 + (b or 0) * 256 + (c or 0)
+		local d1 = math.floor(n / 262144) % 64 + 1
+		local d2 = math.floor(n / 4096) % 64 + 1
+		local d3 = math.floor(n / 64) % 64 + 1
+		local d4 = n % 64 + 1
+		out[#out + 1] = digits:sub(d1, d1) .. digits:sub(d2, d2) .. (b and digits:sub(d3, d3) or "=") .. (c and digits:sub(d4, d4) or "=")
+	end
+	return table.concat(out)
+end
+
+function C.LogLines(id, payload, lineLength, fillerBytes)
+	local text = C.Base64(C.FrameBytes(id % 65536, payload, C.MAGIC2_LOG))
+	local total = math.ceil(#text / lineLength)
+	local lines = {}
+	for seq = 1, total do
+		lines[seq] = string.format("%s %d %d/%d %s", C.LOG_TAG, id, seq, total, text:sub((seq - 1) * lineLength + 1, seq * lineLength))
+	end
+	local pad = C.LOG_TAG .. " " .. id .. " pad " .. string.rep("z", lineLength)
+	local written = 0
+	while written < fillerBytes do
+		lines[#lines + 1] = pad
+		written = written + #pad
+	end
+	return lines, total
+end
+
+-- Returns an array of cell values (0 .. 2^bits - 1, the ramp first for codec 2)
+-- and the number of bytes encoded. `codec` is 1 (the default) or 2.
+function C.Encode(id, payload, codec)
+	codec = codec == 2 and 2 or 1
+	local geo = C.GEOMETRY[codec]
+	local bytes = C.FrameBytes(id, payload, codec == 2 and C.MAGIC2_DENSE or C.MAGIC2)
 
 	local BITS = geo.bits
 	local base = 2 ^ BITS
