@@ -92,15 +92,15 @@ function refusedText(r) {
   if (r.problem === GR.PROBLEM.length) return `${r.length} characters, the limit is ${r.max}`;
   if (r.problem === GR.PROBLEM.char) return `the character U+${r.char.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')} is not allowed`;
   if (r.problem === GR.PROBLEM.words) return `words neither in the recap nor plain: ${r.words.join(', ')}`;
-  if (r.problem === GR.PROBLEM.phrases) return `game names not in the recap: ${r.phrases.join(', ')}`;
+  if (r.problem === GR.PROBLEM.phrases) return `game names not in the recap: ${r.phrases.map(p => `${p.run} (${p.source})`).join(', ')}`;
   return 'it is empty';
 }
 
 function checkLine(recap, outcome, gameData = null) {
   const line = roastLine(outcome);
-  if (!line) return { text: '', refused: '', phrasesChecked: false };
+  if (!line) return { text: '', refused: '', phrasesNote: '' };
   const r = GR.checkText(line, { store: gameData, tokens: false, names: recapNames(recap), known: [recap], plainWords: ROAST_WORDS, charRe: ROAST_CHAR_RE, maxLength: ROAST_TEXT_MAX });
-  return r.ok ? { text: r.text, refused: '', phrasesChecked: r.phrasesChecked } : { text: '', refused: refusedText(r), phrasesChecked: !!r.phrasesChecked };
+  return r.ok ? { text: r.text, refused: '', phrasesNote: r.phrasesNote } : { text: '', refused: refusedText(r), phrasesNote: r.phrasesNote || '' };
 }
 
 function overlayCommand(recap, outcome, checked = checkLine(recap, outcome)) {
@@ -130,7 +130,7 @@ async function sendToOverlay(job, outcome, core) {
   const gameData = typeof core.gameData === 'function' ? () => core.gameData() : null;
   const checked = checkLine(job.recap, outcome, gameData);
   if (checked.refused) core.log(`${core.tag(job)} roast: line left off the card (${checked.refused})`);
-  if (checked.text && !checked.phrasesChecked) core.log(`${core.tag(job)} roast: ${GR.PHRASES_UNCHECKED_TEXT}`);
+  if (checked.text && checked.phrasesNote) core.log(`${core.tag(job)} roast: ${checked.phrasesNote}`);
   const command = overlayCommand(job.recap, outcome, checked);
   try {
     const result = await stream.postControl(url, command);

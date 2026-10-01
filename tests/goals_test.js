@@ -374,7 +374,11 @@ test('order phrases: a run of plain words that names something in the synced dat
   const store = fixtureData();
   const refused = G.validateOrderText('take the low road to 150', NAMES, store);
   assert.equal(refused.ok, false);
-  assert.equal(refused.text, 'The order was refused. These word runs are game names: "low road". Use a reference token or leave the name out.');
+  assert.equal(refused.text, 'The order was refused. These word runs are game names: "low road" (a map name in the game data; use {map:ID,x,y} for it). Reword the text or leave the names out.');
+  assert.equal(G.validateOrderText('go to the old town', NAMES, store).text, 'The order was refused. These word runs are game names: "old town" (a well-known ability, NPC or place name from the built-in list). Reword the text or leave the names out.', 'no token is offered where no token kind exists');
+  assert.equal(G.validateOrderText('you got old. town is next', NAMES, store).ok, true, 'runs stop at sentence and clause marks');
+  assert.equal(G.validateOrderText('you got old, town is next', NAMES, store).ok, true);
+  assert.equal(G.validateOrderText('go to old - town', NAMES, store).ok, false, 'a dash does not end a clause');
   assert.equal(G.validateOrderText('take the {map:9004,10,10} to 150', NAMES, store).text, 'take the Low Road to 150', 'the same name through a token is fine');
   assert.equal(G.validateOrderText('raise first aid to 100', ['First Aid', 'Bone'], store).ok, true, 'a reported profession that is also in the data and the built-in list');
   assert.equal(G.validateOrderText('take the low road to 150', ['Low Road', 'Bone'], store).ok, true, 'a reported name made of plain words is not refused as a data phrase');
@@ -395,8 +399,14 @@ test('order_issue says when the data phrase check was skipped for lack of synced
   try {
     const res = await none.store.call('order_issue', { text: 'take the low road to 150' });
     assert.equal(res.ok, true, res.text);
-    assert.match(res.text, /No game data is synced for the client's build, so multi-word names were checked only against the short built-in list\./);
+    assert.match(res.text, /No game data is synced for this build yet \(claude-wow data sync\).* Multi-word game names were checked only against the short built-in list\./);
   } finally { none.cleanup(); }
+  const mismatch = rig({ gameData: openFixtureData, ctx: BONE_CONTEXT.replace('client 1.60.1.70124', 'client 1.59.0.1') });
+  try {
+    const res = await mismatch.store.call('order_issue', { text: 'take the low road to 150' });
+    assert.equal(res.ok, true, res.text);
+    assert.match(res.text, /The synced game data is build 1\.60\.1\.200, which is not in the client's build family \(client 1\.59\.0\.1\)\..* Multi-word game names were checked only against the short built-in list\./, 'the note names the real reason');
+  } finally { mismatch.cleanup(); }
   const synced = rig({ gameData: openFixtureData });
   try {
     const res = await synced.store.call('order_issue', { text: 'skin 10' });
@@ -416,24 +426,58 @@ test('order tokens: an order refused by its words never opens the game data; a p
   } finally { r.cleanup(); }
 });
 
-test('order tokens through the store the bridge builds: CLAUDE_WOW_HOME from the environment, its data and the context client build expand {item:501}', async () => {
+test('order tokens through the store the bridge builds: the injected home, its data and the context client build expand {item:501}', async () => {
   const dir = tmpDir('bridgegoals');
-  const before = process.env.CLAUDE_WOW_HOME;
-  process.env.CLAUDE_WOW_HOME = dir;
   try {
-    const store = G.createBridgeGoals({ context: () => ({ text: BONE_CONTEXT, at: NOW, receivedAt: Date.now() }), streamOptions: () => ({ ...ST.INERT_OPTIONS }) });
-    assert.equal(store.home.dir, dir);
+    const home = require('../bridge/home').resolve({ CLAUDE_WOW_HOME: dir });
+    const store = G.createBridgeGoals({ home, context: () => ({ text: BONE_CONTEXT, at: NOW, receivedAt: Date.now() }), streamOptions: () => ({ ...ST.INERT_OPTIONS }) });
+    assert.equal(store.home, home);
     assert.equal(store.home.data, path.join(dir, 'data'));
-    fs.cpSync(WOWDATA, store.home.data, { recursive: true });
+    fs.cpSync(WOWDATA, home.data, { recursive: true });
     const res = await store.call('order_issue', { text: 'Buy 2 {item:501}' });
     assert.equal(res.ok, true, res.text);
-    const saved = JSON.parse(fs.readFileSync(path.join(store.home.goals, BONE_KEY, G.GOALS_FILE), 'utf8'));
+    const saved = JSON.parse(fs.readFileSync(path.join(home.goals, BONE_KEY, G.GOALS_FILE), 'utf8'));
     assert.equal(saved.orders.current.text, 'Buy 2 Fixture Blade');
     assert.equal(saved.orders.current.refs[0].build, FIXTURE_BUILD);
-  } finally {
-    if (before === undefined) delete process.env.CLAUDE_WOW_HOME; else process.env.CLAUDE_WOW_HOME = before;
-    fs.rmSync(dir, { recursive: true, force: true });
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+function copiedData(name) {
+  const dir = tmpDir(name);
+  fs.cpSync(WOWDATA, dir, { recursive: true });
+  return { dir, build: path.join(dir, 'forever', FIXTURE_BUILD), open: () => GD.openStore({ dataDir: dir, clientBuild: '1.60.1.70124' }) };
+}
+
+test('order phrases: a missing or damaged phrase table is never taken as a complete index, and the order says so', async () => {
+  for (const damage of [
+    d => fs.writeFileSync(path.join(d.build, 'uimaps.jsonl'), '{"id":9004,"name":"Low Road"}\n'),
+    d => fs.rmSync(path.join(d.build, 'zones.jsonl')),
+  ]) {
+    const d = copiedData('damaged');
+    try {
+      damage(d);
+      const checked = GR.checkText('take the low road to 150', { store: d.open(), names: NAMES, plainWords: G.ORDER_WORDS, charRe: /^[A-Za-z0-9 ,.'\-:!?%]$/, maxLength: 90 });
+      assert.equal(checked.phrasesChecked, false);
+      assert.match(checked.phrasesNote, /The synced game data is missing or has a damaged (uimaps|zones) table/);
+      const again = GR.checkText('take the low road to 150', { store: d.open(), names: NAMES, plainWords: G.ORDER_WORDS, charRe: /^[A-Za-z0-9 ,.'\-:!?%]$/, maxLength: 90 });
+      assert.equal(again.phrasesChecked, false, 'the incomplete index was not cached');
+    } finally { fs.rmSync(d.dir, { recursive: true, force: true }); }
   }
+});
+
+test('order phrases: a re-sync of the same build with new tables rebuilds the index', () => {
+  const d = copiedData('resync');
+  try {
+    const check = () => G.validateOrderText('go to the far bank', NAMES, d.open());
+    assert.equal(check().ok, true);
+    fs.appendFileSync(path.join(d.build, 'uimaps.jsonl'), '{"id":9010,"name":"Far Bank","parentUiMapID":9002,"type":3,"system":0}\n');
+    const manifestFile = path.join(d.build, 'manifest.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
+    manifest.entities.uimaps.rows += 1;
+    manifest.tableHash = 'fixture-2';
+    fs.writeFileSync(manifestFile, JSON.stringify(manifest));
+    assert.match(check().text, /"far bank" \(a map name in the game data/);
+  } finally { fs.rmSync(d.dir, { recursive: true, force: true }); }
 });
 
 test('order tokens: without synced data, or with data for another build or an unknown client build, no token expands and the order says why', async () => {

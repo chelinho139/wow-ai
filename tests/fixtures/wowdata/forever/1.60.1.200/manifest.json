@@ -6,9 +6,12 @@
   "build": "1.60.1.200",
   "buildFamily": "1.60.1",
   "fetchedAt": "2026-09-30T12:00:00.000Z",
+  "tableHash": "fixture-1",
   "entities": {
-    "items": { "file": "items.jsonl", "table": "ItemSparse", "rows": 7 },
+    "items": { "file": "items.jsonl", "table": "ItemSparse", "rows": 8 },
     "skilllines": { "file": "skilllines.jsonl", "table": "SkillLine", "rows": 2 },
-    "uimaps": { "file": "uimaps.jsonl", "table": "UiMap", "rows": 3 }
+    "uimaps": { "file": "uimaps.jsonl", "table": "UiMap", "rows": 4 },
+    "zones": { "file": "zones.jsonl", "table": "AreaTable", "rows": 2 },
+    "flightpaths": { "file": "flightpaths.jsonl", "table": "TaxiNodes", "rows": 1 }
   }
 }
