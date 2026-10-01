@@ -2941,3 +2941,24 @@ test('projects: a chat has none by default; --project, #name and none attach and
   vm.run('SlashCmdList.CLAUDE("-c --project none")');
   assert.equal(vm.evaluate('ClaudeWoWDB.chats[#ClaudeWoWDB.chats].cwd'), '');
 });
+
+test('a whisper reply waits briefly for an item the client has not loaded, then shows the real link; it gives up after three tries with a plain id', () => {
+  const vm = whisperVM();
+  const chatId = vm.evaluate('ClaudeWoWDB.chats[1].id');
+  vm.run('STUB.cached = false; C_Item.GetItemInfo = function(id) if id == 2589 and STUB.cached then return "Linen Cloth", "|cffffffff|Hitem:2589::::::::|h[Linen Cloth]|h|r" end end; C_Item.RequestLoadItemDataByID = function() end');
+  const deliver = text => {
+    vm.run(`ClaudeWoW.Send("${text}")`);
+    const pending = vm.num(`(function() for _, c in ipairs(ClaudeWoWDB.chats) do if c.id == "${chatId}" then return c.pendingId end end end)()`);
+    nextSlot(vm, `{ now = time(), cwd = "", replies = { { chat = "${chatId}", id = ${pending}, status = "done", text = "farm {item:2589}", agent = "claude" } } }`);
+    vm.run('STUB.now = STUB.now + 10; STUB.Tick()');
+  };
+  deliver('what cloth');
+  assert.ok(!chatTabText(vm, chatId).includes('farm'), 'nothing is written while the item loads');
+  vm.run('STUB.cached = true; STUB.RunTimers()');
+  assert.ok(chatTabText(vm, chatId).includes('farm |cffffffff|Hitem:2589::::::::|h[Linen Cloth]|h|r'), chatTabText(vm, chatId));
+
+  vm.run('STUB.cached = false');
+  deliver('again');
+  for (let i = 0; i < 4; i++) vm.run('STUB.RunTimers()');
+  assert.ok(chatTabText(vm, chatId).includes('farm |cff9d9d9ditem 2589|r'), 'after three tries the reply goes out with the plain id');
+});

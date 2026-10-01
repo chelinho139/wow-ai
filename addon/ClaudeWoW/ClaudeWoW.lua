@@ -2068,8 +2068,9 @@ local LINK_BYTES_MAX = 900 -- bytes kept per link
 -- Call a game API that may not exist or may throw, and get its returns or nothing.
 local function Try(fn, ...)
 	if type(fn) ~= "function" then return nil end
-	local ok, a, b, c, d, e, f, g = pcall(fn, ...)
-	if ok then return a, b, c, d, e, f, g end
+	return (function(ok, ...)
+		if ok then return ... end
+	end)(pcall(fn, ...))
 end
 
 local function Money(copper)
@@ -2664,6 +2665,10 @@ function Whisper.MacroLinkLabel(m)
 end
 
 function Whisper.Reply(chat, text, agent, role, denied, summary, msgId, macros)
+	if role ~= "system" and Q.WaitForLinks(Display(tostring(summary or "") .. "\n" .. tostring(text or "")), tostring(chat.id) .. ":" .. tostring(msgId)) then
+		C_Timer.After(Q.LINK_RETRY_SECONDS, function() Whisper.Reply(chat, text, agent, role, denied, summary, msgId, macros) end)
+		return true
+	end
 	local frame = Whisper.FrameFor(chat, true, false)
 	if not frame then return false end
 	Whisper.EndLive(frame, "progress")
@@ -2678,7 +2683,7 @@ function Whisper.Reply(chat, text, agent, role, denied, summary, msgId, macros)
 		local r, g, b = WhisperColor("WHISPER", 1, 0.5, 1)
 		local prefix = WhisperFormat(CHAT_WHISPER_GET, "%s whispers: ", "|H" .. LINK_PREFIX .. "reply:" .. chat.id .. "|h[" .. who .. "]|h")
 		local lines, cut = Whisper.Body(text, summary)
-		for i, line in ipairs(lines) do WhisperWrite(frame, (i == 1 and prefix or "") .. line, r, g, b) end
+		for i, line in ipairs(lines) do WhisperWrite(frame, (i == 1 and prefix or "") .. Q.RichText(line), r, g, b) end
 		if #lines == 0 then WhisperWrite(frame, prefix, r, g, b) end
 		if cut then WhisperWrite(frame, "|cff888888" .. cut .. ":|r " .. Link("open", chat.id, "full reply"), r, g, b) end
 		for k, m in ipairs(macros or {}) do
@@ -3264,6 +3269,7 @@ function ClaudeWoW.SwitchChat(id)
 		prev.draft = typed ~= "" and typed or nil
 	end
 	db.activeChat = c.id
+	c.opened = time()
 	c.unread = 0
 	ui.chatPage = nil
 	if ui.input then
@@ -3393,12 +3399,10 @@ function Cli.ProjectMenu(anchor)
 			for _, p in ipairs(Cli.KnownProjects()) do
 				root:CreateButton(FolderName(p), function() Cli.PickProject(c, p) end)
 			end
-			root:CreateDivider()
-			root:CreateButton("Other folder...", function() ClaudeWoW.FolderPrompt(c.id) end)
 		end)
 		if shown then return end
 	end
-	ClaudeWoW.FolderPrompt(c.id)
+	Cli.Out(c, "project: " .. Cli.ProjectLabel(c) .. " (known: " .. Cli.ProjectNames() .. "). Use /claude --project <name|path|none>.")
 end
 
 function Cli.UpdateProjectButton()
@@ -3952,7 +3956,7 @@ function ClaudeWoW.UpdateStatus()
 	if ui.title then
 		local t = c and Display(c.name) or "Claude WoW"
 		if ui.chatTitle then
-			t = "Claude WoW"
+			t = Q.PANEL_TITLE
 		else
 			local folder = FolderName(ChatFolder(c))
 			if folder ~= "" then t = t .. "  |cff888888" .. Display(folder) .. "|r" end
@@ -4030,6 +4034,12 @@ local function GetBubble(i)
 	local b = ui.bubbles[i]
 	if b then return b end
 	b = CreateFrame("Frame", nil, ui.content)
+	if b.SetHyperlinksEnabled then
+		pcall(b.SetHyperlinksEnabled, b, true)
+		b:SetScript("OnHyperlinkClick", Q.LinkClick)
+		b:SetScript("OnHyperlinkEnter", Q.LinkEnter)
+		b:SetScript("OnHyperlinkLeave", function() GameTooltip:Hide() end)
+	end
 	b.bg = b:CreateTexture(nil, "BACKGROUND")
 	b.bg:SetAllPoints()
 	b.accent = b:CreateTexture(nil, "BORDER")
@@ -4092,7 +4102,7 @@ function ClaudeWoW.Render()
 			b.who:SetTextColor(look.color[1], look.color[2], look.color[3])
 			b.when:SetText(when or "")
 			b.body:SetWidth(width - 18)
-			b.body:SetText(Display(text))
+			b.body:SetText(role == "assistant" and Q.RichText(Display(text)) or Display(text))
 			local ink = ui.parchment and (dim and Q.PARCHMENT_DIM or Q.PARCHMENT_TEXT) or (dim and { 0.72, 0.72, 0.72 } or { 0.93, 0.93, 0.93 })
 			b.body:SetTextColor(ink[1], ink[2], ink[3])
 			local h = b.body:GetStringHeight()
@@ -4735,6 +4745,103 @@ function Q.AtlasExists(name)
 	return C_Texture and C_Texture.GetAtlasExists and C_Texture.GetAtlasExists(name) and true or false
 end
 
+Q.PANEL_TITLE = "Claude"
+Q.LINK_RETRY_SECONDS, Q.LINK_RETRIES = 0.5, 3
+Q.linkTries = {}
+Q.linkMissing = false
+
+function Q.ItemLink(id)
+	local info = (C_Item and C_Item.GetItemInfo) or GetItemInfo
+	local _, link = Try(info, id)
+	if type(link) == "string" then return link end
+	Q.linkMissing = true
+	if C_Item and C_Item.RequestLoadItemDataByID then pcall(C_Item.RequestLoadItemDataByID, id) end
+	return nil
+end
+
+function Q.SpellLink(id)
+	local link = Try((C_Spell and C_Spell.GetSpellLink) or GetSpellLink, id)
+	if type(link) == "string" then return link end
+	if C_Spell and C_Spell.RequestLoadSpellData then
+		Q.linkMissing = true
+		pcall(C_Spell.RequestLoadSpellData, id)
+	end
+	return nil
+end
+
+function Q.QuestTitle(id)
+	local n = Try(C_QuestLog and C_QuestLog.GetNumQuestLogEntries) or Try(GetNumQuestLogEntries) or 0
+	for i = 1, math.min(tonumber(n) or 0, 60) do
+		local info = Try(C_QuestLog and C_QuestLog.GetInfo, i)
+		if type(info) == "table" then
+			if tonumber(info.questID) == id and not info.isHeader then return info.title end
+		else
+			local title, _, _, isHeader, _, _, _, qid = Try(GetQuestLogTitle, i)
+			if tonumber(qid) == id and not isHeader then return title end
+		end
+	end
+	return nil
+end
+
+function Q.RichToken(kind, id)
+	id = tonumber(id)
+	if not id then return nil end
+	if kind == "item" then return Q.ItemLink(id) end
+	if kind == "spell" then return Q.SpellLink(id) end
+	if kind == "quest" then
+		local title = Q.QuestTitle(id)
+		return title and ("|cffffd100[" .. Display(title) .. "]|r") or nil
+	end
+	return nil
+end
+
+function Q.RichText(text)
+	text = tostring(text or "")
+	text = text:gsub("{(%a+):(%d+)}", function(kind, id)
+		return Q.RichToken(kind:lower(), id) or ("|cff9d9d9d" .. kind .. " " .. id .. "|r")
+	end)
+	text = text:gsub("^[%-%*] ", "\226\128\162 "):gsub("\n[%-%*] ", "\n\226\128\162 ")
+	return text
+end
+
+function Q.WaitForLinks(text, key)
+	Q.linkMissing = false
+	Q.RichText(text)
+	if not Q.linkMissing then return false end
+	local tries = (Q.linkTries[key] or 0) + 1
+	Q.linkTries[key] = tries
+	return tries <= Q.LINK_RETRIES
+end
+
+Q.linkEvents = CreateFrame("Frame")
+pcall(Q.linkEvents.RegisterEvent, Q.linkEvents, "GET_ITEM_INFO_RECEIVED")
+pcall(Q.linkEvents.RegisterEvent, Q.linkEvents, "SPELL_DATA_LOAD_RESULT")
+Q.linkEvents:SetScript("OnEvent", function()
+	if Q.linkRedraw or not ui.frame then return end
+	Q.linkRedraw = true
+	C_Timer.After(Q.LINK_RETRY_SECONDS, function()
+		Q.linkRedraw = nil
+		if ui.frame and ui.frame:IsShown() then ClaudeWoW.Render() end
+	end)
+end)
+
+function Q.LinkClick(self, link, text, button)
+	if type(SetItemRef) == "function" then SetItemRef(link, text, button, self) end
+end
+
+function Q.LinkEnter(self, link)
+	local kind = tostring(link or ""):match("^(%a+):")
+	if kind ~= "item" and kind ~= "spell" then return end
+	GameTooltip:SetOwner(self, "ANCHOR_CURSOR")
+	if pcall(GameTooltip.SetHyperlink, GameTooltip, link) then GameTooltip:Show() else GameTooltip:Hide() end
+end
+
+function Q.WhenLabel(t)
+	t = tonumber(t)
+	if not t then return "" end
+	if date("%Y-%m-%d", t) == date("%Y-%m-%d", time()) then return "at " .. date("%H:%M", t) end
+	return "on " .. date("%b %d", t)
+end
 Q.CLASSIC_ERA_ART = { parchment = true, reply = true }
 Q.CLASSIC_ERA_GEAR = "Interface\\Icons\\INV_Misc_Gear_01"
 Q.CLASSIC_PAGE = {
@@ -4870,7 +4977,7 @@ function Q.ChatObjectives(c)
 	local first = tostring(last.text or ""):match("^%s*([^\n]*)") or ""
 	return {
 		who .. ": " .. first,
-		count .. (count == 1 and " message" or " messages") .. (last.t and (", last at " .. date("%H:%M", last.t)) or ""),
+		count .. (count == 1 and " message" or " messages") .. (last.t and (", last " .. Q.WhenLabel(last.t)) or ""),
 	}
 end
 
@@ -5096,13 +5203,6 @@ function ClaudeWoW.RenderQuestList()
 		end
 		table.insert(groups[key], c)
 	end
-	for i, key in ipairs(order) do
-		if key == Q.NO_FOLDER and i > 1 then
-			table.remove(order, i)
-			table.insert(order, 1, key)
-			break
-		end
-	end
 	local width = Try(q.scroll.GetWidth, q.scroll) or (Q.LIST_W - 32)
 	if width < 80 then width = Q.LIST_W - 32 end
 	q.content:SetWidth(width)
@@ -5160,11 +5260,12 @@ function ClaudeWoW.RenderQuestList()
 end
 
 function Q.LastActive(c)
+	local opened = tonumber(c.opened)
 	for i = #(c.history or {}), 1, -1 do
 		local t = tonumber(c.history[i].t)
-		if t then return t end
+		if t then return math.max(t, opened or 0) end
 	end
-	return nil
+	return opened
 end
 
 function Q.NewestFirst(chats)
@@ -5461,7 +5562,7 @@ local function BuildUI()
 	local nativeTitle = native and Try(f.GetTitleText, f)
 	local title = nativeTitle or f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
 	if not nativeTitle then title:SetPoint("LEFT", dotHolder, "RIGHT", 6, 0) end
-	title:SetText("Claude WoW")
+	title:SetText(Q.PANEL_TITLE)
 	ui.title = title
 
 	local status = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
