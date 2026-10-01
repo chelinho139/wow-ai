@@ -8,6 +8,8 @@ const MAP_ARGS = /^\s*(\d{1,9})\s*,\s*(\d{1,3}(?:\.\d{1,2})?)\s*,\s*(\d{1,3}(?:\
 const REASON = Object.freeze({
   noData: 'noData',
   buildMismatch: 'buildMismatch',
+  buildUnknown: 'buildUnknown',
+  tableUnavailable: 'tableUnavailable',
   badToken: 'badToken',
   unknownId: 'unknownId',
   outOfRange: 'outOfRange',
@@ -24,18 +26,17 @@ function percentText(n) {
   return n.toFixed(1);
 }
 
-function resolveItem(store, args) {
-  const m = ID_ONLY.exec(args);
-  if (!m) return { reason: REASON.badToken };
-  const row = store.byId('items', Number(m[1]));
-  return row ? { id: row.id, name: row.name, text: row.name } : { reason: REASON.unknownId };
+function missingRow(store, entity) {
+  return { reason: store.has(entity) ? REASON.unknownId : REASON.tableUnavailable };
 }
 
-function resolveSkill(store, args) {
-  const m = ID_ONLY.exec(args);
-  if (!m) return { reason: REASON.badToken };
-  const row = store.byId('skilllines', Number(m[1]));
-  return row ? { id: row.id, name: row.name, text: row.name } : { reason: REASON.unknownId };
+function resolveNamed(entity) {
+  return (store, args) => {
+    const m = ID_ONLY.exec(args);
+    if (!m) return { reason: REASON.badToken };
+    const row = store.byId(entity, Number(m[1]));
+    return row ? { id: row.id, name: row.name, text: row.name } : missingRow(store, entity);
+  };
 }
 
 function resolveMap(store, args) {
@@ -45,16 +46,17 @@ function resolveMap(store, args) {
   const y = Number(m[3]);
   if (x > 100 || y > 100) return { reason: REASON.outOfRange };
   const row = store.byId('uimaps', Number(m[1]));
-  if (!row) return { reason: REASON.unknownId };
+  if (!row) return missingRow(store, 'uimaps');
   return { id: row.id, name: row.name, x, y, text: `${row.name} (${percentText(x)}, ${percentText(y)})` };
 }
 
-const RESOLVERS = Object.freeze({ item: resolveItem, skill: resolveSkill, map: resolveMap });
+const RESOLVERS = Object.freeze({ item: resolveNamed('items'), skill: resolveNamed('skilllines'), map: resolveMap });
 
 function createExpander(store) {
   function blocked() {
     if (!store || !store.build) return REASON.noData;
     if (store.buildCheck === GD.BUILD_CHECK.mismatch) return REASON.buildMismatch;
+    if (store.buildCheck === GD.BUILD_CHECK.unknown) return REASON.buildUnknown;
     return null;
   }
 
@@ -76,7 +78,7 @@ function createExpander(store) {
         continue;
       }
       const { text: shown, ...fields } = r;
-      refs.push({ token: ref.token, kind: ref.kind, ...fields, source: store.source, build: store.build, trust: GD.TRUST.clientData });
+      refs.push({ token: ref.token, kind: ref.kind, ...fields, source: store.source, build: store.build, trust: store.rowTrust });
       out += shown;
     }
     out += source.slice(at);

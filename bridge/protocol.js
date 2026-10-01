@@ -550,7 +550,13 @@ function deniedAgain(entry, granted) {
     const target = entry.path || entry.folder;
     return (granted.dirs || []).some(dir => insideFolder(target, dir));
   }
-  return (granted.rules || []).includes(entry.rule);
+  return (granted.rules || []).some(rule => rule === entry.rule || coversMcpTool(rule, entry.rule));
+}
+
+const MCP_SERVER_RULE_RE = /^mcp__[^_]+(?:_[^_]+)*$/;
+
+function coversMcpTool(rule, toolRule) {
+  return MCP_SERVER_RULE_RE.test(rule) && String(toolRule || '').startsWith(`${rule}__`);
 }
 
 function denialNotes(agentName, fresh, again) {

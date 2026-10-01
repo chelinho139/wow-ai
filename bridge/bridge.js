@@ -1137,6 +1137,11 @@ function runAgent(job, opts = {}) {
     beat(job);
     publish(key, { chat: job.chat, id: job.id, status: 'working', text: progress.join('\n'), cwd: job.cwd, session: sessionId, agent: agentId, plugin: plugin.id }, false);
   };
+  const noteMcpDown = (servers) => {
+    log(`${tag} MCP server(s) not connected: ${servers.map(s => `${s.name} (${s.status})`).join(', ')}`);
+    const ours = dataServer && servers.find(s => s.name === DM.SERVER_NAME);
+    if (ours) notes.push(`The game data server (${DM.SERVER_NAME}) did not start (${ours.status}), so this answer was not checked against the client data.`);
+  };
   if (agent.stream === 'text') pushProgress(`${agent.name} is working (no live progress)`);
   if (input.note) notes.push(input.note);
   if (visionNote) notes.push(visionNote);
@@ -1172,6 +1177,7 @@ function runAgent(job, opts = {}) {
     for (const p of r.progress) pushProgress(p);
     for (const d of r.denied) denied.add(d);
     if (Array.isArray(r.deniedAgain)) for (const d of r.deniedAgain) deniedAgain.add(d);
+    if (Array.isArray(r.mcpDown)) noteMcpDown(r.mcpDown);
     notes.push(...r.notes);
     if (r.done) result = r.done;
   };

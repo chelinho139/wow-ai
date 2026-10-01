@@ -15,7 +15,7 @@ function fixtureFetch(url) {
   const u = new URL(url);
   const table = /^\/db2\/(\w+)\/csv$/.exec(u.pathname)[1];
   const headers = { 'content-type': 'text/csv', 'content-disposition': `attachment; filename="${table}.${u.searchParams.get('build')}.csv"` };
-  return Promise.resolve({ status: 200, headers: { get: k => headers[k.toLowerCase()] ?? null }, text: async () => fs.readFileSync(path.join(FIXTURES, `${table}.csv`), 'utf8') });
+  return Promise.resolve(new Response(fs.readFileSync(path.join(FIXTURES, `${table}.csv`), 'utf8'), { status: 200, headers }));
 }
 
 const listAfter = (argv, flag) => {
@@ -51,6 +51,19 @@ test('ask runs get the wowdata server and its run-only rule; coding runs do not;
     assert.ok(!codingRun.argv.includes('--mcp-config'), 'the coding plugin runs without it');
     assert.ok(!listAfter(codingRun.argv, '--allowedTools').includes('mcp__wowdata'));
     assert.ok(!fs.readFileSync(h.sb.config, 'utf8').includes('mcp__wowdata'), 'the rule is never saved');
+  });
+});
+
+test('a wowdata server that fails to start is logged and named in the reply', async () => {
+  const beforeLaunch = async sb => {
+    await D.sync({ dataDir: path.join(sb.home, 'data'), build: BUILD, fetch: fixtureFetch });
+  };
+  await withGame({ plugin: 'ask', beforeLaunch }, async h => {
+    const failed = await h.client.say('[[mcp-fail wowdata]] where is the vale roost');
+    await h.bridge.waitForLine(/MCP server\(s\) not connected: wowdata \(failed\)/);
+    assert.match(failed.text, /game data server \(wowdata\) did not start \(failed\)/);
+    const fine = await h.client.say('where is the vale roost');
+    assert.doesNotMatch(fine.text, /did not start/);
   });
 });
 

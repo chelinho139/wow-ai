@@ -10,6 +10,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const A = require('../bridge/agents');
+const P = require('../bridge/protocol');
 
 const SYS = 'The user is talking to you from inside World of Warcraft';
 
@@ -42,7 +43,6 @@ test('Claude Code: headless stream-json with the allowlist, resume and system pr
 });
 
 test('Claude Code with the wowdata server (ask runs): --mcp-config with the bridge\'s JSON and mcp__wowdata as a run-only rule', () => {
-  const P = require('../bridge/protocol');
   const mcpConfig = JSON.stringify({ mcpServers: { wowdata: { type: 'stdio', command: '/x/claude-wow', args: ['data-mcp', '--data', '/h/data'], alwaysLoad: true } } });
   const cfg = P.withRunOnlyRules({ allowedTools: ['WebSearch'] }, ['mcp__wowdata']);
   assert.deepEqual(A.AGENTS.claude.args({ cfg, resume: 'r', system: SYS, cwd: 'x', mcpConfig }), ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits',
@@ -249,6 +249,28 @@ test('Claude denials from real streams: a retry that is still denied for what it
   const missing = replayClaude('claude-denied-adddir-missing.jsonl', { granted: { rules: ['Bash(mkdir:*)'], dirs: [FIXTURE_CWD, '/tmp/cwow-s10/a'] } });
   assert.deepEqual(missing.denied, [], 'Claude Code drops an --add-dir that does not exist yet; the folder is not offered again');
   assert.deepEqual(missing.deniedAgain, ['AddDir(/tmp)']);
+});
+
+test('Claude denials: a tool under a granted mcp__<server> rule is denied again, never offered as a new rule', () => {
+  const granted = { rules: ['WebSearch', 'mcp__wowdata'], dirs: [FIXTURE_CWD] };
+  const p = A.claudeParser({ cwd: FIXTURE_CWD, isDir: fixtureIsDir, granted });
+  const r = p.feed({ type: 'result', result: 'x', permission_denials: [
+    { tool_name: 'mcp__wowdata__wow_item', tool_use_id: 't1', tool_input: { id: 501 } },
+    { tool_name: 'mcp__wowdataextra__wow_item', tool_use_id: 't2', tool_input: {} },
+  ] });
+  assert.deepEqual(r.deniedAgain, ['mcp__wowdata__wow_item']);
+  assert.deepEqual(r.denied, ['mcp__wowdataextra__wow_item'], 'another server that only shares the prefix is still offered');
+  assert.equal(P.deniedAgain({ kind: 'rule', rule: 'mcp__wowdata__wow_item' }, granted), true);
+  assert.equal(P.deniedAgain({ kind: 'rule', rule: 'mcp__wowdata__wow_item' }, { rules: ['mcp__wowdata__wow_quest'] }), false);
+  assert.equal(P.deniedAgain({ kind: 'rule', rule: 'mcp__wowdata' }, granted), true);
+});
+
+test('Claude init: an MCP server that is not connected is reported, a connected one is not', () => {
+  const p = A.claudeParser();
+  const r = p.feed({ type: 'system', subtype: 'init', session_id: 's', mcp_servers: [{ name: 'wowdata', status: 'failed' }, { name: 'linear', status: 'connected' }, { name: 'docs', status: 'needs-auth' }] });
+  assert.deepEqual(r.mcpDown, [{ name: 'wowdata', status: 'failed' }, { name: 'docs', status: 'needs-auth' }]);
+  assert.equal(p.feed({ type: 'system', subtype: 'init', mcp_servers: [{ name: 'wowdata', status: 'connected' }] }).mcpDown, undefined);
+  assert.equal(p.feed({ type: 'system', subtype: 'init' }).mcpDown, undefined);
 });
 
 test('Claude stream after --add-dir: the resumed retry runs, no denial', () => {

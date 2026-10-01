@@ -177,6 +177,10 @@ function claudeParser(opts = {}) {
     feed(ev) {
       const out = empty();
       if (ev.session_id) out.session = ev.session_id;
+      if (ev.type === 'system' && ev.subtype === 'init' && Array.isArray(ev.mcp_servers)) {
+        const down = ev.mcp_servers.filter(s => s && typeof s === 'object' && s.status !== 'connected');
+        if (down.length) out.mcpDown = down.map(s => ({ name: String(s.name || '?').slice(0, 80), status: String(s.status || 'no status').slice(0, 40) }));
+      }
       if (ev.type === 'system' && ev.subtype === 'permission_denied') {
         noteRefusal(ev.tool_use_id, ev.message || ev.decision_reason, ev.decision_reason_type, true);
       } else if (ev.type === 'user' && ev.message && Array.isArray(ev.message.content)) {

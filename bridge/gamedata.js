@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const D = require('./datasync');
 
-const TRUST = Object.freeze({ clientData: 'client-data', communityDb: 'community-db', none: 'none' });
+const TRUST = Object.freeze({ clientData: 'client-data', buildUnchecked: 'client-data-build-unchecked', buildMismatch: 'unverified-build-mismatch', communityDb: 'community-db', none: 'none' });
 const BUILD_CHECK = Object.freeze({ exact: 'exact', family: 'family', mismatch: 'build-mismatch', unknown: 'unknown', noData: 'no-data' });
 const ENTITIES = Object.freeze(['items', 'quests', 'zones', 'flightpaths', 'uimaps', 'uimapassignments', 'skilllines', 'skilllineabilities', 'spellreagents']);
 const MAX_QUERY_LENGTH = 100;
@@ -25,17 +25,32 @@ function buildCheckFor(clientBuild, dataBuild) {
   return c === 'mismatch' ? BUILD_CHECK.mismatch : c;
 }
 
-function readRows(file) {
+function rowTrustFor(buildCheck) {
+  if (buildCheck === BUILD_CHECK.exact || buildCheck === BUILD_CHECK.family) return TRUST.clientData;
+  if (buildCheck === BUILD_CHECK.unknown) return TRUST.buildUnchecked;
+  if (buildCheck === BUILD_CHECK.mismatch) return TRUST.buildMismatch;
+  return TRUST.none;
+}
+
+function unavailable(problem) {
+  return { rows: [], problem };
+}
+
+function readTable(file, expectedRows) {
+  if (!Number.isSafeInteger(expectedRows) || expectedRows < 0) return unavailable('the manifest has no row count');
   let text;
-  try { text = fs.readFileSync(file, 'utf8'); } catch { return []; }
+  try { text = fs.readFileSync(file, 'utf8'); } catch (e) { return unavailable(`the file cannot be read (${e.code || e.message})`); }
   const rows = [];
+  let bad = 0;
   for (const line of text.split('\n')) {
     if (!line) continue;
     let row;
-    try { row = JSON.parse(line); } catch { continue; }
+    try { row = JSON.parse(line); } catch { bad++; continue; }
     if (row && typeof row === 'object' && isId(row.id)) rows.push(row);
+    else bad++;
   }
-  return rows;
+  if (bad || rows.length !== expectedRows) return unavailable(`${rows.length} good rows and ${bad} bad lines, the manifest says ${expectedRows}`);
+  return { rows, problem: null };
 }
 
 function foldName(s) {
@@ -56,19 +71,29 @@ function openStore({ dataDir, flavor = 'forever', clientBuild = '' } = {}) {
   const current = root ? D.readCurrent(root) : null;
   const build = current ? current.build : null;
   const manifest = current ? current.manifest : null;
-  const dir = build ? path.join(root, build) : null;
+  const dir = current ? current.dir : null;
   const tables = new Map();
   const indexes = new Map();
-  const listed = new Set(manifest && manifest.entities && typeof manifest.entities === 'object' ? Object.keys(manifest.entities) : []);
+  const missed = new Map();
+  const listed = manifest && manifest.entities && typeof manifest.entities === 'object' ? manifest.entities : {};
+
+  function load(entity) {
+    if (!tables.has(entity)) {
+      const info = Object.prototype.hasOwnProperty.call(listed, entity) ? listed[entity] : null;
+      tables.set(entity, info && typeof info === 'object' ? readTable(path.join(dir, `${entity}.jsonl`), info.rows) : unavailable('this sync has no such table'));
+    }
+    return tables.get(entity);
+  }
 
   function has(entity) {
-    return !!dir && ENTITIES.includes(entity) && listed.has(entity);
+    if (!dir || !ENTITIES.includes(entity)) return false;
+    const table = load(entity);
+    if (table.problem) missed.set(entity, table.problem);
+    return !table.problem;
   }
 
   function rows(entity) {
-    if (!has(entity)) return [];
-    if (!tables.has(entity)) tables.set(entity, readRows(path.join(dir, `${entity}.jsonl`)));
-    return tables.get(entity);
+    return has(entity) ? tables.get(entity).rows : [];
   }
 
   function byId(entity, id) {
@@ -79,6 +104,7 @@ function openStore({ dataDir, flavor = 'forever', clientBuild = '' } = {}) {
 
   function group(entity, name, keysOf) {
     const memo = `${entity}:${name}`;
+    if (!has(entity)) return new Map();
     if (!indexes.has(memo)) {
       const index = new Map();
       for (const r of rows(entity)) {
@@ -113,14 +139,20 @@ function openStore({ dataDir, flavor = 'forever', clientBuild = '' } = {}) {
     dir,
     clientBuild: D.isBuild(clientBuild) ? clientBuild : '',
     buildCheck,
+    rowTrust: rowTrustFor(build ? buildCheck : BUILD_CHECK.noData),
     source: manifest ? manifest.source || null : null,
     has,
     rows,
     byId,
     group,
     search,
-    loaded: () => [...tables.keys()],
+    loaded: () => [...tables.keys()].filter(entity => !tables.get(entity).problem),
+    takeMissed() {
+      const out = [...missed].map(([entity, problem]) => ({ entity, problem }));
+      missed.clear();
+      return out;
+    },
   };
 }
 
-module.exports = { TRUST, BUILD_CHECK, ENTITIES, MAX_QUERY_LENGTH, isId, clientBuildOf, buildCheckFor, foldName, openStore };
+module.exports = { TRUST, BUILD_CHECK, ENTITIES, MAX_QUERY_LENGTH, isId, clientBuildOf, buildCheckFor, rowTrustFor, foldName, openStore };
