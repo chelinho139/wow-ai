@@ -331,7 +331,7 @@ test('orders card: a refresh that fails hides the card but keeps the order, so t
   scenario(vm, [ORDER_GOALS(5)]);
   vm.run('STUB.failBar = true; ClaudeWoWOrders.ToggleCollapsed(); ClaudeWoWOrders.ToggleCollapsed()');
   assert.equal(cardShown(vm), false);
-  vm.run('STUB.failBar = false; SlashCmdList.CLAUDE("orders on")');
+  vm.run('STUB.failBar = false; ClaudeWoWOrders.ToggleCollapsed(); ClaudeWoWOrders.ToggleCollapsed()');
   assert.equal(cardShown(vm), true, 'no slot read needed');
   assert.equal(vm.evaluate('ClaudeWoWOrders.debug.lastError'), null, 'the good draw cleared the error');
   assert.equal(vm.evaluate('ClaudeWoWOrdersCard.orderText.text'), 'Craft until Leatherworking hits 125');
