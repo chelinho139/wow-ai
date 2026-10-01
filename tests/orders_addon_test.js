@@ -354,6 +354,8 @@ test('orders card: a draw error that keeps failing is said once across vehicle a
   }
   assert.equal(cardShown(vm), false);
   assert.equal(drawErrorsSaid(vm), 1);
+  vm.run('SlashCmdList.CLAUDE("orders on")');
+  assert.equal(drawErrorsSaid(vm), 2, 'an explicit /claude orders on says the error again');
 });
 
 test('orders card: a build that fails after the card frame exists never builds a second frame', () => {

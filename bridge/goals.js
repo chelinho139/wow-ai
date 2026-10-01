@@ -4,7 +4,6 @@ const fs = require('fs');
 const path = require('path');
 const ST = require('./plugins/stream');
 const GR = require('./gamerefs');
-const GD = require('./gamedata');
 const { luaStr } = require('./protocol');
 
 const STORE_VERSION = 1;
@@ -325,53 +324,34 @@ function slotTitle(goal, names) {
   return checked.ok && checked.text.length <= GOAL_TITLE_MAX ? checked.text : null;
 }
 
-const MAP_TOKEN_POINT = '50,50';
-
-function refToken(ref) {
-  return ref.kind === 'map' ? `{map:${ref.id},${MAP_TOKEN_POINT}}` : `{${ref.kind}:${ref.id}}`;
+function storedRefNames(current) {
+  return (Array.isArray(current.refs) ? current.refs : []).map(ref => ref && ref.name).filter(name => typeof name === 'string' && name);
 }
 
-function verifiedRefNames(refs, store) {
-  if (!Array.isArray(refs) || !refs.length) return [];
-  if (!store) return null;
-  try {
-    const expander = GR.createExpander(store);
-    const names = [];
-    for (const ref of refs) {
-      const r = expander.expand(refToken(ref || {}));
-      if (!r.ok || r.refs.length !== 1 || r.refs[0].name !== ref.name) return null;
-      names.push(ref.name);
-    }
-    return names;
-  } catch {
-    return null;
-  }
-}
-
-function slotOrder(doc, snap, names, orderGoal, refNames) {
+function slotOrder(doc, snap, names, orderGoal) {
   const current = doc.orders.current;
-  if (!current || !refNames) return null;
-  const checked = validateOrderText(current.text, names.concat(refNames));
-  if (!checked.ok) return null;
-  return {
+  if (!current) return { order: null };
+  const checked = validateOrderText(current.text, names.concat(storedRefNames(current)));
+  if (!checked.ok) return { order: null, withheld: `order ${current.id} is not shown: ${checked.text}` };
+  return { order: {
     id: ORDER_ID_RE.test(String(current.id)) ? String(current.id) : `o_${doc.rev}`,
     text: checked.text,
     pct: orderGoal ? slotPct(progressOf(orderGoal, snap).pct) : null,
-  };
+  } };
 }
 
-function slotPayload(doc, snap, refNames = []) {
+function slotPayload(doc, snap) {
   const names = knownNames(snap);
   const current = doc.orders.current;
   const orderGoal = current && current.goalId ? doc.goals.find(g => g.id === current.goalId) || null : null;
-  const order = slotOrder(doc, snap, names, orderGoal, refNames);
+  const { order, withheld } = slotOrder(doc, snap, names, orderGoal);
   const shownWithOrder = order ? orderGoal : null;
   const goals = doc.goals
     .filter(g => g !== shownWithOrder)
     .map(g => ({ title: slotTitle(g, names), pct: slotPct(progressOf(g, snap).pct) }))
     .filter(g => g.title && g.pct !== null)
     .slice(0, SLOT_GOALS_MAX);
-  return { rev: Math.max(0, Math.floor(Number(doc.rev) || 0)), char: snap.character ? snap.character.key : '', order, goals };
+  return { rev: Math.max(0, Math.floor(Number(doc.rev) || 0)), char: snap.character ? snap.character.key : '', order, goals, ...(withheld ? { withheld } : {}) };
 }
 
 function luaSlotOrder(order) {
@@ -407,7 +387,6 @@ function createGoals(opts) {
   const onChange = opts.onChange || (() => {});
   let cached = { file: '', mtimeMs: -1, doc: null };
   let lastSlotProblem = '';
-  let refCache = { doc: null, build: '', names: null };
 
   function slotProblem(text) {
     if (text !== lastSlotProblem) log(`goals: the slot files hide the Orders card (${text})`);
@@ -431,27 +410,21 @@ function createGoals(opts) {
     return luaGoals({ rev: 0, char: key, order: null, goals: [] });
   }
 
-  function orderRefNames(doc, snap) {
-    const refs = doc.orders.current && doc.orders.current.refs;
-    if (!Array.isArray(refs) || !refs.length) return [];
-    const build = GD.clientBuildOf(snap.text);
-    if (refCache.doc !== doc || refCache.build !== build) refCache = { doc, build, names: verifiedRefNames(refs, gameData(snap.text)) };
-    return refCache.names;
-  }
-
   function slotLua() {
     const snap = snapshotOf(context());
     if (!snap.character) return '';
     const key = snap.character.key;
     let lua;
+    let payload;
     try {
-      const doc = storedDoc(storeFile(root, key), key);
-      lua = luaGoals(slotPayload(doc, snap, orderRefNames(doc, snap)));
+      payload = slotPayload(storedDoc(storeFile(root, key), key), snap);
+      lua = luaGoals(payload);
     } catch (e) {
       return hiddenCard(key, e.message);
     }
     if (!lua) return hiddenCard(key, `the field is over ${SLOT_LUA_MAX_BYTES} bytes`);
-    lastSlotProblem = '';
+    if (payload.withheld) slotProblem(payload.withheld);
+    else lastSlotProblem = '';
     return lua;
   }
 

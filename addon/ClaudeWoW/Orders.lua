@@ -526,6 +526,7 @@ end
 function T.SetShown(on)
 	local s = Settings()
 	if s then s.ordersCard = on and true or false end
+	T.debug.lastError = nil
 	T.Refresh()
 end
 

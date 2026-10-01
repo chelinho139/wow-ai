@@ -822,28 +822,35 @@ test('slot field: only text that passes the order validator reaches the game, wh
   } finally { r.cleanup(); }
 });
 
-test('slot field: a token order reaches the game with its expanded names only while the game data still gives each ID that name', async () => {
-  const r = rig({ gameData: openFixtureData });
+test('slot field: a token order shows the expanded names its stored refs allow, with no game data opened; a tampered order stays off and is logged once', async () => {
+  const logs = [];
+  const dir = tmpDir('slotrefs');
   try {
-    await r.store.call('order_issue', { text: 'Buy 2 {item:501}, then train {skill:40} at {map:9003,27.5,25}' });
-    const want = 'Buy 2 Fixture Blade, then train Fixture Craft at Fixture Town';
-    assert.deepEqual(slotGoals(r.store).order, { id: 'o_1', text: want });
-    const noData = G.createGoals({ dir: r.dir, context: () => ({ text: BONE_CONTEXT, at: CONTEXT_AT }), streamOptions: () => ({ ...ST.INERT_OPTIONS }), now: () => NOW });
-    assert.equal(slotGoals(noData).order, undefined, 'without game data a token order cannot be checked, so it stays off the card');
+    const context = () => ({ text: BONE_CONTEXT, at: CONTEXT_AT });
+    const issuer = G.createGoals({ dir, context, streamOptions: () => ({ ...ST.INERT_OPTIONS }), now: () => NOW, gameData: openFixtureData });
+    let opened = 0;
+    const store = G.createGoals({ dir, context, streamOptions: () => ({ ...ST.INERT_OPTIONS }), now: () => NOW, gameData: () => { opened += 1; return null; }, log: m => logs.push(m) });
+    const file = path.join(dir, BONE_KEY, G.GOALS_FILE);
     const edit = change => {
-      const doc = r.read();
+      const doc = JSON.parse(fs.readFileSync(file, 'utf8'));
       change(doc.orders.current);
-      fs.writeFileSync(r.file, JSON.stringify(doc));
+      fs.writeFileSync(file, JSON.stringify(doc));
       const later = new Date(Date.now() + 1000 * (edit.n = (edit.n || 0) + 1));
-      fs.utimesSync(r.file, later, later);
+      fs.utimesSync(file, later, later);
     };
-    edit(c => { c.refs[0].name = 'Silverpine Forest'; c.text = c.text.replace('Fixture Blade', 'Silverpine Forest'); });
-    assert.equal(slotGoals(r.store).order, undefined, 'a ref name the data does not give that ID is refused');
-    edit(c => { c.refs[0].name = 'Fixture Blade'; c.text = 'Buy 2 Silverpine, then train Fixture Craft at Fixture Town'; });
-    assert.equal(slotGoals(r.store).order, undefined, 'a name outside the refs is refused');
-    edit(c => { c.text = want; });
-    assert.equal(slotGoals(r.store).order.text, want);
-  } finally { r.cleanup(); }
+    assert.equal((await issuer.call('order_issue', { text: 'Buy 2 {item:501}, then train {skill:40} at {map:9003,27.5,25}' })).ok, true);
+    const want = 'Buy 2 Fixture Blade, then train Fixture Craft at Fixture Town';
+    assert.deepEqual(slotGoals(store).order, { id: 'o_1', text: want });
+    assert.equal(opened, 0, 'publishing never opens the game data');
+    edit(c => { delete c.refs; });
+    assert.equal(slotGoals(store).order, undefined, 'without its refs the expanded names are refused');
+    assert.equal(slotGoals(store).order, undefined);
+    assert.equal(logs.filter(l => /hide the Orders card \(order o_1 is not shown: .*fixture/.test(l)).length, 1, logs.join('\n'));
+    edit(c => { c.refs = [{ kind: 'item', id: 501, name: 'Fixture Blade' }]; c.text = 'Buy 2 Fixture Blade in Silverpine'; });
+    assert.equal(slotGoals(store).order, undefined, 'a name outside the refs is refused');
+    assert.equal((await issuer.call('order_issue', { text: 'take the {map:9004,10,10} to 150' })).ok, true);
+    assert.deepEqual(slotGoals(store).order, { id: 'o_2', text: 'take the Low Road to 150' }, 'a name made of plain words shows too');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('slot field: the Lua stays under the byte cap, dropping goals from the end before anything else', () => {
@@ -894,20 +901,20 @@ test('slot field: every goal write republishes the slot files at once; a read or
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('slot field: the bridge republishes a goal write as urgent, the mode that keeps a large map and widget set in the slot files', () => {
+test('slot field: the bridge republishes a goal write as urgent, the mode that keeps a large map and widget set in the slot files', async () => {
   const src = fs.readFileSync(BRIDGE, 'utf8');
   const wiring = /GOALS\.createBridgeGoals\(\{[\s\S]*?onChange: \(\) => publishNow\((\w+), \{ refresh: true \}\)/.exec(src);
   assert.ok(wiring, 'the goal store is wired to publishNow');
   assert.equal(wiring[1], 'true', 'a non-urgent publish drops a map over the progress size from every slot file');
   assert.match(src, /const map = Date\.now\(\) < mapShareUntil && \(urgent \|\| mapLuaSize\(\) <= MAP_PROGRESS_MAX\)/, 'urgent is what keeps a large map');
-  const home = { goals: path.join(tmpDir('bridgegoals'), 'goals'), data: WOWDATA };
-  let published = 0;
-  const store = G.createBridgeGoals({ home, context: () => ({ text: BONE_CONTEXT, at: CONTEXT_AT }), streamOptions: () => ({ ...ST.INERT_OPTIONS }), onChange: () => { published += 1; } });
-  return store.call('goal_set', { profession: 'Skinning', rank: 225 }).then(res => {
+  const dir = tmpDir('bridgegoals');
+  try {
+    let published = 0;
+    const store = G.createBridgeGoals({ home: { goals: path.join(dir, 'goals'), data: WOWDATA }, context: () => ({ text: BONE_CONTEXT, at: CONTEXT_AT }), streamOptions: () => ({ ...ST.INERT_OPTIONS }), onChange: () => { published += 1; } });
+    const res = await store.call('goal_set', { profession: 'Skinning', rank: 225 });
     assert.equal(res.ok, true, res.text);
     assert.equal(published, 1, 'createBridgeGoals passes onChange through');
-    fs.rmSync(path.dirname(home.goals), { recursive: true, force: true });
-  });
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('slot field: urgent publish keeps large widgets too', () => {
