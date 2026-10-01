@@ -367,6 +367,29 @@ test('on Classic Era, where the quest parchment atlas is missing, the transcript
   assert.equal(vm.num(`${page}.pieces[2].x`), vm.num(`${page}.pieces[1].width`), 'the right piece starts where the left one ends');
 });
 
+test('a reply names items and spells by token: the client turns each into a real link, unknown ones stay plain, and the bubble makes links clickable', () => {
+  const vm = nativeVM();
+  vm.run(`
+    STUB.itemLoads = {}
+    C_Item.GetItemInfo = function(id) if id == 2589 then return "Linen Cloth", "|cffffffff|Hitem:2589::::::::|h[Linen Cloth]|h|r" end end
+    C_Item.RequestLoadItemDataByID = function(id) table.insert(STUB.itemLoads, id) end
+    C_Spell = { GetSpellLink = function(id) if id == 1752 then return "|cff71d5ff|Hspell:1752|h[Sinister Strike]|h|r" end end }
+    local c = ClaudeWoWDB.chats[1]
+    ClaudeWoW.SwitchChat(c.id)
+    c.history = { { role = "assistant", t = 1, text = "farm {item:2589} then use {spell:1752}\\n- spare {item:999999}\\n- fake |cffff0000[Thunderfury]|r" } }
+    ClaudeWoW.Render()
+  `);
+  const body = vm.evaluate('(function() for _, b in ipairs(ClaudeWoW.UI.bubbles) do if b.shown then return b.body:GetText() end end end)()');
+  assert.ok(body.includes('|Hitem:2589::::::::|h[Linen Cloth]|h'), body);
+  assert.ok(body.includes('|Hspell:1752|h[Sinister Strike]|h'), body);
+  assert.ok(body.includes('|cff9d9d9ditem 999999|r'), 'an ID the client does not have shows plainly, with no invented name');
+  assert.equal(vm.evaluate('STUB.itemLoads[1]'), '999999', 'and the client is asked to load it');
+  assert.ok(body.includes('\u2022 spare'), 'a "- " line becomes a bullet');
+  assert.ok(!body.includes('|cffff0000'), 'color codes the agent typed are neutralized');
+  const b = '(function() for _, b in ipairs(ClaudeWoW.UI.bubbles) do if b.shown then return b end end end)()';
+  assert.equal(vm.evaluate(`${b}.scripts.OnHyperlinkClick ~= nil`), 'true', 'the bubble handles link clicks');
+});
+
 test('the chat list orders by last activity: the open empty chat, then chats by their last message, then other empty chats', () => {
   const vm = nativeVM();
   vm.run(`

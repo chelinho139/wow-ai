@@ -2659,6 +2659,10 @@ function Whisper.MacroLinkLabel(m)
 end
 
 function Whisper.Reply(chat, text, agent, role, denied, summary, msgId, macros)
+	if role ~= "system" and Q.WaitForLinks(Display(tostring(summary or "") .. "\n" .. tostring(text or "")), tostring(chat.id) .. ":" .. tostring(msgId)) then
+		C_Timer.After(Q.LINK_RETRY_SECONDS, function() Whisper.Reply(chat, text, agent, role, denied, summary, msgId, macros) end)
+		return true
+	end
 	local frame = Whisper.FrameFor(chat, true, false)
 	if not frame then return false end
 	Whisper.EndLive(frame, "progress")
@@ -2673,7 +2677,7 @@ function Whisper.Reply(chat, text, agent, role, denied, summary, msgId, macros)
 		local r, g, b = WhisperColor("WHISPER", 1, 0.5, 1)
 		local prefix = WhisperFormat(CHAT_WHISPER_GET, "%s whispers: ", "|H" .. LINK_PREFIX .. "reply:" .. chat.id .. "|h[" .. who .. "]|h")
 		local lines, cut = Whisper.Body(text, summary)
-		for i, line in ipairs(lines) do WhisperWrite(frame, (i == 1 and prefix or "") .. line, r, g, b) end
+		for i, line in ipairs(lines) do WhisperWrite(frame, (i == 1 and prefix or "") .. Q.RichText(line), r, g, b) end
 		if #lines == 0 then WhisperWrite(frame, prefix, r, g, b) end
 		if cut then WhisperWrite(frame, "|cff888888" .. cut .. ":|r " .. Link("open", chat.id, "full reply"), r, g, b) end
 		for k, m in ipairs(macros or {}) do
@@ -4024,6 +4028,12 @@ local function GetBubble(i)
 	local b = ui.bubbles[i]
 	if b then return b end
 	b = CreateFrame("Frame", nil, ui.content)
+	if b.SetHyperlinksEnabled then
+		pcall(b.SetHyperlinksEnabled, b, true)
+		b:SetScript("OnHyperlinkClick", Q.LinkClick)
+		b:SetScript("OnHyperlinkEnter", Q.LinkEnter)
+		b:SetScript("OnHyperlinkLeave", function() GameTooltip:Hide() end)
+	end
 	b.bg = b:CreateTexture(nil, "BACKGROUND")
 	b.bg:SetAllPoints()
 	b.accent = b:CreateTexture(nil, "BORDER")
@@ -4086,7 +4096,7 @@ function ClaudeWoW.Render()
 			b.who:SetTextColor(look.color[1], look.color[2], look.color[3])
 			b.when:SetText(when or "")
 			b.body:SetWidth(width - 18)
-			b.body:SetText(Display(text))
+			b.body:SetText(role == "assistant" and Q.RichText(Display(text)) or Display(text))
 			local ink = ui.parchment and (dim and Q.PARCHMENT_DIM or Q.PARCHMENT_TEXT) or (dim and { 0.72, 0.72, 0.72 } or { 0.93, 0.93, 0.93 })
 			b.body:SetTextColor(ink[1], ink[2], ink[3])
 			local h = b.body:GetStringHeight()
@@ -4730,6 +4740,95 @@ function Q.AtlasExists(name)
 end
 
 Q.PANEL_TITLE = "Claude"
+Q.LINK_RETRY_SECONDS, Q.LINK_RETRIES = 0.5, 3
+Q.linkTries = {}
+Q.linkMissing = false
+
+function Q.ItemLink(id)
+	local info = (C_Item and C_Item.GetItemInfo) or GetItemInfo
+	local _, link = Try(info, id)
+	if type(link) == "string" then return link end
+	Q.linkMissing = true
+	if C_Item and C_Item.RequestLoadItemDataByID then pcall(C_Item.RequestLoadItemDataByID, id) end
+	return nil
+end
+
+function Q.SpellLink(id)
+	local link = Try((C_Spell and C_Spell.GetSpellLink) or GetSpellLink, id)
+	if type(link) == "string" then return link end
+	if C_Spell and C_Spell.RequestLoadSpellData then
+		Q.linkMissing = true
+		pcall(C_Spell.RequestLoadSpellData, id)
+	end
+	return nil
+end
+
+function Q.QuestTitle(id)
+	local n = Try(C_QuestLog and C_QuestLog.GetNumQuestLogEntries) or Try(GetNumQuestLogEntries) or 0
+	for i = 1, math.min(tonumber(n) or 0, 60) do
+		local info = Try(C_QuestLog and C_QuestLog.GetInfo, i)
+		if type(info) == "table" then
+			if tonumber(info.questID) == id and not info.isHeader then return info.title end
+		else
+			local title, _, _, isHeader, _, _, _, qid = Try(GetQuestLogTitle, i)
+			if tonumber(qid) == id and not isHeader then return title end
+		end
+	end
+	return nil
+end
+
+function Q.RichToken(kind, id)
+	id = tonumber(id)
+	if not id then return nil end
+	if kind == "item" then return Q.ItemLink(id) end
+	if kind == "spell" then return Q.SpellLink(id) end
+	if kind == "quest" then
+		local title = Q.QuestTitle(id)
+		return title and ("|cffffd100[" .. Display(title) .. "]|r") or nil
+	end
+	return nil
+end
+
+function Q.RichText(text)
+	text = tostring(text or "")
+	text = text:gsub("{(%a+):(%d+)}", function(kind, id)
+		return Q.RichToken(kind:lower(), id) or ("|cff9d9d9d" .. kind .. " " .. id .. "|r")
+	end)
+	text = text:gsub("^[%-%*] ", "\226\128\162 "):gsub("\n[%-%*] ", "\n\226\128\162 ")
+	return text
+end
+
+function Q.WaitForLinks(text, key)
+	Q.linkMissing = false
+	Q.RichText(text)
+	if not Q.linkMissing then return false end
+	local tries = (Q.linkTries[key] or 0) + 1
+	Q.linkTries[key] = tries
+	return tries <= Q.LINK_RETRIES
+end
+
+Q.linkEvents = CreateFrame("Frame")
+pcall(Q.linkEvents.RegisterEvent, Q.linkEvents, "GET_ITEM_INFO_RECEIVED")
+pcall(Q.linkEvents.RegisterEvent, Q.linkEvents, "SPELL_DATA_LOAD_RESULT")
+Q.linkEvents:SetScript("OnEvent", function()
+	if Q.linkRedraw or not ui.frame then return end
+	Q.linkRedraw = true
+	C_Timer.After(Q.LINK_RETRY_SECONDS, function()
+		Q.linkRedraw = nil
+		if ui.frame and ui.frame:IsShown() then ClaudeWoW.Render() end
+	end)
+end)
+
+function Q.LinkClick(self, link, text, button)
+	if type(SetItemRef) == "function" then SetItemRef(link, text, button, self) end
+end
+
+function Q.LinkEnter(self, link)
+	local kind = tostring(link or ""):match("^(%a+):")
+	if kind ~= "item" and kind ~= "spell" then return end
+	GameTooltip:SetOwner(self, "ANCHOR_CURSOR")
+	if pcall(GameTooltip.SetHyperlink, GameTooltip, link) then GameTooltip:Show() else GameTooltip:Hide() end
+end
 
 function Q.WhenLabel(t)
 	t = tonumber(t)
