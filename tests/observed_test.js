@@ -9,6 +9,7 @@ const OT = require('../bridge/observedtools');
 const TL = require('../bridge/telemetry');
 const GR = require('../bridge/gamerefs');
 const P = require('../bridge/protocol');
+const MH = require('../bridge/maphold');
 
 const WOWDATA = path.join(__dirname, 'fixtures', 'wowdata');
 const BONE_CONTEXT = [
@@ -113,7 +114,7 @@ test('the slot field offers the observed sections only when the bridge keeps the
     const plain = TL.createTelemetry({ dir });
     const keeps = TL.createTelemetry({ dir, observed: OB.createObserved({ dir }) });
     assert.doesNotMatch(plain.luaGs(), /obs = 1/);
-    assert.match(keeps.luaGs(), /refused = \{ {2}\}, obs = 1 \},$/);
+    assert.match(keeps.luaGs(), /refused = \{ {2}\}, obs = 1, gather = \{ {2}\} \},$/);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -135,6 +136,47 @@ test('drop tracker: one rate per source with its n, sources never added together
   assert.equal(OB.dropRates(lines, ITEM, 21).shown.length, 0);
 });
 
+test('drop tracker: a well-sampled source that never dropped the item shows rate 0 with its asOf; the spot is a real sample, the medoid', () => {
+  const npc = { type: 'npc', id: 3100, spell: 0 };
+  const dry = { type: 'npc', id: 3200, spell: 0 };
+  const lines = [];
+  const spots = [[10, 10], [11, 11], [12, 12], [90, 90]];
+  for (let i = 0; i < 12; i++) lines.push(JSON.parse(lootLine(npc, i < 4 ? { [ITEM]: 1 } : {}, { at: AT + i, map: { id: 9002, x: (spots[i] || [5, 5])[0], y: (spots[i] || [5, 5])[1] } })));
+  for (let i = 0; i < 10; i++) lines.push(JSON.parse(lootLine(dry, {}, { at: AT + 100 + i })));
+  const { shown } = OB.dropRates(lines, ITEM, 10);
+  const zero = shown.find(r => r.source.id === 3200);
+  assert.deepEqual([zero.n, zero.k, zero.rate, zero.asOf], [10, 0, 0, (AT + 109) * 1000]);
+  assert.deepEqual(shown.find(r => r.source.id === 3100).spots, [{ mapID: 9002, n: 4, x: 11, y: 11 }], 'a point the player stood on, not an average no one stood on');
+  assert.equal(shown.find(r => r.source.id === 3100).asOf, (AT + 11) * 1000, 'asOf follows the newest loot window, with or without the item');
+});
+
+test('gather spells: only the spells of the synced Herbalism, Mining and Skinning lines and their child lines, from client-data rows', () => {
+  const rows = {
+    skilllines: [{ id: 182, name: 'Herbalism', parentSkillLineID: 0 }, { id: 2944, name: 'Herbalism', parentSkillLineID: 182 }, { id: 393, name: 'Skinning', parentSkillLineID: 0 }, { id: 39, name: 'Subtlety', parentSkillLineID: 0 }],
+    skilllineabilities: [{ skillLine: 182, spell: 2366 }, { skillLine: 2944, spell: 900001 }, { skillLine: 393, spell: 8613 }, { skillLine: 39, spell: 921 }, { skillLine: 393, spell: 0 }],
+  };
+  const store = (trust, tag) => ({ build: '1.60.1.1', dir: tag, manifest: {}, rowTrust: trust, has: e => !!rows[e], rows: e => rows[e] || [] });
+  assert.deepEqual(OB.gatherSpells(store('client-data', 'a')), [2366, 8613, 900001], 'no class ability such as a rogue skill');
+  assert.deepEqual(OB.gatherSpells(store('unverified-build-mismatch', 'b')), [], 'data for another build family gives none');
+  assert.deepEqual(OB.gatherSpells(null), []);
+  const dir = tmpDir('gather');
+  try {
+    const t = TL.createTelemetry({ dir, observed: OB.createObserved({ dir }), gatherSpells: () => [8613, 2366] });
+    assert.match(t.luaGs(), /obs = 1, gather = \{ 8613, 2366 \} \},$/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('the dedupe memory is primed from the rotated file too', () => {
+  const dir = tmpDir('rotated');
+  try {
+    const entry = lootEntry('n', 3100, 0, AT, { 501: 1 });
+    fs.mkdirSync(path.join(dir, BONE), { recursive: true });
+    fs.writeFileSync(path.join(dir, BONE, OB.OBSERVED_ROTATED_FILE), JSON.stringify(OB.lineFor('loot', OB.parseLoot(entry).samples[0])) + '\n');
+    const observed = OB.createObserved({ dir });
+    assert.equal(observed.ingest(BONE, 'loot', OB.parseLoot(entry)), 0, 'a sample already in observed.1.jsonl is not written again');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('farm_spot_lookup: observed rates with n and trust, item and map names from the synced data, NPC names never', async () => {
   const dir = tmpDir('farm');
   try {
@@ -149,7 +191,7 @@ test('farm_spot_lookup: observed rates with n and trust, item and map names from
     assert.deepEqual(out.item, { ref: '{item:501}', id: 501, name: 'Fixture Blade', trust: 'client-data', build: '1.60.1.200' });
     const row = out.sources.find(s => s.source.id === 3100);
     assert.deepEqual([row.trust, row.n, row.k, row.rate], ['observed', 12, 4, 0.333]);
-    assert.deepEqual(row.source, { type: 'npc', id: 3100, spell: null, ref: '{npc:3100}', name: null, nameNote: 'no verified name source' });
+    assert.deepEqual(row.source, { type: 'npc', id: 3100, spell: null, ref: null, name: null, nameNote: 'no verified name source' });
     assert.deepEqual(row.spots, [{ map: { ref: '{map:9002,41.2,47.8}', id: 9002, name: 'Fixture Vale', trust: 'client-data' }, point: { x: 41.2, y: 47.8, trust: 'observed' }, n: 4 }]);
     const unknownMap = out.sources.find(s => s.source.id === 4000);
     assert.deepEqual(unknownMap.spots, [], 'a map the data does not have is never shown');
@@ -202,10 +244,15 @@ test('market_price: the auction prices from searches the player ran and the vend
   try {
     const observed = OB.createObserved({ dir });
     const t = TL.createTelemetry({ dir, observed, now: () => AT * 1000 });
+    t.submit(gsJob(9, { ah: `${ITEM}=90/1@${AT - 2 * 86400}` }));
     t.submit(gsJob(10, { ah: [`${ITEM}=1500/4@${AT}`, `${ITEM}=1200/2@${AT + 60}`, `${OTHER_ITEM}=7/100@${AT}`].join(','), vendor: `3100@${AT + 30}@9002;${ITEM}=600/1,${OTHER_ITEM}=25/5` }));
     const r = await tools(dir).call('market_price', { itemID: ITEM });
     const out = JSON.parse(r.text);
-    assert.deepEqual(out.auctionHouse, { n: 2, asOf: (AT + 60) * 1000, latest: { price: 1200, quantity: 2 }, low: 1200, high: 1500, trust: 'observed', unit: 'copper per item' });
+    assert.deepEqual(out.auctionHouse, {
+      n: 3, asOf: (AT + 60) * 1000, latest: { price: 1200, quantity: 2 },
+      recent: { n: 2, from: AT * 1000, asOf: (AT + 60) * 1000, low: 1200, high: 1500, hours: 24 },
+      trust: 'observed', unit: 'copper per item',
+    }, 'a quote from two days before is counted in n but never sets low or high');
     assert.equal(out.vendors.length, 1);
     const v = out.vendors[0];
     assert.deepEqual([v.price, v.stack, v.unitPrice, v.n, v.asOf, v.trust], [600, 1, 600, 1, (AT + 30) * 1000, 'observed']);
@@ -262,13 +309,34 @@ test('route_draw refuses the whole route for one unknown map, a non-token point,
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('map in the slot files: shared for a while after a change, held without a time limit while a tool route waits for the game, small only on progress publishes', () => {
+test('map in the slot files: shared for a while after a change, held without a time limit while a tool route waits for a reply, small only on progress publishes', () => {
   const base = { now: 1000, shareUntil: 0, held: false, urgent: true, size: 10, progressMax: 100 };
-  assert.equal(P.mapInSlots(base), false, 'nothing changed lately: no map');
-  assert.equal(P.mapInSlots({ ...base, shareUntil: 2000 }), true);
-  assert.equal(P.mapInSlots({ ...base, held: true }), true, 'a held route rides however long the game takes');
-  assert.equal(P.mapInSlots({ ...base, held: true, urgent: false, size: 1000 }), false, 'a large set stays off progress publishes');
-  assert.equal(P.mapInSlots({ ...base, held: 'yes' }), false);
+  assert.equal(MH.inSlots(base), false, 'nothing changed lately: no map');
+  assert.equal(MH.inSlots({ ...base, shareUntil: 2000 }), true);
+  assert.equal(MH.inSlots({ ...base, held: true }), true, 'a held route rides however long the game takes');
+  assert.equal(MH.inSlots({ ...base, held: true, urgent: false, size: 1000 }), false, 'a large set stays off progress publishes');
+  assert.equal(MH.inSlots({ ...base, held: 'yes' }), false);
+});
+
+test('map hold: a gs record or a message never releases it; the published reply or a hello does, and starts the share window then', () => {
+  let clock = 1000;
+  let saves = 0;
+  const state = { map: { layers: {} } };
+  const share = MH.createMapShare({ state, shareMs: 180000, now: () => clock, save: () => { saves += 1; } });
+  share.hold();
+  assert.equal(state.mapHeldForGame, true);
+  clock = 1000 + 10 * 60 * 1000;
+  assert.equal(share.onRecord({ kind: 'gs', id: 5, hello: false }), false);
+  assert.equal(share.onRecord({ kind: 'gs', id: 6, hello: true }), false, 'not even a gs record with a stray hello flag');
+  assert.equal(share.onRecord({ id: 7, text: 'a message' }), false, 'a message waits for its reply');
+  assert.equal(share.held(), true);
+  assert.equal(share.inSlots({ urgent: true, size: 50000, progressMax: 20000 }), true, 'a large held set rides on the urgent reply publish however long the run took');
+  assert.equal(share.onReplyPublished(), true);
+  assert.equal(share.held(), false);
+  assert.equal(share.shareUntil(), clock + 180000, 'the usual window starts at the reply');
+  share.hold();
+  assert.equal(share.onRecord({ id: 8, hello: true }), true, 'a hello releases it');
+  assert.ok(saves >= 4);
 });
 
 test('the observed tools are listed for the live session, and only route_draw is a writer', () => {

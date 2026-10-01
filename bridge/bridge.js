@@ -77,6 +77,7 @@ const TL = require('./telemetry');
 const VOTES = require('./votes');
 const OB = require('./observed');
 const OT = require('./observedtools');
+const MH = require('./maphold');
 
 const HERE = __dirname;
 // Config, state, transcripts, log and scratch live in the home folder (home.js:
@@ -264,6 +265,7 @@ const telemetry = TL.createTelemetry({
   log,
   watch: () => TL.watchFrom(cfg.telemetry),
   observed,
+  gatherSpells: () => OB.gatherSpells(GR.openFor(HOME.data, (state.context && state.context.text) || '')),
 });
 
 // Bridge-side transcripts. The beta client sometimes wipes addon saved data; since
@@ -448,7 +450,7 @@ const MAP_DIR = HOME.mapjobs;
 // while, and on progress publishes only while it is small.
 const MAP_SHARE_MS = 3 * 60 * 1000;
 const MAP_PROGRESS_MAX = 20000;
-let mapShareUntil = Object.keys(state.map.layers).length ? Date.now() + MAP_SHARE_MS : 0;
+const mapShare = MH.createMapShare({ state, shareMs: MAP_SHARE_MS, save: () => saveState() });
 let mapLuaCache = { version: -1, epoch: '', text: '' };
 function mapLuaSize() {
   if (mapLuaCache.version !== state.map.version || mapLuaCache.epoch !== state.map.epoch) {
@@ -460,19 +462,11 @@ function mapLuaSize() {
 function applyToolMap(cmds) {
   const { changed, notes } = P.applyMapCommands(state.map, cmds);
   if (changed) {
-    state.mapHeldForGame = true;
-    saveState();
-    log(`map: ${notes.join('; ')} (version ${state.map.version}), kept in the slot files until the game sends its next record`);
+    mapShare.hold();
+    log(`map: ${notes.join('; ')} (version ${state.map.version}), kept in the slot files until the next reply or hello`);
     publishNow(true, { refresh: true });
   }
   return { changed, notes };
-}
-
-function releaseHeldMap() {
-  if (!state.mapHeldForGame) return;
-  state.mapHeldForGame = false;
-  mapShareUntil = Date.now() + MAP_SHARE_MS;
-  saveState();
 }
 
 function mapFileFor(job) {
@@ -495,7 +489,7 @@ function takeMapCommands(job, text) {
   errors.push(...blocks.errors);
   if (!cmds.length && !errors.length) return { text: blocks.text, note: '' };
   const { changed, notes } = P.applyMapCommands(state.map, cmds);
-  if (changed) { saveState(); mapShareUntil = Date.now() + MAP_SHARE_MS; }
+  if (changed) { saveState(); mapShare.touch(); }
   const all = [...notes, ...errors];
   log(`#${job.id} map: ${all.join('; ') || 'no change'} (version ${state.map.version})`);
   return { text: blocks.text, note: all.length ? `map: ${all.join('; ')}` : '' };
@@ -534,7 +528,7 @@ function takeWidgetCommands(job, text) {
 
 // Slot file / Inbox.lua body: see protocol.luaTable.
 function slotFile(globalName, records, urgent = true) {
-  const map = P.mapInSlots({ now: Date.now(), shareUntil: mapShareUntil, held: state.mapHeldForGame, urgent, size: mapLuaSize(), progressMax: MAP_PROGRESS_MAX }) ? state.map : null;
+  const map = mapShare.inSlots({ urgent, size: mapLuaSize(), progressMax: MAP_PROGRESS_MAX }) ? state.map : null;
   const widgets = Date.now() < widgetShareUntil && (urgent || widgetSourceBytes() <= WIDGET_PROGRESS_MAX) ? state.widgets : null;
   const transportNote = TRANSPORT_SOURCE === 'fallback' ? P.transportNote(state.transportFallback) : '';
   const achievementsLua = ACHIEVEMENTS_ON ? ACH.luaAchievements(state) : '';
@@ -851,6 +845,7 @@ function allowRules(agentId, rules) {
 // ---------------------------------------------------------------------------
 
 function submit(job) {
+  mapShare.onRecord(job);
   if (TL.isTelemetry(job)) {
     if (!TELEMETRY_ON) return;
     try { telemetry.submit(job); } catch (e) { log(`telemetry: gs #${job.id} not applied (${e && e.message ? e.message : e})`); }
@@ -886,15 +881,13 @@ function submit(job) {
     saveState();
     signal('ack', job.id, true);
     maybeOfferRestore(job);
-    releaseHeldMap();
     // Even an empty set: a client holding layers from a reset bridge must drop them.
-    mapShareUntil = Date.now() + MAP_SHARE_MS;
+    mapShare.touch();
     widgetShareUntil = Date.now() + WIDGET_SHARE_MS;
     publishNow();
     log(`hello from session ${job.session}${pendingRestore ? ' (restore offered)' : ''}`);
     return;
   }
-  releaseHeldMap();
   const key = chatKey(job);
   const cur = running.get(key);
   if (cur && cur.job.id === job.id) return;
@@ -1051,6 +1044,7 @@ function lateReply(job, raw) {
   const { text, summary } = P.splitSummary(String(raw || ''));
   noteMessage(job, 'assistant', text);
   publish(`${chatKey(job)}#late`, { chat: job.chat, id: job.id, status: 'done', late: true, text, summary, cwd: job.cwd, agent: job.agent || '', plugin: job.plugin || '' }, true);
+  mapShare.onReplyPublished();
   log(`${tagOf(job)} late reply delivered (${text.length} chars)`);
 }
 
@@ -1484,6 +1478,7 @@ function finish(job, status, text, session, denied) {
   awardAchievements(job, status);
   const usage = P.usageFields(job.usage);
   publish(chatKey(job), { chat: job.chat, id: job.id, status, text, summary, cwd: job.cwd, session, denied, macros, agent: job.agent || '', plugin: job.plugin || '', lateOk: status === 'error' && !!job.lateOk, ...usage }, true);
+  mapShare.onReplyPublished();
   signal('sig', job.id, true);
   tellPluginFinished(plugin, job, { status, text, summary });
   const growth = usage.turns ? `, turn ${usage.turns}${usage.ctx ? ', ctx ' + P.tokensLabel(usage.ctx) + (usage.window ? ' of ' + P.tokensLabel(usage.window) : '') : ''}${usage.cost !== undefined ? ', ~$' + usage.cost.toFixed(2) + ' API so far' : ''}` : '';

@@ -6,6 +6,7 @@ O.AH_QUOTES_MAX = 12
 O.LOOT_ENTRIES_MAX = 8
 O.LOOT_ITEMS_MAX = 6
 O.LOOTED_GUIDS_MAX = 64
+O.GATHER_SPELLS_MAX = 80
 O.SPELL_WINDOW_SECONDS = 1
 O.WINDOW_SECONDS = 2
 O.AH_REPEAT_SECONDS = 300
@@ -23,11 +24,14 @@ O.PROBES = {
 	"GetLootSlotType",
 	"GetLootSlotLink",
 	"GetLootSourceInfo",
+	"GetLootSlotInfo",
+	"IsFishingLoot",
+	"C_Map.GetPlayerMapPosition",
 	"UnitGUID",
 }
 O.EVENTS = { "MERCHANT_SHOW", "AUCTION_HOUSE_BROWSE_RESULTS_UPDATED", "COMMODITY_SEARCH_RESULTS_UPDATED", "LOOT_READY", "LOOT_OPENED", "LOOT_CLOSED" }
 
-local state = { vendor = nil, ah = {}, loot = {}, looted = {}, lootedOrder = {}, windowAt = nil, spell = nil }
+local state = { vendor = nil, ah = {}, loot = {}, looted = {}, lootedOrder = {}, windowAt = nil, spell = nil, gather = {} }
 
 local function Try(fn, ...)
 	if type(fn) ~= "function" then return nil end
@@ -117,12 +121,8 @@ local function Quote(itemID, price, quantity)
 	if not (WholeNumber(itemID) and itemID > 0 and WholeNumber(price) and price > 0) then return false end
 	quantity = WholeNumber(quantity) or 0
 	local now = time()
-	for i = #state.ah, 1, -1 do
-		local q = state.ah[i]
-		if q.id == itemID then
-			if q.price == price and q.quantity == quantity and now - q.at < O.AH_REPEAT_SECONDS then return false end
-			break
-		end
+	for _, q in ipairs(state.ah) do
+		if q.id == itemID and q.price == price and q.quantity == quantity and now - q.at < O.AH_REPEAT_SECONDS then return false end
 	end
 	Push(state.ah, { id = itemID, price = price, quantity = quantity, at = now }, O.AH_QUOTES_MAX)
 	return true
@@ -135,7 +135,8 @@ function O.OnBrowse()
 	for i = 1, math.min(#results, O.AH_QUOTES_MAX) do
 		local r = results[i]
 		local key = type(r) == "table" and r.itemKey
-		if type(key) == "table" and Quote(key.itemID, r.minPrice, r.totalQuantity) then added = true end
+		local plain = type(key) == "table" and (key.itemSuffix or 0) == 0 and (key.battlePetSpeciesID or 0) == 0
+		if plain and Quote(key.itemID, r.minPrice, r.totalQuantity) then added = true end
 	end
 	if added then Changed() end
 end
@@ -220,7 +221,7 @@ function O.OnLoot()
 	end
 	local added = false
 	for _, guid in ipairs(order) do
-		if not Looted(guid) then
+		if not Looted(guid .. "_" .. Int(spell)) then
 			local s = sources[guid]
 			Push(state.loot, Entry(s.code, s.id, spell, place, s.items), O.LOOT_ENTRIES_MAX)
 			added = true
@@ -229,8 +230,20 @@ function O.OnLoot()
 	if added then Changed() end
 end
 
+function O.SetGather(list)
+	local gather, n = {}, 0
+	for _, id in ipairs(type(list) == "table" and list or {}) do
+		if n >= O.GATHER_SPELLS_MAX then break end
+		if WholeNumber(id) and id > 0 and not gather[id] then
+			gather[id] = true
+			n = n + 1
+		end
+	end
+	state.gather = gather
+end
+
 function O.OnSpell(unit, spellID)
-	if unit ~= "player" or not (WholeNumber(spellID) and spellID > 0) then return end
+	if unit ~= "player" or not (WholeNumber(spellID) and spellID > 0) or not state.gather[spellID] then return end
 	state.spell = { id = spellID, at = GetTime() }
 end
 

@@ -106,7 +106,9 @@ function gsOf(jobs) {
   return (jobs || []).filter(j => j.kind === 'gs');
 }
 
-const GS_OBSERVED = '{ v = 1, watch = { items = {}, factions = {} }, chars = {}, obs = 1 }';
+const GATHER_SPELL = 8613;
+const UNRELATED_SPELL = 1943;
+const GS_OBSERVED = `{ v = 1, watch = { items = {}, factions = {} }, chars = {}, obs = 1, gather = { ${GATHER_SPELL}, 2366 } }`;
 const GS_PLAIN = '{ v = 1, watch = { items = {}, factions = {} }, chars = {} }';
 
 function ready({ gs = GS_OBSERVED, extra, saved } = {}) {
@@ -175,8 +177,10 @@ test('auction prices come only from results of searches the player ran; the addo
   vm.run('STUB.browse = { { itemKey = { itemID = 501 }, minPrice = 1500, totalQuantity = 4 }, { itemKey = { itemID = 505 }, minPrice = 7, totalQuantity = 200 } }; STUB.FireEvent("AUCTION_HOUSE_BROWSE_RESULTS_UPDATED")');
   vm.run('STUB.commodity = { { itemID = 2589, unitPrice = 31, quantity = 80 } }; STUB.FireEvent("COMMODITY_SEARCH_RESULTS_UPDATED", 2589)');
   vm.run('STUB.FireEvent("AUCTION_HOUSE_BROWSE_RESULTS_UPDATED")');
+  vm.run('STUB.browse = { { itemKey = { itemID = 4000, itemSuffix = 0 }, minPrice = 500, totalQuantity = 1 }, { itemKey = { itemID = 4000, itemSuffix = 1179 }, minPrice = 9000, totalQuantity = 1 } }');
+  vm.run('STUB.FireEvent("AUCTION_HOUSE_BROWSE_RESULTS_UPDATED"); STUB.FireEvent("AUCTION_HOUSE_BROWSE_RESULTS_UPDATED")');
   const r = nextRecord(vm);
-  assert.deepEqual(r.sections.ah.value.quotes.map(q => [q.itemID, q.price, q.quantity]), [[501, 1500, 4], [505, 7, 200], [2589, 31, 80]], 'the same results seen again are not counted twice');
+  assert.deepEqual(r.sections.ah.value.quotes.map(q => [q.itemID, q.price, q.quantity]), [[501, 1500, 4], [505, 7, 200], [2589, 31, 80], [4000, 500, 1]], 'results seen again are not counted twice, and a suffix variant is never priced as the item');
   for (let i = 0; i < 30; i++) tick(vm, 60);
   assert.equal(vm.evaluate('#STUB.ahCalls'), '0', 'no search, refresh or purchase call from addon code, ever');
 });
@@ -211,6 +215,33 @@ test('loot after a cast within a second is keyed by that spell; a later loot of 
   vm.run('STUB.FireEvent("LOOT_CLOSED")');
   const r = nextRecord(vm);
   assert.deepEqual(r.sections.loot.value.samples.map(s => s.source), [{ type: 'npc', id: 3100, spell: 8613 }, { type: 'npc', id: 3101, spell: 0 }]);
+});
+
+test('a gather spell after kill loot on the same corpse is a second sample; a plain reopen adds nothing', () => {
+  const vm = ready();
+  vm.run(`STUB.lootSlots = { ${lootSlot(501, 1, [NPC_GUID, 1])} }; STUB.FireEvent("LOOT_READY"); STUB.FireEvent("LOOT_CLOSED")`);
+  tick(vm, 3);
+  vm.run(`STUB.FireEvent("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-3", ${GATHER_SPELL})`);
+  vm.run(`STUB.lootSlots = { ${lootSlot(2318, 1, [NPC_GUID, 1])} }; STUB.FireEvent("LOOT_READY"); STUB.FireEvent("LOOT_CLOSED")`);
+  tick(vm, 3);
+  vm.run(`STUB.lootSlots = { ${lootSlot(2318, 1, [NPC_GUID, 1])} }; STUB.FireEvent("LOOT_READY"); STUB.FireEvent("LOOT_CLOSED")`);
+  const r = nextRecord(vm);
+  assert.deepEqual(r.sections.loot.value.samples.map(s => [s.source, s.items]), [
+    [{ type: 'npc', id: 3100, spell: 0 }, { 501: 1 }],
+    [{ type: 'npc', id: 3100, spell: GATHER_SPELL }, { 2318: 1 }],
+  ]);
+});
+
+test('a spell the bridge did not name as a gather spell never keys a sample, and a slot without a gather list keys none', () => {
+  const vm = ready();
+  vm.run(`STUB.FireEvent("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-4", ${UNRELATED_SPELL})`);
+  vm.run(`STUB.lootSlots = { ${lootSlot(501, 1, [NPC_GUID, 1])} }; STUB.FireEvent("LOOT_READY"); STUB.FireEvent("LOOT_CLOSED")`);
+  tick(vm, 3);
+  vm.run('ClaudeWoWTelemetry.Sync({ v = 1, watch = { items = {}, factions = {} }, chars = {}, obs = 1 })');
+  vm.run(`STUB.FireEvent("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-5", ${GATHER_SPELL})`);
+  vm.run(`STUB.lootSlots = { ${lootSlot(501, 1, [OTHER_GUID, 1])} }; STUB.FireEvent("LOOT_READY"); STUB.FireEvent("LOOT_CLOSED")`);
+  const r = nextRecord(vm);
+  assert.deepEqual(r.sections.loot.value.samples.map(s => s.source.spell), [0, 0]);
 });
 
 test('gathering objects and fishing are their own source types, one fishing window is one sample, and a secret GUID is never read', () => {

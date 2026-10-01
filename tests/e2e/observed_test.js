@@ -127,7 +127,7 @@ test('route_draw from a listening session reaches the game map on the next slot 
       await h.client.say('show me the way');
       await h.client.waitFor(() => h.client.luaValue('ClaudeWoWMapDB.map and ClaudeWoWMapDB.map.layers[1] and ClaudeWoWMapDB.map.layers[1].name') === 'claude-route', { timeoutMs: 30000, label: 'the route in the game map' });
       assert.equal(h.client.luaValue('#ClaudeWoWMapDB.map.layers[1].points'), '2');
-      assert.equal(h.state().mapHeldForGame, false, 'the next record from the game releases the hold');
+      assert.equal(h.state().mapHeldForGame, false, 'the published reply releases the hold');
       assert.equal(h.agentCalls().length, 2, 'route_draw ran no agent');
     } finally {
       session.proc.kill();

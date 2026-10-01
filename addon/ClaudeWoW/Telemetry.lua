@@ -304,9 +304,9 @@ function T.Command(rest)
 	rest = tostring(rest or ""):lower()
 	if rest == "on" or rest == "off" then T.SetOn(rest == "on") end
 	if T.IsOn() then
-		Print("Game state telemetry is on: money, level, zone, profession ranks, watched items, gear IDs, reputation, deaths and recipes go to the bridge on screenshots the addon takes anyway, plus one of its own at most every 2 minutes. /claude config telemetry off stops it.")
+		Print("Game state telemetry is on: money, level, zone, profession ranks, watched items, gear IDs, reputation, deaths, recipes, and the vendor prices, auction results and loot (with your map position) from windows you open go to the bridge on screenshots the addon takes anyway, plus one of its own at most every 2 minutes. /claude config telemetry off stops it.")
 	else
-		Print("Game state telemetry is off: no game state records and no telemetry screenshots. /claude config telemetry on starts it again.")
+		Print("Game state telemetry is off: no game state, vendor, auction or loot records and no telemetry screenshots. /claude config telemetry on starts it again.")
 	end
 end
 
@@ -435,11 +435,13 @@ function T.Sync(gs)
 	if type(gs) ~= "table" or gs.v ~= T.SLOT_VERSION then
 		state.bridge = false
 		state.observed = false
+		if ClaudeWoWObserved and ClaudeWoWObserved.SetGather then ClaudeWoWObserved.SetGather(nil) end
 		return
 	end
 	local changed = not state.bridge or state.observed ~= (gs.obs == 1)
 	state.bridge = true
 	state.observed = gs.obs == 1
+	if ClaudeWoWObserved and ClaudeWoWObserved.SetGather then ClaudeWoWObserved.SetGather(state.observed and gs.gather or nil) end
 	local watch = type(gs.watch) == "table" and gs.watch or {}
 	local items, factions = IdList(watch.items, T.WATCH_ITEMS_MAX), IdList(watch.factions, T.WATCH_FACTIONS_MAX)
 	if table.concat(items, ",") ~= table.concat(state.watch.items, ",") or table.concat(factions, ",") ~= table.concat(state.watch.factions, ",") then changed = true end

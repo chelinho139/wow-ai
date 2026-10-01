@@ -923,7 +923,7 @@ test('slot field: the bridge republishes a goal write as urgent, the mode that k
   const wiring = /GOALS\.createBridgeGoals\(\{[\s\S]*?onChange: \(\) => publishNow\((\w+), \{ refresh: true \}\)/.exec(src);
   assert.ok(wiring, 'the goal store is wired to publishNow');
   assert.equal(wiring[1], 'true', 'a non-urgent publish drops a map over the progress size from every slot file');
-  assert.match(src, /const map = P\.mapInSlots\(\{ now: Date\.now\(\), shareUntil: mapShareUntil, held: state\.mapHeldForGame, urgent, size: mapLuaSize\(\), progressMax: MAP_PROGRESS_MAX \}\)/, 'urgent is what keeps a large map');
+  assert.match(src, /const map = mapShare\.inSlots\(\{ urgent, size: mapLuaSize\(\), progressMax: MAP_PROGRESS_MAX \}\)/, 'urgent is what keeps a large map');
   const dir = tmpDir('bridgegoals');
   try {
     let published = 0;

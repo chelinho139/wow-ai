@@ -54,8 +54,7 @@ function observedPoint(store, spot, notes) {
 }
 
 function sourceView(source) {
-  const ref = source.type === 'npc' ? `{npc:${source.id}}` : null;
-  return { type: source.type, id: source.id, spell: source.spell || null, ref, name: null, nameNote: NO_NAME_SOURCE };
+  return { type: source.type, id: source.id, spell: source.spell || null, ref: null, name: null, nameNote: NO_NAME_SOURCE };
 }
 
 function farmView(store, item, lines, minSamples, asOfContext) {
@@ -79,7 +78,8 @@ function farmView(store, item, lines, minSamples, asOfContext) {
     sources,
     hidden: hidden.map(h => ({ source: sourceView(h.source), n: h.n })),
     notes: [
-      'Rates are per loot window the player opened, for one source each; sources are never added together. A kill with no loot window is not counted.',
+      'Rates are per loot window the player opened, for one source each; sources are never added together. A kill with no loot window is not counted. A source the player looted often without this item shows rate 0.',
+      'Each spot is one real loot position, the most central of the samples on that map.',
       `Sources with fewer than ${minSamples} loot windows show no rate.`,
       'NPC and object names have no verified source yet: name a source only by what the player sees, never from memory.',
       ...notes,
@@ -103,7 +103,7 @@ function priceView(store, item, lines, asOfContext) {
     vendors: vendorRows,
     notes: [
       'Prices are only what the player saw: auction house searches the player ran and vendor windows the player opened. Copper.',
-      'Auction prices change; give asOf with any number.',
+      `Auction prices change; give asOf with any number. low and high cover only the ${OB.PRICE_WINDOW_MS / 3600000} hours before the latest quote.`,
       ...notes,
     ],
   };

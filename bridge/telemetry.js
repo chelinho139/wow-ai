@@ -417,13 +417,13 @@ function luaQuote(s) {
   return '"' + String(s).replace(/[\\"]/g, c => '\\' + c).replace(/[\x00-\x1f\x7f]/g, c => '\\' + String(c.charCodeAt(0)).padStart(3, '0')) + '"';
 }
 
-function luaGsTable(snapshots, watch, refused = [], observedOn = false) {
+function luaGsTable(snapshots, watch, refused = [], observedOn = false, gather = []) {
   const chars = (snapshots || [])
     .filter(s => s && CHARACTER_KEY_RE.test(s.character) && SESSION_RE.test(s.session || ''))
     .slice(0, GS_CHARACTERS_MAX)
     .map(s => `{ character = "${s.character}", session = "${s.session || ''}", seq = ${Math.max(0, Math.floor(Number(s.seq) || 0))}, hashes = { ${luaHashes(s)} } }`);
   const items = [...watch.items.keys()];
-  return `\tgs = { v = ${GS_SLOT_VERSION}, watch = { items = { ${items.join(', ')} }, factions = { ${watch.factions.join(', ')} } }, chars = { ${chars.join(', ')} }, refused = { ${refused.map(luaQuote).join(', ')} }${observedOn ? ', obs = 1' : ''} },`;
+  return `\tgs = { v = ${GS_SLOT_VERSION}, watch = { items = { ${items.join(', ')} }, factions = { ${watch.factions.join(', ')} } }, chars = { ${chars.join(', ')} }, refused = { ${refused.map(luaQuote).join(', ')} }${observedOn ? `, obs = 1, gather = { ${idList(gather, OB.GATHER_SPELLS_MAX).join(', ')} }` : ''} },`;
 }
 
 function createTelemetry(opts) {
@@ -433,6 +433,7 @@ function createTelemetry(opts) {
   const watch = opts.watch || (() => watchFrom(null));
   const rotateBytes = opts.rotateBytes || EVENTS_ROTATE_BYTES;
   const observed = opts.observed || null;
+  const gatherSpells = opts.gatherSpells || (() => []);
   const handled = { gs: {} };
   const snapshots = new Map();
   const loggedMissing = new Map();
@@ -545,7 +546,9 @@ function createTelemetry(opts) {
     prime();
     const w = watch();
     const recent = [...snapshots.values()].filter(s => s.session).sort((a, b) => b.updatedAt - a.updatedAt);
-    return luaGsTable(recent, w, [...rejectedKeys], !!observed);
+    let gather = [];
+    if (observed) { try { gather = gatherSpells(); } catch (e) { log(`telemetry: no gather spells in the slot field (${e.message})`); } }
+    return luaGsTable(recent, w, [...rejectedKeys], !!observed, gather);
   }
 
   return { submit, luaGs, handled, snapshot: load, snapshotFile };

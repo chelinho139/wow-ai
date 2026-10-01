@@ -16,6 +16,10 @@ const LOOT_ITEMS_MAX = 6;
 const SEEN_KEYS_MAX = 4000;
 const SEEN_PRIME_BYTES = 512 * 1024;
 const MIN_SAMPLES = 10;
+const MEDOID_POINTS_MAX = 200;
+const PRICE_WINDOW_MS = 24 * 60 * 60 * 1000;
+const GATHER_SKILL_NAMES = Object.freeze(['Herbalism', 'Mining', 'Skinning']);
+const GATHER_SPELLS_MAX = 80;
 const POSITION_SCALE = 10;
 const POSITION_MAX = 1000;
 const SOURCE_TYPES = Object.freeze({ n: 'npc', o: 'object', f: 'fishing' });
@@ -182,6 +186,17 @@ function sourceKey(s) {
   return `${s.type}:${s.id}:${s.spell}`;
 }
 
+function medoid(points) {
+  const pool = points.slice(-MEDOID_POINTS_MAX);
+  let best = null;
+  let bestCost = Infinity;
+  for (const p of pool) {
+    const cost = pool.reduce((sum, q) => sum + Math.hypot(p.x - q.x, p.y - q.y), 0);
+    if (cost < bestCost) { best = p; bestCost = cost; }
+  }
+  return best;
+}
+
 function dropRates(lines, itemID, minSamples = MIN_SAMPLES) {
   const groups = new Map();
   for (const doc of lines) {
@@ -190,28 +205,26 @@ function dropRates(lines, itemID, minSamples = MIN_SAMPLES) {
     if (!groups.has(key)) groups.set(key, { source: doc.source, n: 0, k: 0, qty: 0, asOf: 0, spots: new Map() });
     const g = groups.get(key);
     g.n += 1;
+    g.asOf = Math.max(g.asOf, doc.at);
     const qty = Number(doc.items[itemID]) || 0;
     if (!qty) continue;
     g.k += 1;
     g.qty += qty;
-    g.asOf = Math.max(g.asOf, doc.at);
     if (doc.map && Number.isSafeInteger(doc.map.id)) {
-      if (!g.spots.has(doc.map.id)) g.spots.set(doc.map.id, { mapID: doc.map.id, n: 0, xs: [], ys: [] });
+      if (!g.spots.has(doc.map.id)) g.spots.set(doc.map.id, { mapID: doc.map.id, n: 0, points: [] });
       const spot = g.spots.get(doc.map.id);
       spot.n += 1;
-      if (typeof doc.map.x === 'number' && typeof doc.map.y === 'number') { spot.xs.push(doc.map.x); spot.ys.push(doc.map.y); }
+      if (typeof doc.map.x === 'number' && typeof doc.map.y === 'number') spot.points.push({ x: doc.map.x, y: doc.map.y });
     }
   }
   const shown = [];
   const hidden = [];
   for (const g of groups.values()) {
-    if (!g.k) continue;
-    const spots = [...g.spots.values()].sort((a, b) => b.n - a.n).map(s => ({
-      mapID: s.mapID,
-      n: s.n,
-      x: s.xs.length ? Math.round((s.xs.reduce((a, b) => a + b, 0) / s.xs.length) * 10) / 10 : null,
-      y: s.ys.length ? Math.round((s.ys.reduce((a, b) => a + b, 0) / s.ys.length) * 10) / 10 : null,
-    }));
+    if (!g.k && g.n < minSamples) continue;
+    const spots = [...g.spots.values()].sort((a, b) => b.n - a.n).map(s => {
+      const point = medoid(s.points);
+      return { mapID: s.mapID, n: s.n, x: point ? point.x : null, y: point ? point.y : null };
+    });
     const row = { source: g.source, n: g.n, k: g.k, asOf: g.asOf, spots };
     if (g.n < minSamples) { hidden.push({ source: g.source, n: g.n }); continue; }
     shown.push({ ...row, rate: Math.round((g.k / g.n) * 1000) / 1000, perLoot: Math.round((g.qty / g.n) * 100) / 100 });
@@ -222,12 +235,13 @@ function dropRates(lines, itemID, minSamples = MIN_SAMPLES) {
 
 function prices(lines, itemID) {
   const quotes = lines.filter(d => d.kind === KINDS.ah && d.itemID === itemID).sort((a, b) => a.at - b.at);
-  const ah = quotes.length ? {
+  const last = quotes[quotes.length - 1];
+  const recent = last ? quotes.filter(q => q.at > last.at - PRICE_WINDOW_MS) : [];
+  const ah = last ? {
     n: quotes.length,
-    asOf: quotes[quotes.length - 1].at,
-    latest: { price: quotes[quotes.length - 1].price, quantity: quotes[quotes.length - 1].quantity },
-    low: Math.min(...quotes.map(q => q.price)),
-    high: Math.max(...quotes.map(q => q.price)),
+    asOf: last.at,
+    latest: { price: last.price, quantity: last.quantity },
+    recent: { n: recent.length, from: recent[0].at, asOf: last.at, low: Math.min(...recent.map(q => q.price)), high: Math.max(...recent.map(q => q.price)), hours: PRICE_WINDOW_MS / 3600000 },
   } : null;
   const byNpc = new Map();
   for (const d of lines) {
@@ -241,6 +255,25 @@ function prices(lines, itemID) {
   }
   const vendors = [...byNpc.values()].sort((a, b) => a.price / a.stack - b.price / b.stack);
   return { ah, vendors };
+}
+
+const gatherCache = { key: '', spells: [] };
+
+function gatherSpells(store) {
+  if (!store || !store.build || store.rowTrust !== 'client-data' || !store.has('skilllines') || !store.has('skilllineabilities')) return [];
+  const m = store.manifest || {};
+  const key = [store.dir, store.build, m.fetchedAt || '', m.tableHash || ''].join('|');
+  if (gatherCache.key === key) return gatherCache.spells;
+  const top = new Set(store.rows('skilllines').filter(r => GATHER_SKILL_NAMES.includes(r.name) && !(r.parentSkillLineID > 0)).map(r => r.id));
+  const lines = new Set([...top, ...store.rows('skilllines').filter(r => top.has(r.parentSkillLineID)).map(r => r.id)]);
+  const spells = [];
+  for (const a of store.rows('skilllineabilities')) {
+    if (lines.has(a.skillLine) && Number.isSafeInteger(a.spell) && a.spell > 0 && !spells.includes(a.spell)) spells.push(a.spell);
+  }
+  const capped = spells.sort((x, y) => x - y).slice(0, GATHER_SPELLS_MAX);
+  gatherCache.key = key;
+  gatherCache.spells = capped;
+  return capped;
 }
 
 function createObserved(opts) {
@@ -257,17 +290,19 @@ function createObserved(opts) {
   function seenFor(character) {
     if (seen.has(character)) return seen.get(character);
     const keys = new Set();
-    const file = path.join(folder(character), OBSERVED_FILE);
-    try {
-      const size = fs.statSync(file).size;
-      const start = Math.max(0, size - SEEN_PRIME_BYTES);
-      const fd = fs.openSync(file, 'r');
-      const buf = Buffer.alloc(size - start);
-      try { fs.readSync(fd, buf, 0, buf.length, start); } finally { fs.closeSync(fd); }
-      for (const line of buf.toString('utf8').split('\n')) {
-        try { const doc = JSON.parse(line); if (doc && typeof doc.key === 'string') keys.add(doc.key); } catch {}
-      }
-    } catch {}
+    for (const name of [OBSERVED_ROTATED_FILE, OBSERVED_FILE]) {
+      const file = path.join(folder(character), name);
+      try {
+        const size = fs.statSync(file).size;
+        const start = Math.max(0, size - SEEN_PRIME_BYTES);
+        const fd = fs.openSync(file, 'r');
+        const buf = Buffer.alloc(size - start);
+        try { fs.readSync(fd, buf, 0, buf.length, start); } finally { fs.closeSync(fd); }
+        for (const line of buf.toString('utf8').split('\n')) {
+          try { const doc = JSON.parse(line); if (doc && typeof doc.key === 'string') keys.add(doc.key); } catch {}
+        }
+      } catch {}
+    }
     seen.set(character, keys);
     return keys;
   }
@@ -311,5 +346,5 @@ function createObserved(opts) {
 module.exports = {
   OBSERVED_FILE, OBSERVED_ROTATED_FILE, OBSERVED_ROTATE_BYTES, LINE_VERSION, TRUST, SECTIONS, PARSERS, MIN_SAMPLES,
   VENDOR_ITEMS_MAX, AH_QUOTES_MAX, LOOT_ENTRIES_MAX, LOOT_ITEMS_MAX, SOURCE_TYPES, KINDS,
-  parseVendor, parseAh, parseLoot, entriesOf, lineFor, validLine, readLines, dropRates, prices, createObserved,
+  GATHER_SKILL_NAMES, GATHER_SPELLS_MAX, PRICE_WINDOW_MS, parseVendor, parseAh, parseLoot, entriesOf, gatherSpells, medoid, lineFor, validLine, readLines, dropRates, prices, createObserved,
 };
