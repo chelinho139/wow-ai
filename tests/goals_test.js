@@ -9,6 +9,8 @@ const G = require('../bridge/goals');
 const LP = require('../bridge/liveproto');
 const P = require('../bridge/protocol');
 const ST = require('../bridge/plugins/stream');
+const GD = require('../bridge/gamedata');
+const GR = require('../bridge/gamerefs');
 
 const ROOT = path.join(__dirname, '..');
 const BRIDGE = path.join(ROOT, 'bridge', 'bridge.js');
@@ -34,7 +36,7 @@ function rig(opts = {}) {
   const posts = [];
   const streamOptions = opts.streamOptions || { url: 'http://127.0.0.1:9' };
   const post = opts.post || (async (url, command) => { posts.push({ url, command }); return { ok: true, status: 200, message: '' }; });
-  const store = G.createGoals({ dir, context: () => ctx, streamOptions: () => streamOptions, post, now: () => NOW });
+  const store = G.createGoals({ dir, context: () => ctx, streamOptions: () => streamOptions, post, now: () => NOW, gameData: opts.gameData });
   const file = path.join(dir, BONE_KEY, G.GOALS_FILE);
   const read = () => JSON.parse(fs.readFileSync(file, 'utf8'));
   return { dir, store, posts, file, read, setContext: text => { ctx = { text, at: CONTEXT_AT + 1000 }; }, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
@@ -125,7 +127,8 @@ test('order text validator: any character outside the plain set is refused, so n
   reject('skin 30 and/or fish', /"\/"/);
   reject('type "/sit" now', /character """/);
   reject('skin |cff00ff00 now', /"\|"/);
-  reject('see {item:2318}', /"\{"/);
+  reject('see {item 2318}', /"\{".*whole reference token/);
+  reject('see {item:2318}', /No game data is synced/);
   reject('see <b>', /"<"/);
   reject('one\ntwo', /U\+000A/);
   reject('go to Orgrímmar', /U\+00ED/);
@@ -152,7 +155,7 @@ test('order vocabulary: lowercase, no duplicates, a few hundred plain words, no 
   const properNames = ['horde', 'alliance', 'orc', 'troll', 'tauren', 'undead', 'human', 'dwarf', 'gnome', 'elf', 'rogue', 'warrior',
     'mage', 'priest', 'hunter', 'druid', 'paladin', 'shaman', 'warlock', 'thrall', 'orgrimmar', 'undercity', 'crossroads', 'barrens',
     'brill', 'ratchet', 'everlook', 'sepulcher', 'bulwark', 'durotar', 'mulgore', 'silverpine', 'tirisfal', 'stormwind', 'ironforge',
-    'darnassus', 'murloc', 'kobold', 'gnoll', 'worgen', 'defias', 'scourge', 'light', 'hearthstone', 'forest', 'leather', 'linen'];
+    'darnassus', 'murloc', 'kobold', 'gnoll', 'worgen', 'defias', 'scourge', 'light', 'hearthstone', 'forest', 'leather', 'linen', 'city'];
   for (const n of properNames) assert.ok(!G.ORDER_WORDS.has(n), n);
 });
 
@@ -273,6 +276,236 @@ test('order_issue: one current order plus the last 20, checked by the validator,
   } finally { r.cleanup(); }
 });
 
+const WOWDATA = path.join(__dirname, 'fixtures', 'wowdata');
+const FIXTURE_BUILD = '1.60.1.200';
+const openFixtureData = text => GD.openStore({ dataDir: WOWDATA, clientBuild: GD.clientBuildOf(text) });
+const NAMES = ['Leatherworking', 'Bone'];
+const fixtureData = (clientBuild = '1.60.1.70124') => GD.openStore({ dataDir: WOWDATA, clientBuild });
+
+test('order tokens: {item:ID}, {skill:ID} and {map:ID,x,y} expand from the fixture data, and the expanded text and refs are stored and shown', async () => {
+  const r = rig({ gameData: openFixtureData });
+  try {
+    const res = await r.store.call('order_issue', { text: 'Buy 2 {item:501}, then train {skill:40} at {map:9003,27.5,25}' });
+    assert.equal(res.ok, true, res.text);
+    const want = 'Buy 2 Fixture Blade, then train Fixture Craft at Fixture Town';
+    assert.match(res.text, new RegExp(`"${want}"`));
+    const current = r.read().orders.current;
+    assert.equal(current.text, want, 'a map token shows the map name only, never the typed coordinates');
+    assert.deepEqual(current.refs, [
+      { kind: 'item', id: 501, name: 'Fixture Blade', trust: 'client-data', build: FIXTURE_BUILD },
+      { kind: 'skill', id: 40, name: 'Fixture Craft', trust: 'client-data', build: FIXTURE_BUILD },
+      { kind: 'map', id: 9003, name: 'Fixture Town', trust: 'client-data', build: FIXTURE_BUILD, point: { x: 27.5, y: 25, trust: 'model' } },
+    ]);
+    assert.equal(r.posts[0].command.orders.order.text, want, 'the overlay gets the expanded names, never a raw token');
+    assert.equal((await r.store.call('order_issue', { text: 'Raise Leatherworking to 150' })).ok, true, 'a plain order still works with data synced');
+    assert.equal(r.read().orders.current.refs, undefined, 'an order without tokens stores no refs');
+  } finally { r.cleanup(); }
+});
+
+test('order tokens: unknown IDs, a malformed map token, a kind with no name source and an unsafe data name refuse the whole order and save nothing', async () => {
+  const r = rig({ gameData: openFixtureData });
+  try {
+    const refuse = async (text, re) => {
+      const res = await r.store.call('order_issue', { text });
+      assert.equal(res.ok, false, text);
+      assert.match(res.text, /The whole order was refused and nothing was saved\./, text);
+      assert.match(res.text, re, text);
+    };
+    await refuse('Buy 2 {item:999}', /\{item:999\}: that item ID is not in the Forever client data for build 1\.60\.1\.200\. Look the ID up with the wowdata tools; never use an ID from memory or from Classic\./);
+    await refuse('Buy 2 {item:501} and 5 {item:2318}', /\{item:2318\}: that item ID is not in the Forever client data/);
+    await refuse('go to {map:4242,10,10}', /\{map:4242,10,10\}: that map ID/);
+    await refuse('go to {map:9003,101,10}', /coordinates run from 0 to 100/);
+    await refuse('kill {npc:1} for {quest:2} and {faction:3}', /\{npc:1\}: there is no verified source of npc names yet, so leave that name out\. \{quest:2\}: .*quest names.*\{faction:3\}: .*faction names/);
+    await refuse('buy 2 {item:503}', /\{item:503\}: the name in the data has characters that cannot be shown/);
+    await refuse('buy 2 {item:504}', /\{item:504\}: the name in the data has characters that cannot be shown/);
+    assert.equal(fs.existsSync(r.file), false, 'nothing was written');
+    assert.equal(r.posts.length, 0, 'nothing was pushed');
+  } finally { r.cleanup(); }
+});
+
+test('order tokens: the 90-character cap applies to the expanded text', () => {
+  const store = fixtureData();
+  const text = `Buy ${'{item:501} '.repeat(7)}now`;
+  assert.ok(text.length <= GR.TOKEN_TEXT_MAX);
+  const r = G.validateOrderText(text, NAMES, store);
+  assert.equal(r.ok, false);
+  assert.match(r.text, /characters once its tokens are expanded; the limit is 90/);
+  assert.match(G.validateOrderText(`buy ${'1'.repeat(GR.TOKEN_TEXT_MAX)} {item:501}`, NAMES, store).text, /the limit is 400/);
+});
+
+test('order tokens: a raw game name next to a valid token is still refused, in any case, split by a hidden character, or with a title-case letter', () => {
+  const store = fixtureData();
+  const refuse = (text, re) => {
+    const r = G.validateOrderText(text, NAMES, store);
+    assert.equal(r.ok, false, text);
+    assert.match(r.text, re, text);
+  };
+  refuse('Buy 2 {item:501} in Silverpine', /not allowed: "silverpine"\..*reported names: Leatherworking, Bone\. Name a game thing with a reference token instead/);
+  refuse('buy 2 {item:501} from thrall in orgrimmar', /not allowed: "thrall", "orgrimmar"/);
+  refuse('go to Under city', /not allowed: "city"/);
+  refuse('buy 2 {item:501} in Under city', /not allowed: "city"/);
+  refuse('buy 2 {item:501} near the​town', /^The order text has the character U\+200B/);
+  refuse('buy 2 {item:501} near the­town', /^The order text has the character U\+00AD/);
+  refuse('buy 2 {item:501} in the ‮town', /^The order text has the character U\+202E/);
+  refuse('buy 2 {item:501} from ǅungeon', /^The order text has the character U\+017E/);
+  refuse('buy {item:501} {item 2}', /"\{"/);
+  assert.equal(G.validateOrderText('buy 2 {item:501} near the town', NAMES, store).ok, true, 'precondition: the same words without the hidden character pass');
+});
+
+test('order tokens: a token glued to a letter, a digit or another token is refused with the reason', () => {
+  const store = fixtureData();
+  for (const [text, token] of [['buy 2{item:501} now', '{item:501}'], ['buy {item:501}now', '{item:501}'], ['buy {item:501}{item:502}', '{item:501}'], ['buy 2 {item:501}s', '{item:501}']]) {
+    const r = G.validateOrderText(text, NAMES, store);
+    assert.equal(r.ok, false, text);
+    assert.equal(r.text, `${token} touches a letter, a digit or another token. Put a space or punctuation on both sides of every token.`, text);
+  }
+  assert.equal(G.validateOrderText('buy 2 {item:501}, {item:502}.', NAMES, store).text, 'buy 2 Fixture Blade, Fixture Letter.');
+});
+
+test('order tokens: a data name with a character the order set refuses is refused per token', async () => {
+  const r = G.validateOrderText('buy {item:506}', NAMES, fixtureData());
+  assert.equal(r.ok, false);
+  assert.match(r.text, /\{item:506\}: the name in the data has characters that cannot be shown/);
+  const tight = GR.checkText('buy {item:502}', { store: fixtureData(), names: [], plainWords: G.ORDER_WORDS, charRe: /^[A-KM-Za-z0-9 ]$/, maxLength: 90 });
+  assert.deepEqual({ problem: tight.problem, char: tight.char, token: tight.token, name: tight.name }, { problem: 'char', char: 'L', token: '{item:502}', name: 'Fixture Letter' }, 'a caller with a tighter set gets the expanded text checked again, naming the token');
+});
+
+test('order phrases: a run of plain words that names something in the synced data is refused, unless a token, the character or a reported profession made it', async () => {
+  const store = fixtureData();
+  const refused = G.validateOrderText('take the low road to 150', NAMES, store);
+  assert.equal(refused.ok, false);
+  assert.equal(refused.text, 'The order was refused. These word runs are game names: "low road" (a map name in the game data; use {map:ID,x,y} for it). Reword the text or leave the names out.');
+  assert.equal(G.validateOrderText('go to the old town', NAMES, store).text, 'The order was refused. These word runs are game names: "old town" (a well-known ability, NPC or place name from the built-in list). Reword the text or leave the names out.', 'no token is offered where no token kind exists');
+  assert.equal(G.validateOrderText('you got old. town is next', NAMES, store).ok, true, 'runs stop at sentence and clause marks');
+  assert.equal(G.validateOrderText('you got old, town is next', NAMES, store).ok, true);
+  assert.equal(G.validateOrderText('go to old - town', NAMES, store).ok, false, 'a dash does not end a clause');
+  assert.equal(G.validateOrderText('take the {map:9004,10,10} to 150', NAMES, store).text, 'take the Low Road to 150', 'the same name through a token is fine');
+  assert.equal(G.validateOrderText('raise first aid to 100', ['First Aid', 'Bone'], store).ok, true, 'a reported profession that is also in the data and the built-in list');
+  assert.equal(G.validateOrderText('take the low road to 150', ['Low Road', 'Bone'], store).ok, true, 'a reported name made of plain words is not refused as a data phrase');
+  assert.equal(G.validateOrderText('take the low road to 150', NAMES, null).ok, true, 'without data the data phrases are skipped');
+});
+
+test('order phrases: the built-in list refuses well-known ability and place names made of plain words, with or without data', () => {
+  for (const data of [null, fixtureData()]) {
+    const r = G.validateOrderText('go to old town', NAMES, data);
+    assert.equal(r.ok, false);
+    assert.match(r.text, /"old town"/);
+  }
+  assert.equal(G.validateOrderText('go to the town', NAMES, null).ok, true, 'precondition: the words alone are plain');
+});
+
+test('order_issue says when the data phrase check was skipped for lack of synced data', async () => {
+  const none = rig();
+  try {
+    const res = await none.store.call('order_issue', { text: 'take the low road to 150' });
+    assert.equal(res.ok, true, res.text);
+    assert.match(res.text, /No game data is synced for this build yet \(claude-wow data sync\).* Multi-word game names were checked only against the short built-in list\./);
+  } finally { none.cleanup(); }
+  const mismatch = rig({ gameData: openFixtureData, ctx: BONE_CONTEXT.replace('client 1.60.1.70124', 'client 1.59.0.1') });
+  try {
+    const res = await mismatch.store.call('order_issue', { text: 'take the low road to 150' });
+    assert.equal(res.ok, true, res.text);
+    assert.match(res.text, /The synced game data is build 1\.60\.1\.200, which is not in the client's build family \(client 1\.59\.0\.1\)\. Multi-word game names were checked only against the short built-in list\./, 'the note names the real reason');
+    assert.doesNotMatch(res.text, /try again|reference token/, 'a saved order gets no retry or token advice');
+  } finally { mismatch.cleanup(); }
+  const synced = rig({ gameData: openFixtureData });
+  try {
+    const res = await synced.store.call('order_issue', { text: 'skin 10' });
+    assert.equal(res.ok, true);
+    assert.doesNotMatch(res.text, /No game data is synced/);
+  } finally { synced.cleanup(); }
+});
+
+test('order tokens: an order refused by its words never opens the game data; a passing one opens it once', async () => {
+  let opened = 0;
+  const r = rig({ gameData: text => { opened += 1; return openFixtureData(text); } });
+  try {
+    assert.equal((await r.store.call('order_issue', { text: 'go to Silverpine' })).ok, false);
+    assert.equal(opened, 0, 'a refused-by-words order never opens the data');
+    assert.equal((await r.store.call('order_issue', { text: 'buy 2 {item:501}' })).ok, true);
+    assert.equal(opened, 1);
+  } finally { r.cleanup(); }
+});
+
+test('order tokens through the store the bridge builds: the injected home, its data and the context client build expand {item:501}', async () => {
+  const dir = tmpDir('bridgegoals');
+  try {
+    const home = require('../bridge/home').resolve({ CLAUDE_WOW_HOME: dir });
+    const store = G.createBridgeGoals({ home, context: () => ({ text: BONE_CONTEXT, at: NOW, receivedAt: Date.now() }), streamOptions: () => ({ ...ST.INERT_OPTIONS }) });
+    assert.equal(store.home, home);
+    assert.equal(store.home.data, path.join(dir, 'data'));
+    fs.cpSync(WOWDATA, home.data, { recursive: true });
+    const res = await store.call('order_issue', { text: 'Buy 2 {item:501}' });
+    assert.equal(res.ok, true, res.text);
+    const saved = JSON.parse(fs.readFileSync(path.join(home.goals, BONE_KEY, G.GOALS_FILE), 'utf8'));
+    assert.equal(saved.orders.current.text, 'Buy 2 Fixture Blade');
+    assert.equal(saved.orders.current.refs[0].build, FIXTURE_BUILD);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+function copiedData(name) {
+  const dir = tmpDir(name);
+  fs.cpSync(WOWDATA, dir, { recursive: true });
+  return { dir, build: path.join(dir, 'forever', FIXTURE_BUILD), open: () => GD.openStore({ dataDir: dir, clientBuild: '1.60.1.70124' }) };
+}
+
+test('order phrases: a missing or damaged phrase table is never taken as a complete index, and the order says so', async () => {
+  for (const damage of [
+    d => fs.writeFileSync(path.join(d.build, 'uimaps.jsonl'), '{"id":9004,"name":"Low Road"}\n'),
+    d => fs.rmSync(path.join(d.build, 'zones.jsonl')),
+  ]) {
+    const d = copiedData('damaged');
+    try {
+      damage(d);
+      const checked = GR.checkText('take the low road to 150', { store: d.open(), names: NAMES, plainWords: G.ORDER_WORDS, charRe: /^[A-Za-z0-9 ,.'\-:!?%]$/, maxLength: 90 });
+      assert.equal(checked.phrasesChecked, false);
+      assert.match(checked.phrasesNote, /The synced game data is missing or has a damaged (uimaps|zones) table/);
+      const again = GR.checkText('take the low road to 150', { store: d.open(), names: NAMES, plainWords: G.ORDER_WORDS, charRe: /^[A-Za-z0-9 ,.'\-:!?%]$/, maxLength: 90 });
+      assert.equal(again.phrasesChecked, false, 'the incomplete index was not cached');
+    } finally { fs.rmSync(d.dir, { recursive: true, force: true }); }
+  }
+});
+
+test('order phrases: a re-sync of the same build with new tables rebuilds the index', () => {
+  const d = copiedData('resync');
+  try {
+    const check = () => G.validateOrderText('go to the far bank', NAMES, d.open());
+    assert.equal(check().ok, true);
+    fs.appendFileSync(path.join(d.build, 'uimaps.jsonl'), '{"id":9010,"name":"Far Bank","parentUiMapID":9002,"type":3,"system":0}\n');
+    const manifestFile = path.join(d.build, 'manifest.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
+    manifest.entities.uimaps.rows += 1;
+    manifest.tableHash = 'fixture-2';
+    fs.writeFileSync(manifestFile, JSON.stringify(manifest));
+    assert.match(check().text, /"far bank" \(a map name in the game data/);
+  } finally { fs.rmSync(d.dir, { recursive: true, force: true }); }
+});
+
+test('order tokens: without synced data, or with data for another build or an unknown client build, no token expands and the order says why', async () => {
+  const empty = tmpDir('nodata');
+  try {
+    const none = GD.openStore({ dataDir: empty, clientBuild: '1.60.1.70124' });
+    const tokenOrder = G.validateOrderText('Buy 2 {item:501}', NAMES, none);
+    assert.equal(tokenOrder.ok, false);
+    assert.match(tokenOrder.text, /No game data is synced for this build yet \(claude-wow data sync\).*only names the game itself reported may appear/);
+    const word = G.validateOrderText('Buy 2 in Silverpine', NAMES, none);
+    assert.match(word.text, /"silverpine".*Tokens work only once game data is synced for the client's build \(claude-wow data sync\); until then only names the game reported may appear\./);
+    assert.deepEqual(G.validateOrderText('Raise Leatherworking to 150', NAMES, none), { ok: true, text: 'Raise Leatherworking to 150' }, 'Phase 0 orders work as before');
+    assert.match(G.validateOrderText('Buy 2 {item:501}', NAMES, null).text, /No game data is synced/);
+  } finally { fs.rmSync(empty, { recursive: true, force: true }); }
+  const mismatch = G.validateOrderText('Buy 2 {item:501}', NAMES, fixtureData('1.61.0.1'));
+  assert.match(mismatch.text, /build 1\.60\.1\.200, which is not in the client's build family \(client 1\.61\.0\.1\)/);
+  const unknown = G.validateOrderText('Buy 2 {item:501}', NAMES, fixtureData(''));
+  assert.match(unknown.text, /has not reported its client build/);
+
+  const r = rig({ gameData: openFixtureData, ctx: BONE_CONTEXT.replace('client 1.60.1.70124', 'client 1.59.0.1') });
+  try {
+    const res = await r.store.call('order_issue', { text: 'Buy 2 {item:501}' });
+    assert.equal(res.ok, false, 'the client build comes from the game context the order is checked against');
+    assert.match(res.text, /not in the client's build family \(client 1\.59\.0\.1\)/);
+  } finally { r.cleanup(); }
+});
+
 test('display push: the exact orders contract, on every change and never on a read or a refusal', async () => {
   const r = rig();
   try {
@@ -376,7 +609,9 @@ test('display push: stream off never posts, and a stream service that is down do
 
 test('MCP tool schemas: goal_set, goal_list and order_issue; only the two writers are denied to in-game runs', () => {
   assert.deepEqual(G.toolSchemas().map(t => t.name), ['goal_set', 'goal_list', 'order_issue']);
-  assert.equal(G.toolSchemas()[2].inputSchema.properties.text.maxLength, 90);
+  assert.equal(G.toolSchemas()[2].inputSchema.properties.text.maxLength, GR.TOKEN_TEXT_MAX, 'raw text may carry tokens; the 90-character cap applies after expansion');
+  assert.match(G.toolSchemas()[2].description, /\{item:ID\}, \{skill:ID\} or \{map:ID,x,y\}/);
+  assert.match(G.toolSchemas()[2].description, /never from memory or Classic/);
   assert.deepEqual(LP.GOAL_WRITE_TOOLS, ['mcp__claude-wow__goal_set', 'mcp__claude-wow__order_issue']);
   const acfg = P.withRunDeniedRules({ allowedTools: ['WebSearch'], deniedTools: ['Bash(rm:*)'] }, LP.GOAL_WRITE_TOOLS);
   assert.deepEqual(acfg.deniedTools, ['Bash(rm:*)', 'mcp__claude-wow__goal_set', 'mcp__claude-wow__order_issue']);

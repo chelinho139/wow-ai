@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const ask = require('./ask');
 const stream = require('./stream');
+const GR = require('../gamerefs');
 
 const KIND = 'roast';
 const RECAP_PREFIX = 'Death recap:';
@@ -22,12 +23,16 @@ const PLAIN_WORDS = new Set([
   'at', 'in', 'on', 'to', 'of', 'for', 'with', 'from', 'by', 'one', 'some', 'someone', 'something', 'somehow', 'death', 'dead', 'died',
   "don't", "didn't", "can't", "won't", "let's", 'tl', 'dr',
 ]);
+const ROAST_WORDS = Object.freeze(new Set([...require('../order-words.json'), ...require('../roast-words.json'), ...PLAIN_WORDS]));
+const ROAST_CHAR_RE = /^[A-Za-z0-9 ,.'‘’\-:!?%()";]$/;
+const ROAST_TEXT_MAX = 280;
 
 const TOOLS = [
   'This chat is the player\'s death roast. When a message is a death recap (it starts with "Death recap:"), the player has just died in World of Warcraft and the addon sent you the last hits before the death: from the game\'s death recap (who hit them, with what, for how much, the overkill, the levels), or, when the game shared none, the hits they took with no attacker named plus their target at death. The zone is always there.',
   'Reply with a short, funny, affectionate roast of that death: two or three sentences, like a friend in guild chat who saw it happen. Use the specifics (the mob, the ability, the overkill, a level gap, the zone) because the details are the joke. Punch at the play, never at the person. No slurs, nothing about real-world identity, appearance or intelligence, nothing cruel. At most one practical tip, and only if it is also funny.',
   'If a screenshot of the screen is attached, you may use what you see in it. Do not use the map or write macros in this chat. Your TL;DR line is the best line of the roast.',
   'Name only the mobs, abilities, zones and levels that appear in the recap, spelled exactly as they appear there. Never name any other mob, ability, zone, item, quest or character from the game, even one you remember: your TL;DR line is shown to stream viewers.',
+  'The bridge checks the TL;DR line word by word before it goes on the stream card: every word must be a number, a word from the recap, or an everyday English word, in any letter case. Any other game name drops the line from the card. This chat has no reference tokens: the reply is printed in the game chat as written, so name game things only the way the recap does.',
   'A message that is not a death recap is the player talking back: answer it in the same playful tone, briefly.',
 ].join('\n');
 
@@ -79,29 +84,28 @@ function roastLine(outcome) {
   return withoutBridgeNotes(outcome.summary) || withoutBridgeNotes(outcome.text);
 }
 
-function wordsOf(text) {
-  return (String(text || '').replace(/[‘’]/g, "'").match(/[A-Za-z][A-Za-z']*/g) || [])
-    .map(w => w.replace(/'+$/, ''));
+function recapNames(recap) {
+  return GR.displayWords(recap);
 }
 
-function possessiveStem(word) {
-  return word.replace(/'s$/i, '');
+function refusedText(r) {
+  if (r.problem === GR.PROBLEM.length) return `${r.length} characters, the limit is ${r.max}`;
+  if (r.problem === GR.PROBLEM.char) return `the character U+${r.char.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')} is not allowed`;
+  if (r.problem === GR.PROBLEM.words) return `words neither in the recap nor plain: ${r.words.join(', ')}`;
+  if (r.problem === GR.PROBLEM.phrases) return `game names not in the recap: ${r.phrases.map(p => `${p.run} (${p.source})`).join(', ')}`;
+  return 'it is empty';
 }
 
-function namesOnlyFromRecap(text, recap) {
-  if (text.includes('|')) return false;
-  const recapWords = new Set(wordsOf(recap).flatMap(w => [w, possessiveStem(w)]));
-  return wordsOf(text).every(word => {
-    if (!/^[A-Z]/.test(word)) return true;
-    if (PLAIN_WORDS.has(word.toLowerCase())) return true;
-    return recapWords.has(word) || recapWords.has(possessiveStem(word));
-  });
-}
-
-function overlayCommand(recap, outcome) {
-  const facts = recapFacts(recap);
+function checkLine(recap, outcome, gameData = null) {
   const line = roastLine(outcome);
-  const text = line && namesOnlyFromRecap(line, recap) ? line : '';
+  if (!line) return { text: '', refused: '', phrasesNote: '' };
+  const r = GR.checkText(line, { store: gameData, tokens: false, names: recapNames(recap), known: [recap], plainWords: ROAST_WORDS, charRe: ROAST_CHAR_RE, maxLength: ROAST_TEXT_MAX });
+  return r.ok ? { text: r.text, refused: '', phrasesNote: r.phrasesNote } : { text: '', refused: refusedText(r), phrasesNote: r.phrasesNote || '' };
+}
+
+function overlayCommand(recap, outcome, checked = checkLine(recap, outcome)) {
+  const facts = recapFacts(recap);
+  const { text } = checked;
   const roast = {};
   if (text) roast.text = text;
   for (const key of ['killer', 'ability', 'overkill', 'zone']) {
@@ -123,7 +127,11 @@ async function sendToOverlay(job, outcome, core) {
     return null;
   }
   const url = stream.serviceUrl(options);
-  const command = overlayCommand(job.recap, outcome);
+  const gameData = typeof core.gameData === 'function' ? () => core.gameData() : null;
+  const checked = checkLine(job.recap, outcome, gameData);
+  if (checked.refused) core.log(`${core.tag(job)} roast: line left off the card (${checked.refused})`);
+  if (checked.text && checked.phrasesNote) core.log(`${core.tag(job)} roast: ${checked.phrasesNote}`);
+  const command = overlayCommand(job.recap, outcome, checked);
   try {
     const result = await stream.postControl(url, command);
     core.log(`${core.tag(job)} roast: overlay -> ${result.status}${result.message ? ' ' + result.message : ''}`);
@@ -151,7 +159,7 @@ const plugin = {
       core.fail(job, `The roast plugin needs a scratch folder and could not create ${path.resolve(cwd)}: ${e.message}\nSet plugins.roast.cwd in config.json to a folder that works.`);
       return;
     }
-    if (isRoast(job)) {
+    if (isRecap(job.text)) {
       job.recap = String(job.text || '');
       job.text = roastPrompt(job.text);
     }
@@ -169,4 +177,7 @@ module.exports.isRoast = isRoast;
 module.exports.roastPrompt = roastPrompt;
 module.exports.recapFacts = recapFacts;
 module.exports.overlayCommand = overlayCommand;
+module.exports.checkLine = checkLine;
+module.exports.ROAST_WORDS = ROAST_WORDS;
+module.exports.ROAST_TEXT_MAX = ROAST_TEXT_MAX;
 module.exports.sendToOverlay = sendToOverlay;
