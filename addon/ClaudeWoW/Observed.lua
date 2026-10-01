@@ -161,8 +161,9 @@ end
 
 local function SpellBeforeLoot()
 	local s = state.spell
-	if s and GetTime() - s.at <= O.SPELL_WINDOW_SECONDS then return s.id end
-	return 0
+	state.spell = nil
+	if not s or GetTime() - s.at > O.SPELL_WINDOW_SECONDS then return 0 end
+	return state.gather[s.id]
 end
 
 local function Entry(code, id, spell, place, items)
@@ -182,12 +183,18 @@ local function AddItem(source, itemID, qty)
 	source.items[#source.items + 1] = { id = itemID, qty = qty }
 end
 
+function O.LootKeyed()
+	return next(state.gather) ~= nil
+end
+
 function O.OnLoot()
+	if not O.LootKeyed() then return end
 	local now = GetTime()
 	if state.windowAt and now - state.windowAt < O.WINDOW_SECONDS then return end
 	state.windowAt = now
 	local count = WholeNumber(Try(GetNumLootItems)) or 0
 	local spell = SpellBeforeLoot()
+	if not spell then return end
 	local place = { Place() }
 	if Try(IsFishingLoot) then
 		local map = tonumber(place[1])
@@ -230,12 +237,12 @@ function O.OnLoot()
 	if added then Changed() end
 end
 
-function O.SetGather(list)
+function O.SetGather(map)
 	local gather, n = {}, 0
-	for _, id in ipairs(type(list) == "table" and list or {}) do
+	for id, root in pairs(type(map) == "table" and map or {}) do
 		if n >= O.GATHER_SPELLS_MAX then break end
-		if WholeNumber(id) and id > 0 and not gather[id] then
-			gather[id] = true
+		if WholeNumber(id) and id > 0 and WholeNumber(root) and root > 0 then
+			gather[id] = root
 			n = n + 1
 		end
 	end
@@ -243,7 +250,7 @@ function O.SetGather(list)
 end
 
 function O.OnSpell(unit, spellID)
-	if unit ~= "player" or not (WholeNumber(spellID) and spellID > 0) or not state.gather[spellID] then return end
+	if unit ~= "player" or not (WholeNumber(spellID) and spellID > 0) then return end
 	state.spell = { id = spellID, at = GetTime() }
 end
 

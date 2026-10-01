@@ -294,6 +294,7 @@ end
 
 function T.Toggle()
 	T.SetOn(not T.IsOn())
+	T.Command("")
 end
 
 function T.Status()

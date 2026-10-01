@@ -845,7 +845,6 @@ function allowRules(agentId, rules) {
 // ---------------------------------------------------------------------------
 
 function submit(job) {
-  mapShare.onRecord(job);
   if (TL.isTelemetry(job)) {
     if (!TELEMETRY_ON) return;
     try { telemetry.submit(job); } catch (e) { log(`telemetry: gs #${job.id} not applied (${e && e.message ? e.message : e})`); }
@@ -876,6 +875,7 @@ function submit(job) {
     // The addon announcing itself: ack, offer a restore if its data is fresh,
     // and refresh the slots so it can read our clock. No agent run.
     markHandled(job);
+    mapShare.onHello(job);
     placeProbe(job);
     presenceBeat();
     saveState();

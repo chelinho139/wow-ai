@@ -107,8 +107,9 @@ function gsOf(jobs) {
 }
 
 const GATHER_SPELL = 8613;
-const UNRELATED_SPELL = 1943;
-const GS_OBSERVED = `{ v = 1, watch = { items = {}, factions = {} }, chars = {}, obs = 1, gather = { ${GATHER_SPELL}, 2366 } }`;
+const GATHER_RANK = 8617;
+const PICK_POCKET_LIKE = 921;
+const GS_OBSERVED = `{ v = 1, watch = { items = {}, factions = {} }, chars = {}, obs = 1, gather = { [${GATHER_SPELL}] = ${GATHER_SPELL}, [${GATHER_RANK}] = ${GATHER_SPELL}, [2366] = 2366 } }`;
 const GS_PLAIN = '{ v = 1, watch = { items = {}, factions = {} }, chars = {} }';
 
 function ready({ gs = GS_OBSERVED, extra, saved } = {}) {
@@ -232,16 +233,28 @@ test('a gather spell after kill loot on the same corpse is a second sample; a pl
   ]);
 });
 
-test('a spell the bridge did not name as a gather spell never keys a sample, and a slot without a gather list keys none', () => {
+test('a window right after a cast that is not a gather spell is skipped whole, so a pick pocket never takes the kill loot sample', () => {
   const vm = ready();
-  vm.run(`STUB.FireEvent("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-4", ${UNRELATED_SPELL})`);
-  vm.run(`STUB.lootSlots = { ${lootSlot(501, 1, [NPC_GUID, 1])} }; STUB.FireEvent("LOOT_READY"); STUB.FireEvent("LOOT_CLOSED")`);
+  vm.run(`STUB.FireEvent("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-4", ${PICK_POCKET_LIKE})`);
+  vm.run(`STUB.lootSlots = { ${lootSlot(5374, 1, [NPC_GUID, 1])} }; STUB.FireEvent("LOOT_READY"); STUB.FireEvent("LOOT_CLOSED")`);
   tick(vm, 3);
-  vm.run('ClaudeWoWTelemetry.Sync({ v = 1, watch = { items = {}, factions = {} }, chars = {}, obs = 1 })');
-  vm.run(`STUB.FireEvent("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-5", ${GATHER_SPELL})`);
-  vm.run(`STUB.lootSlots = { ${lootSlot(501, 1, [OTHER_GUID, 1])} }; STUB.FireEvent("LOOT_READY"); STUB.FireEvent("LOOT_CLOSED")`);
+  vm.run(`STUB.lootSlots = { ${lootSlot(501, 2, [NPC_GUID, 2])} }; STUB.FireEvent("LOOT_READY"); STUB.FireEvent("LOOT_CLOSED")`);
   const r = nextRecord(vm);
-  assert.deepEqual(r.sections.loot.value.samples.map(s => s.source.spell), [0, 0]);
+  assert.deepEqual(r.sections.loot.value.samples.map(s => [s.source, s.items]), [[{ type: 'npc', id: 3100, spell: 0 }, { 501: 2 }]]);
+});
+
+test('one cast keys one window, a higher rank keys its first rank, and without a gather list no loot is read at all', () => {
+  const vm = ready();
+  vm.run(`STUB.FireEvent("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-6", ${GATHER_RANK})`);
+  vm.run(`STUB.lootSlots = { ${lootSlot(2318, 1, [NPC_GUID, 1])} }; STUB.FireEvent("LOOT_READY"); STUB.FireEvent("LOOT_CLOSED")`);
+  vm.run(`STUB.lootSlots = { ${lootSlot(2318, 1, [OTHER_GUID, 1])} }; STUB.FireEvent("LOOT_READY"); STUB.FireEvent("LOOT_CLOSED")`);
+  const r = nextRecord(vm);
+  assert.deepEqual(r.sections.loot.value.samples.map(s => s.source), [{ type: 'npc', id: 3100, spell: GATHER_SPELL }, { type: 'npc', id: 3101, spell: 0 }], 'two corpses in one second: only the first is the skinning');
+  vm.run('ClaudeWoWTelemetry.Sync({ v = 1, watch = { items = {}, factions = {} }, chars = {}, obs = 1 })');
+  assert.equal(vm.evaluate('ClaudeWoWObserved.LootKeyed()'), 'false');
+  tick(vm, 3);
+  vm.run(`STUB.lootSlots = { ${lootSlot(501, 1, ['Creature-0-4372-0-17-3300-00000ABD10', 1])} }; STUB.FireEvent("LOOT_READY"); STUB.FireEvent("LOOT_CLOSED")`);
+  assert.doesNotMatch(vm.evaluate('ClaudeWoWObserved.Sections().loot'), /n3300_/, 'a bridge with no gather list gets no loot it could not key');
 });
 
 test('gathering objects and fishing are their own source types, one fishing window is one sample, and a secret GUID is never read', () => {

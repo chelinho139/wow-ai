@@ -19,12 +19,17 @@ const BUILD = '1.60.1.200';
 const CHANNEL = path.join(__dirname, '..', '..', 'bridge', 'channel.js');
 const SESSION_NAME = 'observed-e2e';
 
+const GATHER_ROWS = { SkillLine: '"Skinning",,,393,11,0,0', SkillLineAbility: ',,303,393,8613,1,0,0,0,0,0' };
+
 function fixtureFetch(url) {
   const u = new URL(url);
   const table = /^\/db2\/(\w+)\/csv$/.exec(u.pathname)[1];
   const headers = { 'content-type': 'text/csv', 'content-disposition': `attachment; filename="${table}.${u.searchParams.get('build')}.csv"` };
-  return Promise.resolve(new Response(fs.readFileSync(path.join(FIXTURES, `${table}.csv`), 'utf8'), { status: 200, headers }));
+  const csv = fs.readFileSync(path.join(FIXTURES, `${table}.csv`), 'utf8');
+  return Promise.resolve(new Response(GATHER_ROWS[table] ? `${csv.trimEnd()}\n${GATHER_ROWS[table]}\n` : csv, { status: 200, headers }));
 }
+
+const syncData = async sb => { await D.sync({ dataDir: path.join(sb.home, 'data'), build: BUILD, fetch: fixtureFetch }); };
 
 const LOOT_STUB = `
 local unpack = unpack or table.unpack
@@ -83,11 +88,11 @@ function fakeSession(sb) {
 }
 
 test('the real addon reads a loot window the player opened, sends it as a gs section, and the bridge files it in observed.jsonl', async () => {
-  await withGame({ client: { speed: 8 }, speed: 8 }, async h => {
+  await withGame({ client: { speed: 8 }, speed: 8, beforeLaunch: syncData }, async h => {
     await h.client.say('hello');
     const snapFile = path.join(h.sb.home, 'goals', CHARACTER, TL.SNAPSHOT_FILE);
     await h.client.waitFor(() => { try { return JSON.parse(fs.readFileSync(snapFile, 'utf8')).sections.cap; } catch { return null; } }, { timeoutMs: 60000, label: 'the first gs record' });
-    await h.client.waitFor(() => h.client.luaValue('ClaudeWoWTelemetry.Observing()') === 'true', { timeoutMs: 30000, label: 'the bridge to offer observed sections' });
+    await h.client.waitFor(() => h.client.luaValue('ClaudeWoWTelemetry.Observing()') === 'true' && h.client.luaValue('ClaudeWoWObserved.LootKeyed()') === 'true', { timeoutMs: 60000, label: 'the bridge to offer observed sections and the gather list from the synced data' });
     h.client.runLua(LOOT_STUB);
     h.client.runLua('STUB.FireEvent("LOOT_READY"); STUB.FireEvent("LOOT_CLOSED")');
     const lines = await h.client.waitFor(() => { const l = readObserved(h.sb); return l.length ? l : null; }, { timeoutMs: 60000, label: 'the loot sample in observed.jsonl' });
@@ -98,8 +103,7 @@ test('the real addon reads a loot window the player opened, sends it as a gs sec
 });
 
 test('route_draw from a listening session reaches the game map on the next slot the game loads anyway, with no slot of its own', { skip: process.platform === 'win32' }, async () => {
-  const beforeLaunch = async sb => { await D.sync({ dataDir: path.join(sb.home, 'data'), build: BUILD, fetch: fixtureFetch }); };
-  await withGame({ beforeLaunch }, async h => {
+  await withGame({ beforeLaunch: syncData }, async h => {
     h.client.runLua('ClaudeWoWDB.stream = ClaudeWoWDB.stream or {}; ClaudeWoWDB.stream.follow = false');
     await h.client.say('hello');
     await h.bridge.waitForLine(/game context updated: Character: Testchar/);

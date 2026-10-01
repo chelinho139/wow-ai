@@ -150,19 +150,48 @@ test('drop tracker: a well-sampled source that never dropped the item shows rate
   assert.equal(shown.find(r => r.source.id === 3100).asOf, (AT + 11) * 1000, 'asOf follows the newest loot window, with or without the item');
 });
 
-test('gather spells: only the spells of the synced Herbalism, Mining and Skinning lines and their child lines, from client-data rows', () => {
+test('gather spells: the gathering abilities of the synced Herbalism, Mining and Skinning lines, crafts and tracking left out, rank chains folded to one source spell', () => {
   const rows = {
-    skilllines: [{ id: 182, name: 'Herbalism', parentSkillLineID: 0 }, { id: 2944, name: 'Herbalism', parentSkillLineID: 182 }, { id: 393, name: 'Skinning', parentSkillLineID: 0 }, { id: 39, name: 'Subtlety', parentSkillLineID: 0 }],
-    skilllineabilities: [{ skillLine: 182, spell: 2366 }, { skillLine: 2944, spell: 900001 }, { skillLine: 393, spell: 8613 }, { skillLine: 39, spell: 921 }, { skillLine: 393, spell: 0 }],
+    skilllines: [{ id: 182, name: 'Herbalism', parentSkillLineID: 0 }, { id: 2944, name: 'Herbalism', parentSkillLineID: 182 }, { id: 186, name: 'Mining', parentSkillLineID: 0 }, { id: 393, name: 'Skinning', parentSkillLineID: 0 }, { id: 39, name: 'Subtlety', parentSkillLineID: 0 }],
+    skilllineabilities: [
+      { skillLine: 182, spell: 2366, trivialHigh: 0, acquireMethod: 0, supercedesSpell: 0 },
+      { skillLine: 182, spell: 2368, trivialHigh: 0, acquireMethod: 0, supercedesSpell: 2366 },
+      { skillLine: 2944, spell: 900001, trivialHigh: 0, acquireMethod: 0, supercedesSpell: 0 },
+      { skillLine: 182, spell: 2383, trivialHigh: 0, acquireMethod: 1, supercedesSpell: 0 },
+      { skillLine: 182, spell: 8387, trivialHigh: 0, acquireMethod: 0, supercedesSpell: 2383 },
+      { skillLine: 186, spell: 2657, trivialHigh: 70, acquireMethod: 1, supercedesSpell: 0 },
+      { skillLine: 186, spell: 2575, trivialHigh: 0, acquireMethod: 0, supercedesSpell: 0 },
+      { skillLine: 186, spell: 3304, trivialHigh: 0, acquireMethod: 0, supercedesSpell: 0 },
+      { skillLine: 393, spell: 8613, trivialHigh: 0, acquireMethod: 0, supercedesSpell: 0 },
+      { skillLine: 393, spell: 8617, trivialHigh: 0, acquireMethod: 0, supercedesSpell: 8613 },
+      { skillLine: 393, spell: 8618, trivialHigh: 0, acquireMethod: 0, supercedesSpell: 8617 },
+      { skillLine: 39, spell: 921, trivialHigh: 0, acquireMethod: 0, supercedesSpell: 0 },
+    ],
+    spellreagents: [{ spellID: 2657, reagents: [] }, { spellID: 3304, reagents: [] }],
   };
-  const store = (trust, tag) => ({ build: '1.60.1.1', dir: tag, manifest: {}, rowTrust: trust, has: e => !!rows[e], rows: e => rows[e] || [] });
-  assert.deepEqual(OB.gatherSpells(store('client-data', 'a')), [2366, 8613, 900001], 'no class ability such as a rogue skill');
-  assert.deepEqual(OB.gatherSpells(store('unverified-build-mismatch', 'b')), [], 'data for another build family gives none');
-  assert.deepEqual(OB.gatherSpells(null), []);
+  let opened = 0;
+  const store = (trust, tag, tables = rows) => ({ build: '1.60.1.1', buildCheck: 'family', dir: tag, manifest: {}, rowTrust: trust, has: e => { opened += 1; return !!tables[e]; }, rows: e => tables[e] || [] });
+  const r = OB.gatherSpells(store('client-data', 'a'));
+  assert.deepEqual(r.spells, { 2366: 2366, 2368: 2366, 2575: 2575, 8613: 8613, 8617: 8613, 8618: 8613, 900001: 900001 }, 'no smelting (reagents, trivial range), no tracking learned with the line and its later ranks, no rogue ability');
+  assert.deepEqual([r.count, r.cut, r.why], [7, 0, '']);
+  const before = opened;
+  OB.gatherSpells(store('client-data', 'a'));
+  assert.equal(opened, before, 'a cached data identity opens no table');
+  assert.match(OB.gatherSpells(store('unverified-build-mismatch', 'b')).why, /not checked against the client build/);
+  assert.match(OB.gatherSpells(store('client-data', 'c', { ...rows, spellreagents: undefined })).why, /no usable spellreagents table/, 'without the reagents table crafts cannot be told apart');
+  assert.match(OB.gatherSpells(null).why, /no synced game data/);
+  const many = { ...rows, skilllineabilities: Array.from({ length: OB.GATHER_SPELLS_MAX + 5 }, (_, i) => ({ skillLine: 393, spell: 100000 + i, trivialHigh: 0, acquireMethod: 0, supercedesSpell: 0 })) };
+  const capped = OB.gatherSpells(store('client-data', 'd', many));
+  assert.deepEqual([capped.count, capped.cut], [OB.GATHER_SPELLS_MAX, 5]);
   const dir = tmpDir('gather');
   try {
-    const t = TL.createTelemetry({ dir, observed: OB.createObserved({ dir }), gatherSpells: () => [8613, 2366] });
-    assert.match(t.luaGs(), /obs = 1, gather = \{ 8613, 2366 \} \},$/);
+    const lines = [];
+    const t = TL.createTelemetry({ dir, observed: OB.createObserved({ dir }), log: l => lines.push(l), gatherSpells: () => ({ spells: { 8617: 8613, 2366: 2366 }, cut: 0, why: '' }) });
+    assert.match(t.luaGs(), /obs = 1, gather = \{ \[2366\] = 2366, \[8617\] = 8613 \} \},$/);
+    const empty = TL.createTelemetry({ dir, observed: OB.createObserved({ dir }), log: l => lines.push(l), gatherSpells: () => ({ spells: {}, why: 'no synced game data' }) });
+    empty.luaGs();
+    empty.luaGs();
+    assert.equal(lines.filter(l => /no loot capture: no synced game data/.test(l)).length, 1, 'said once');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -318,7 +347,7 @@ test('map in the slot files: shared for a while after a change, held without a t
   assert.equal(MH.inSlots({ ...base, held: 'yes' }), false);
 });
 
-test('map hold: a gs record or a message never releases it; the published reply or a hello does, and starts the share window then', () => {
+test('map hold: a gs record or a message never releases it; the published reply or a new hello does, a replayed hello does not', () => {
   let clock = 1000;
   let saves = 0;
   const state = { map: { layers: {} } };
@@ -326,16 +355,18 @@ test('map hold: a gs record or a message never releases it; the published reply 
   share.hold();
   assert.equal(state.mapHeldForGame, true);
   clock = 1000 + 10 * 60 * 1000;
-  assert.equal(share.onRecord({ kind: 'gs', id: 5, hello: false }), false);
-  assert.equal(share.onRecord({ kind: 'gs', id: 6, hello: true }), false, 'not even a gs record with a stray hello flag');
-  assert.equal(share.onRecord({ id: 7, text: 'a message' }), false, 'a message waits for its reply');
+  assert.equal(share.onHello({ kind: 'gs', session: 's', id: 5, hello: true }), false, 'a gs record never releases it');
+  assert.equal(share.onHello({ session: 's', id: 7, text: 'a message' }), false, 'a message waits for its reply');
   assert.equal(share.held(), true);
   assert.equal(share.inSlots({ urgent: true, size: 50000, progressMax: 20000 }), true, 'a large held set rides on the urgent reply publish however long the run took');
   assert.equal(share.onReplyPublished(), true);
   assert.equal(share.held(), false);
   assert.equal(share.shareUntil(), clock + 180000, 'the usual window starts at the reply');
+  assert.equal(share.onHello({ session: 's', id: 8, hello: true }), false, 'nothing held: nothing to release');
   share.hold();
-  assert.equal(share.onRecord({ id: 8, hello: true }), true, 'a hello releases it');
+  assert.equal(share.onHello({ session: 's', id: 8, hello: true }), false, 'the same hello replayed from the strip does not release it');
+  assert.equal(share.held(), true);
+  assert.equal(share.onHello({ session: 's', id: 9, hello: true }), true, 'a new hello does');
   assert.ok(saves >= 4);
 });
 

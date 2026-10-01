@@ -173,7 +173,7 @@ function createObservedTools(opts) {
     return done({
       layer: ROUTE_LAYER,
       drawn: !!r.changed,
-      delivery: 'The bridge keeps the route in the slot files until the game reads one; it reaches the map on the next slot the game loads anyway (a reply, the hello or /reload). No slot is spent for it.',
+      delivery: 'The bridge keeps the route in the slot files until the next reply is published or the game says hello, then for three minutes more; it reaches the map on a slot load the game makes anyway (a reply, the hello or /reload). No slot is spent for it.',
       points: checked.points.map(p => ({ ref: p.token, map: { id: p.id, name: p.name, trust: p.trust }, point: { x: p.x, y: p.y, trust: MODEL_TRUST } })),
       notes: ['Every point is your estimate: the map shows each stop as a model estimate, never as a verified spot.', ...(r.notes || [])],
     });

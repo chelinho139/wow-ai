@@ -257,23 +257,51 @@ function prices(lines, itemID) {
   return { ah, vendors };
 }
 
-const gatherCache = { key: '', spells: [] };
+const LEARNED_WITH_SKILL_LINE = 1;
+const gatherCache = { key: '', result: null };
+
+function gatherFail(why) {
+  return { spells: {}, count: 0, cut: 0, why };
+}
 
 function gatherSpells(store) {
-  if (!store || !store.build || store.rowTrust !== 'client-data' || !store.has('skilllines') || !store.has('skilllineabilities')) return [];
+  if (!store || !store.build) return gatherFail('no synced game data');
+  if (store.rowTrust !== 'client-data') return gatherFail(`the synced data (build ${store.build}) is not checked against the client build (${store.buildCheck})`);
   const m = store.manifest || {};
-  const key = [store.dir, store.build, m.fetchedAt || '', m.tableHash || ''].join('|');
-  if (gatherCache.key === key) return gatherCache.spells;
+  const key = [store.dir, store.build, m.fetchedAt || '', m.tableHash || '', store.rowTrust].join('|');
+  if (gatherCache.key === key) return gatherCache.result;
+  const missing = ['skilllines', 'skilllineabilities', 'spellreagents'].filter(e => !store.has(e));
+  if (missing.length) return gatherFail(`the synced data has no usable ${missing.join(', ')} table`);
   const top = new Set(store.rows('skilllines').filter(r => GATHER_SKILL_NAMES.includes(r.name) && !(r.parentSkillLineID > 0)).map(r => r.id));
   const lines = new Set([...top, ...store.rows('skilllines').filter(r => top.has(r.parentSkillLineID)).map(r => r.id)]);
-  const spells = [];
+  const crafted = new Set(store.rows('spellreagents').map(r => r.spellID));
+  const abilities = new Map();
   for (const a of store.rows('skilllineabilities')) {
-    if (lines.has(a.skillLine) && Number.isSafeInteger(a.spell) && a.spell > 0 && !spells.includes(a.spell)) spells.push(a.spell);
+    if (lines.has(a.skillLine) && Number.isSafeInteger(a.spell) && a.spell > 0) abilities.set(a.spell, a);
   }
-  const capped = spells.sort((x, y) => x - y).slice(0, GATHER_SPELLS_MAX);
+  const excluded = a => crafted.has(a.spell) || a.trivialHigh > 0 || a.acquireMethod === LEARNED_WITH_SKILL_LINE;
+  const chainOf = spell => {
+    const chain = [];
+    let at = abilities.get(spell);
+    while (at && !chain.includes(at)) {
+      chain.push(at);
+      at = at.supercedesSpell > 0 ? abilities.get(at.supercedesSpell) : null;
+    }
+    return chain;
+  };
+  const spells = {};
+  for (const spell of [...abilities.keys()].sort((x, y) => x - y)) {
+    const chain = chainOf(spell);
+    if (chain.some(excluded)) continue;
+    spells[spell] = chain[chain.length - 1].spell;
+  }
+  const ids = Object.keys(spells).map(Number);
+  const kept = {};
+  for (const id of ids.slice(0, GATHER_SPELLS_MAX)) kept[id] = spells[id];
+  const result = { spells: kept, count: Math.min(ids.length, GATHER_SPELLS_MAX), cut: Math.max(0, ids.length - GATHER_SPELLS_MAX), why: ids.length ? '' : 'the synced data has no gathering spells' };
   gatherCache.key = key;
-  gatherCache.spells = capped;
-  return capped;
+  gatherCache.result = result;
+  return result;
 }
 
 function createObserved(opts) {
