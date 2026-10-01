@@ -892,6 +892,30 @@ test('screenshot transport: Blizzard\'s "Screen captured" status stays hidden fo
   assert.equal(vm.evaluate('NEW_STATUS.shown'), 'true');
 });
 
+test('screenshot transport: the late event of a shot that timed out still keeps "Screen captured" hidden, and the player\'s next one shows', () => {
+  const vm = newVM();
+  vm.run('STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW\\\\ctl\\\\valid.wav"] = true; STUB.armed = true');
+  login(vm);
+  vm.run(`
+    STATUS = CreateFrame("Frame", "ActionStatus", UIParent)
+    STATUS:Hide()
+    STATUS:RegisterEvent("SCREENSHOT_SUCCEEDED")
+    STATUS:SetScript("OnEvent", function(self) self:Show() end)
+  `);
+  vm.run('STUB.RunTimers()');
+  nextSlot(vm, '{ now = time(), cwd = "", transport = "screenshot", replies = {} }');
+  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+  frames(vm, 2);
+  assert.equal(vm.num('STUB.screenshots'), 1);
+  vm.run('STUB.now = STUB.now + 4; STUB.RunTimers()');
+  vm.run('STUB.now = STUB.now + 0.5; STUB.RunTimers()');
+  vm.run('STUB.FireEvent("SCREENSHOT_SUCCEEDED")');
+  assert.equal(vm.evaluate('STATUS.shown'), 'false', 'the late event is still the addon\'s shot');
+  vm.run('STUB.RunTimers()');
+  vm.run('STUB.FireEvent("SCREENSHOT_SUCCEEDED")');
+  assert.equal(vm.evaluate('STATUS.shown'), 'true', 'a screenshot the player takes after it still says so');
+});
+
 test('screenshot transport: the strip is shot once per message, hidden on the event, and the format CVar is restored', () => {
   const vm = newVM();
   vm.run('STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW\\\\ctl\\\\valid.wav"] = true; STUB.armed = true');

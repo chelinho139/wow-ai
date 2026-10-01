@@ -682,3 +682,35 @@ test('a message waits behind a fired telemetry-only shot, then is shot at once a
   frames();
   assert.equal(vm.num('STUB.screenshots'), shots + 1, 'and shot');
 });
+
+test('a late screenshot event from a timed-out shot never completes the next shot: a message drawn after the timeout is still shot', () => {
+  const vm = ready();
+  const frames = () => { for (let i = 0; i < 2; i++) vm.run('local f = ClaudeWoWStrip; if f.shown and f.scripts.OnUpdate then f.scripts.OnUpdate(f, 0.016) end'); };
+  frames();
+  const fired = vm.num('STUB.screenshots');
+  vm.run('STUB.RunTimers()');
+  assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'false', 'the telemetry-only shot timed out');
+  vm.run('ClaudeWoW.Send("after a slow shot")');
+  assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'true');
+  frames();
+  assert.equal(vm.num('STUB.screenshots'), fired, 'no second shot while the late event may still come');
+  vm.run('STUB.FireEvent("SCREENSHOT_SUCCEEDED")');
+  assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'true', 'the late event belongs to the old shot, not to the message');
+  const frame = decodeStrip(vm);
+  assert.ok(P.jobsFromStrip(frame.id, frame.text).some(j => j.text === 'after a slow shot'));
+  frames();
+  assert.equal(vm.num('STUB.screenshots'), fired + 1, 'the message is shot once the late event is in');
+});
+
+test('the player\'s own screenshot event while a message strip is still being drawn does not count as the message\'s shot', () => {
+  const vm = ready();
+  const frames = () => { for (let i = 0; i < 2; i++) vm.run('local f = ClaudeWoWStrip; if f.shown and f.scripts.OnUpdate then f.scripts.OnUpdate(f, 0.016) end'); };
+  frames();
+  vm.run('STUB.FireEvent("SCREENSHOT_SUCCEEDED")');
+  vm.run('ClaudeWoW.Send("typed during a print screen")');
+  const before = vm.num('STUB.screenshots');
+  vm.run('STUB.FireEvent("SCREENSHOT_SUCCEEDED")');
+  assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'true', 'the strip is still up');
+  frames();
+  assert.equal(vm.num('STUB.screenshots'), before + 1, 'and the message is shot');
+});
