@@ -196,6 +196,105 @@ test('the game context describes the character and rides on the hello, then only
   assert.ok(vm.evaluate('ClaudeWoWDB.chats[2].history[#ClaudeWoWDB.chats[2].history].text').includes('Game context is ON'));
 });
 
+const talentsLine = vm => vm.evaluate('ClaudeWoW.GameContext()').split('\n').find(l => l.startsWith('Talents:'));
+
+test('the talents line reads the Forever trait trees, with no old talent-tab functions in the client', () => {
+  const vm = newVM();
+  login(vm);
+  assert.equal(vm.evaluate('GetNumTalentTabs'), null, 'the stub client has no GetNumTalentTabs, like Forever');
+  assert.equal(vm.evaluate('GetTalentTabInfo'), null);
+  assert.equal(talentsLine(vm), 'Talents: Beast Mastery 10 / Marksmanship 5 / Survival 0');
+  vm.run('STUB.talentGroups[2].spent[7001] = 7; STUB.talentGroups[3].displayName = "Trapping"');
+  assert.equal(talentsLine(vm), 'Talents: Beast Mastery 10 / Marksmanship 7 / Trapping 0', 'names and points come from the client');
+});
+
+test('the talents line follows the active spec group through its own combat config id', () => {
+  const vm = newVM();
+  login(vm);
+  vm.run('STUB.activeSpecGroup = 2');
+  assert.equal(vm.num('ClaudeWoW.ActiveTraitConfigID()'), 7002);
+  assert.equal(talentsLine(vm), 'Talents: Beast Mastery 0 / Marksmanship 2 / Survival 9');
+  vm.run('STUB.activeSpecGroup = 1');
+  assert.equal(talentsLine(vm), 'Talents: Beast Mastery 10 / Marksmanship 5 / Survival 0');
+});
+
+test('with no combat config id for the spec group there is no talents line, like the disabled Forever talent frame', () => {
+  const vm = newVM();
+  login(vm);
+  vm.run('C_SpecializationInfo.GetCombatConfigIDForSpecGroup = function() return nil end; C_ClassTalents = { GetActiveConfigID = function() return 7001 end }');
+  assert.equal(talentsLine(vm), undefined, 'C_ClassTalents.GetActiveConfigID is not a fallback');
+});
+
+test('bad trait data is dropped before the next trait call, and no talents line is shown', () => {
+  const vm = newVM();
+  login(vm);
+  vm.run(`
+    TRAIT_CALLS = {}
+    for _, name in ipairs({ "GetConfigInfo", "GetGroupDisplayInfoByTreeID", "GetGroupCurrencyInfo" }) do
+      local real = C_Traits[name]
+      C_Traits[name] = function(first, ...) table.insert(TRAIT_CALLS, name .. ":" .. type(first)); return real(first, ...) end
+    end
+  `);
+  const calls = () => vm.evaluate('table.concat(TRAIT_CALLS, ",")');
+  vm.run('TRAIT_CALLS = {}; C_SpecializationInfo.GetCombatConfigIDForSpecGroup = function() return "7001" end');
+  assert.equal(vm.num('#ClaudeWoW.TraitTalentTrees()'), 0);
+  assert.equal(calls(), '', 'a non-number config id makes no C_Traits call');
+  vm.run('TRAIT_CALLS = {}; STUB.activeSpecGroup = 1; C_SpecializationInfo.GetCombatConfigIDForSpecGroup = function(g) return STUB.talentConfigIDs[g] end');
+  vm.run('local real = C_Traits.GetConfigInfo; C_Traits.GetConfigInfo = function(id) real(id); return { treeIDs = { "301" } } end');
+  assert.equal(vm.num('#ClaudeWoW.TraitTalentTrees()'), 0);
+  assert.equal(calls(), 'GetConfigInfo:number', 'a non-number tree id makes no display call');
+  vm.run('C_Traits.GetConfigInfo = function(id) return { treeIDs = { STUB.talentTreeID } } end; C_Traits.GetGroupDisplayInfoByTreeID = function() return true end');
+  assert.equal(vm.num('#ClaudeWoW.TraitTalentTrees()'), 0, 'display info that is not a table gives no trees and no error');
+  assert.equal(talentsLine(vm), undefined);
+});
+
+test('a currency entry with no group id is skipped, and an empty currency list before the config loads shows no line', () => {
+  const vm = newVM();
+  login(vm);
+  vm.run(`
+    local real = C_Traits.GetGroupCurrencyInfo
+    C_Traits.GetGroupCurrencyInfo = function(...)
+      local out = real(...)
+      table.insert(out, 1, { currencyInfos = { { traitCurrencyID = 1, quantity = 0, spent = 4 } } })
+      return out
+    end
+  `);
+  assert.equal(vm.num('#ClaudeWoW.TraitTalentTrees()'), 3, 'the entry with a nil group id does not raise "table index is nil"');
+  assert.equal(talentsLine(vm), 'Talents: Beast Mastery 10 / Marksmanship 5 / Survival 0');
+  vm.run('C_Traits.GetGroupCurrencyInfo = function() return {} end');
+  assert.equal(talentsLine(vm), undefined, 'no spent data yet, no line of zeros');
+});
+
+test('an error anywhere in the talent read never breaks the game context', () => {
+  const vm = newVM();
+  login(vm);
+  vm.run('ClaudeWoW.TraitTalentTrees = function() error("boom") end; ClaudeWoW.TabTalentTrees = function() error("boom") end');
+  const ctx = vm.evaluate('ClaudeWoW.GameContext()');
+  assert.ok(ctx.includes('Professions: Skinning 75/75'), ctx);
+  assert.ok(!ctx.includes('Talents:'));
+});
+
+test('the talents line falls back to the old talent-tab functions when there are no trait trees', () => {
+  const vm = newVM();
+  login(vm);
+  vm.run('C_Traits = nil; function GetNumTalentTabs() return 2 end; function GetTalentTabInfo(i) local t = { { "Combat", 3 }, { "Subtlety", 1 } }; return t[i][1], "icon", t[i][2] end');
+  assert.equal(talentsLine(vm), 'Talents: Combat 3 / Subtlety 1');
+});
+
+test('with no talent API at all, or one that errors, there is no talents line and the context still builds', () => {
+  const vm = newVM();
+  login(vm);
+  vm.run('C_Traits.GetGroupCurrencyInfo = function() error("boom") end');
+  let ctx = vm.evaluate('ClaudeWoW.GameContext()');
+  assert.ok(ctx.includes('Professions: Skinning 75/75'), ctx);
+  assert.ok(!ctx.includes('Talents:'), 'an erroring trait API adds no line');
+  vm.run('C_Traits = nil; C_SpecializationInfo = nil; C_ClassTalents = nil; GetNumTalentTabs = nil; GetTalentTabInfo = nil');
+  ctx = vm.evaluate('ClaudeWoW.GameContext()');
+  assert.ok(ctx.includes('Character: Testchar'), ctx);
+  assert.ok(ctx.includes('Professions: Skinning 75/75'), ctx);
+  assert.ok(!ctx.includes('Talents:'), 'no talent API, no line');
+});
+
 test('a shift-clicked link lands in the focused input and is sent as its name plus tooltip', () => {
   const vm = newVM();
   login(vm);

@@ -51,6 +51,7 @@ function paths(dir, source) {
     mapjobs: path.join(dir, 'mapjobs'),
     uijobs: path.join(dir, 'uijobs'),
     goals: path.join(dir, 'goals'),
+    data: path.join(dir, 'data'),
   };
 }
 

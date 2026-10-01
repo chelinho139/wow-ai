@@ -644,11 +644,50 @@ C_DeathRecap = {
 }
 function UnitXP(unit) return 1234 end
 function UnitXPMax(unit) return 5000 end
-function GetNumTalentTabs() return 3 end
-function GetTalentTabInfo(i)
-	local tabs = { { "Beast Mastery", 10 }, { "Marksmanship", 5 }, { "Survival", 0 } }
-	return tabs[i][1], "Interface\\Icons\\x", tabs[i][2]
+STUB.activeSpecGroup, STUB.talentTreeID = 1, 301
+STUB.talentConfigIDs = { 7001, 7002 }
+STUB.talentGroups = {
+	{ groupID = 11, displayName = "Beast Mastery", spent = { [7001] = 10, [7002] = 0 } },
+	{ groupID = 12, displayName = "Marksmanship", spent = { [7001] = 5, [7002] = 2 } },
+	{ groupID = 13, displayName = "Survival", spent = { [7001] = 0, [7002] = 9 } },
+}
+local function IsStubTalentConfig(configID)
+	for _, id in ipairs(STUB.talentConfigIDs) do
+		if id == configID then return true end
+	end
+	return false
 end
+C_SpecializationInfo = {
+	GetActiveSpecGroup = function() return STUB.activeSpecGroup end,
+	GetCombatConfigIDForSpecGroup = function(groupIndex) return STUB.talentConfigIDs[groupIndex] end,
+}
+C_Traits = {
+	GetConfigInfo = function(configID)
+		if IsStubTalentConfig(configID) then
+			return { ID = configID, type = 1, name = "", treeIDs = { STUB.talentTreeID }, usesSharedActionBars = false }
+		end
+	end,
+	GetGroupDisplayInfoByTreeID = function(treeID)
+		local out = {}
+		if treeID ~= STUB.talentTreeID then return out end
+		for i, g in ipairs(STUB.talentGroups) do
+			out[i] = { groupID = g.groupID, treeID = treeID, skillLineID = 0, orderIndex = i, displayName = g.displayName, icon = 0 }
+		end
+		return out
+	end,
+	GetGroupCurrencyInfo = function(configID, groupIDs)
+		local out = {}
+		if not IsStubTalentConfig(configID) then return out end
+		for _, id in ipairs(groupIDs) do
+			for _, g in ipairs(STUB.talentGroups) do
+				if g.groupID == id then
+					table.insert(out, { traitNodeGroupID = id, currencyInfos = { { traitCurrencyID = 1, quantity = 0, spent = g.spent[configID] } } })
+				end
+			end
+		end
+		return out
+	end,
+}
 TRADE_SKILLS, SECONDARY_SKILLS = "Professions", "Secondary Skills"
 local SKILLS = {
 	{ "Class Skills", true }, { "Bows", false, 46, 115 },
