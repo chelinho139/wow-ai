@@ -2,11 +2,12 @@
 
 const fs = require('fs');
 const path = require('path');
+const OB = require('./observed');
 
 const KIND = 'gs';
 const RECORD_VERSION = 'gs1';
 const GS_SLOT_VERSION = 1;
-const SECTION_NAMES = Object.freeze(['cap', 'level', 'zone', 'money', 'items', 'skills', 'equip', 'factions', 'life', 'recipes']);
+const SECTION_NAMES = Object.freeze(['cap', 'level', 'zone', 'money', 'items', 'skills', 'equip', 'factions', 'life', 'recipes', ...OB.SECTIONS]);
 const RECORD_TEXT_MAX = 1500;
 const SNAPSHOT_FILE = 'snapshot.json';
 const EVENTS_FILE = 'events.jsonl';
@@ -159,6 +160,7 @@ const SECTION_PARSERS = {
     }
     return { learned };
   },
+  ...OB.PARSERS,
 };
 
 function parseRecord(text) {
@@ -310,6 +312,7 @@ const SECTION_DIFFS = {
   cap() {
     return [];
   },
+  ...Object.fromEntries(OB.SECTIONS.map(name => [name, () => []])),
 };
 
 function diffSection(name, prev, next, watch) {
@@ -414,13 +417,22 @@ function luaQuote(s) {
   return '"' + String(s).replace(/[\\"]/g, c => '\\' + c).replace(/[\x00-\x1f\x7f]/g, c => '\\' + String(c.charCodeAt(0)).padStart(3, '0')) + '"';
 }
 
-function luaGsTable(snapshots, watch, refused = []) {
+function luaGather(spells) {
+  return Object.entries(spells && typeof spells === 'object' ? spells : {})
+    .map(([id, root]) => [Number(id), Number(root)])
+    .filter(([id, root]) => Number.isSafeInteger(id) && id > 0 && Number.isSafeInteger(root) && root > 0)
+    .slice(0, OB.GATHER_SPELLS_MAX)
+    .map(([id, root]) => `[${id}] = ${root}`)
+    .join(', ');
+}
+
+function luaGsTable(snapshots, watch, refused = [], observedOn = false, gather = {}) {
   const chars = (snapshots || [])
     .filter(s => s && CHARACTER_KEY_RE.test(s.character) && SESSION_RE.test(s.session || ''))
     .slice(0, GS_CHARACTERS_MAX)
     .map(s => `{ character = "${s.character}", session = "${s.session || ''}", seq = ${Math.max(0, Math.floor(Number(s.seq) || 0))}, hashes = { ${luaHashes(s)} } }`);
   const items = [...watch.items.keys()];
-  return `\tgs = { v = ${GS_SLOT_VERSION}, watch = { items = { ${items.join(', ')} }, factions = { ${watch.factions.join(', ')} } }, chars = { ${chars.join(', ')} }, refused = { ${refused.map(luaQuote).join(', ')} } },`;
+  return `\tgs = { v = ${GS_SLOT_VERSION}, watch = { items = { ${items.join(', ')} }, factions = { ${watch.factions.join(', ')} } }, chars = { ${chars.join(', ')} }, refused = { ${refused.map(luaQuote).join(', ')} }${observedOn ? `, obs = 1, gather = { ${luaGather(gather)} }` : ''} },`;
 }
 
 function createTelemetry(opts) {
@@ -429,6 +441,9 @@ function createTelemetry(opts) {
   const now = opts.now || Date.now;
   const watch = opts.watch || (() => watchFrom(null));
   const rotateBytes = opts.rotateBytes || EVENTS_ROTATE_BYTES;
+  const observed = opts.observed || null;
+  const gatherSpells = opts.gatherSpells || (() => ({ spells: {}, why: 'no game data' }));
+  let gatherNote = null;
   const handled = { gs: {} };
   const snapshots = new Map();
   const loggedMissing = new Map();
@@ -499,6 +514,7 @@ function createTelemetry(opts) {
     }
     const applied = [];
     const events = [];
+    const observations = [];
     const w = watch();
     const pruned = pruneCompleted(snap, w);
     const stamp = now();
@@ -508,6 +524,7 @@ function createTelemetry(opts) {
       const prev = snap.sections[name];
       if (prev && prev.seq >= seq) continue;
       events.push(...onceCompleted(snap, name, diffSection(name, prev && prev.value, incoming.value, w)));
+      if (OB.SECTIONS.includes(name)) observations.push([name, incoming.value]);
       snap.sections[name] = { seq, hash: incoming.hash, at: stamp, data: incoming.data, value: incoming.value };
       applied.push(name);
       if (name === 'cap') noteMissing(character, incoming.value);
@@ -525,15 +542,31 @@ function createTelemetry(opts) {
       log(`telemetry: could not save the game state for ${character} (${e.message})`);
       return { status: 'error', events };
     }
-    log(`telemetry: gs #${seq}@${session || '-'} for ${character}: ${applied.join(', ')}${events.length ? ` (${events.length} event${events.length === 1 ? '' : 's'})` : ''}`);
-    return { status: 'applied', sections: applied, events };
+    let observedCount = 0;
+    if (observed) {
+      try {
+        for (const [name, value] of observations) observedCount += observed.ingest(character, name, value);
+      } catch (e) { log(`telemetry: could not save the observed data for ${character} (${e.message})`); }
+    }
+    log(`telemetry: gs #${seq}@${session || '-'} for ${character}: ${applied.join(', ')}${events.length ? ` (${events.length} event${events.length === 1 ? '' : 's'})` : ''}${observedCount ? ` (${observedCount} observed)` : ''}`);
+    return { status: 'applied', sections: applied, events, observed: observedCount };
   }
 
   function luaGs() {
     prime();
     const w = watch();
     const recent = [...snapshots.values()].filter(s => s.session).sort((a, b) => b.updatedAt - a.updatedAt);
-    return luaGsTable(recent, w, [...rejectedKeys]);
+    let gather = {};
+    if (observed) {
+      let why;
+      try {
+        const r = gatherSpells();
+        gather = r.spells || {};
+        why = Object.keys(gather).length ? (r.cut ? `the gather list was cut at ${OB.GATHER_SPELLS_MAX}; ${r.cut} spell(s) left out` : '') : `no loot capture: ${r.why || 'no gathering spells'}`;
+      } catch (e) { why = `no loot capture: ${e.message}`; }
+      if (why !== gatherNote) { if (why) log(`telemetry: ${why}`); gatherNote = why; }
+    }
+    return luaGsTable(recent, w, [...rejectedKeys], !!observed, gather);
   }
 
   return { submit, luaGs, handled, snapshot: load, snapshotFile };

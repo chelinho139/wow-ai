@@ -5,6 +5,7 @@ const net = require('net');
 const path = require('path');
 const LP = require('./liveproto');
 const G = require('./goals');
+const OT = require('./observedtools');
 
 const PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const REPLY_TIMEOUT_MS = 15000;
@@ -193,11 +194,11 @@ function createChannel(opts) {
       if (!(await listeningKnown)) return { tools: [] };
       toolsListed = true;
       setImmediate(maybeReady);
-      return { tools: [LP.replyToolSchema(), ...G.toolSchemas()] };
+      return { tools: [LP.replyToolSchema(), ...G.toolSchemas(), ...OT.toolSchemas()] };
     }
     if (method === 'tools/call') {
       const tool = params && params.name;
-      const known = tool === LP.REPLY_TOOL || G.TOOL_NAMES.includes(tool);
+      const known = tool === LP.REPLY_TOOL || G.TOOL_NAMES.includes(tool) || OT.TOOL_NAMES.includes(tool);
       if (!known || !(await listeningKnown)) return { content: [{ type: 'text', text: `Unknown tool: ${tool}` }], isError: true };
       const r = tool === LP.REPLY_TOOL ? await reply(params.arguments || {}) : await goalCall(tool, params.arguments);
       return { content: [{ type: 'text', text: r.text || (r.ok ? 'sent' : 'not sent') }], isError: !r.ok };

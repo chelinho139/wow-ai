@@ -19,7 +19,8 @@ T.FIRST_BAG = 0
 T.LAST_BAG = 4
 T.GENERAL_BAG_FAMILY = 0
 T.HASH_MOD = 65521
-T.ORDER = { "cap", "level", "zone", "money", "items", "skills", "equip", "factions", "life", "recipes" }
+T.ORDER = { "cap", "level", "zone", "money", "items", "skills", "equip", "factions", "life", "recipes", "vendor", "ah", "loot" }
+T.OBSERVED = { "vendor", "ah", "loot" }
 T.PROBES = {
 	"GetMoney",
 	"UnitLevel",
@@ -43,7 +44,7 @@ T.INFLIGHT_MAX = 4
 T.INBOX_MAX_AGE = 300
 
 local US = "\31"
-local state = { bridge = false, known = {}, sentAt = {}, sentSeq = {}, sent = {}, inflight = {}, urgent = false, urgentRestored = false, refusedMine = false, hint = false, watch = { items = {}, factions = {} } }
+local state = { bridge = false, known = {}, sentAt = {}, sentSeq = {}, sent = {}, inflight = {}, urgent = false, urgentRestored = false, refusedMine = false, observed = false, hint = false, watch = { items = {}, factions = {} } }
 
 local function Try(fn, ...)
 	if type(fn) ~= "function" then return nil end
@@ -160,8 +161,11 @@ end
 
 function T.Missing()
 	local out = {}
-	for _, name in ipairs(T.PROBES) do
-		if type(Lookup(name)) ~= "function" then out[#out + 1] = name end
+	local probes = { T.PROBES, state.observed and ClaudeWoWObserved and ClaudeWoWObserved.PROBES or {} }
+	for _, list in ipairs(probes) do
+		for _, name in ipairs(list) do
+			if type(Lookup(name)) ~= "function" then out[#out + 1] = name end
+		end
 	end
 	return out
 end
@@ -263,6 +267,12 @@ function T.Sections()
 	s.factions = Factions()
 	s.life = Int(mine.deaths or 0) .. "," .. Int(mine.lastDeath or 0)
 	s.recipes = Recipes(mine)
+	local observed = state.observed and ClaudeWoWObserved and Try(ClaudeWoWObserved.Sections)
+	if type(observed) == "table" then
+		for _, name in ipairs(T.OBSERVED) do
+			if type(observed[name]) == "string" then s[name] = observed[name] end
+		end
+	end
 	return s
 end
 
@@ -284,6 +294,7 @@ end
 
 function T.Toggle()
 	T.SetOn(not T.IsOn())
+	T.Command("")
 end
 
 function T.Status()
@@ -293,11 +304,16 @@ end
 function T.Command(rest)
 	rest = tostring(rest or ""):lower()
 	if rest == "on" or rest == "off" then T.SetOn(rest == "on") end
-	if T.IsOn() then
-		Print("Game state telemetry is on: money, level, zone, profession ranks, watched items, gear IDs, reputation, deaths and recipes go to the bridge on screenshots the addon takes anyway, plus one of its own at most every 2 minutes. /claude config telemetry off stops it.")
-	else
-		Print("Game state telemetry is off: no game state records and no telemetry screenshots. /claude config telemetry on starts it again.")
+	if not T.IsOn() then
+		Print("Game state telemetry is off: no game state, vendor, auction or loot records and no telemetry screenshots. /claude config telemetry on starts it again.")
+		return
 	end
+	local extra = ""
+	if T.Observing() then
+		local loot = ClaudeWoWObserved and ClaudeWoWObserved.LootKeyed and ClaudeWoWObserved.LootKeyed()
+		extra = loot and ", and the vendor prices, auction results and loot (with your map position) from windows you open" or ", and the vendor prices and auction results from windows you open (no loot: the bridge has no game data for this client)"
+	end
+	Print("Game state telemetry is on: money, level, zone, profession ranks, watched items, gear IDs, reputation, deaths and recipes" .. extra .. " go to the bridge on screenshots the addon takes anyway, plus one of its own at most every 2 minutes. /claude config telemetry off stops it.")
 end
 
 local function Enabled()
@@ -424,10 +440,14 @@ end
 function T.Sync(gs)
 	if type(gs) ~= "table" or gs.v ~= T.SLOT_VERSION then
 		state.bridge = false
+		state.observed = false
+		if ClaudeWoWObserved and ClaudeWoWObserved.SetGather then ClaudeWoWObserved.SetGather(nil) end
 		return
 	end
-	local changed = not state.bridge
+	local changed = not state.bridge or state.observed ~= (gs.obs == 1)
 	state.bridge = true
+	state.observed = gs.obs == 1
+	if ClaudeWoWObserved and ClaudeWoWObserved.SetGather then ClaudeWoWObserved.SetGather(state.observed and gs.gather or nil) end
 	local watch = type(gs.watch) == "table" and gs.watch or {}
 	local items, factions = IdList(watch.items, T.WATCH_ITEMS_MAX), IdList(watch.factions, T.WATCH_FACTIONS_MAX)
 	if table.concat(items, ",") ~= table.concat(state.watch.items, ",") or table.concat(factions, ",") ~= table.concat(state.watch.factions, ",") then changed = true end
@@ -460,6 +480,14 @@ end
 
 function T.Active()
 	return Enabled() and true or false
+end
+
+function T.Observing()
+	return Enabled() and state.observed and true or false
+end
+
+function T.Hint()
+	state.hint = true
 end
 
 function T.Pump()

@@ -607,12 +607,12 @@ test('display push: stream off never posts, and a stream service that is down do
   } finally { down.cleanup(); }
 });
 
-test('MCP tool schemas: goal_set, goal_list, order_issue and the two vote tools; every writer is denied to in-game runs', () => {
+test('MCP tool schemas: goal_set, goal_list, order_issue and the two vote tools; every writer, route_draw included, is denied to in-game runs', () => {
   assert.deepEqual(G.toolSchemas().map(t => t.name), ['goal_set', 'goal_list', 'order_issue', 'goal_vote_open', 'goal_vote_close']);
   assert.equal(G.toolSchemas()[2].inputSchema.properties.text.maxLength, GR.TOKEN_TEXT_MAX, 'raw text may carry tokens; the 90-character cap applies after expansion');
   assert.match(G.toolSchemas()[2].description, /\{item:ID\}, \{skill:ID\} or \{map:ID,x,y\}/);
   assert.match(G.toolSchemas()[2].description, /never from memory or Classic/);
-  assert.deepEqual(LP.GOAL_WRITE_TOOLS, ['mcp__claude-wow__goal_set', 'mcp__claude-wow__order_issue', 'mcp__claude-wow__goal_vote_open', 'mcp__claude-wow__goal_vote_close']);
+  assert.deepEqual(LP.GOAL_WRITE_TOOLS, ['mcp__claude-wow__goal_set', 'mcp__claude-wow__order_issue', 'mcp__claude-wow__goal_vote_open', 'mcp__claude-wow__goal_vote_close', 'mcp__claude-wow__route_draw']);
   const acfg = P.withRunDeniedRules({ allowedTools: ['WebSearch'], deniedTools: ['Bash(rm:*)'] }, LP.GOAL_WRITE_TOOLS);
   assert.deepEqual(acfg.deniedTools, ['Bash(rm:*)', ...LP.GOAL_WRITE_TOOLS]);
   assert.deepEqual(P.withoutRules(['WebSearch', 'mcp__claude-wow__order_issue'], LP.GOAL_WRITE_TOOLS), ['WebSearch']);
@@ -923,7 +923,7 @@ test('slot field: the bridge republishes a goal write as urgent, the mode that k
   const wiring = /GOALS\.createBridgeGoals\(\{[\s\S]*?onChange: \(\) => publishNow\((\w+), \{ refresh: true \}\)/.exec(src);
   assert.ok(wiring, 'the goal store is wired to publishNow');
   assert.equal(wiring[1], 'true', 'a non-urgent publish drops a map over the progress size from every slot file');
-  assert.match(src, /const map = Date\.now\(\) < mapShareUntil && \(urgent \|\| mapLuaSize\(\) <= MAP_PROGRESS_MAX\)/, 'urgent is what keeps a large map');
+  assert.match(src, /const map = mapShare\.inSlots\(\{ urgent, size: mapLuaSize\(\), progressMax: MAP_PROGRESS_MAX \}\)/, 'urgent is what keeps a large map');
   const dir = tmpDir('bridgegoals');
   try {
     let published = 0;

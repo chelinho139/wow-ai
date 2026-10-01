@@ -176,7 +176,7 @@ test('channel server: initialize declares the channel and permission capabilitie
   assert.equal(pickProtocol('2024-11-05'), '2024-11-05');
   ch.feed(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }) + '\n');
   const list = await until(() => out.lines.find(l => l.id === 2));
-  assert.deepEqual(list.result.tools.map(t => t.name), ['wow_reply', 'goal_set', 'goal_list', 'order_issue', 'goal_vote_open', 'goal_vote_close']);
+  assert.deepEqual(list.result.tools.map(t => t.name), ['wow_reply', 'goal_set', 'goal_list', 'order_issue', 'goal_vote_open', 'goal_vote_close', 'farm_spot_lookup', 'market_price', 'route_draw']);
   assert.deepEqual(list.result.tools[0].inputSchema.required, ['chat_id', 'text']);
   ch.feed(JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'resources/list' }) + '\n');
   const nope = await until(() => out.lines.find(l => l.id === 3));
@@ -400,7 +400,7 @@ test('listening: a parent started with the channel gets the full server and conn
     assert.deepEqual(init.result.capabilities, { experimental: { 'claude/channel': {}, 'claude/channel/permission': {} }, tools: {} });
     assert.match(init.result.instructions, /wow_reply/);
     ch.feed(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }) + '\n');
-    assert.deepEqual((await until(() => out.lines.find(l => l.id === 2))).result.tools.map(t => t.name), ['wow_reply', 'goal_set', 'goal_list', 'order_issue', 'goal_vote_open', 'goal_vote_close']);
+    assert.deepEqual((await until(() => out.lines.find(l => l.id === 2))).result.tools.map(t => t.name), ['wow_reply', 'goal_set', 'goal_list', 'order_issue', 'goal_vote_open', 'goal_vote_close', 'farm_spot_lookup', 'market_price', 'route_draw']);
     await until(() => r.live.status().length === 1);
     assert.equal(ch.listening, true);
   } finally { ch.stop(); r.cleanup(); }

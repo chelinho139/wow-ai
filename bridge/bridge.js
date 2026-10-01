@@ -75,6 +75,9 @@ const T = require('./titles');
 const GOALS = require('./goals');
 const TL = require('./telemetry');
 const VOTES = require('./votes');
+const OB = require('./observed');
+const OT = require('./observedtools');
+const MH = require('./maphold');
 
 const HERE = __dirname;
 // Config, state, transcripts, log and scratch live in the home folder (home.js:
@@ -256,10 +259,13 @@ for (const [k, v] of Object.entries(state.handled)) {
 }
 
 const TELEMETRY_ON = TL.telemetryEnabled(cfg.telemetry);
+const observed = OB.createObserved({ dir: HOME.goals, log });
 const telemetry = TL.createTelemetry({
   dir: HOME.goals,
   log,
   watch: () => TL.watchFrom(cfg.telemetry),
+  observed,
+  gatherSpells: () => OB.gatherSpells(GR.openFor(HOME.data, (state.context && state.context.text) || '')),
 });
 
 // Bridge-side transcripts. The beta client sometimes wipes addon saved data; since
@@ -444,13 +450,23 @@ const MAP_DIR = HOME.mapjobs;
 // while, and on progress publishes only while it is small.
 const MAP_SHARE_MS = 3 * 60 * 1000;
 const MAP_PROGRESS_MAX = 20000;
-let mapShareUntil = Object.keys(state.map.layers).length ? Date.now() + MAP_SHARE_MS : 0;
+const mapShare = MH.createMapShare({ state, shareMs: MAP_SHARE_MS, save: () => saveState() });
 let mapLuaCache = { version: -1, epoch: '', text: '' };
 function mapLuaSize() {
   if (mapLuaCache.version !== state.map.version || mapLuaCache.epoch !== state.map.epoch) {
     mapLuaCache = { version: state.map.version, epoch: state.map.epoch, text: P.luaMap(state.map) };
   }
   return mapLuaCache.text.length;
+}
+
+function applyToolMap(cmds) {
+  const { changed, notes } = P.applyMapCommands(state.map, cmds);
+  if (changed) {
+    mapShare.hold();
+    log(`map: ${notes.join('; ')} (version ${state.map.version}), kept in the slot files until the next reply or hello`);
+    publishNow(true, { refresh: true });
+  }
+  return { changed, notes };
 }
 
 function mapFileFor(job) {
@@ -473,7 +489,7 @@ function takeMapCommands(job, text) {
   errors.push(...blocks.errors);
   if (!cmds.length && !errors.length) return { text: blocks.text, note: '' };
   const { changed, notes } = P.applyMapCommands(state.map, cmds);
-  if (changed) { saveState(); mapShareUntil = Date.now() + MAP_SHARE_MS; }
+  if (changed) { saveState(); mapShare.touch(); }
   const all = [...notes, ...errors];
   log(`#${job.id} map: ${all.join('; ') || 'no change'} (version ${state.map.version})`);
   return { text: blocks.text, note: all.length ? `map: ${all.join('; ')}` : '' };
@@ -512,7 +528,7 @@ function takeWidgetCommands(job, text) {
 
 // Slot file / Inbox.lua body: see protocol.luaTable.
 function slotFile(globalName, records, urgent = true) {
-  const map = Date.now() < mapShareUntil && (urgent || mapLuaSize() <= MAP_PROGRESS_MAX) ? state.map : null;
+  const map = mapShare.inSlots({ urgent, size: mapLuaSize(), progressMax: MAP_PROGRESS_MAX }) ? state.map : null;
   const widgets = Date.now() < widgetShareUntil && (urgent || widgetSourceBytes() <= WIDGET_PROGRESS_MAX) ? state.widgets : null;
   const transportNote = TRANSPORT_SOURCE === 'fallback' ? P.transportNote(state.transportFallback) : '';
   const achievementsLua = ACHIEVEMENTS_ON ? ACH.luaAchievements(state) : '';
@@ -859,13 +875,14 @@ function submit(job) {
     // The addon announcing itself: ack, offer a restore if its data is fresh,
     // and refresh the slots so it can read our clock. No agent run.
     markHandled(job);
+    mapShare.onHello(job);
     placeProbe(job);
     presenceBeat();
     saveState();
     signal('ack', job.id, true);
     maybeOfferRestore(job);
     // Even an empty set: a client holding layers from a reset bridge must drop them.
-    mapShareUntil = Date.now() + MAP_SHARE_MS;
+    mapShare.touch();
     widgetShareUntil = Date.now() + WIDGET_SHARE_MS;
     publishNow();
     log(`hello from session ${job.session}${pendingRestore ? ' (restore offered)' : ''}`);
@@ -984,7 +1001,7 @@ const core = {
   get liveHome() { return liveHomeArg(); },
   get claudeDir() { return CLAUDE_DIR; },
   runAgent,
-  goals: (tool, args) => goalStore.call(tool, args),
+  goals: (tool, args) => (OT.TOOL_NAMES.includes(tool) ? observedTools.call(tool, args) : goalStore.call(tool, args)),
   gameData: () => GR.openFor(HOME.data, (state.context && state.context.text) || ''),
   agentPids: () => [...running.values()].map(r => r.child).concat(T.titleChildren()).filter(Boolean).map(c => c.pid),
 };
@@ -1005,6 +1022,16 @@ const goalStore = GOALS.createBridgeGoals({
   log,
 });
 
+const observedTools = OT.createObservedTools({
+  observed,
+  context: () => state.context,
+  gameData: contextText => {
+    try { return GR.openFor(HOME.data, contextText || ''); } catch (e) { log(`observed tools: cannot open the synced game data (${e.message})`); return null; }
+  },
+  applyMap: applyToolMap,
+  log,
+});
+
 function liveHomeArg() {
   return HOME.source === 'CLAUDE_WOW_HOME' ? HOME.dir : '';
 }
@@ -1017,6 +1044,7 @@ function lateReply(job, raw) {
   const { text, summary } = P.splitSummary(String(raw || ''));
   noteMessage(job, 'assistant', text);
   publish(`${chatKey(job)}#late`, { chat: job.chat, id: job.id, status: 'done', late: true, text, summary, cwd: job.cwd, agent: job.agent || '', plugin: job.plugin || '' }, true);
+  mapShare.onReplyPublished();
   log(`${tagOf(job)} late reply delivered (${text.length} chars)`);
 }
 
@@ -1450,6 +1478,7 @@ function finish(job, status, text, session, denied) {
   awardAchievements(job, status);
   const usage = P.usageFields(job.usage);
   publish(chatKey(job), { chat: job.chat, id: job.id, status, text, summary, cwd: job.cwd, session, denied, macros, agent: job.agent || '', plugin: job.plugin || '', lateOk: status === 'error' && !!job.lateOk, ...usage }, true);
+  mapShare.onReplyPublished();
   signal('sig', job.id, true);
   tellPluginFinished(plugin, job, { status, text, summary });
   const growth = usage.turns ? `, turn ${usage.turns}${usage.ctx ? ', ctx ' + P.tokensLabel(usage.ctx) + (usage.window ? ' of ' + P.tokensLabel(usage.window) : '') : ''}${usage.cost !== undefined ? ', ~$' + usage.cost.toFixed(2) + ' API so far' : ''}` : '';

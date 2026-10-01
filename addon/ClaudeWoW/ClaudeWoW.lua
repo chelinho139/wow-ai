@@ -887,11 +887,22 @@ end
 
 -- ok = true (SCREENSHOT_SUCCEEDED), false (SCREENSHOT_FAILED or the call raised),
 -- nil (no event within SHOT_TIMEOUT: the file may or may not exist).
-local function ScreenshotDone(ok)
+local function ScreenshotDone(ok, fromEvent)
 	local shot = run.shot
-	if not shot then return end
+	if fromEvent and run.staleShotUntil then
+		run.staleShotUntil = nil
+		if run.staleShotGen then ShotStatus.End(run.staleShotGen) end
+		run.staleShotGen = nil
+		if not (shot and shot.fired) then return end
+	end
+	if not shot or (fromEvent and not shot.fired) then return end
 	run.shot = nil
-	ShotStatus.End(shot.gen)
+	if ok == nil then
+		run.staleShotUntil = GetTime() + SHOT_TIMEOUT
+		run.staleShotGen = shot.gen
+	else
+		ShotStatus.End(shot.gen)
+	end
 	HideStrip()
 	Tm.Settle(ok == true and "Delivered" or "Lost", shot.telemetry)
 	local stats = ShotStats()
@@ -940,6 +951,9 @@ local function TakeScreenshot()
 		end
 		shot.frames = shot.frames + 1
 		if shot.frames < SHOT_FRAMES then return end
+		if run.staleShotUntil and GetTime() < run.staleShotUntil then return end
+		if run.staleShotGen then ShotStatus.End(run.staleShotGen) end
+		run.staleShotUntil, run.staleShotGen = nil, nil
 		self:SetScript("OnUpdate", nil)
 		shot.fired = true
 		ShotStats().taken = ShotStats().taken + 1
@@ -5119,7 +5133,7 @@ function Q.ListSettingsMenu(anchor)
 		local shown = pcall(MenuUtil.CreateContextMenu, anchor, function(_, root)
 			root:CreateCheckbox("Show message previews", Q.PreviewsOn, TogglePreviews)
 			if ClaudeWoWOrders then root:CreateCheckbox("Show the Orders card", ClaudeWoWOrders.IsOn, ClaudeWoWOrders.Toggle) end
-			if ClaudeWoWTelemetry then root:CreateCheckbox("Send game state to Claude", ClaudeWoWTelemetry.IsOn, ClaudeWoWTelemetry.Toggle) end
+			if ClaudeWoWTelemetry then root:CreateCheckbox("Send game state, prices and loot to Claude", ClaudeWoWTelemetry.IsOn, ClaudeWoWTelemetry.Toggle) end
 			root:CreateDivider()
 			root:CreateButton("Commands and tips", function() ClaudeWoW.ShowHelp() end)
 			root:CreateButton("Expand all folders", function() SetAll(false) end)
@@ -7289,9 +7303,9 @@ ev:SetScript("OnEvent", function(self, event, arg1)
 			SyncScreenshotMode()
 		end
 	elseif event == "SCREENSHOT_SUCCEEDED" then
-		ScreenshotDone(true)
+		ScreenshotDone(true, true)
 	elseif event == "SCREENSHOT_FAILED" then
-		ScreenshotDone(false)
+		ScreenshotDone(false, true)
 	elseif event == "PLAYER_LOGOUT" then
 		-- The player's screenshot format goes back before the client saves its CVars.
 		if db then ScreenshotCVarsOff() end

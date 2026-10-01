@@ -223,6 +223,15 @@ test('a frame of [message, gs rider] from the real addon and a frame of [gs, mes
   });
 });
 
+test('on a fast game clock whose screenshot events come after the shot timeout, a message still goes out and is answered', async () => {
+  await withGame({ speed: 10, client: { speed: 10, shotDelayMs: 450 } }, async h => {
+    for (const text of ['slow screenshots one', 'slow screenshots two']) {
+      const r = await h.client.say(text, { timeoutMs: 45000 });
+      assert.match(r.text, new RegExp(text));
+    }
+  });
+});
+
 test.after(() => {
   fs.rmSync(ROOT, { recursive: true, force: true });
 });
