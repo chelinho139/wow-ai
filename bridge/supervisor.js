@@ -40,7 +40,10 @@ if (argv[0] === '--version' || argv[0] === '-v') {
   process.argv.splice(2, 1);
   require('./install-slots');
 } else if (argv[0] === 'data') {
-  require('./datasync').main(argv.slice(1)).then((code) => { process.exitCode = code; });
+  require('./datasync').main(argv.slice(1)).then((code) => { process.exitCode = code; }, (e) => {
+    process.stderr.write(`data sync failed: ${e && e.message ? e.message : String(e)}\n`);
+    process.exitCode = 1;
+  });
 } else {
   if (argv.includes('--help') || argv.includes('-h')) console.log('claude-wow setup [...]   game-side install (setup.js)\nclaude-wow service <cmd> background service (install, uninstall, start, stop, restart, status, logs)\nclaude-wow bridge [...]  the bridge alone in this process, without the restarts\nclaude-wow channel      the live-session channel server Claude Code starts (docs/LIVE-SESSION.md)\nclaude-wow data sync    fetch the Forever client tables from wago.tools into the home folder\n');
   supervise();

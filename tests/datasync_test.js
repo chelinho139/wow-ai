@@ -11,27 +11,27 @@ const BUILD = '1.60.1.200';
 const OTHER_BUILD = '1.60.1.300';
 const FIXED_NOW = Date.parse('2026-09-30T12:00:00Z');
 
-globalThis.fetch = () => { throw new Error('the network must not be used in tests'); };
-
 function scratch(name) {
   const dir = path.join(os.tmpdir(), `claude-wow-data-${name}-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`);
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
 
-function response(status, body, headers) {
-  const lower = Object.fromEntries(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]));
-  return { status, headers: { get: k => lower[k.toLowerCase()] ?? null }, text: async () => body };
+function response(status, body, headers, url) {
+  const res = new Response(body, { status, headers });
+  if (url) Object.defineProperty(res, 'url', { value: url });
+  return res;
 }
 
-function fakeWago({ failTable, overrides = {}, disposition } = {}) {
+function fakeWago({ failTable, overrides = {}, disposition, servedFrom } = {}) {
   const calls = [];
-  const fetchImpl = async (url) => {
+  const fetchImpl = async (url, init) => {
     calls.push(url);
+    assert.equal(init.redirect, 'error');
     const u = new URL(url);
     assert.equal(u.origin, 'https://wago.tools');
     if (u.pathname === '/api/builds') {
-      return response(200, fs.readFileSync(path.join(FIXTURES, 'builds.json'), 'utf8'), { 'content-type': 'application/json' });
+      return response(200, fs.readFileSync(path.join(FIXTURES, 'builds.json'), 'utf8'), { 'content-type': 'application/json' }, servedFrom);
     }
     const m = /^\/db2\/(\w+)\/csv$/.exec(u.pathname);
     assert.ok(m, `unexpected url ${url}`);
@@ -72,7 +72,8 @@ test('value checks: integers, numbers, names', () => {
   assert.equal(D.toName('Fixture Blade'), 'Fixture Blade');
   assert.equal(D.toName('x'.repeat(D.MAX_NAME_LENGTH)), 'x'.repeat(D.MAX_NAME_LENGTH));
   assert.equal(D.toName('  Edge Post '), 'Edge Post');
-  for (const bad of ['', '   ', '\tpadded', 'x'.repeat(D.MAX_NAME_LENGTH + 1), 'a|cffff0000b', 'line\nbreak', 'tab\there']) assert.equal(D.toName(bad), null, JSON.stringify(bad));
+  assert.equal(D.toName('\u00a0Nbsp Post\u00a0'), 'Nbsp Post');
+  for (const bad of ['', '   ', '\tpadded', 'x'.repeat(D.MAX_NAME_LENGTH + 1), 'a|cffff0000b', 'line\nbreak', 'tab\there', 'c1\u0085next', 'bidi\u202eflip', 'zero\u200bwidth', 'line\u2028sep', 'para\u2029sep']) assert.equal(D.toName(bad), null, JSON.stringify(bad));
 });
 
 test('build strings: only four dotted integers reach a path or a URL', () => {
@@ -82,9 +83,10 @@ test('build strings: only four dotted integers reach a path or a URL', () => {
     assert.throws(() => D.tableUrl('ItemSparse', bad), D.SyncError);
   }
   assert.equal(D.tableUrl('ItemSparse', '1.60.1.70094'), 'https://wago.tools/db2/ItemSparse/csv?build=1.60.1.70094');
-  assert.throws(() => D.parseArgs(['--build', '1.60.1']), D.SyncError);
-  assert.throws(() => D.parseArgs(['--build']), D.SyncError);
-  assert.throws(() => D.parseArgs(['--flavor', 'classic']), D.SyncError);
+  assert.throws(() => D.parseArgs(['--build', '1.60.1']), D.UsageError);
+  assert.throws(() => D.parseArgs(['--build']), D.UsageError);
+  assert.throws(() => D.parseArgs(['--flavor', 'forever']), D.UsageError);
+  assert.throws(() => D.parseArgs(['--nope']), D.UsageError);
   assert.deepEqual(D.parseArgs(['--build=1.60.1.5', '--force']), { force: true, build: '1.60.1.5' });
 });
 
@@ -98,8 +100,10 @@ test('a bad build string stops the sync before any fetch or folder', async () =>
   const out = [];
   const err = [];
   const code = await D.main(['sync', '--build', '../etc'], { env: { CLAUDE_WOW_HOME: scratch('badbuild-main') }, fetch: wago.fetchImpl, out: s => out.push(s), err: s => err.push(s) });
-  assert.equal(code, 1);
+  assert.equal(code, 2);
   assert.match(err.join(''), /bad build string/);
+  assert.equal(await D.main(['sync', '--flavor=forever'], { env: { CLAUDE_WOW_HOME: scratch('badflag-main') }, fetch: wago.fetchImpl, out: s => out.push(s), err: s => err.push(s) }), 2);
+  assert.match(err.join(''), /unknown option "--flavor=forever"/);
   assert.equal(wago.calls.length, 0);
 });
 
@@ -205,14 +209,44 @@ test('a build that is already current is not fetched again unless forced', async
   assert.equal(r.status, 'current');
   assert.equal(again.calls.length, 0);
 
-  const marker = path.join(dataDir, 'forever', BUILD, 'stale.txt');
+  const root = path.join(dataDir, 'forever');
+  const marker = path.join(root, BUILD, 'stale.txt');
   fs.writeFileSync(marker, 'from the old copy');
+  fs.mkdirSync(path.join(root, '1.60.1.100.tmp'));
+  fs.mkdirSync(path.join(root, `${BUILD}.old`));
   const forced = fakeWago();
   const f = await syncInto(dataDir, { build: BUILD, force: true, wago: forced });
   assert.equal(f.status, 'synced');
   assert.equal(forced.calls.length, D.TABLES.length);
+  assert.equal(f.dir, path.join(root, `${BUILD}-1`));
+  assert.deepEqual(D.readCurrent(root), { build: BUILD, dir: f.dir, manifest: f.manifest });
   assert.equal(fs.existsSync(marker), false);
-  assert.deepEqual(fs.readdirSync(path.join(dataDir, 'forever')).sort(), [BUILD, 'current']);
+  assert.deepEqual(fs.readdirSync(root).sort(), [`${BUILD}-1`, 'current']);
+
+  const again2 = await syncInto(dataDir, { build: BUILD, force: true });
+  assert.equal(again2.dir, path.join(root, BUILD));
+  assert.deepEqual(fs.readdirSync(root).sort(), [BUILD, 'current']);
+});
+
+test('a forced re-sync points current at the new folder before cleanup, and a cleanup failure is only logged', async (t) => {
+  if (process.platform === 'win32' || (process.getuid && process.getuid() === 0)) return t.skip('needs POSIX permissions as a normal user');
+  const dataDir = path.join(scratch('cleanup'), 'data');
+  const root = path.join(dataDir, 'forever');
+  await syncInto(dataDir, { build: BUILD });
+  const locked = path.join(root, BUILD, 'locked');
+  fs.mkdirSync(locked);
+  fs.writeFileSync(path.join(locked, 'file'), 'x');
+  fs.chmodSync(locked, 0o500);
+  const lines = [];
+  try {
+    const r = await syncInto(dataDir, { build: BUILD, force: true, log: line => lines.push(line) });
+    assert.equal(r.status, 'synced');
+    assert.equal(fs.readFileSync(path.join(root, 'current'), 'utf8'), `${BUILD}-1\n`);
+    assert.equal(D.readCurrent(root).dir, path.join(root, `${BUILD}-1`));
+    assert.ok(lines.some(l => /could not remove/.test(l)), lines.join('\n'));
+  } finally {
+    fs.chmodSync(locked, 0o700);
+  }
 });
 
 test('atomic swap: a failed sync leaves the current build, no new folder, no tmp, no lock', async () => {
@@ -266,6 +300,48 @@ test('the lock: one sync at a time, a dead or stale holder is taken over', async
   assert.equal(fs.existsSync(lockFile), false);
 });
 
+test('the lock: an unreadable lock is held until its file is stale', () => {
+  const root = path.join(scratch('lock-empty'), 'data', 'forever');
+  fs.mkdirSync(root, { recursive: true });
+  const lockFile = path.join(root, D.LOCK_FILE);
+  const seconds = ms => ms / 1000;
+  for (const body of ['', '{"pid":']) {
+    fs.writeFileSync(lockFile, body);
+    fs.utimesSync(lockFile, seconds(FIXED_NOW), seconds(FIXED_NOW));
+    assert.throws(() => D.acquireLock(root, () => FIXED_NOW, () => false), D.LockedError);
+    assert.equal(fs.readFileSync(lockFile, 'utf8'), body);
+  }
+  const old = FIXED_NOW - D.LOCK_STALE_MS - 1000;
+  fs.utimesSync(lockFile, seconds(old), seconds(old));
+  D.acquireLock(root, () => FIXED_NOW, () => false).release();
+  assert.equal(fs.existsSync(lockFile), false);
+  assert.deepEqual(fs.readdirSync(root), []);
+});
+
+test('the lock: a stale lock replaced by another taker is not deleted', () => {
+  const root = path.join(scratch('lock-race'), 'data', 'forever');
+  fs.mkdirSync(root, { recursive: true });
+  const lockFile = path.join(root, D.LOCK_FILE);
+  fs.writeFileSync(lockFile, JSON.stringify({ pid: 999999, startedAt: FIXED_NOW, token: 'dead' }));
+  const theirs = JSON.stringify({ pid: 4242, startedAt: FIXED_NOW, token: 'fresh-taker' });
+  let calls = 0;
+  const alive = () => {
+    calls++;
+    if (calls === 1) { fs.writeFileSync(lockFile, theirs); return false; }
+    return true;
+  };
+  assert.throws(() => D.acquireLock(root, () => FIXED_NOW, alive), D.LockedError);
+  assert.equal(fs.readFileSync(lockFile, 'utf8'), theirs);
+
+  fs.writeFileSync(lockFile, JSON.stringify({ pid: 999999, startedAt: FIXED_NOW, token: 'dead' }));
+  const guard = `${lockFile}.takeover`;
+  fs.mkdirSync(guard);
+  fs.utimesSync(guard, FIXED_NOW / 1000, FIXED_NOW / 1000);
+  assert.throws(() => D.acquireLock(root, () => FIXED_NOW, () => false), /taking over/);
+  assert.match(fs.readFileSync(lockFile, 'utf8'), /"dead"/);
+  fs.rmdirSync(guard);
+});
+
 test('a lock held by someone else is not removed when our sync ends', () => {
   const root = path.join(scratch('lock-owner'), 'data', 'forever');
   const mine = D.acquireLock(root, () => FIXED_NOW, () => true);
@@ -312,4 +388,78 @@ test('claude-wow data sync writes under CLAUDE_WOW_HOME/data and reports counts'
   const usage = [];
   assert.equal(await D.main(['nope'], { out: s => usage.push(s), err: s => usage.push(s) }), 2);
   assert.match(usage.join(''), /claude-wow data sync/);
+});
+
+test('an unexpected error in the sync is one line and exit 1, never a rejection', async () => {
+  const err = [];
+  const brokenFetch = async () => ({ status: 200, get headers() { throw new TypeError('headers exploded'); } });
+  const code = await D.main(['sync', '--build', BUILD], { env: { CLAUDE_WOW_HOME: scratch('main-crash') }, fetch: brokenFetch, out: () => {}, err: s => err.push(s) });
+  assert.equal(code, 1);
+  assert.equal(err.length, 1);
+  assert.match(err[0], /^data sync failed: .*headers exploded\n$/);
+
+  const throwingLog = await D.main(['sync', '--build', BUILD], { env: { CLAUDE_WOW_HOME: scratch('main-crash2') }, fetch: fakeWago().fetchImpl, out: () => { throw new RangeError('stdout closed'); }, err: s => err.push(s) });
+  assert.equal(throwingLog, 1);
+  assert.match(err[1], /stdout closed/);
+});
+
+test('optional tables: a failed SkillLineAbility or SpellReagents is recorded and the sync goes on', async () => {
+  for (const table of ['SkillLineAbility', 'SpellReagents']) {
+    const dataDir = path.join(scratch(`optional-${table}`), 'data');
+    const r = await syncInto(dataDir, { build: BUILD, wago: fakeWago({ failTable: table }) });
+    assert.equal(r.status, 'synced');
+    const spec = D.TABLES.find(s => s.table === table);
+    assert.match(r.manifest.tables[table].error, /HTTP 500/);
+    assert.equal(r.manifest.tables[table].rows, undefined);
+    assert.equal(r.manifest.entities[spec.entity], undefined);
+    assert.equal(fs.existsSync(path.join(r.dir, `${spec.entity}.jsonl`)), false);
+    assert.equal(fs.existsSync(path.join(r.dir, 'items.jsonl')), true);
+    assert.equal(D.readCurrent(path.join(dataDir, 'forever')).build, BUILD);
+  }
+  const layout = await syncInto(path.join(scratch('optional-layout'), 'data'), { build: BUILD, wago: fakeWago({ overrides: { SpellReagents: 'Other\n1\n' } }) });
+  assert.match(layout.manifest.tables.SpellReagents.error, /column .* is missing/);
+  await assert.rejects(syncInto(path.join(scratch('required'), 'data'), { build: BUILD, wago: fakeWago({ failTable: 'TaxiNodes' }) }), /HTTP 500/);
+});
+
+test('build family: the newest build of the configured family, and no family switch without --build', async () => {
+  const dataDir = path.join(scratch('family-pick'), 'data');
+  const root = path.join(dataDir, 'forever');
+  const newer = await syncInto(dataDir, { family: '1.61.0' });
+  assert.equal(newer.build, '1.61.0.50');
+
+  const lines = [];
+  await assert.rejects(syncInto(dataDir, { log: l => lines.push(l) }), /current data is 1\.61\.0\.50 .*--build/);
+  assert.equal(D.readCurrent(root).build, '1.61.0.50');
+
+  const explicit = await syncInto(dataDir, { build: BUILD });
+  assert.equal(explicit.status, 'synced');
+  assert.equal(D.readCurrent(root).build, BUILD);
+  assert.equal(explicit.manifest.previous, undefined);
+
+  await assert.rejects(syncInto(dataDir, { family: '1.60' }), /bad build family/);
+});
+
+test('fetch: no redirect off wago.tools, the body is capped while it streams', async () => {
+  const dataDir = path.join(scratch('fetch'), 'data');
+  await assert.rejects(syncInto(dataDir, { wago: fakeWago({ servedFrom: 'https://evil.example/api/builds' }) }), /came from https:\/\/evil\.example/);
+  await assert.rejects(syncInto(dataDir, { maxBodyBytes: 32 }), /larger than 32 bytes/);
+
+  let pulls = 0;
+  const endless = new ReadableStream({ pull(controller) { pulls++; controller.enqueue(new Uint8Array(1024)); } });
+  const streaming = async () => new Response(endless, { status: 200, headers: { 'content-type': 'application/json' } });
+  await assert.rejects(D.sync({ dataDir, fetch: streaming, maxBodyBytes: 4096 }), /larger than 4096 bytes/);
+  assert.ok(pulls < 16, `read ${pulls} chunks`);
+
+  let bodyRead = false;
+  const declared = async () => {
+    const res = new Response('{}', { status: 200, headers: { 'content-type': 'application/json', 'content-length': '999999999' } });
+    const realBody = res.body;
+    Object.defineProperty(res, 'body', { get() { bodyRead = true; return realBody; } });
+    return res;
+  };
+  await assert.rejects(D.sync({ dataDir, fetch: declared, maxBodyBytes: 4096 }), /larger than 4096 bytes/);
+  assert.equal(bodyRead, false);
+
+  const failing = async () => new Response(new ReadableStream({ pull(c) { c.error(new TypeError('socket hang up')); } }), { status: 200, headers: { 'content-type': 'application/json' } });
+  await assert.rejects(D.sync({ dataDir, fetch: failing }), e => e instanceof D.SyncError && /^https:\/\/wago\.tools\/api\/builds: socket hang up$/.test(e.message));
 });
