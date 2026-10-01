@@ -351,6 +351,16 @@ test('on Classic Era the window keeps only the atlases that client draws, and pl
   }
 });
 
+test('on Classic Era, where the quest parchment atlas is missing, the transcript uses the Vanilla quest panel parchment', () => {
+  const vm = newVM({ before: NATIVE_TEMPLATES + `
+    function GetBuildInfo() return "1.15.9", "70003", "Sep 1 2026", 11509 end
+    local realExists = C_Texture.GetAtlasExists
+    C_Texture.GetAtlasExists = function(name) if name == "QuestBG-Parchment" then return false end return realExists(name) end` });
+  open(vm);
+  vm.run('ClaudeWoW.Render()');
+  assert.equal(vm.evaluate('ClaudeWoW.UI.art.parchment'), 'Interface\\QuestFrame\\UI-QuestGreeting-TopLeft');
+});
+
 test('the chat list shows the newest chat first and scrolls to the active chat only when it changes', () => {
   const vm = nativeVM();
   vm.run('for i = 1, 20 do ClaudeWoW.NewChat() end');

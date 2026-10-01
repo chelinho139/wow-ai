@@ -4559,6 +4559,19 @@ end
 
 Q.CLASSIC_ERA_ART = { parchment = true, reply = true }
 Q.CLASSIC_ERA_GEAR = "Interface\\Icons\\INV_Misc_Gear_01"
+Q.CLASSIC_PARCHMENT = "Interface\\QuestFrame\\UI-QuestGreeting-TopLeft"
+Q.CLASSIC_PARCHMENT_COORDS = { 32 / 256, 248 / 256, 92 / 256, 248 / 256 }
+
+function Q.ClassicParchment(tex)
+	if not Q.IsClassicEra() then return false end
+	local ok = pcall(tex.SetTexture, tex, Q.CLASSIC_PARCHMENT)
+	if not ok then return false end
+	local c = Q.CLASSIC_PARCHMENT_COORDS
+	tex:SetTexCoord(c[1], c[2], c[3], c[4])
+	ui.art = ui.art or {}
+	ui.art.parchment = Q.CLASSIC_PARCHMENT
+	return true
+end
 
 function Q.IsClassicEra()
 	local toc = tonumber(select(4, Try(GetBuildInfo)))
@@ -5123,7 +5136,7 @@ function Q.BuildQuestFrames(f)
 	local paper = parchment:CreateTexture(nil, "BACKGROUND", nil, 1)
 	paper:SetPoint("TOPLEFT", parchment, "TOPLEFT", 3, -3)
 	paper:SetPoint("BOTTOMRIGHT", parchment, "BOTTOMRIGHT", -3, 3)
-	if not Q.SetArt(paper, "parchment") then paper:SetColorTexture(0.80, 0.70, 0.52, 1) end
+	if not Q.SetArt(paper, "parchment") and not Q.ClassicParchment(paper) then paper:SetColorTexture(0.80, 0.70, 0.52, 1) end
 	ui.parchment = parchment
 	ui.transcriptPanel = parchment
 
