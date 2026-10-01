@@ -32,7 +32,8 @@ Data first, router last. Each step must pay off on its own before the next one s
 - `agents.claude.model` and `agents.claude.extraArgs` already reach the `claude` argv (`agents.js`, `claude.args`). Try `claude-sonnet-5-5` for game chats through config first.
 - A per-plugin override (`plugins.ask.model`) is added only if the owner wants `ask` and `claude-code` on different models.
 - Measure with the real `claude` (`agentPath` set), not `dev/fake-claude.js`: 10 fixed prompts, cost and latency, against today's `opus[1m]`.
-- Check `CLAUDE_RATES` in `agents.js` against the current price list in the same PR **(the review flagged the Opus 5.5 rate as possibly wrong; unverified)**.
+- Check `CLAUDE_RATES` in `agents.js` against the current price list in the same PR. Checked 2026-09-30: the Opus 5.5 rate was wrong ($5/$25, now $4/$20 with $0.20 cache reads).
+- **Measured 2026-09-30** ([`measurements/step1-ask-model.md`](measurements/step1-ask-model.md), `dev/measure-ask.js`): one stable folder per model, as live `ask` runs use. The first turn of a new chat cost $0.233 on Opus vs $0.130 on Sonnet (1.8x, median 13.5 s vs 11.0 s). A resumed turn cost about the same on both: mean $0.031 vs $0.034, median $0.025 vs $0.016 (median 7.0 s vs 6.1 s). A cold first turn in a new folder cost $0.274 vs $0.212 (n = 1 each). New chats in a used folder still wrote about 26k cache tokens, so only resumed turns ran warm. The run stopped at its $3 budget after 6 of 10 prompts. Quality is for the owner to judge from the recorded answers; all of them use unverified game data. The default model is unchanged until then.
 
 ## 4. Step 2: trusted data for Forever
 
@@ -142,7 +143,8 @@ Data first, router last. Each step must pay off on its own before the next one s
 
 ## 12. Ready to start: step 1
 
-- [ ] Set `agents.claude.model` to `claude-sonnet-5-5` in a test config (`dev/sandbox.js` with `agentPath` pointing at the real `claude`).
-- [ ] Run 10 fixed game prompts (where-is, macro, route, lore) on `opus[1m]` and on Sonnet 5.5. Record cost from the result's `modelUsage` and latency per prompt.
-- [ ] Check `CLAUDE_RATES` in `bridge/agents.js` against the current price list and fix it in the same PR.
-- [ ] Write the numbers into this file under §3. If Sonnet quality holds, set it in `config.example.json` and the owner's config.
+- [x] Set `agents.claude.model` to `claude-sonnet-5-5` in a test config (`dev/sandbox.js` with `agentPath` pointing at the real `claude`).
+- [x] Run 10 fixed game prompts (where-is, macro, route, lore) on `opus[1m]` and on Sonnet 5.5. Record cost from the result's `modelUsage` and latency per prompt.
+- [x] Check `CLAUDE_RATES` in `bridge/agents.js` against the current price list and fix it in the same PR.
+- [x] Write the numbers into this file under §3.
+- [ ] If Sonnet quality holds (owner's call, from the answers in `measurements/step1-ask-model.md`), set it in `config.example.json` and the owner's config.
