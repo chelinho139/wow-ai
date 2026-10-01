@@ -715,12 +715,44 @@ function Tm.CallOff()
 	end
 end
 
+local ShotStatus = { hooked = {} }
+
+function ShotStatus.Frames()
+	local out = {}
+	if _G.ActionStatus then table.insert(out, _G.ActionStatus) end
+	if WorldFrame and WorldFrame.GetChildren then
+		for _, child in ipairs({ WorldFrame:GetChildren() }) do
+			if child ~= _G.ActionStatus and child.GetName and child:GetName() == "ActionStatus" then table.insert(out, child) end
+		end
+	end
+	return out
+end
+
+function ShotStatus.Quiet(gen)
+	run.quietShot = gen
+	for _, frame in ipairs(ShotStatus.Frames()) do
+		if not ShotStatus.hooked[frame] and frame.HookScript then
+			ShotStatus.hooked[frame] = true
+			frame:HookScript("OnShow", function(self)
+				if run.quietShot then self:Hide() end
+			end)
+		end
+	end
+end
+
+function ShotStatus.End(gen)
+	C_Timer.After(0, function()
+		if run.quietShot == gen then run.quietShot = nil end
+	end)
+end
+
 -- ok = true (SCREENSHOT_SUCCEEDED), false (SCREENSHOT_FAILED or the call raised),
 -- nil (no event within SHOT_TIMEOUT: the file may or may not exist).
 local function ScreenshotDone(ok)
 	local shot = run.shot
 	if not shot then return end
 	run.shot = nil
+	ShotStatus.End(shot.gen)
 	HideStrip()
 	Tm.Settle(ok == true and "Delivered" or "Lost", shot.telemetry)
 	local stats = ShotStats()
@@ -772,6 +804,7 @@ local function TakeScreenshot()
 		self:SetScript("OnUpdate", nil)
 		shot.fired = true
 		ShotStats().taken = ShotStats().taken + 1
+		pcall(ShotStatus.Quiet, gen)
 		local ok, err = pcall(Screenshot)
 		if not ok then
 			shot.err = tostring(err)

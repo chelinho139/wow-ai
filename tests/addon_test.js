@@ -862,6 +862,36 @@ function frames(vm, n) {
   for (let i = 0; i < n; i++) vm.run('local f = ClaudeWoWStrip; if f.shown and f.scripts.OnUpdate then f.scripts.OnUpdate(f, 0.016) end');
 }
 
+test('screenshot transport: Blizzard\'s "Screen captured" status stays hidden for the addon\'s own shots, on both Classic Era frames, and shows for the player\'s', () => {
+  const vm = newVM();
+  vm.run('STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW\\\\ctl\\\\valid.wav"] = true; STUB.armed = true');
+  login(vm);
+  vm.run(`
+    WorldFrame = CreateFrame("Frame", "WorldFrame")
+    local function status(parent)
+      local f = CreateFrame("Frame", "ActionStatus", parent)
+      f:Hide()
+      f:RegisterEvent("SCREENSHOT_SUCCEEDED")
+      f:SetScript("OnEvent", function(self) self:Show() end)
+      return f
+    end
+    OLD_STATUS = status(WorldFrame)
+    NEW_STATUS = status(UIParent)
+  `);
+  vm.run('STUB.RunTimers()');
+  nextSlot(vm, '{ now = time(), cwd = "", transport = "screenshot", replies = {} }');
+  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+  frames(vm, 2);
+  assert.equal(vm.num('STUB.screenshots'), 1);
+  vm.run('STUB.FireEvent("SCREENSHOT_SUCCEEDED")');
+  assert.equal(vm.evaluate('OLD_STATUS.shown'), 'false', 'the WorldFrame child Era still has is hidden');
+  assert.equal(vm.evaluate('NEW_STATUS.shown'), 'false', 'the global ActionStatus is hidden');
+  vm.run('STUB.RunTimers()');
+  vm.run('STUB.FireEvent("SCREENSHOT_SUCCEEDED")');
+  assert.equal(vm.evaluate('OLD_STATUS.shown'), 'true', 'a screenshot the player takes still says so');
+  assert.equal(vm.evaluate('NEW_STATUS.shown'), 'true');
+});
+
 test('screenshot transport: the strip is shot once per message, hidden on the event, and the format CVar is restored', () => {
   const vm = newVM();
   vm.run('STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW\\\\ctl\\\\valid.wav"] = true; STUB.armed = true');
