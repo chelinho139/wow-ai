@@ -4560,7 +4560,8 @@ end
 Q.CLASSIC_ERA_ART = { parchment = true, gear = true, reply = true }
 
 function Q.IsClassicEra()
-	local toc = tonumber(select(4, Try(GetBuildInfo)))
+	local _, _, _, interface = Try(GetBuildInfo)
+	local toc = tonumber(interface)
 	return toc ~= nil and toc >= 11500 and toc < 11600
 end
 

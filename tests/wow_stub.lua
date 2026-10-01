@@ -621,7 +621,7 @@ function STUB.ChatEditBox(name, frame, chatType, tellTarget)
 end
 
 -- The character, for the game context (ClaudeWoW.GameContext).
-function GetBuildInfo() return "1.60.1", "69913", "Sep 1 2026", 16001 end
+function GetBuildInfo() return "1.60.1", "69913", "Sep 1 2026", 16001, "", " " end
 function UnitName(unit) if unit == "player" then return "Testchar" end end
 function GetRealmName() return "Test Realm" end
 function UnitLevel(unit) return STUB.level end
