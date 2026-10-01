@@ -147,15 +147,16 @@ test('sync: newest valid build, validated rows, drops counted, uiMap percent coo
     TaxiNodes: [3, { badNumber: 1, badName: 1, duplicateId: 1, columnCount: 1 }],
     QuestV2: [3, { badId: 2 }],
     ItemSparse: [2, { badName: 1, badInteger: 1 }],
+    SkillLine: [2, { badName: 1 }],
     SkillLineAbility: [1, { badId: 1 }],
     SpellReagents: [1, { badReagent: 1 }],
   });
-  assert.equal(m.rows, 18);
-  assert.equal(m.dropped, 14);
+  assert.equal(m.rows, 20);
+  assert.equal(m.dropped, 15);
   assert.deepEqual(m.tables.TaxiNodes.notes, { zoneAmbiguous: 1, notOnAnyMap: 1 });
 
   const dir = path.join(root, BUILD);
-  assert.deepEqual(fs.readdirSync(dir).sort(), ['flightpaths.jsonl', 'items.jsonl', 'manifest.json', 'quests.jsonl', 'skilllineabilities.jsonl', 'spellreagents.jsonl', 'uimapassignments.jsonl', 'uimaps.jsonl', 'zones.jsonl']);
+  assert.deepEqual(fs.readdirSync(dir).sort(), ['flightpaths.jsonl', 'items.jsonl', 'manifest.json', 'quests.jsonl', 'skilllineabilities.jsonl', 'skilllines.jsonl','spellreagents.jsonl', 'uimapassignments.jsonl', 'uimaps.jsonl', 'zones.jsonl']);
   const flights = readJsonl(path.join(dir, 'flightpaths.jsonl'));
   assert.deepEqual(flights.map(f => [f.id, f.name, f.map, f.zoneAmbiguous]), [
     [601, 'Fixture Town Roost', { uiMapID: 9001, x: 27.5, y: 25 }, true],
@@ -167,6 +168,7 @@ test('sync: newest valid build, validated rows, drops counted, uiMap percent coo
   assert.deepEqual(readJsonl(path.join(dir, 'zones.jsonl')).map(z => z.name), ['Fixture Vale', 'Quote "Inn"']);
   assert.deepEqual(readJsonl(path.join(dir, 'items.jsonl'))[1], { id: 502, name: 'Fixture Letter', quality: 1, itemLevel: 1, requiredLevel: 0, inventoryType: 0, sellPrice: 0, buyPrice: 0, startQuestID: 101 });
   assert.deepEqual(readJsonl(path.join(dir, 'quests.jsonl')), [{ id: 101 }, { id: 102 }, { id: 103 }]);
+  assert.deepEqual(readJsonl(path.join(dir, 'skilllines.jsonl')), [{ id: 40, name: 'Fixture Craft', categoryID: 11, parentSkillLineID: 0 }, { id: 2940, name: 'Fixture Craft', categoryID: 11, parentSkillLineID: 40 }]);
   assert.deepEqual(readJsonl(path.join(dir, 'spellreagents.jsonl')), [{ id: 401, spellID: 4001, reagents: [{ itemID: 501, count: 2 }, { itemID: 502, count: 1 }] }]);
   assert.deepEqual(D.readCurrent(root).build, BUILD);
 });
@@ -382,7 +384,7 @@ test('claude-wow data sync writes under CLAUDE_WOW_HOME/data and reports counts'
   const out = [];
   const code = await D.main(['sync'], { env: { CLAUDE_WOW_HOME: home }, fetch: wago.fetchImpl, now: () => FIXED_NOW, out: s => out.push(s), err: s => out.push(s) });
   assert.equal(code, 0);
-  assert.match(out.join(''), /18 rows kept, 14 dropped; current build 1\.60\.1\.200/);
+  assert.match(out.join(''), /20 rows kept, 15 dropped; current build 1\.60\.1\.200/);
   assert.equal(fs.readFileSync(path.join(home, 'data', 'forever', 'current'), 'utf8'), `${BUILD}\n`);
 
   const usage = [];

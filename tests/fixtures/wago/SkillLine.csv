@@ -1,0 +1,4 @@
+DisplayName_lang,AlternateVerb_lang,Description_lang,ID,CategoryID,ParentSkillLineID,Flags
+"Fixture Craft",,"Higher fixture skill, better fixtures.",40,11,0,128
+"Fixture Craft",,,2940,11,40,0
+,,,41,9,0,0

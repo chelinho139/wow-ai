@@ -53,6 +53,8 @@ const ACH = require('./achievements');
 const SS = require('./sessions');
 const G = require('./gamefs');
 const SIG = require('./signals');
+const DM = require('./datamcp');
+const GD = require('./gamedata');
 
 // The plugins this bridge has (docs/PLATFORM.md). Registration order is the
 // order match() is asked in, and the first one is the default unless
@@ -743,6 +745,24 @@ function gameContext() {
   return (state.context && state.context.text) || '';
 }
 
+const loggedDataChecks = new Set();
+function gameDataServer(tag) {
+  let server = null;
+  try {
+    server = DM.launchConfig({ dataDir: HOME.data, clientBuild: GD.clientBuildOf((state.context && state.context.text) || '') });
+  } catch (e) {
+    log(`${tag} wowdata unavailable: ${e.message}`);
+    return null;
+  }
+  const check = server ? `${server.build}:${server.clientBuild}:${server.buildCheck}` : 'none';
+  if (!loggedDataChecks.has(check)) {
+    loggedDataChecks.add(check);
+    if (!server) log(`wowdata: no synced game data under ${HOME.data}; ask runs go without it (claude-wow data sync)`);
+    else if (server.buildCheck === GD.BUILD_CHECK.mismatch) log(`wowdata: data build ${server.build} is not in the client's build family (${server.clientBuild}); answers are labeled build-mismatch`);
+  }
+  return server;
+}
+
 // The addon/macro primer that goes into the system prompt while the addon sends
 // a context. Read on every run so edits count without a restart (Claude Code
 // records a chat's system prompt at its first message, so there an edit reaches
@@ -1028,7 +1048,9 @@ function runAgent(job, opts = {}) {
   if (grantOnce.rules.length) {
     log(`${tag} allowed for this run only (${agentId}): ${grantOnce.rules.join(', ')}`);
   }
-  const acfg = A.withChatSettings(P.withRunDeniedRules(P.withRunOnlyRules(A.agentConfig(cfg, agentId), grantOnce.rules), inGameDeniedTools()), agentId, chosen);
+  const dataServer = opts.gameData && agentId === 'claude' ? gameDataServer(tag) : null;
+  const runOnlyRules = dataServer ? [...grantOnce.rules, ...dataServer.rules] : grantOnce.rules;
+  const acfg = A.withChatSettings(P.withRunDeniedRules(P.withRunOnlyRules(A.agentConfig(cfg, agentId), runOnlyRules), inGameDeniedTools()), agentId, chosen);
   const runDirs = [...grantForGood.dirs, ...grantOnce.dirs].map(d => P.resolveCwd(d, DEFAULT_CWD));
   if (runDirs.length) {
     acfg.addDirs = [...new Set([...A.addDirs(acfg), ...runDirs])];
@@ -1095,7 +1117,7 @@ function runAgent(job, opts = {}) {
   }
   const args = [...cmd.args, ...agent.args({
     cfg: acfg, resume, cwd, system, systemShort, promptFile, images,
-    prompt, timeoutMs: cfg.timeoutMs,
+    prompt, timeoutMs: cfg.timeoutMs, mcpConfig: dataServer ? dataServer.config : '',
   })];
   const env = agent.env({ ...process.env });
   // Where this run's tools append map commands (docs/MAP.md); any agent can use
@@ -1115,7 +1137,7 @@ function runAgent(job, opts = {}) {
     } catch (e) { log(`${tag} ui file unavailable: ${e.message}`); }
   }
 
-  const picked = [acfg.model && 'model ' + acfg.model, acfg.effort && 'effort ' + acfg.effort, chosen.permissionMode && 'mode ' + acfg.permissionMode, (acfg.addDirs || []).length && '+' + acfg.addDirs.length + ' dir(s)'].filter(Boolean).join(', ');
+  const picked = [acfg.model && 'model ' + acfg.model, acfg.effort && 'effort ' + acfg.effort, chosen.permissionMode && 'mode ' + acfg.permissionMode, (acfg.addDirs || []).length && '+' + acfg.addDirs.length + ' dir(s)', dataServer && 'wowdata ' + dataServer.build].filter(Boolean).join(', ');
   log(`${tag} (${job.via}) [${plugin.id}] ${agent.name} starting in ${cwd}${picked ? ' [' + picked + ']' : ''}${resume ? ' (resume ' + resume.slice(0, 8) + ')' : ' (new session)'}${ctx ? ' [game context]' : ''}${image ? ` [screen ${image.width}x${image.height}, ${Math.round(image.bytes / 1024)} KB]` : ''}${running.size ? ' [' + (running.size + 1) + ' running]' : ''}`);
   const startedAt = Date.now(); // a fresh session's clock starts here (the footer's elapsed time)
   const child = PR.spawnChild(cmd.file, args, { cwd, env, windowsHide: true, stdio: [input.stdin !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
@@ -1145,6 +1167,11 @@ function runAgent(job, opts = {}) {
     while (progress.length > 10) progress.shift();
     beat(job);
     publish(key, { chat: job.chat, id: job.id, status: 'working', text: progress.join('\n'), cwd: job.cwd, session: sessionId, agent: agentId, plugin: plugin.id }, false);
+  };
+  const noteMcpDown = (servers) => {
+    log(`${tag} MCP server(s) not connected: ${servers.map(s => `${s.name} (${s.status})`).join(', ')}`);
+    const ours = dataServer && servers.find(s => s.name === DM.SERVER_NAME);
+    if (ours) notes.push(`The game data server (${DM.SERVER_NAME}) did not start (${ours.status}), so this answer was not checked against the client data.`);
   };
   if (agent.stream === 'text') pushProgress(`${agent.name} is working (no live progress)`);
   if (input.note) notes.push(input.note);
@@ -1181,6 +1208,7 @@ function runAgent(job, opts = {}) {
     for (const p of r.progress) pushProgress(p);
     for (const d of r.denied) denied.add(d);
     if (Array.isArray(r.deniedAgain)) for (const d of r.deniedAgain) deniedAgain.add(d);
+    if (Array.isArray(r.mcpDown)) noteMcpDown(r.mcpDown);
     notes.push(...r.notes);
     if (r.done) result = r.done;
   };

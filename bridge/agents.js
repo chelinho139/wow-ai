@@ -169,6 +169,10 @@ function claudeParser(opts = {}) {
     feed(ev) {
       const out = empty();
       if (ev.session_id) out.session = ev.session_id;
+      if (ev.type === 'system' && ev.subtype === 'init' && Array.isArray(ev.mcp_servers)) {
+        const down = ev.mcp_servers.filter(s => s && typeof s === 'object' && s.status !== 'connected');
+        if (down.length) out.mcpDown = down.map(s => ({ name: String(s.name || '?').slice(0, 80), status: String(s.status || 'no status').slice(0, 40) }));
+      }
       if (ev.type === 'system' && ev.subtype === 'permission_denied') {
         noteRefusal(ev.tool_use_id, ev.message || ev.decision_reason, ev.decision_reason_type, true);
       } else if (ev.type === 'user' && ev.message && Array.isArray(ev.message.content)) {
@@ -508,7 +512,7 @@ const AGENTS = {
     install: 'https://claude.com/claude-code, then run `claude` once and log in',
     windowsPaths: () => [path.join(os.homedir(), '.local', 'bin', 'claude.exe')],
     posixPaths: () => [path.join(os.homedir(), '.local', 'bin', 'claude')],
-    args({ cfg, resume, system, images }) {
+    args({ cfg, resume, system, images, mcpConfig }) {
       const a = ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', cfg.permissionMode || 'acceptEdits'];
       // With an image the prompt is a stream-json user message (see input below).
       if (Array.isArray(images) && images.some(i => i && i.data)) a.push('--input-format', 'stream-json');
@@ -516,6 +520,7 @@ const AGENTS = {
       if (rules.length) a.push('--allowedTools', ...rules);
       const denied = Array.isArray(cfg.deniedTools) ? cfg.deniedTools.filter(Boolean) : [];
       if (denied.length) a.push('--disallowedTools', ...denied);
+      if (mcpConfig) a.push('--mcp-config', mcpConfig);
       if (cfg.model) a.push('--model', cfg.model);
       if (cfg.effort) a.push('--effort', cfg.effort);
       for (const dir of addDirs(cfg)) a.push('--add-dir', dir);

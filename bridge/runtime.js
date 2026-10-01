@@ -36,6 +36,7 @@ const SCRIPTS = {
   bridge: 'bridge/bridge.js',
   setup: 'setup.js',
   'install-slots': 'bridge/install-slots.js',
+  'data-mcp': 'bridge/datamcp.js',
 };
 
 // [file, args]: what to spawn to run one of this project's scripts. From a

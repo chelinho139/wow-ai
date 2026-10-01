@@ -128,6 +128,7 @@ test('the shipped coding plugin: a folder resolved against the bridge\'s, refuse
   p.handle(job, core);
   assert.equal(job.cwd, path.join(base, 'realms'));
   assert.equal(calls[0].run.cwd, path.join(base, 'realms'));
+  assert.equal(calls[0].run.gameData, undefined, 'coding runs do not get the wowdata server');
   assert.equal(calls[0].run.freshSession(), '', 'same folder as the session: resume');
   // Another folder than the session's means a new session.
   p.handle({ id: 2, cwd: '', text: 'hi' }, core);
@@ -165,6 +166,7 @@ test('the shipped ask plugin: no folder semantics, a scratch folder of its own, 
   const job = { id: 1, cwd: 'realms', text: 'what drops it' };
   p.handle(job, core);
   assert.equal(calls[0].run.cwd, scratch, 'runs in the scratch folder');
+  assert.equal(calls[0].run.gameData, true, 'ask runs get the read-only wowdata server');
   assert.ok(fs.existsSync(scratch), 'created on demand');
   assert.equal(calls[0].run.freshSession, undefined, 'no folder-change rule: the session is the chat\'s whatever the folder');
   assert.equal(job.cwd, 'realms', 'the chat\'s own folder is left as typed for the coding plugin');

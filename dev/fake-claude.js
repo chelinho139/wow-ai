@@ -132,6 +132,12 @@ function runBash(session, command, argv) {
   return { tool_name: 'Bash', tool_use_id: id, tool_input: { command } };
 }
 
+function mcpServers(argv, failing) {
+  let names = [];
+  try { names = Object.keys(JSON.parse(arg(argv, '--mcp-config') || '{}').mcpServers || {}); } catch {}
+  return names.map(name => ({ name, status: name === failing ? 'failed' : 'connected' }));
+}
+
 function lastUserLine(text) {
   const lines = String(text).split('\n').map(l => l.trim()).filter(Boolean);
   return lines[lines.length - 1] || '';
@@ -155,7 +161,7 @@ async function main() {
     process.exit(1);
   }
   if (d['no-result']) process.exit(Number(d['no-result']) || 1);
-  emit({ type: 'system', subtype: 'init', session_id: session.id, model: MODEL, cwd: process.cwd(), tools: [] });
+  emit({ type: 'system', subtype: 'init', session_id: session.id, model: MODEL, cwd: process.cwd(), tools: [], mcp_servers: mcpServers(argv, d['mcp-fail']) });
   if (d.crash) { process.stderr.write('fake-claude: crashing on request\n'); process.exit(Number(d.crash) || 3); }
   if (d.hang) { setInterval(() => {}, 1 << 30); await new Promise(() => {}); }
 
