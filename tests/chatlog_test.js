@@ -646,6 +646,74 @@ test('a bridge that does not offer the chat log, or a client without the API, ke
   assert.match(noApi.evaluate('ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].text'), /chat log transport: unavailable in this client/);
 });
 
+function slotWithAcks(acks) {
+  const body = P.luaTable('ClaudeWoW_SlotData', [], { transport: 'screenshot', chatlog: { enabled: true, line: 200, filler: 4096, key: KEY }, acks });
+  return `SLOT_TEXT = [==[${body}]==]; STUB.onLoadAddOn = function(name) assert(load(SLOT_TEXT))() end`;
+}
+
+function eraClient() {
+  const vm = loggedIn();
+  vm.run('ClaudeWoW.PresenceWorks = function() return false end');
+  return vm;
+}
+
+test('the bridge lists the records it acknowledged in the slot file: newest last, at most 24, ten minutes at most, one entry per record', () => {
+  let acks = [];
+  for (let id = 1; id <= 30; id++) acks = P.noteAck(acks, { session: 's1', id }, 1000 + id);
+  acks = P.noteAck(acks, { session: 's1', id: 30 }, 2000);
+  assert.equal(acks.length, P.RECENT_ACKS_MAX);
+  assert.deepEqual(acks.map(a => a.id), Array.from({ length: 24 }, (_, i) => i + 7));
+  assert.deepEqual(P.recentAcks(acks, 1000 + 20 + P.RECENT_ACK_MS).map(a => a.id), [21, 22, 23, 24, 25, 26, 27, 28, 29, 30]);
+  assert.deepEqual(P.noteAck([], { session: 's1', id: 0 }), []);
+  const lua = P.luaTable('X', [], { transport: 'screenshot', acks: [{ session: 's"1', id: 5 }, { session: 's2', id: 1.5 }] });
+  assert.match(lua, /\tacks = \{ \{ session = "s\\"1", id = 5 \} \},/);
+  assert.doesNotMatch(P.luaTable('X', [], { transport: 'screenshot' }), /acks/);
+});
+
+test('chat log transport on Classic Era: the hello is acknowledged from the slot file\'s ack list, so it never costs a screenshot', () => {
+  const vm = eraClient();
+  const shots = vm.num('STUB.screenshots');
+  const before = vm.num('#SENT');
+  vm.run('ClaudeWoW.Connect()');
+  const id = vm.num('ClaudeWoWDB.lastSeq');
+  const frames = framesOf(asLogText(sentFrom(vm, before + 1)));
+  assert.equal(frames.length, 1);
+  assert.match(recordsOf(frames[0]).find(r => r.id === id).flags, /^h/, 'the hello went out on the chat log');
+  vm.run(slotWithAcks(P.recentAcks(P.noteAck([], { session: vm.evaluate('ClaudeWoWDB.session'), id }))));
+  for (let i = 0; i < 6; i++) { vm.run('STUB.now = STUB.now + 5; STUB.Tick()'); shotFrames(vm, 2); }
+  assert.equal(vm.num('STUB.screenshots'), shots, 'no screenshot retry');
+  assert.equal(vm.num('#SENT'), before + sentFrom(vm, before + 1).length);
+});
+
+test('chat log transport on Classic Era: an ack listed for another session is ignored, and the hello goes out again by screenshot', () => {
+  const vm = eraClient();
+  const shots = vm.num('STUB.screenshots');
+  vm.run('ClaudeWoW.Connect()');
+  const id = vm.num('ClaudeWoWDB.lastSeq');
+  vm.run(slotWithAcks(P.recentAcks(P.noteAck([], { session: 'someoneelse0000', id }))));
+  for (let i = 0; i < 4; i++) { vm.run('STUB.now = STUB.now + 5; STUB.Tick()'); shotFrames(vm, 2); }
+  assert.equal(vm.num('STUB.screenshots'), shots + 1);
+});
+
+test('chat log transport on Classic Era: deleting a chat reads its ack from one slot poll, with no screenshot', () => {
+  const vm = eraClient();
+  vm.run('ClaudeWoW.NewChat("Gone soon"); ClaudeWoW.Send("hi")');
+  vm.run(`STUB.sounds["${ACK(vm.num('ClaudeWoWDB.lastSeq'))}"] = false; STUB.now = STUB.now + 2; STUB.Tick()`);
+  vm.run('STUB.now = STUB.now + 20; STUB.Tick()');
+  const shots = vm.num('STUB.screenshots');
+  const before = vm.num('#SENT');
+  vm.run('ClaudeWoW.DeleteChat()');
+  const id = vm.num('ClaudeWoWDB.lastSeq');
+  const frames = framesOf(asLogText(sentFrom(vm, before + 1)));
+  assert.equal(recordsOf(frames[0]).find(r => r.id === id).flags, 'd', 'the forget went out on the chat log');
+  vm.run(slotWithAcks(P.recentAcks(P.noteAck([], { session: vm.evaluate('ClaudeWoWDB.session'), id }))));
+  vm.run('LOADS = 0; local load = STUB.onLoadAddOn; STUB.onLoadAddOn = function(name) LOADS = LOADS + 1; load(name) end');
+  vm.run('STUB.now = STUB.now + 5; STUB.Tick()');
+  assert.equal(vm.num('LOADS'), 1, 'one slot poll, 4 s after the write');
+  for (let i = 0; i < 6; i++) { vm.run('STUB.now = STUB.now + 5; STUB.Tick()'); shotFrames(vm, 2); }
+  assert.equal(vm.num('STUB.screenshots'), shots, 'no screenshot retry');
+});
+
 test('a bridge that stops offering the chat log is followed on the next slot read', () => {
   const vm = loggedIn();
   vm.run('STUB.onLoadAddOn = function(name) ClaudeWoW_SlotData = { now = time(), cwd = "", transport = "screenshot", replies = {} } end');

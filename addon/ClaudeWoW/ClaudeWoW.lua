@@ -718,7 +718,7 @@ local function TellPlayer(msg)
 	if ui.frame then ClaudeWoW.Render() end
 end
 
-ClaudeWoW.ChatLog = { MISSES_BEFORE_PAUSE = 2, RETRY_SECONDS = 8, SLOW_RETRY_SECONDS = 15, FIRST_PAUSE_SECONDS = 600, MAX_PAUSE_SECONDS = 3600 }
+ClaudeWoW.ChatLog = { MISSES_BEFORE_PAUSE = 2, RETRY_SECONDS = 8, SLOW_RETRY_SECONDS = 15, ACK_POLL_SECONDS = 4, FIRST_PAUSE_SECONDS = 600, MAX_PAUSE_SECONDS = 3600 }
 
 function ClaudeWoW.ChatLog.RetrySeconds()
 	local L = ClaudeWoW.ChatLog
@@ -789,15 +789,19 @@ function ClaudeWoW.ChatLog.InstallFilter()
 	if type(add) == "function" then L.filtered = pcall(add, "CHAT_MSG_SYSTEM", L.Hide) end
 end
 
-function ClaudeWoW.ChatLog.Write(id, payload)
+function ClaudeWoW.ChatLog.Write(id, payload, kind)
 	local spec = db.settings.chatlog
 	local ok, err = pcall(function()
 		if not LoggingChat() then LoggingChat(true) end
 		ClaudeWoW.ChatLog.InstallFilter()
 		local lines = Codec.LogLines(id, payload, spec.line, spec.filler, spec.key)
 		for i = 1, #lines do SendSystemMessage(lines[i]) end
-		run.chatlogStats = run.chatlogStats or { frames = 0, lines = 0, acked = 0, late = 0 }
-		run.chatlogStats.frames = run.chatlogStats.frames + 1
+		run.chatlogStats = run.chatlogStats or { frames = 0, lines = 0, acked = 0, late = 0, gs = 0 }
+		if kind == "gs" then
+			run.chatlogStats.gs = run.chatlogStats.gs + 1
+		else
+			run.chatlogStats.frames = run.chatlogStats.frames + 1
+		end
 		run.chatlogStats.lines = run.chatlogStats.lines + #lines
 	end)
 	if not ok then
@@ -837,7 +841,7 @@ function ClaudeWoW.ChatLog.Status()
 		state,
 		s.chatlog.line, s.chatlog.filler,
 		s.chatlog.show and ", lines shown in chat" or "",
-		stats and string.format("; %d frames, %d lines written, %d acknowledged first time, %d only after the screenshot retry", stats.frames, stats.lines, stats.acked, stats.late) or "")
+		stats and string.format("; %d frames, %d lines written, %d acknowledged first time, %d only after the screenshot retry, %d game state frames", stats.frames, stats.lines, stats.acked, stats.late, stats.gs) or "")
 end
 
 local Tm = {}
@@ -981,6 +985,12 @@ RefreshStrip = function()
 		-- Nothing left to send. A shot still counting frames is called off; one
 		-- the client is already writing keeps the strip until its event.
 		if run.shot and not run.shot.solo then Tm.CallOff() end
+		if not run.shot and ClaudeWoW.ChatLog.Mode() then
+			HideStrip()
+			local solo = Tm.Record(Codec.MAX_PAYLOAD, true)
+			if solo then Tm.Settle(ClaudeWoW.ChatLog.Write(0, solo, "gs") and "Delivered" or "Lost", solo) end
+			return
+		end
 		if not run.shot then
 			local solo = ScreenshotMode() and Tm.Record(Codec.MAX_PAYLOAD, true)
 			if solo then
@@ -1010,7 +1020,12 @@ RefreshStrip = function()
 		for _, rec in ipairs(included) do
 			if not rec.shot then unsent = true end
 		end
-		if not unsent or ClaudeWoW.ChatLog.Write(latest, table.concat(parts, RS)) then
+		local rider = unsent and Tm.Record(Codec.MAX_PAYLOAD - size - 1, false) or nil
+		if rider then table.insert(parts, rider) end
+		local written = unsent and ClaudeWoW.ChatLog.Write(latest, table.concat(parts, RS))
+		Tm.Settle(written and "Delivered" or "Lost", rider)
+		if rider and not written then table.remove(parts) end
+		if not unsent or written then
 			Tm.CallOff()
 			if not run.shot then HideStrip() end
 			if unsent then
@@ -1018,6 +1033,9 @@ RefreshStrip = function()
 					rec.shot = "log"
 					rec.logged = true
 					rec.loggedAt = GetTime()
+					if (rec.forget or rec.cancelOf) and not run.helloPollAt and not run.ackPollAt then
+						run.ackPollAt = GetTime() + ClaudeWoW.ChatLog.ACK_POLL_SECONDS
+					end
 				end
 			end
 			return
@@ -1635,6 +1653,20 @@ local function MarkAcked(id)
 	NotedBridge()
 end
 
+function ClaudeWoW.ApplyAcks(acks)
+	if type(acks) ~= "table" or not db then return false end
+	local any = false
+	for _, a in ipairs(acks) do
+		local rec = type(a) == "table" and a.session == db.session and run.outbound[a.id]
+		if rec and not rec.acked then
+			NoteAcked(rec)
+			any = true
+		end
+	end
+	if any then NotedBridge() end
+	return any
+end
+
 -- Dispatch a list of reply records to the chats waiting for them.
 local function ApplyReplies(replies)
 	local matched = false
@@ -1766,7 +1798,9 @@ local function TryLoadSlot(why)
 		if type(data.plugins) == "table" and #data.plugins > 0 then run.bridgePlugins = data.plugins end
 		ClaudeWoW.ApplyLive(data.live)
 		ClaudeWoW.ApplySessions(data.sessions, data.now)
+		local acked = ClaudeWoW.ApplyAcks(data.acks)
 		ApplyTransport(data)
+		if acked then RefreshStrip() end
 		Presence.Check(data.presence, data.now)
 	end
 	local matched = ApplyReplies(type(data) == "table" and data.replies or nil)
@@ -1838,6 +1872,10 @@ local function Tick()
 			run.restoring = nil
 			ClaudeWoW.Render()
 		end
+	end
+	if run.ackPollAt and now >= run.ackPollAt then
+		run.ackPollAt = nil
+		if not ClaudeWoW.PresenceWorks() then TryLoadSlot("ack") end
 	end
 	if run.restoring and now - run.restoring > 25 then
 		run.restoring = nil

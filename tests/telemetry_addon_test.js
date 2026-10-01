@@ -7,6 +7,7 @@ const { lua, lauxlib, lualib, to_luastring, to_jsstring } = require('fengari');
 const P = require('../bridge/protocol');
 const TL = require('../bridge/telemetry');
 const G = require('../bridge/goals');
+const CL = require('../bridge/chatlog');
 
 const ADDON = path.join(__dirname, '..', 'addon', 'ClaudeWoW');
 const CELLS_PER_ROW = 200;
@@ -133,6 +134,74 @@ function ready({ gs = GS, saved = '', extra } = {}) {
   tick(vm, 21);
   return vm;
 }
+
+const LOG_KEY = '0123456789abcdef0123456789abcdef';
+const CHAT_LOG_API = `
+SENT, LOGGING = {}, false
+function SendSystemMessage(text) SENT[#SENT + 1] = text end
+function LoggingChat(on) if on ~= nil then LOGGING = on end return LOGGING end
+`;
+
+function logFrames(vm, first = 1) {
+  const lines = [];
+  for (let i = first; i <= vm.num('#SENT'); i++) lines.push(vm.evaluate(`SENT[${i}]`));
+  const frames = [];
+  const assembler = CL.createAssembler(f => frames.push(f), { key: LOG_KEY });
+  assembler.feed(lines.map(l => `9/30 19:00:00.000  ${l}\n`).join(''));
+  return frames.map(f => ({ id: f.id, jobs: P.jobsFromStrip(f.id, f.text) }));
+}
+
+function readyChatLog() {
+  const vm = newVM({ extra: GAME_STUB + CHAT_LOG_API });
+  vm.run('STUB.FireEvent("ADDON_LOADED", "ClaudeWoW"); STUB.FireEvent("PLAYER_LOGIN")');
+  vm.run('STUB.RunTimers()');
+  nextSlot(vm, slotBody(GS, `, chatlog = { line = 200, filler = 4096, key = "${LOG_KEY}" }, acks = { { session = ClaudeWoWDB.session, id = ClaudeWoWDB.lastSeq } }`));
+  tick(vm, 6);
+  assert.equal(vm.evaluate('ClaudeWoW.IsConnected()'), 'true');
+  return vm;
+}
+
+test('chat log transport: game state goes out as chat log frames of its own, never as a screenshot', () => {
+  const vm = readyChatLog();
+  tick(vm, 6);
+  const first = logFrames(vm).filter(f => gsJobs(f).length);
+  assert.equal(first.length, 1, 'the first record went out on the chat log');
+  assert.equal(first[0].id, 0, 'a frame with no message id');
+  assert.deepEqual(Object.keys(sectionsOf(gsJobs(first[0])[0]).sections), ['cap', 'level', 'zone', 'money', 'items', 'skills', 'equip', 'factions', 'life', 'recipes']);
+  for (let i = 0; i < 5; i++) { vm.run('STUB.money = STUB.money + 100; STUB.FireEvent("PLAYER_MONEY")'); tick(vm, 130); }
+  const all = logFrames(vm).filter(f => gsJobs(f).length);
+  assert.ok(all.length >= 5, `money changes went out on the chat log (${all.length} frames)`);
+  assert.equal(sectionsOf(gsJobs(all[all.length - 1])[0]).sections.money.value.copper, vm.num('STUB.money'));
+  assert.equal(vm.num('STUB.screenshots'), 0, 'no screenshot at all');
+  assert.equal(vm.evaluate('ClaudeWoWStrip and ClaudeWoWStrip.shown or false'), 'false');
+});
+
+test('chat log transport: game state rides on a message frame, after the message', () => {
+  const vm = readyChatLog();
+  tick(vm, 6);
+  vm.run('STUB.money = STUB.money + 100; STUB.FireEvent("PLAYER_MONEY")');
+  tick(vm, 31);
+  const before = vm.num('#SENT');
+  vm.run('ClaudeWoW.Send("what should I do next")');
+  const [frame] = logFrames(vm, before + 1);
+  assert.equal(frame.jobs[0].text, 'what should I do next');
+  assert.deepEqual(Object.keys(sectionsOf(gsJobs(frame)[0]).sections), ['money']);
+  assert.equal(vm.num('STUB.screenshots'), 0);
+});
+
+test('chat log transport: a failed chat log write sends the message by screenshot with one game state record, not the lost one and a new one', () => {
+  const vm = readyChatLog();
+  tick(vm, 6);
+  tick(vm, 31);
+  vm.run('STUB.level = (STUB.level or 23) + 1; STUB.FireEvent("PLAYER_LEVEL_UP")');
+  vm.run('SendSystemMessage = function() error("chat log write failed") end');
+  vm.run('ClaudeWoW.Send("after a failed write")');
+  const shot = shoot(vm);
+  assert.ok(shot, 'the message went out by screenshot');
+  assert.ok(shot.jobs.some(j => j.text === 'after a failed write'));
+  assert.equal(gsJobs(shot).length, 1, 'one game state record on the strip');
+  assert.ok(shot.frame.len <= MAX_PAYLOAD);
+});
 
 test('no game state goes out before the bridge advertises gs, and an old bridge without it never gets one', () => {
   const vm = ready({ gs: null });

@@ -510,6 +510,8 @@ function takeWidgetCommands(job, text) {
   return { text: blocks.text, note: all.length ? `ui: ${all.join('; ')}` : '' };
 }
 
+let acksSent = [];
+
 // Slot file / Inbox.lua body: see protocol.luaTable.
 function slotFile(globalName, records, urgent = true) {
   const map = Date.now() < mapShareUntil && (urgent || mapLuaSize() <= MAP_PROGRESS_MAX) ? state.map : null;
@@ -523,7 +525,7 @@ function slotFile(globalName, records, urgent = true) {
   if (TELEMETRY_ON) {
     try { gsLua = telemetry.luaGs(); } catch (e) { log(`telemetry: slot field gs left out (${e && e.message ? e.message : e})`); }
   }
-  return P.luaTable(globalName, records, { live: liveInfo, sessions: sessionList(), cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), plugin: DEFAULT_PLUGIN, plugins: registry.ids(), map, widgets, transport: TRANSPORT, levels: LEVELS, codec: STRIP_CODEC, chatlog: chatLogSlot(), transportNote, achievementsLua, goalsLua, gsLua, presence: presenceInfo() });
+  return P.luaTable(globalName, records, { live: liveInfo, sessions: sessionList(), cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), plugin: DEFAULT_PLUGIN, plugins: registry.ids(), map, widgets, transport: TRANSPORT, levels: LEVELS, codec: STRIP_CODEC, chatlog: chatLogSlot(), acks: P.recentAcks(acksSent), transportNote, achievementsLua, goalsLua, gsLua, presence: presenceInfo() });
 }
 
 function recentClaudeSessions() {
@@ -664,6 +666,11 @@ function setSignalFile(file, on) {
 
 function signal(kind, id, on) {
   setSignalFile(SIG.signalFile(cfg.addonDir, kind, slotNumber(id)), on);
+}
+
+function ackJob(job) {
+  acksSent = P.noteAck(acksSent, job);
+  signal('ack', job.id, true);
 }
 
 function pendingIds() {
@@ -836,7 +843,10 @@ function submit(job) {
   }
   if (job.shot) fallbackToPixel(job.shot, job); // even for a message already handled: the report stands
   noteSignalReport(job);
-  if (alreadyHandled(job)) return;
+  if (alreadyHandled(job)) {
+    acksSent = P.noteAck(acksSent, job);
+    return;
+  }
   clearSignalsAhead(job.id);
   if (job.ctx !== undefined) setContext(job);
   else noteContextHeard();
@@ -845,14 +855,16 @@ function submit(job) {
     markHandled(job);
     forgetChat(job);
     saveState();
-    signal('ack', job.id, true);
+    ackJob(job);
+    publishNow();
     return;
   }
   if (job.cancel) {
     markHandled(job);
     saveState();
-    signal('ack', job.id, true);
+    ackJob(job);
     cancelRun(job);
+    publishNow();
     return;
   }
   if (job.hello) {
@@ -862,7 +874,7 @@ function submit(job) {
     placeProbe(job);
     presenceBeat();
     saveState();
-    signal('ack', job.id, true);
+    ackJob(job);
     maybeOfferRestore(job);
     // Even an empty set: a client holding layers from a reset bridge must drop them.
     mapShareUntil = Date.now() + MAP_SHARE_MS;
@@ -930,7 +942,7 @@ function runJob(job) {
   const tag = tagOf(job);
   signal('sig', job.id, false);
   resetBeats(job.id);
-  signal('ack', job.id, true);
+  ackJob(job);
   if (job.resume && !job.liveTarget) {
     const found = resolveResume(job);
     if (found.error) {
@@ -1370,7 +1382,7 @@ function recoverInflight() {
     const text = `The bridge stopped unexpectedly while ${run.agent || 'the agent'} was working on this message (started ${since} UTC), so its reply is lost. Send it again. The reason is in ${LOG_FILE}.`;
     P.markHandled(state, { session: run.session, chat: run.chat, id: run.id });
     live.set(key, { chat: run.chat, id: run.id, status: 'error', text, cwd: run.cwd });
-    signal('ack', run.id, true);
+    ackJob({ session: run.session, id: run.id });
     signal('sig', run.id, true);
     log(`#${run.id}@${run.session || ''} was running when the previous bridge stopped; told the game it is lost`);
   }
