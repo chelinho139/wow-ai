@@ -4,7 +4,8 @@ const path = require('path');
 
 const TAG = 'CWX1';
 const MAGIC = [0xc7, 0x3a];
-const LINE = new RegExp(`${TAG} (\\d+) (\\d+)/(\\d+) ([A-Za-z0-9+/=]+)\\s*$`);
+const STAMP = '^\\d+/\\d+ \\d\\d:\\d\\d:\\d\\d\\.\\d{3}  ';
+const LINE = new RegExp(`${STAMP}${TAG} (\\d+) (\\d+)/(\\d+) ([A-Za-z0-9+/=]+)\\s*$`);
 const MAX_OPEN_FRAMES = 8;
 const MAX_CHUNKS = 400;
 const DEFAULTS = { enabled: false, line: 900, filler: 50000, show: false, clean: true, pollMs: 250 };
@@ -40,7 +41,7 @@ function bufferSize(samples) {
   let best = null;
   for (const [bucket, n] of counts) {
     const total = n + (counts.get(bucket + 1) || 0);
-    if (total >= MIN_CLUSTER && (!best || total > best.total || (total === best.total && bucket > best.bucket))) best = { bucket, total };
+    if (total >= MIN_CLUSTER && (!best || bucket < best.bucket)) best = { bucket, total };
   }
   if (!best) return 0;
   return Math.min(...samples.filter(s => { const b = Math.floor(s / WRITE_BUCKET); return b === best.bucket || b === best.bucket + 1; }));
@@ -54,22 +55,41 @@ function calibratedFiller(samples, configured) {
 }
 
 const PROBE_TAG = 'CWLOG\\d+';
-const OUR_LINE = new RegExp(`^\\d+/\\d+ \\d\\d:\\d\\d:\\d\\d\\.\\d{3}  (${TAG}|${PROBE_TAG}) `);
+const OUR_LINE = new RegExp(`${STAMP}(${TAG}|${PROBE_TAG}) `);
 const CLEAN_MIN_IDLE_MS = 60000;
 
-function stripOurLines(file) {
+const STRIP_CHUNK_BYTES = 1 << 20;
+
+function stripOurLines(file, chunkBytes = STRIP_CHUNK_BYTES) {
   const fd = fs.openSync(file, 'r+');
   try {
     const before = fs.fstatSync(fd).size;
-    const buf = Buffer.alloc(before);
-    fs.readSync(fd, buf, 0, before, 0);
-    const lines = buf.toString('latin1').split('\n');
-    const kept = lines.filter(line => !OUR_LINE.test(line));
-    if (kept.length === lines.length) return { before, after: before, removed: 0 };
-    const out = Buffer.from(kept.join('\n'), 'latin1');
-    fs.writeSync(fd, out, 0, out.length, 0);
-    fs.ftruncateSync(fd, out.length);
-    return { before, after: out.length, removed: lines.length - kept.length };
+    const chunk = Buffer.alloc(chunkBytes);
+    let readAt = 0;
+    let writeAt = 0;
+    let removed = 0;
+    let carry = '';
+    const keep = (text) => {
+      if (removed > 0 && text) fs.writeSync(fd, Buffer.from(text, 'latin1'), 0, text.length, writeAt);
+      writeAt += text.length;
+    };
+    while (readAt < before) {
+      const got = fs.readSync(fd, chunk, 0, Math.min(chunkBytes, before - readAt), readAt);
+      if (got <= 0) break;
+      readAt += got;
+      const text = carry + chunk.toString('latin1', 0, got);
+      const cut = text.lastIndexOf('\n');
+      carry = cut < 0 ? text : text.slice(cut + 1);
+      if (cut < 0) continue;
+      const lines = text.slice(0, cut).split('\n');
+      const kept = lines.filter(line => !OUR_LINE.test(line));
+      removed += lines.length - kept.length;
+      keep(kept.map(line => line + '\n').join(''));
+    }
+    if (OUR_LINE.test(carry)) removed++;
+    else keep(carry);
+    if (removed > 0) fs.ftruncateSync(fd, writeAt);
+    return { before, after: removed > 0 ? writeAt : before, removed };
   } finally {
     fs.closeSync(fd);
   }
@@ -99,7 +119,7 @@ function cleanWhenClosed(file, folder, opts = {}) {
   if (now - st.mtimeMs < CLEAN_MIN_IDLE_MS) return { cleaned: false, why: 'written less than a minute ago' };
   const running = clientRunning(folder, opts);
   if (running !== false) return { cleaned: false, why: running === null ? 'cannot tell whether the game is running' : 'the game is running' };
-  return Object.assign({ cleaned: true }, stripOurLines(file));
+  return Object.assign({ cleaned: true }, stripOurLines(file, opts.chunkBytes));
 }
 
 function chatLogFile(cfg) {

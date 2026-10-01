@@ -1635,6 +1635,11 @@ function startChatLogWatch() {
   if (!CHAT_LOG_FILE) { log('chat log transport: no addonDir in config.json, so no Logs folder to watch'); return; }
   chatLogWatch = CL.watchChatLog(CHAT_LOG_FILE, handleLogFrame, { log, pollMs: CHAT_LOG.pollMs, onWrite: noteChatLogWrite });
   log(`chat log transport: watching ${CHAT_LOG_FILE} (lines of ${CHAT_LOG.line}, filler ${chatLogSlot().filler} bytes${CHAT_LOG.show ? ', lines shown in chat' : ''}); screenshots stay as the retry path`);
+  if (!CHAT_LOG.clean) return;
+  if (CL.clientRunning(CL.clientFolder(cfg)) === null) {
+    log(`chat log transport: WARNING, the bridge cannot tell on ${process.platform} whether the game is running, so it never removes its lines from ${path.basename(CHAT_LOG_FILE)}: the file grows by about ${Math.round(chatLogSlot().filler / 1000)} KB per message. The transport is measured on macOS only.`);
+    return;
+  }
   cleanChatLog('startup');
   const cleaner = setInterval(() => cleanChatLog('periodic'), SWEEP_MS);
   if (cleaner.unref) cleaner.unref();
