@@ -666,23 +666,19 @@ test('a newer urgent event keeps its own retry when an older urgent shot fails',
   assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'true', 'the death still has its one urgent retry');
 });
 
-test('a player message does not wait behind a telemetry-only shot the client is writing', () => {
+test('a message waits behind a fired telemetry-only shot, then is shot at once after its own failure', () => {
   const vm = ready();
-  for (let i = 0; i < 2; i++) vm.run('local f = ClaudeWoWStrip; if f.shown and f.scripts.OnUpdate then f.scripts.OnUpdate(f, 0.016) end');
+  const frames = () => { for (let i = 0; i < 2; i++) vm.run('local f = ClaudeWoWStrip; if f.shown and f.scripts.OnUpdate then f.scripts.OnUpdate(f, 0.016) end'); };
+  frames();
   const shots = vm.num('STUB.screenshots');
-  vm.run('ClaudeWoW.Send("right now")');
-  assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'true');
+  vm.run('ClaudeWoW.Send("queued behind")');
+  frames();
+  assert.equal(vm.num('STUB.screenshots'), shots, 'no second screenshot while the first is being written');
+  vm.run('STUB.FireEvent("SCREENSHOT_SUCCEEDED")');
+  vm.run('STUB.FireEvent("SCREENSHOT_FAILED")');
+  assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'true', 'the message is up again at once after its failure');
   const frame = decodeStrip(vm);
-  assert.ok(P.jobsFromStrip(frame.id, frame.text).some(j => j.text === 'right now'), 'the message is drawn at once');
-  vm.run('STUB.FireEvent("SCREENSHOT_SUCCEEDED")');
-  for (let i = 0; i < 2; i++) vm.run('local f = ClaudeWoWStrip; if f.shown and f.scripts.OnUpdate then f.scripts.OnUpdate(f, 0.016) end');
-  assert.equal(vm.num('STUB.screenshots'), shots + 1, 'the message got its own screenshot');
-  vm.run('STUB.FireEvent("SCREENSHOT_SUCCEEDED")');
-  const chat = vm.evaluate('ClaudeWoWDB.chats[1].id');
-  const id = vm.num('ClaudeWoWDB.chats[1].pendingId');
-  nextSlot(vm, slotBody(GS, `, replies = { { chat = "${chat}", id = ${id}, status = "done", text = "ok" } }`));
-  tick(vm, 6);
-  tick(vm, 125);
-  const [again] = gsJobs(shoot(vm));
-  assert.ok(again && sectionsOf(again).sections.money, 'the telemetry record that gave way is sent again');
+  assert.ok(P.jobsFromStrip(frame.id, frame.text).some(j => j.text === 'queued behind'));
+  frames();
+  assert.equal(vm.num('STUB.screenshots'), shots + 1, 'and shot');
 });

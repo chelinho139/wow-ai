@@ -267,6 +267,7 @@ function T.Sections()
 end
 
 local function Print(msg)
+	if ClaudeWoW and type(ClaudeWoW.Print) == "function" then return ClaudeWoW.Print(msg) end
 	print("|cff66ccff[Claude WoW]|r " .. msg)
 end
 

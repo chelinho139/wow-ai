@@ -136,7 +136,11 @@ test('a frame of [message, gs rider] from the real addon and a frame of [gs, mes
     const nowSec = Math.floor(Date.now() / 1000);
     const gsSlots = new Set(Array.from({ length: 120 }, (_, k) => slotOf(nowSec - 10 + k)));
     let messageId = h.client.lastSeq() + 1;
-    while (gsSlots.has(slotOf(messageId)) || ackBefore.includes(slotOf(messageId)) || sigBefore.includes(slotOf(messageId))) messageId += 1;
+    const firstTry = messageId;
+    while (gsSlots.has(slotOf(messageId)) || ackBefore.includes(slotOf(messageId)) || sigBefore.includes(slotOf(messageId))) {
+      messageId += 1;
+      assert.ok(messageId - firstTry < SLOTS, 'a slot clear of the gs seqs and of every spent signal exists');
+    }
     h.client.runLua(`ClaudeWoWDB.lastSeq = ${messageId - 1}`);
     h.client.runLua('STUB.money = STUB.money + 77');
     const mark = h.bridge.output.length;
@@ -159,6 +163,7 @@ test('a frame of [message, gs rider] from the real addon and a frame of [gs, mes
     assert.deepEqual(newSigs, [slotA], 'only the message spent a sig file');
     assert.equal(ridden.id, messageId);
     assert.notEqual(slotOf(gsSeq), slotA, 'the message id was chosen so the gs seq has a slot of its own, which stays unspent');
+    assert.ok(!ackBefore.includes(slotOf(gsSeq)) && !sigBefore.includes(slotOf(gsSeq)), 'the gs seq slot was armed before, so staying unspent means something');
 
     const ackMid = spentSlots(h.sb, 'ack');
     const sigMid = spentSlots(h.sb, 'sig');

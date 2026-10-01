@@ -719,7 +719,7 @@ end
 -- nil (no event within SHOT_TIMEOUT: the file may or may not exist).
 local function ScreenshotDone(ok)
 	local shot = run.shot
-	if not shot or not shot.fired then return end
+	if not shot then return end
 	run.shot = nil
 	HideStrip()
 	Tm.Settle(ok == true and "Delivered" or "Lost", shot.telemetry)
@@ -874,9 +874,7 @@ RefreshStrip = function()
 	if run.shot and run.shot.fired then
 		-- The client is writing a shot of the previous strip; ScreenshotDone takes
 		-- another for the records still unshot.
-		if not run.shot.solo then return end
-		Tm.Settle("Lost", run.shot.telemetry)
-		run.shot = nil
+		return
 	end
 	local retry = false
 	for _, rec in ipairs(included) do
