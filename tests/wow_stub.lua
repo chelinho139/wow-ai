@@ -148,6 +148,8 @@ function Methods.EnableMouse(self, v) self.mouseEnabled = v and true or false en
 function Methods.StartMoving(self) self.moving = true end
 function Methods.StopMovingOrSizing(self) self.moving = nil end
 function Methods.GetVerticalScrollRange(self) return 0 end
+function Methods.GetVerticalScroll(self) return self.vscroll or 0 end
+function Methods.SetVerticalScroll(self, v) self.vscroll = v end
 function Methods.CreateTexture(self, name, layer)
 	local t = NewObject("Texture", name, self)
 	table.insert(self.textures, t)

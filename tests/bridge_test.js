@@ -528,3 +528,18 @@ test('titles: generateTitle runs the command and cleans its output, and gives up
   assert.equal(viaStdin, 'Got --version', 'game text goes on stdin, never into the arguments');
   assert.deepEqual(T.titleChildren(), [], 'a finished title run is not tracked');
 });
+
+test('the ask plugin speaks as a player: one lowercase line, no TL;DR block; other plugins keep the summary rule', () => {
+  const ask = require('../bridge/plugins/ask');
+  const code = require('../bridge/plugins/claude-code');
+  const ctx = 'Game: World of Warcraft Classic\nCharacter: Testchar, level 5 Undead Warlock';
+  const player = P.systemPrompt(ctx, '', { tools: ask.tools, surfaces: ask.surfaces, voice: ask.voice });
+  assert.equal(ask.voice, 'player');
+  assert.match(player, /all lowercase/);
+  assert.match(player, /no punctuation at all/);
+  assert.ok(!player.includes('starts with "TL;DR:"'), 'no closing summary is asked for');
+  assert.match(player, /wowmacro/, 'macros keep their format');
+  const coding = P.systemPrompt(ctx, '', { tools: code.tools, surfaces: code.surfaces, voice: code.voice });
+  assert.ok(coding.includes('starts with "TL;DR:"'), 'a coding chat still ends with the summary block');
+  assert.ok(!coding.includes('all lowercase'));
+});
