@@ -1,0 +1,1522 @@
+{
+  "context": "Game: World of Warcraft: Forever (client 1.60.1.70124, interface 16001)\nCharacter: Bone on Classic Beta PvP 2, level 20 Orc Rogue (Horde)\nLocation: Undercity - Canals\nPosition: 59.3, 17.4 (map 1458)\nMoney: 21s 29c; XP: 91/23200\nProfessions: Leatherworking 107/150, Skinning 187/225, Cooking 11/75, First Aid 97/150, Fishing 4/75\nQuest log (id, * = ready to turn in): 6563,235*,5728,5761,896,863,852,882,899,1069,1060*,4921,92706,97003,878,1483*,868,97250,264*,1130*,1489*,1491,959,97904,2479*",
+  "budget": 4.9,
+  "spent": 4.515663600000001,
+  "stopped": "",
+  "results": [
+    {
+      "prompt": "where-trainer",
+      "kind": "where-is",
+      "text": "where is my class trainer in this city?",
+      "model": "opus[1m]",
+      "modelsUsed": [
+        "claude-opus-5-5[1m]"
+      ],
+      "costUsd": 0.28573,
+      "bridgeCostUsd": 0.28573,
+      "bridgeUnknown": [],
+      "wallMs": 15807,
+      "apiMs": 7848,
+      "firstTextMs": 14013,
+      "turns": 1,
+      "tools": [],
+      "isError": false,
+      "subtype": "success",
+      "exitCode": 0,
+      "answerChars": 662,
+      "answer": "Your rogue trainers are in the Rogues' Quarter, in the southeast corner of the Undercity. Carolyn Ward, Miles Dexter and Josef Gregorian stand there, at about 83.7, 70.0.\n\nFrom the canals, go east through the inner ring and take the southeast exit. These are Classic coordinates, so the spot can be a little off in Forever. I put a marker on your map.\n\n```wowmap\n{\"op\":\"set\",\"layer\":\"trainer\",\"title\":\"Rogue Trainers\",\"points\":[{\"m\":1458,\"x\":83.7,\"y\":70.0,\"label\":\"Rogues' Quarter - Rogue Trainers\",\"kind\":\"trainer\"}]}\n```\n\nTL;DR:\nRogue trainers are in the Rogues' Quarter, southeast Undercity, at about 83.7, 70.0 (Classic coordinates). I marked it on your map.",
+      "modelUsage": {
+        "claude-opus-5-5[1m]": {
+          "inputTokens": 2,
+          "outputTokens": 711,
+          "cacheReadInputTokens": 10350,
+          "cacheCreationInputTokens": 33679,
+          "webSearchRequests": 0,
+          "costUSD": 0.28573,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "thinkingTokens": 418,
+          "canonicalModel": "claude-opus-5-5",
+          "provider": "firstParty",
+          "costBasis": "list"
+        }
+      },
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 33679,
+        "cache_read_input_tokens": 10350,
+        "output_tokens": 711,
+        "output_tokens_details": {
+          "thinking_tokens": 418
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 33679,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 711,
+            "cache_read_input_tokens": 10350,
+            "cache_creation_input_tokens": 33679,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 33679
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard",
+        "fallback_credit": null
+      },
+      "stderr": ""
+    },
+    {
+      "prompt": "where-trainer",
+      "kind": "where-is",
+      "text": "where is my class trainer in this city?",
+      "model": "claude-sonnet-5-5",
+      "modelsUsed": [
+        "claude-sonnet-5-5"
+      ],
+      "costUsd": 0.141966,
+      "bridgeCostUsd": 0.141966,
+      "bridgeUnknown": [],
+      "wallMs": 17737,
+      "apiMs": 8240,
+      "firstTextMs": 16589,
+      "turns": 1,
+      "tools": [],
+      "isError": false,
+      "subtype": "success",
+      "exitCode": 0,
+      "answerChars": 558,
+      "answer": "Your rogue trainer is Whisper Gloomshade in the Rogues' Quarter, on the east side of Undercity, around 72, 32. That's from memory, not checked against this client, so treat the spot as approximate. I marked it on your map.\n\n```wowmap\n{\"op\":\"set\",\"layer\":\"trainer\",\"title\":\"Rogue trainer\",\"ordered\":false,\"loop\":false,\"points\":[{\"m\":1458,\"x\":72,\"y\":32,\"label\":\"Whisper Gloomshade (Rogue trainer)\",\"kind\":\"trainer\"}]}\n```\n\nTL;DR: Rogue trainer Whisper Gloomshade is in the Rogues' Quarter, east side, about 72, 32 (from memory, unverified). Marked on your map.",
+      "modelUsage": {
+        "claude-sonnet-5-5": {
+          "inputTokens": 2,
+          "outputTokens": 834,
+          "cacheReadInputTokens": 10350,
+          "cacheCreationInputTokens": 32888,
+          "webSearchRequests": 0,
+          "costUSD": 0.141966,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "thinkingTokens": 586,
+          "canonicalModel": "claude-sonnet-5-5",
+          "provider": "firstParty",
+          "costBasis": "list"
+        }
+      },
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 32888,
+        "cache_read_input_tokens": 10350,
+        "output_tokens": 834,
+        "output_tokens_details": {
+          "thinking_tokens": 586
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 32888,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 834,
+            "cache_read_input_tokens": 10350,
+            "cache_creation_input_tokens": 32888,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 32888
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard",
+        "fallback_credit": null
+      },
+      "stderr": ""
+    },
+    {
+      "prompt": "where-skinning",
+      "kind": "where-is",
+      "text": "my skinning is capped at 225. where do I train the next rank?",
+      "model": "claude-sonnet-5-5",
+      "modelsUsed": [
+        "claude-sonnet-5-5"
+      ],
+      "costUsd": 0.139828,
+      "bridgeCostUsd": 0.139828,
+      "bridgeUnknown": [],
+      "wallMs": 8096,
+      "apiMs": 4372,
+      "firstTextMs": 7243,
+      "turns": 1,
+      "tools": [],
+      "isError": false,
+      "subtype": "success",
+      "exitCode": 0,
+      "answerChars": 282,
+      "answer": "Your skinning is capped at 225 because the next rank, Artisan, requires character level 35. You are level 20, so no trainer can teach it yet.\n\nTL;DR: Artisan Skinning (225-300) needs level 35. You are level 20, so you cannot train it until then. Check the trainer when you reach 35.",
+      "modelUsage": {
+        "claude-sonnet-5-5": {
+          "inputTokens": 2,
+          "outputTokens": 439,
+          "cacheReadInputTokens": 10350,
+          "cacheCreationInputTokens": 33341,
+          "webSearchRequests": 0,
+          "costUSD": 0.139828,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "thinkingTokens": 334,
+          "canonicalModel": "claude-sonnet-5-5",
+          "provider": "firstParty",
+          "costBasis": "list"
+        }
+      },
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 33341,
+        "cache_read_input_tokens": 10350,
+        "output_tokens": 439,
+        "output_tokens_details": {
+          "thinking_tokens": 334
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 33341,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 439,
+            "cache_read_input_tokens": 10350,
+            "cache_creation_input_tokens": 33341,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 33341
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard",
+        "fallback_credit": null
+      },
+      "stderr": ""
+    },
+    {
+      "prompt": "where-skinning",
+      "kind": "where-is",
+      "text": "my skinning is capped at 225. where do I train the next rank?",
+      "model": "opus[1m]",
+      "modelsUsed": [
+        "claude-opus-5-5[1m]"
+      ],
+      "costUsd": 0.288818,
+      "bridgeCostUsd": 0.288818,
+      "bridgeUnknown": [],
+      "wallMs": 13711,
+      "apiMs": 8596,
+      "firstTextMs": 13007,
+      "turns": 1,
+      "tools": [],
+      "isError": false,
+      "subtype": "success",
+      "exitCode": 0,
+      "answerChars": 450,
+      "answer": "You cannot train it yet. Artisan Skinning (225-300) needs character level 35, and you are level 20.\n\nAt 35, train it from a city skinning trainer. In Classic, Killian Hagey teaches it in the Undercity Rogues' Quarter, and Thuwd teaches it in Orgrimmar. WoW Forever may differ from Classic, so check with the trainer.\n\nTL;DR:\nArtisan Skinning needs level 35 (you are 20). At 35, try Killian Hagey in UC or Thuwd in Org (Classic data, may differ here).",
+      "modelUsage": {
+        "claude-opus-5-5[1m]": {
+          "inputTokens": 2,
+          "outputTokens": 685,
+          "cacheReadInputTokens": 10350,
+          "cacheCreationInputTokens": 34130,
+          "webSearchRequests": 0,
+          "costUSD": 0.288818,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "thinkingTokens": 494,
+          "canonicalModel": "claude-opus-5-5",
+          "provider": "firstParty",
+          "costBasis": "list"
+        }
+      },
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 34130,
+        "cache_read_input_tokens": 10350,
+        "output_tokens": 685,
+        "output_tokens_details": {
+          "thinking_tokens": 494
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 34130,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 685,
+            "cache_read_input_tokens": 10350,
+            "cache_creation_input_tokens": 34130,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 34130
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard",
+        "fallback_credit": null
+      },
+      "stderr": ""
+    },
+    {
+      "prompt": "where-fishing",
+      "kind": "where-is",
+      "text": "where can I buy a fishing pole near here?",
+      "model": "opus[1m]",
+      "modelsUsed": [
+        "claude-opus-5-5[1m]",
+        "claude-haiku-4-5-20251001"
+      ],
+      "costUsd": 0.34962400000000005,
+      "bridgeCostUsd": 0.339624,
+      "bridgeUnknown": [],
+      "wallMs": 17720,
+      "apiMs": 14317,
+      "firstTextMs": 17076,
+      "turns": 3,
+      "tools": [
+        "ToolSearch",
+        "WebSearch"
+      ],
+      "isError": false,
+      "subtype": "success",
+      "exitCode": 0,
+      "answerChars": 624,
+      "answer": "Lizbeth Cromwell, the Fishing Supplies vendor, sells the Fishing Pole. She stands near the fishing trainer Armand Cromwell, at about 80.6, 31.0 in the canal ring on the east side, by the Magic Quarter. The coordinates are from a classic database, so they may be a little off in Forever. I marked the spot on your map.\n\n```wowmap\n{\"op\":\"set\",\"layer\":\"fishing\",\"title\":\"Fishing Pole vendor\",\"points\":[{\"m\":1458,\"x\":80.6,\"y\":31.0,\"label\":\"Lizbeth Cromwell - Fishing Supplies\",\"kind\":\"vendor\"}]}\n```\n\nTL;DR:\nLizbeth Cromwell (Fishing Supplies) sells poles, near Armand Cromwell at about 80.6, 31.0 Undercity. Marked on your map.",
+      "modelUsage": {
+        "claude-opus-5-5[1m]": {
+          "inputTokens": 6,
+          "outputTokens": 936,
+          "cacheReadInputTokens": 100220,
+          "cacheCreationInputTokens": 35994,
+          "webSearchRequests": 0,
+          "costUSD": 0.32674000000000003,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "thinkingTokens": 466,
+          "canonicalModel": "claude-opus-5-5",
+          "provider": "firstParty",
+          "costBasis": "list"
+        },
+        "claude-haiku-4-5-20251001": {
+          "inputTokens": 11529,
+          "outputTokens": 271,
+          "cacheReadInputTokens": 0,
+          "cacheCreationInputTokens": 0,
+          "webSearchRequests": 1,
+          "costUSD": 0.022884,
+          "contextWindow": 200000,
+          "maxOutputTokens": 32000,
+          "thinkingTokens": 0,
+          "canonicalModel": "claude-haiku-4-5",
+          "provider": "firstParty",
+          "costBasis": "list"
+        }
+      },
+      "usage": {
+        "input_tokens": 6,
+        "cache_creation_input_tokens": 35994,
+        "cache_read_input_tokens": 100220,
+        "output_tokens": 936,
+        "output_tokens_details": {
+          "thinking_tokens": 466
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 35994,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 431,
+            "cache_read_input_tokens": 45396,
+            "cache_creation_input_tokens": 948,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 948
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard",
+        "fallback_credit": null
+      },
+      "stderr": ""
+    },
+    {
+      "prompt": "where-fishing",
+      "kind": "where-is",
+      "text": "where can I buy a fishing pole near here?",
+      "model": "claude-sonnet-5-5",
+      "modelsUsed": [
+        "claude-sonnet-5-5"
+      ],
+      "costUsd": 0.141762,
+      "bridgeCostUsd": 0.141762,
+      "bridgeUnknown": [],
+      "wallMs": 8965,
+      "apiMs": 6020,
+      "firstTextMs": 8383,
+      "turns": 1,
+      "tools": [],
+      "isError": false,
+      "subtype": "success",
+      "exitCode": 0,
+      "answerChars": 494,
+      "answer": "Armand Cromwell, the Undercity fishing trainer, should sell Fishing Poles. I think they're in the Trade Quarter, but I'm not sure of the exact spot. I can't check coordinates here, so I haven't marked the map.\n\nFailing that, the general goods vendors in the Trade Quarter often stock one. Fishing is 4/75, so you can also learn Apprentice rank from Armand.\n\nTL;DR: Try Armand Cromwell, fishing trainer in the Undercity Trade Quarter (unsure of spot); general goods vendors there are the backup.",
+      "modelUsage": {
+        "claude-sonnet-5-5": {
+          "inputTokens": 2,
+          "outputTokens": 634,
+          "cacheReadInputTokens": 10350,
+          "cacheCreationInputTokens": 33337,
+          "webSearchRequests": 0,
+          "costUSD": 0.141762,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "thinkingTokens": 440,
+          "canonicalModel": "claude-sonnet-5-5",
+          "provider": "firstParty",
+          "costBasis": "list"
+        }
+      },
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 33337,
+        "cache_read_input_tokens": 10350,
+        "output_tokens": 634,
+        "output_tokens_details": {
+          "thinking_tokens": 440
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 33337,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 634,
+            "cache_read_input_tokens": 10350,
+            "cache_creation_input_tokens": 33337,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 33337
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard",
+        "fallback_credit": null
+      },
+      "stderr": ""
+    },
+    {
+      "prompt": "macro-opener",
+      "kind": "macro",
+      "text": "make me a macro that opens with my stun when I am stealthed and uses my normal combo point builder when I am not",
+      "model": "claude-sonnet-5-5",
+      "modelsUsed": [
+        "claude-sonnet-5-5"
+      ],
+      "costUsd": 0.138798,
+      "bridgeCostUsd": 0.138798,
+      "bridgeUnknown": [],
+      "wallMs": 6278,
+      "apiMs": 3125,
+      "firstTextMs": 5654,
+      "turns": 1,
+      "tools": [],
+      "isError": false,
+      "subtype": "success",
+      "exitCode": 0,
+      "answerChars": 391,
+      "answer": "```wowmacro Opener\n#showtooltip\n/cast [stealth] Cheap Shot; Sinister Strike\n```\n\nCheap Shot while stealthed, Sinister Strike otherwise. Use `[stealth,@target]` if you need it, but the plain form works. Make sure Cheap Shot and Sinister Strike are on your bars or known by name.\n\nTL;DR: Macro \"Opener\" casts Cheap Shot when stealthed, otherwise Sinister Strike. Click the button to create it.",
+      "modelUsage": {
+        "claude-sonnet-5-5": {
+          "inputTokens": 2,
+          "outputTokens": 332,
+          "cacheReadInputTokens": 10350,
+          "cacheCreationInputTokens": 33351,
+          "webSearchRequests": 0,
+          "costUSD": 0.138798,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "thinkingTokens": 159,
+          "canonicalModel": "claude-sonnet-5-5",
+          "provider": "firstParty",
+          "costBasis": "list"
+        }
+      },
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 33351,
+        "cache_read_input_tokens": 10350,
+        "output_tokens": 332,
+        "output_tokens_details": {
+          "thinking_tokens": 159
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 33351,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 332,
+            "cache_read_input_tokens": 10350,
+            "cache_creation_input_tokens": 33351,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 33351
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard",
+        "fallback_credit": null
+      },
+      "stderr": ""
+    },
+    {
+      "prompt": "macro-opener",
+      "kind": "macro",
+      "text": "make me a macro that opens with my stun when I am stealthed and uses my normal combo point builder when I am not",
+      "model": "opus[1m]",
+      "modelsUsed": [
+        "claude-opus-5-5[1m]"
+      ],
+      "costUsd": 0.28647,
+      "bridgeCostUsd": 0.28647,
+      "bridgeUnknown": [],
+      "wallMs": 9347,
+      "apiMs": 6512,
+      "firstTextMs": 8778,
+      "turns": 1,
+      "tools": [],
+      "isError": false,
+      "subtype": "success",
+      "exitCode": 0,
+      "answerChars": 473,
+      "answer": "```wowmacro Opener\n#showtooltip\n/cast [stealth] Cheap Shot; Sinister Strike\n```\nIn stealth, the macro casts Cheap Shot. Out of stealth, it casts Sinister Strike.\nIn vanilla, rogues learn Cheap Shot at level 26, and you are 20. Until then, change \"Cheap Shot\" to \"Garrote\" or \"Ambush\". Forever can differ from vanilla, so check your spellbook.\n\nTL;DR:\nMacro \"Opener\": Cheap Shot in stealth, else Sinister Strike. Cheap Shot comes at 26 in vanilla, so use Garrote until then.",
+      "modelUsage": {
+        "claude-opus-5-5[1m]": {
+          "inputTokens": 2,
+          "outputTokens": 562,
+          "cacheReadInputTokens": 10350,
+          "cacheCreationInputTokens": 34144,
+          "webSearchRequests": 0,
+          "costUSD": 0.28647,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "thinkingTokens": 338,
+          "canonicalModel": "claude-opus-5-5",
+          "provider": "firstParty",
+          "costBasis": "list"
+        }
+      },
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 34144,
+        "cache_read_input_tokens": 10350,
+        "output_tokens": 562,
+        "output_tokens_details": {
+          "thinking_tokens": 338
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 34144,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 562,
+            "cache_read_input_tokens": 10350,
+            "cache_creation_input_tokens": 34144,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 34144
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard",
+        "fallback_credit": null
+      },
+      "stderr": ""
+    },
+    {
+      "prompt": "macro-pickpocket",
+      "kind": "macro",
+      "text": "macro: pick pocket my target, then start attacking it",
+      "model": "opus[1m]",
+      "modelsUsed": [
+        "claude-opus-5-5[1m]"
+      ],
+      "costUsd": 0.290626,
+      "bridgeCostUsd": 0.290626,
+      "bridgeUnknown": [],
+      "wallMs": 14109,
+      "apiMs": 10991,
+      "firstTextMs": 13531,
+      "turns": 1,
+      "tools": [],
+      "isError": false,
+      "subtype": "success",
+      "exitCode": 0,
+      "answerChars": 579,
+      "answer": "This picks your target's pocket from stealth, then starts auto attack in the same press. Out of stealth, it only starts the attack.\n\n```wowmacro PickAttack\n#showtooltip Pick Pocket\n/cast [stealth] Pick Pocket\n/startattack\n```\n\nThe auto attack breaks stealth, so you lose your opener (Cheap Shot or Ambush). To keep the opener, delete the /startattack line. Then press the macro once to pick the pocket and use your opener as the second press.\n\nTL;DR:\nMacro PickAttack: picks the pocket from stealth, then auto attacks. The attack breaks stealth, so you lose Cheap Shot or Ambush.",
+      "modelUsage": {
+        "claude-opus-5-5[1m]": {
+          "inputTokens": 2,
+          "outputTokens": 775,
+          "cacheReadInputTokens": 10350,
+          "cacheCreationInputTokens": 34131,
+          "webSearchRequests": 0,
+          "costUSD": 0.290626,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "thinkingTokens": 547,
+          "canonicalModel": "claude-opus-5-5",
+          "provider": "firstParty",
+          "costBasis": "list"
+        }
+      },
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 34131,
+        "cache_read_input_tokens": 10350,
+        "output_tokens": 775,
+        "output_tokens_details": {
+          "thinking_tokens": 547
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 34131,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 775,
+            "cache_read_input_tokens": 10350,
+            "cache_creation_input_tokens": 34131,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 34131
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard",
+        "fallback_credit": null
+      },
+      "stderr": ""
+    },
+    {
+      "prompt": "macro-pickpocket",
+      "kind": "macro",
+      "text": "macro: pick pocket my target, then start attacking it",
+      "model": "claude-sonnet-5-5",
+      "modelsUsed": [
+        "claude-sonnet-5-5"
+      ],
+      "costUsd": 0.13851,
+      "bridgeCostUsd": 0.13851,
+      "bridgeUnknown": [],
+      "wallMs": 7294,
+      "apiMs": 4380,
+      "firstTextMs": 6727,
+      "turns": 1,
+      "tools": [],
+      "isError": false,
+      "subtype": "success",
+      "exitCode": 0,
+      "answerChars": 409,
+      "answer": "```wowmacro PickAttack\n#showtooltip Pick Pocket\n/cast Pick Pocket\n/startattack\n```\n\nIt casts Pick Pocket on your target, then turns on auto-attack in the same press. Pick Pocket only works while you are stealthed, so stealth first and be behind the target. The attack breaks stealth after the pick.\n\nTL;DR: Macro \"PickAttack\" casts Pick Pocket, then /startattack. Stealth first. Click the button to create it.",
+      "modelUsage": {
+        "claude-sonnet-5-5": {
+          "inputTokens": 2,
+          "outputTokens": 306,
+          "cacheReadInputTokens": 10350,
+          "cacheCreationInputTokens": 33344,
+          "webSearchRequests": 0,
+          "costUSD": 0.13851,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "thinkingTokens": 142,
+          "canonicalModel": "claude-sonnet-5-5",
+          "provider": "firstParty",
+          "costBasis": "list"
+        }
+      },
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 33344,
+        "cache_read_input_tokens": 10350,
+        "output_tokens": 306,
+        "output_tokens_details": {
+          "thinking_tokens": 142
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 33344,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 306,
+            "cache_read_input_tokens": 10350,
+            "cache_creation_input_tokens": 33344,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 33344
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard",
+        "fallback_credit": null
+      },
+      "stderr": ""
+    },
+    {
+      "prompt": "route-turnins",
+      "kind": "route",
+      "text": "which quests in my log are ready to turn in, and in what order should I hand them in? mark the route on my map",
+      "model": "claude-sonnet-5-5",
+      "modelsUsed": [
+        "claude-sonnet-5-5",
+        "claude-haiku-4-5-20251001"
+      ],
+      "costUsd": 0.19482860000000002,
+      "bridgeCostUsd": 0.1848286,
+      "bridgeUnknown": [],
+      "wallMs": 17828,
+      "apiMs": 14334,
+      "firstTextMs": 17076,
+      "turns": 3,
+      "tools": [
+        "ToolSearch",
+        "WebSearch"
+      ],
+      "isError": false,
+      "subtype": "success",
+      "exitCode": 0,
+      "answerChars": 596,
+      "answer": "Seven quests in your log are ready to turn in: 235, 264, 1060, 1130, 1483, 1489 and 2479. I can't give you a route or mark the map, because I can't confirm where they hand in. Your log lists only quest IDs, and my search found no turn-in locations for them.\n\nOpen your quest log (L) and look at each ready quest's name. Tell me the names or shift-click them into chat. I'll then order the hand-ins by distance from Undercity and mark them.\n\nTL;DR: Ready to turn in: 235, 264, 1060, 1130, 1483, 1489, 2479. I couldn't look up where they hand in, so no route yet. Shift-click the quest names to me.",
+      "modelUsage": {
+        "claude-sonnet-5-5": {
+          "inputTokens": 6,
+          "outputTokens": 776,
+          "cacheReadInputTokens": 98633,
+          "cacheCreationInputTokens": 35161,
+          "webSearchRequests": 0,
+          "costUSD": 0.16814260000000003,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "thinkingTokens": 346,
+          "canonicalModel": "claude-sonnet-5-5",
+          "provider": "firstParty",
+          "costBasis": "list"
+        },
+        "claude-haiku-4-5-20251001": {
+          "inputTokens": 15651,
+          "outputTokens": 207,
+          "cacheReadInputTokens": 0,
+          "cacheCreationInputTokens": 0,
+          "webSearchRequests": 1,
+          "costUSD": 0.026686,
+          "contextWindow": 200000,
+          "maxOutputTokens": 32000,
+          "thinkingTokens": 0,
+          "canonicalModel": "claude-haiku-4-5",
+          "provider": "firstParty",
+          "costBasis": "list"
+        }
+      },
+      "usage": {
+        "input_tokens": 6,
+        "cache_creation_input_tokens": 35161,
+        "cache_read_input_tokens": 98633,
+        "output_tokens": 776,
+        "output_tokens_details": {
+          "thinking_tokens": 346
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 35161,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 296,
+            "cache_read_input_tokens": 44580,
+            "cache_creation_input_tokens": 931,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 931
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard",
+        "fallback_credit": null
+      },
+      "stderr": ""
+    },
+    {
+      "prompt": "route-turnins",
+      "kind": "route",
+      "text": "which quests in my log are ready to turn in, and in what order should I hand them in? mark the route on my map",
+      "model": "opus[1m]",
+      "modelsUsed": [
+        "claude-opus-5-5[1m]",
+        "claude-haiku-4-5-20251001"
+      ],
+      "costUsd": 0.39140699999999995,
+      "bridgeCostUsd": 0.381407,
+      "bridgeUnknown": [],
+      "wallMs": 38138,
+      "apiMs": 34711,
+      "firstTextMs": 37617,
+      "turns": 3,
+      "tools": [
+        "ToolSearch",
+        "WebSearch"
+      ],
+      "isError": false,
+      "subtype": "success",
+      "exitCode": 0,
+      "answerChars": 1289,
+      "answer": "I could not check the quest database, so this is from memory. These are the 7 quests ready to hand in: 235, 1060, 1483, 264, 1130, 1489, 2479. I am sure of where 4 of them go:\n\n1. 2479 Hinott's Assistance: Serge Hinott, Tarren Mill, Hillsbrad 61.6, 19.2. It is close, so do it first.\n2. Take the Tirisfal zeppelin to Orgrimmar, then fly to the Crossroads.\n3. 1060 Letter to Jin'Zil: Malaka'jin, Stonetalon 74.5, 97.9.\n4. 1483 Ziz Fizziks: Windshear Crag, Stonetalon 59.0, 67.4.\n5. 1489 Hamuul Runetotem: Elder Rise, Thunder Bluff 78.6, 28.6.\n\nI don't know where 235, 264 and 1130 end. 1130 (Melor Sends Word) is most likely in Thunder Bluff. Tell me the names of the other two from your log and I will add them.\n\nI drew a 4-stop route named \"Turn-ins\".\n\n```wowmap\n{\"op\":\"set\",\"layer\":\"turnins\",\"title\":\"Turn-ins\",\"ordered\":true,\"loop\":false,\"points\":[{\"m\":1424,\"x\":61.6,\"y\":19.2,\"label\":\"Hinott's Assistance - Serge Hinott\",\"kind\":\"turnin\"},{\"m\":1442,\"x\":74.5,\"y\":97.9,\"label\":\"Letter to Jin'Zil\",\"kind\":\"turnin\"},{\"m\":1442,\"x\":59.0,\"y\":67.4,\"label\":\"Ziz Fizziks\",\"kind\":\"turnin\"},{\"m\":1456,\"x\":78.6,\"y\":28.6,\"label\":\"Hamuul Runetotem\",\"kind\":\"turnin\"}]}\n```\n\nTL;DR:\n7 ready. Route on map: Tarren Mill, Jin'Zil, Ziz Fizziks, Hamuul (Thunder Bluff). Send me the names of quests 235 and 264.",
+      "modelUsage": {
+        "claude-opus-5-5[1m]": {
+          "inputTokens": 6,
+          "outputTokens": 2976,
+          "cacheReadInputTokens": 100445,
+          "cacheCreationInputTokens": 36219,
+          "webSearchRequests": 0,
+          "costUSD": 0.36938499999999996,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "thinkingTokens": 2106,
+          "canonicalModel": "claude-opus-5-5",
+          "provider": "firstParty",
+          "costBasis": "list"
+        },
+        "claude-haiku-4-5-20251001": {
+          "inputTokens": 10927,
+          "outputTokens": 219,
+          "cacheReadInputTokens": 0,
+          "cacheCreationInputTokens": 0,
+          "webSearchRequests": 1,
+          "costUSD": 0.022022,
+          "contextWindow": 200000,
+          "maxOutputTokens": 32000,
+          "thinkingTokens": 0,
+          "canonicalModel": "claude-haiku-4-5",
+          "provider": "firstParty",
+          "costBasis": "list"
+        }
+      },
+      "usage": {
+        "input_tokens": 6,
+        "cache_creation_input_tokens": 36219,
+        "cache_read_input_tokens": 100445,
+        "output_tokens": 2976,
+        "output_tokens_details": {
+          "thinking_tokens": 2106
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 36219,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 2278,
+            "cache_read_input_tokens": 45605,
+            "cache_creation_input_tokens": 964,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 964
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard",
+        "fallback_credit": null
+      },
+      "stderr": ""
+    },
+    {
+      "prompt": "route-next-zone",
+      "kind": "route",
+      "text": "I am level 20. where should I go to level next, and why?",
+      "model": "opus[1m]",
+      "modelsUsed": [
+        "claude-opus-5-5[1m]"
+      ],
+      "costUsd": 0.29577,
+      "bridgeCostUsd": 0.29577,
+      "bridgeUnknown": [],
+      "wallMs": 16567,
+      "apiMs": 13328,
+      "firstTextMs": 15978,
+      "turns": 1,
+      "tools": [],
+      "isError": false,
+      "subtype": "success",
+      "exitCode": 0,
+      "answerChars": 704,
+      "answer": "Go to Hillsbrad Foothills now. It is a level 20–30 zone, and you can walk there from Undercity through Silverpine.\n\n- You have a quest ready to turn in there: 2479 (Hinott's Assistance), to Serge Hinott in Tarren Mill.\n- Tarren Mill has a flight path and a lot of quests for your level.\n- After Hillsbrad, take the zeppelin back to Kalimdor. You have several finished quests to hand in: 1060, 1483 and 1130 in Stonetalon, and 1489 and 264 in the Barrens. That is free XP.\n\nThese quest locations come from the original game. Forever can differ, so check them in game.\n\nTL;DR:\nGo to Tarren Mill in Hillsbrad (20–30) and turn in Hinott's Assistance, then hand in your finished Stonetalon and Barrens quests.",
+      "modelUsage": {
+        "claude-opus-5-5[1m]": {
+          "inputTokens": 2,
+          "outputTokens": 1033,
+          "cacheReadInputTokens": 10350,
+          "cacheCreationInputTokens": 34129,
+          "webSearchRequests": 0,
+          "costUSD": 0.29577,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "thinkingTokens": 740,
+          "canonicalModel": "claude-opus-5-5",
+          "provider": "firstParty",
+          "costBasis": "list"
+        }
+      },
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 34129,
+        "cache_read_input_tokens": 10350,
+        "output_tokens": 1033,
+        "output_tokens_details": {
+          "thinking_tokens": 740
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 34129,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 1033,
+            "cache_read_input_tokens": 10350,
+            "cache_creation_input_tokens": 34129,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 34129
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard",
+        "fallback_credit": null
+      },
+      "stderr": ""
+    },
+    {
+      "prompt": "route-next-zone",
+      "kind": "route",
+      "text": "I am level 20. where should I go to level next, and why?",
+      "model": "claude-sonnet-5-5",
+      "modelsUsed": [
+        "claude-sonnet-5-5"
+      ],
+      "costUsd": 0.142304,
+      "bridgeCostUsd": 0.142304,
+      "bridgeUnknown": [],
+      "wallMs": 10291,
+      "apiMs": 6882,
+      "firstTextMs": 9587,
+      "turns": 1,
+      "tools": [],
+      "isError": false,
+      "subtype": "success",
+      "exitCode": 0,
+      "answerChars": 758,
+      "answer": "Go to Hillsbrad Foothills (Tarren Mill). It is the closest 20-30 zone from Undercity and has plenty of quests for your level.\n\n- Turn in your ready quests (6 are marked *) before you leave, since you are already in Undercity.\n- Take the Undercity flight path to Tarren Mill and pick up the quests there.\n- Hillsbrad is dense with beasts, so your Skinning (187/225) will keep levelling as you go.\n- Ashenvale is the alternative, but it is a long trip from Undercity.\n- Shadowfang Keep is also a good dungeon at 20+ if you can find a group.\n\nI did not check this against Forever-specific quest data, so some NPCs or quests may differ from Classic.\n\nTL;DR: Turn in your ready quests, then fly to Tarren Mill and level in Hillsbrad Foothills from 20 to about 30.",
+      "modelUsage": {
+        "claude-sonnet-5-5": {
+          "inputTokens": 2,
+          "outputTokens": 687,
+          "cacheReadInputTokens": 10350,
+          "cacheCreationInputTokens": 33340,
+          "webSearchRequests": 0,
+          "costUSD": 0.142304,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "thinkingTokens": 389,
+          "canonicalModel": "claude-sonnet-5-5",
+          "provider": "firstParty",
+          "costBasis": "list"
+        }
+      },
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 33340,
+        "cache_read_input_tokens": 10350,
+        "output_tokens": 687,
+        "output_tokens_details": {
+          "thinking_tokens": 389
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 33340,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 687,
+            "cache_read_input_tokens": 10350,
+            "cache_creation_input_tokens": 33340,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 33340
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard",
+        "fallback_credit": null
+      },
+      "stderr": ""
+    },
+    {
+      "prompt": "advice-talents",
+      "kind": "advice",
+      "text": "which talent tree should I use for solo questing at my level?",
+      "model": "claude-sonnet-5-5",
+      "modelsUsed": [
+        "claude-sonnet-5-5"
+      ],
+      "costUsd": 0.137366,
+      "bridgeCostUsd": 0.137366,
+      "bridgeUnknown": [],
+      "wallMs": 5720,
+      "apiMs": 2707,
+      "firstTextMs": 5008,
+      "turns": 1,
+      "tools": [],
+      "isError": false,
+      "subtype": "success",
+      "exitCode": 0,
+      "answerChars": 546,
+      "answer": "Combat (Assassination) or Subtlety are the usual picks. For solo questing at 20, go Combat: Improved Sinister Strike, Dagger/Sword Specialization, Precision and Lightning Reflexes. It gives more damage and survives better than the others.\n\nAssassination is a fine alternative if you want faster kills with Malice and Lethality. Subtlety is weaker for questing until later.\n\nForever's talent layout may differ from Classic, so check the names in your tree.\n\nTL;DR: Combat is the best pick for solo questing at 20; Assassination is the alternative.",
+      "modelUsage": {
+        "claude-sonnet-5-5": {
+          "inputTokens": 2,
+          "outputTokens": 194,
+          "cacheReadInputTokens": 10350,
+          "cacheCreationInputTokens": 33338,
+          "webSearchRequests": 0,
+          "costUSD": 0.137366,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "thinkingTokens": 0,
+          "canonicalModel": "claude-sonnet-5-5",
+          "provider": "firstParty",
+          "costBasis": "list"
+        }
+      },
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 33338,
+        "cache_read_input_tokens": 10350,
+        "output_tokens": 194,
+        "output_tokens_details": {
+          "thinking_tokens": 0
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 33338,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 194,
+            "cache_read_input_tokens": 10350,
+            "cache_creation_input_tokens": 33338,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 33338
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard",
+        "fallback_credit": null
+      },
+      "stderr": ""
+    },
+    {
+      "prompt": "advice-talents",
+      "kind": "advice",
+      "text": "which talent tree should I use for solo questing at my level?",
+      "model": "opus[1m]",
+      "modelsUsed": [
+        "claude-opus-5-5[1m]"
+      ],
+      "costUsd": 0.29467,
+      "bridgeCostUsd": 0.29467,
+      "bridgeUnknown": [],
+      "wallMs": 13598,
+      "apiMs": 10008,
+      "firstTextMs": 12640,
+      "turns": 1,
+      "tools": [],
+      "isError": false,
+      "subtype": "success",
+      "exitCode": 0,
+      "answerChars": 644,
+      "answer": "Use Combat with swords. It is the safest and fastest tree for solo questing in vanilla.\n\n- Points 1–10: Improved Sinister Strike 2/2, Lightning Reflexes 3/5, Precision 5/5\n- Points 11–20: Dual Wield Specialization 5/5, then the rest into Lightning Reflexes or Deflection\n- Level 30: Blade Flurry. After that, Sword Specialization 5/5.\n\nUse a slow sword in your main hand for Sinister Strike, and a fast weapon in your off hand.\n\nThis is the standard vanilla build. Forever can change talents, so check that the tooltips match.\n\nTL;DR:\nCombat Swords: Imp Sinister Strike 2, Precision 5, Dual Wield Spec 5, then Blade Flurry at 30 and Sword Spec.",
+      "modelUsage": {
+        "claude-opus-5-5[1m]": {
+          "inputTokens": 2,
+          "outputTokens": 978,
+          "cacheReadInputTokens": 10350,
+          "cacheCreationInputTokens": 34129,
+          "webSearchRequests": 0,
+          "costUSD": 0.29467,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "thinkingTokens": 696,
+          "canonicalModel": "claude-opus-5-5",
+          "provider": "firstParty",
+          "costBasis": "list"
+        }
+      },
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 34129,
+        "cache_read_input_tokens": 10350,
+        "output_tokens": 978,
+        "output_tokens_details": {
+          "thinking_tokens": 696
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 34129,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 978,
+            "cache_read_input_tokens": 10350,
+            "cache_creation_input_tokens": 34129,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 34129
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard",
+        "fallback_credit": null
+      },
+      "stderr": ""
+    },
+    {
+      "prompt": "advice-money",
+      "kind": "advice",
+      "text": "I only have about 21 silver. what should I spend money on first at this level?",
+      "model": "opus[1m]",
+      "modelsUsed": [
+        "claude-opus-5-5[1m]"
+      ],
+      "costUsd": 0.293598,
+      "bridgeCostUsd": 0.293598,
+      "bridgeUnknown": [],
+      "wallMs": 16901,
+      "apiMs": 11865,
+      "firstTextMs": 16274,
+      "turns": 1,
+      "tools": [],
+      "isError": false,
+      "subtype": "success",
+      "exitCode": 0,
+      "answerChars": 674,
+      "answer": "Spend it on class training at a rogue trainer first. Undercity's Rogues' Quarter has them, and level 20 brings new ranks. Next, buy poisons if your trainer offers them, but WoW: Forever may differ, so check there.\n\n- Before you spend, turn in your 7 ready quests (235, 1060, 1483, 264, 1130, 1489, 2479). The silver from them likely covers training.\n- Skip vendor gear and the auction house. Quest rewards and your own Leatherworking are cheaper.\n- Sell spare leather or hides only after you have the leather you need for Leatherworking.\n\nTL;DR:\nTurn in your 7 ready quests, then buy level 20 rogue training in the Rogues' Quarter; poisons next if offered. Skip vendor gear.",
+      "modelUsage": {
+        "claude-opus-5-5[1m]": {
+          "inputTokens": 2,
+          "outputTokens": 924,
+          "cacheReadInputTokens": 10350,
+          "cacheCreationInputTokens": 34130,
+          "webSearchRequests": 0,
+          "costUSD": 0.293598,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "thinkingTokens": 660,
+          "canonicalModel": "claude-opus-5-5",
+          "provider": "firstParty",
+          "costBasis": "list"
+        }
+      },
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 34130,
+        "cache_read_input_tokens": 10350,
+        "output_tokens": 924,
+        "output_tokens_details": {
+          "thinking_tokens": 660
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 34130,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 924,
+            "cache_read_input_tokens": 10350,
+            "cache_creation_input_tokens": 34130,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 34130
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard",
+        "fallback_credit": null
+      },
+      "stderr": ""
+    },
+    {
+      "prompt": "advice-money",
+      "kind": "advice",
+      "text": "I only have about 21 silver. what should I spend money on first at this level?",
+      "model": "claude-sonnet-5-5",
+      "modelsUsed": [
+        "claude-sonnet-5-5"
+      ],
+      "costUsd": 0.13817400000000002,
+      "bridgeCostUsd": 0.138174,
+      "bridgeUnknown": [],
+      "wallMs": 7980,
+      "apiMs": 4758,
+      "firstTextMs": 7402,
+      "turns": 1,
+      "tools": [],
+      "isError": false,
+      "subtype": "success",
+      "exitCode": 0,
+      "answerChars": 696,
+      "answer": "Train Rogue skills and buy a bigger bag first. Skip gear.\n\n- Rogue trainer: at level 20 you likely have new ranks to learn. Check the Undercity trainer. Use any copper left on the cheap, useful ranks.\n- Poisons: you need a Rogue level 20 quest for Poisons. Skip it for now. It costs too much.\n- Bag: with Leatherworking you can craft your own. Buy Light Leather from the AH or the vendor only if you are short.\n- Keep a few silver for Thistle Tea and flash powder only if you hit those levels.\n\nI did not check this against current game data, so ranks and prices may differ.\n\nTL;DR: Spend first on Rogue trainer skills, then a bigger bag. Keep a little silver in reserve. I did not verify prices.",
+      "modelUsage": {
+        "claude-sonnet-5-5": {
+          "inputTokens": 2,
+          "outputTokens": 268,
+          "cacheReadInputTokens": 10350,
+          "cacheCreationInputTokens": 33355,
+          "webSearchRequests": 0,
+          "costUSD": 0.13817400000000002,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "thinkingTokens": 0,
+          "canonicalModel": "claude-sonnet-5-5",
+          "provider": "firstParty",
+          "costBasis": "list"
+        }
+      },
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 33355,
+        "cache_read_input_tokens": 10350,
+        "output_tokens": 268,
+        "output_tokens_details": {
+          "thinking_tokens": 0
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 33355,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 268,
+            "cache_read_input_tokens": 10350,
+            "cache_creation_input_tokens": 33355,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 33355
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard",
+        "fallback_credit": null
+      },
+      "stderr": ""
+    },
+    {
+      "prompt": "lore-city",
+      "kind": "lore",
+      "text": "who leads this city and what is its story, in short?",
+      "model": "claude-sonnet-5-5",
+      "modelsUsed": [
+        "claude-sonnet-5-5"
+      ],
+      "costUsd": 0.14051999999999998,
+      "bridgeCostUsd": 0.14052,
+      "bridgeUnknown": [],
+      "wallMs": 8630,
+      "apiMs": 5162,
+      "firstTextMs": 8070,
+      "turns": 1,
+      "tools": [],
+      "isError": false,
+      "subtype": "success",
+      "exitCode": 0,
+      "answerChars": 650,
+      "answer": "Sylvanas Windrunner, the Dark Lady, leads Undercity. The dreadlord Varimathras is her lieutenant.\n\nUndercity is a vast complex of tunnels and sewers beneath the ruined Lordaeron capital. After Arthas destroyed Lordaeron, Sylvanas freed the Forsaken, undead who broke from the Lich King's control. She took the ruins as the Forsaken's home and joined them to the Horde. Her enemies are the Scourge and the Alliance, which she blames for her fall. The Apothecary Lab, under Putress, works on plague weapons there.\n\nTL;DR: Sylvanas Windrunner rules Undercity. She led the Forsaken out of the Scourge, took the ruins under Lordaeron and joined the Horde.",
+      "modelUsage": {
+        "claude-sonnet-5-5": {
+          "inputTokens": 2,
+          "outputTokens": 505,
+          "cacheReadInputTokens": 10350,
+          "cacheCreationInputTokens": 33349,
+          "webSearchRequests": 0,
+          "costUSD": 0.14051999999999998,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "thinkingTokens": 239,
+          "canonicalModel": "claude-sonnet-5-5",
+          "provider": "firstParty",
+          "costBasis": "list"
+        }
+      },
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 33349,
+        "cache_read_input_tokens": 10350,
+        "output_tokens": 505,
+        "output_tokens_details": {
+          "thinking_tokens": 239
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 33349,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 505,
+            "cache_read_input_tokens": 10350,
+            "cache_creation_input_tokens": 33349,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 33349
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard",
+        "fallback_credit": null
+      },
+      "stderr": ""
+    },
+    {
+      "prompt": "lore-city",
+      "kind": "lore",
+      "text": "who leads this city and what is its story, in short?",
+      "model": "opus[1m]",
+      "modelsUsed": [
+        "claude-opus-5-5[1m]"
+      ],
+      "costUsd": 0.28489400000000004,
+      "bridgeCostUsd": 0.284894,
+      "bridgeUnknown": [],
+      "wallMs": 8904,
+      "apiMs": 6153,
+      "firstTextMs": 8338,
+      "turns": 1,
+      "tools": [],
+      "isError": false,
+      "subtype": "success",
+      "exitCode": 0,
+      "answerChars": 704,
+      "answer": "Sylvanas Windrunner, the Banshee Queen, rules Undercity. She leads the Forsaken from the Royal Quarter.\n\n- Undercity lies under the ruins of Lordaeron, the old human capital.\n- Prince Arthas killed his father, King Terenas, and the Scourge burned the city.\n- Sylvanas and other undead broke free from the Lich King. They called themselves the Forsaken and took the crypts below the city.\n- They joined the Horde for convenience, not out of loyalty. The dreadlord Varimathras serves Sylvanas, and the Royal Apothecary Society works on a new plague.\n\nTL;DR:\nSylvanas Windrunner rules. Undercity is under ruined Lordaeron, which Arthas destroyed. Her undead broke free of the Lich King and joined the Horde.",
+      "modelUsage": {
+        "claude-opus-5-5[1m]": {
+          "inputTokens": 2,
+          "outputTokens": 488,
+          "cacheReadInputTokens": 10350,
+          "cacheCreationInputTokens": 34132,
+          "webSearchRequests": 0,
+          "costUSD": 0.28489400000000004,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "thinkingTokens": 208,
+          "canonicalModel": "claude-opus-5-5",
+          "provider": "firstParty",
+          "costBasis": "list"
+        }
+      },
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 34132,
+        "cache_read_input_tokens": 10350,
+        "output_tokens": 488,
+        "output_tokens_details": {
+          "thinking_tokens": 208
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 34132,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 488,
+            "cache_read_input_tokens": 10350,
+            "cache_creation_input_tokens": 34132,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 34132
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard",
+        "fallback_credit": null
+      },
+      "stderr": ""
+    }
+  ]
+}
