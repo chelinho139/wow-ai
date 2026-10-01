@@ -397,6 +397,11 @@ const PLAYER_VOICE_FORMAT = [
   'A macro or a map mark keeps the exact format given below and may follow the line.',
 ];
 
+const LINK_HINT = [
+  'Name an item, spell or quest with a token, not with its name: {item:ID}, {spell:ID} or {quest:ID}. The addon turns each token into the real in-game link, with the name and color the client has, and the player can hover or shift-click it. Do not also write the name next to the token. Use an ID only when you are sure of it: on World of Warcraft Classic (Classic Era) use the Classic ID, on Forever check it with the wowdata tools when you have them. A quest token shows only for a quest in the player\'s quest log. NPCs, zones and other things have no token: name them in plain words.',
+  'For a list, put each item on its own line starting with "- "; the addon draws it as a bullet.',
+];
+
 // How the agent draws on the world map (see "Map layers" below and docs/MAP.md).
 // Sent with the game context, since marks only make sense in a game chat.
 const MAP_HINT = [
@@ -442,7 +447,7 @@ function systemPrompt(ctx, primer, opts) {
   const game = !!String(ctx || '').trim();
   const tools = opts && String(opts.tools || '').trim();
   if (tools) lines.push('', tools);
-  if (game) lines.push('', SITUATION_RULE, '', ...WHERE_HINT, '', ...MAP_HINT, '', ...MACRO_HINT);
+  if (game) lines.push('', SITUATION_RULE, '', ...WHERE_HINT, '', ...LINK_HINT, '', ...MAP_HINT, '', ...MACRO_HINT);
   if (game && opts && Array.isArray(opts.surfaces) && opts.surfaces.includes('ui')) lines.push('', ...WIDGET_HINT);
   const ref = game ? String(primer || '').trim() : '';
   if (ref) {

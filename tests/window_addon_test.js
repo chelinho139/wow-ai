@@ -367,31 +367,60 @@ test('on Classic Era, where the quest parchment atlas is missing, the transcript
   assert.equal(vm.num(`${page}.pieces[2].x`), vm.num(`${page}.pieces[1].width`), 'the right piece starts where the left one ends');
 });
 
+test('a reply names items and spells by token: the client turns each into a real link, unknown ones stay plain, and the bubble makes links clickable', () => {
+  const vm = nativeVM();
+  vm.run(`
+    STUB.itemLoads = {}
+    C_Item.GetItemInfo = function(id) if id == 2589 then return "Linen Cloth", "|cffffffff|Hitem:2589::::::::|h[Linen Cloth]|h|r" end end
+    C_Item.RequestLoadItemDataByID = function(id) table.insert(STUB.itemLoads, id) end
+    C_Spell = { GetSpellLink = function(id) if id == 1752 then return "|cff71d5ff|Hspell:1752|h[Sinister Strike]|h|r" end end }
+    local c = ClaudeWoWDB.chats[1]
+    ClaudeWoW.SwitchChat(c.id)
+    c.history = { { role = "assistant", t = 1, text = "farm {item:2589} then use {spell:1752}\\n- spare {item:999999}\\n- fake |cffff0000[Thunderfury]|r" } }
+    ClaudeWoW.Render()
+  `);
+  const body = vm.evaluate('(function() for _, b in ipairs(ClaudeWoW.UI.bubbles) do if b.shown then return b.body:GetText() end end end)()');
+  assert.ok(body.includes('|Hitem:2589::::::::|h[Linen Cloth]|h'), body);
+  assert.ok(body.includes('|Hspell:1752|h[Sinister Strike]|h'), body);
+  assert.ok(body.includes('|cff9d9d9ditem 999999|r'), 'an ID the client does not have shows plainly, with no invented name');
+  assert.equal(vm.evaluate('STUB.itemLoads[1]'), '999999', 'and the client is asked to load it');
+  assert.ok(body.includes('\u2022 spare'), 'a "- " line becomes a bullet');
+  assert.ok(!body.includes('|cffff0000'), 'color codes the agent typed are neutralized');
+  const b = '(function() for _, b in ipairs(ClaudeWoW.UI.bubbles) do if b.shown then return b end end end)()';
+  assert.equal(vm.evaluate(`${b}.scripts.OnHyperlinkClick ~= nil`), 'true', 'the bubble handles link clicks');
+});
+
 test('the chat list orders by last activity: the open empty chat, then chats by their last message, then other empty chats', () => {
   const vm = nativeVM();
   vm.run(`
-    for _, c in ipairs(ClaudeWoWDB.chats) do c.cwd = "" c.history = {} c.created = 100 end
+    for _, c in ipairs(ClaudeWoWDB.chats) do c.cwd = "" c.history = {} c.created = 100 c.opened = nil end
     ClaudeWoW.NewChat("Old talk"); ClaudeWoWDB.chats[#ClaudeWoWDB.chats].history = { { role = "user", t = 500, text = "a" } }; ClaudeWoWDB.chats[#ClaudeWoWDB.chats].created = 50
     ClaudeWoW.NewChat("Fresh talk"); ClaudeWoWDB.chats[#ClaudeWoWDB.chats].history = { { role = "user", t = 900, text = "b" }, { role = "assistant", text = "no time" } }; ClaudeWoWDB.chats[#ClaudeWoWDB.chats].created = 60
     ClaudeWoW.NewChat("Blank later"); ClaudeWoWDB.chats[#ClaudeWoWDB.chats].created = 950
+    for _, c in ipairs(ClaudeWoWDB.chats) do c.opened = nil end
     ClaudeWoW.NewChat("Open blank")
+    ClaudeWoWDB.chats[#ClaudeWoWDB.chats].opened = nil
     ClaudeWoW.Render()
   `);
-  const order = shownRows(vm).split('|');
+  let order = shownRows(vm).split('|');
   assert.deepEqual(order.slice(0, 4), ['Open blank', 'Fresh talk', 'Old talk', 'Blank later']);
+  vm.run('for _, c in ipairs(ClaudeWoWDB.chats) do if c.name == "Old talk" then ClaudeWoW.SwitchChat(c.id) end end');
+  order = shownRows(vm).split('|');
+  assert.equal(order[0], 'Old talk', 'opening a chat makes it the most recently active');
 });
 
-test('general chats sit under Chats at the top, project chats under their project, and the dropdown under the input switches the project', () => {
+test('general chats sit under Chats, project chats under their project, and the dropdown under the input switches the project', () => {
   const vm = nativeVM();
-  vm.run('ClaudeWoW.NewChat("Best rogue race"); ClaudeWoWDB.chats[#ClaudeWoWDB.chats].created = 1')
+  vm.run('ClaudeWoW.NewChat("Best rogue race")');
   vm.run('ClaudeWoW.Render()');
-  assert.equal(shownHeaders(vm).split('|')[0], 'Chats', 'general chats come first, even when a project chat is newer');
+  assert.equal(shownHeaders(vm).split('|')[0], 'Chats', 'the section of the most recently active chat comes first');
   assert.ok(shownHeaders(vm).split('|').includes('every') && shownHeaders(vm).split('|').includes('wow-ai'));
   assert.match(vm.evaluate('ClaudeWoWProjectButton.text:GetText()'), /Project: \|cffffffffNo project/);
   vm.run('ClaudeWoWProjectButton.scripts.OnClick(ClaudeWoWProjectButton)');
   const items = vm.evaluate('(function() local t = {} for _, it in ipairs(STUB.menu.items) do table.insert(t, it.text) end return table.concat(t, "|") end)()');
   assert.match(items, /^Project\|No project\|/);
-  assert.ok(items.includes('wow-ai') && items.includes('Other folder...'));
+  assert.ok(items.includes('wow-ai'));
+  assert.ok(!items.includes('Other folder...'), 'no folder popup from the dropdown: it pushed the window down');
   vm.run('STUB.Pick("wow-ai")');
   assert.equal(vm.evaluate('ClaudeWoWDB.chats[#ClaudeWoWDB.chats].cwd'), '~/wow-ai');
   assert.match(vm.evaluate('ClaudeWoWProjectButton.text:GetText()'), /wow-ai/);
@@ -407,12 +436,11 @@ test('the chat list shows the newest chat first and scrolls to the active chat o
   const firstRow = () => vm.evaluate('(function() local best for _, r in ipairs(ClaudeWoW.UI.questList.rows) do if r.shown and (not best or r.y > best.y) then best = r end end return best and best.chatId end)()');
   assert.equal(firstRow(), vm.evaluate('ClaudeWoWDB.chats[#ClaudeWoWDB.chats].id'), 'the newest chat is the top row');
   assert.equal(scroll(), 0, 'the new chat is already in view at the top');
-  vm.run('ClaudeWoW.SwitchChat(ClaudeWoWDB.chats[1].id)');
-  assert.ok(scroll() > 0, 'the oldest chat, at the bottom, is scrolled into view');
-  vm.run('ClaudeWoW.UI.questList.scroll:SetVerticalScroll(0); ClaudeWoW.Render()');
-  assert.equal(scroll(), 0, 'a render with the same active chat keeps the player\'s scroll');
-  vm.run('ClaudeWoW.UI.questList.scroll:SetVerticalScroll(500); ClaudeWoW.SwitchChat(ClaudeWoWDB.chats[#ClaudeWoWDB.chats].id)');
-  assert.equal(scroll(), 0, 'switching to the newest chat scrolls back to the top');
+  vm.run('ClaudeWoW.UI.questList.scroll:SetVerticalScroll(300); ClaudeWoW.Render()');
+  assert.equal(scroll(), 300, 'a render with the same active chat keeps the player\'s scroll');
+  vm.run('STUB.now = STUB.now + 10; ClaudeWoW.SwitchChat(ClaudeWoWDB.chats[1].id)');
+  assert.equal(firstRow(), vm.evaluate('ClaudeWoWDB.chats[1].id'), 'the chat just opened moves to the top');
+  assert.equal(scroll(), 0, 'and the list scrolls up to it');
 });
 
 test('the window is built from Blizzard frame templates where the client has them: portrait, title bar, close button, parchment and a quest-log chat list', () => {
@@ -473,7 +501,7 @@ test('the black bar shows the chat title across its whole width, with folder, ag
   const vm = nativeVM();
   vm.run('ClaudeWoW.SwitchChat(ClaudeWoWDB.chats[2].id)');
   assert.equal(vm.evaluate('ClaudeWoW.UI.chatTitle:GetText()'), 'Fix the bridge');
-  assert.equal(vm.evaluate('ClaudeWoWFrame.TitleText:GetText()'), 'Claude WoW', 'the window title does not repeat the chat title');
+  assert.equal(vm.evaluate('ClaudeWoWFrame.TitleText:GetText()'), 'Claude', 'the window title is just Claude and does not repeat the chat title');
   assert.equal(vm.num('#STUB.nav.buttons'), 0, 'no folder, agent or plugin crumbs');
   assert.equal(vm.evaluate('STUB.nav.home'), null);
 
