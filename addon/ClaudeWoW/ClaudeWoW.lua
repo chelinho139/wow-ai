@@ -4288,9 +4288,20 @@ function Q.AtlasExists(name)
 	return C_Texture and C_Texture.GetAtlasExists and C_Texture.GetAtlasExists(name) and true or false
 end
 
+Q.CLASSIC_ERA_ART = { parchment = true, gear = true, reply = true }
+
+function Q.IsClassicEra()
+	local toc = tonumber(select(4, Try(GetBuildInfo)))
+	return toc ~= nil and toc >= 11500 and toc < 11600
+end
+
+function Q.ArtAllowed(key)
+	return not Q.IsClassicEra() or Q.CLASSIC_ERA_ART[key] == true
+end
+
 function Q.SetArt(tex, key, useSize)
 	local name = Q.QUEST_ART[key]
-	local ok = name ~= nil and Q.AtlasExists(name) and pcall(tex.SetAtlas, tex, name, useSize)
+	local ok = name ~= nil and Q.ArtAllowed(key) and Q.AtlasExists(name) and pcall(tex.SetAtlas, tex, name, useSize)
 	ui.art = ui.art or {}
 	ui.art[key] = ok and name or false
 	return ok and true or false
