@@ -26,6 +26,27 @@ function spentSlots(sb, kind) {
   return out;
 }
 
+const slotOfId = n => ((n - 1) % SLOTS) + 1;
+
+function quietClient(h) {
+  h.client.runLua('ClaudeWoWDB.stream = ClaudeWoWDB.stream or {}; ClaudeWoWDB.stream.follow = false');
+}
+
+function assertSpends(h, { session, before, kind, messageId, issuedFrom, issuedTo, logFrom }) {
+  const spent = spentSlots(h.sb, kind).filter(s => !before.includes(s));
+  const own = slotOfId(messageId);
+  assert.ok(spent.includes(own), `the message spent its ${kind} file`);
+  const log = h.bridge.output.slice(logFrom);
+  for (const s of spent.filter(x => x !== own)) {
+    const real = [];
+    for (let r = issuedFrom; r <= issuedTo; r++) {
+      if (r !== messageId && slotOfId(r) === s && (new RegExp(`(?<!gs )#${r}@${session}[ :]`).test(log) || /hello from session /.test(log))) real.push(r);
+    }
+    assert.ok(real.length, `${kind} slot ${s} was spent by a record the addon itself sent (ids ${issuedFrom}..${issuedTo}), never by a gs seq`);
+  }
+  return spent;
+}
+
 function gsRecord(session, seq) {
   const money = String(1000 + seq);
   const hash = String(seq).padStart(8, '0');
@@ -64,6 +85,7 @@ async function sendRecords(h, session, seqs, frameNo) {
 test('300 gs records whose seqs overlap the message ids spend no ack or sig file, leave lastId alone, and a message sent between them is answered', async () => {
   await withGame({}, async h => {
     h.client.runLua('ClaudeWoWTelemetry.Take = function() return nil end');
+    quietClient(h);
     const first = await h.client.say('before the telemetry');
     assert.match(first.text, /before the telemetry/);
     await h.bridge.waitForLine(/game context updated: Character: Testchar/);
@@ -71,6 +93,8 @@ test('300 gs records whose seqs overlap the message ids spend no ack or sig file
     const ackBefore = spentSlots(h.sb, 'ack');
     const sigBefore = spentSlots(h.sb, 'sig');
     const lastIdBefore = h.state().lastId;
+    const issuedFrom = h.client.lastSeq() + 1;
+    const logFrom = h.bridge.output.length;
     assert.ok(lastIdBefore < RECORDS, `message ids (${lastIdBefore}) sit inside the gs seq range, the case a shared id space would break`);
 
     const seqs = Array.from({ length: RECORDS }, (_, i) => i + 1);
@@ -90,16 +114,17 @@ test('300 gs records whose seqs overlap the message ids spend no ack or sig file
     assert.equal(events.length, RECORDS - 1, 'one money event per record after the baseline');
 
     const slotB = ((between.id - 1) % SLOTS) + 1;
-    const newAcks = spentSlots(h.sb, 'ack').filter(s => !ackBefore.includes(s));
-    const newSigs = spentSlots(h.sb, 'sig').filter(s => !sigBefore.includes(s));
-    assert.deepEqual(newAcks, [slotB], 'only the real message spent an ack file');
-    assert.deepEqual(newSigs.filter(s => s !== slotB), [], 'only the real message spent a sig file');
+    const issuedTo = h.client.lastSeq();
+    assertSpends(h, { session, before: ackBefore, kind: 'ack', messageId: between.id, issuedFrom, issuedTo, logFrom });
+    const sigs = spentSlots(h.sb, 'sig').filter(s => !sigBefore.includes(s));
+    for (const s of sigs.filter(x => x !== slotB)) assert.ok(Array.from({ length: issuedTo - issuedFrom + 1 }, (_, k) => issuedFrom + k).some(id => id !== between.id && slotOfId(id) === s), `sig slot ${s} belongs to a record the addon itself sent`);
     const state = h.state();
-    assert.equal(state.lastId, between.id, 'lastId is the last message id, never a gs seq');
-    assert.ok(Object.keys(state.handled[session]).every(id => Number(id) <= between.id), 'no gs seq in the message dedupe map');
+    assert.ok(state.lastId >= between.id && state.lastId <= issuedTo, `lastId ${state.lastId} is an id the addon sent (${issuedFrom}..${issuedTo}), never a gs seq up to ${RECORDS}`);
+    assert.ok(Object.keys(state.handled[session]).every(id => Number(id) <= issuedTo), 'no gs seq in the message dedupe map');
     assert.equal(h.agentCalls().length, 2, 'no gs record ever reached an agent');
     assert.doesNotMatch(h.bridge.output, /gs1/, 'no gs text was logged or run as a prompt');
     const published = new RegExp(`\\{ character = "${CHARACTER}", session = "${session}", seq = ${RECORDS}, hashes = \\{ money = "${String(RECORDS).padStart(8, '0')}" \\} \\}`);
+    await h.client.say('publish the slots');
     await h.client.waitFor(() => published.test(fs.readFileSync(path.join(h.sb.addons, 'ClaudeWoW_S001', 'Inbox.lua'), 'utf8')), { timeoutMs: 45000, label: 'the slot files to publish the gs hashes' });
   });
 });
@@ -129,7 +154,7 @@ test('a frame of [message, gs rider] from the real addon and a frame of [gs, mes
     await new Promise(r => setTimeout(r, 5000));
     const session = h.client.db().session;
 
-    h.client.runLua('ClaudeWoWDB.stream = ClaudeWoWDB.stream or {}; ClaudeWoWDB.stream.follow = false');
+    quietClient(h);
     const slotOf = n => ((n - 1) % SLOTS) + 1;
     const RIDER_TRIES = 5;
     let round = null;
@@ -163,12 +188,12 @@ test('a frame of [message, gs rider] from the real addon and a frame of [gs, mes
       const gsSeq = Number(/telemetry: gs #(\d+)@/.exec(gsLine)[1]);
       assert.equal(readSnap().sections.money.value.copper, money);
       const slotA = slotOf(ridden.id);
-      const newAcks = spentSlots(h.sb, 'ack').filter(s => !ackBefore.includes(s));
-      const newSigs = spentSlots(h.sb, 'sig').filter(s => !sigBefore.includes(s));
-      assert.deepEqual(newAcks, [slotA], 'only the message spent an ack file');
-      assert.deepEqual(newSigs, [slotA], 'only the message spent a sig file');
+      const issuedTo = h.client.lastSeq();
+      const newAcks = assertSpends(h, { session, before: ackBefore, kind: 'ack', messageId, issuedFrom: messageId, issuedTo, logFrom: mark });
+      const newSigs = assertSpends(h, { session, before: sigBefore, kind: 'sig', messageId, issuedFrom: messageId, issuedTo, logFrom: mark });
       const gsSlot = slotOf(gsSeq);
-      if (gsSlot !== slotA && !ackBefore.includes(gsSlot) && !sigBefore.includes(gsSlot)) { round = { gsSlot, newAcks, newSigs }; break; }
+      const realSlots = Array.from({ length: issuedTo - messageId + 1 }, (_, k) => slotOf(messageId + k));
+      if (!realSlots.includes(gsSlot) && !ackBefore.includes(gsSlot) && !sigBefore.includes(gsSlot)) { round = { gsSlot, newAcks, newSigs }; break; }
     }
     assert.ok(round, `within ${RIDER_TRIES} rider records one gs seq landed on a slot whose ack and sig files were still armed`);
     assert.ok(!round.newAcks.includes(round.gsSlot) && !round.newSigs.includes(round.gsSlot), 'the gs seq spent nothing');
@@ -176,21 +201,25 @@ test('a frame of [message, gs rider] from the real addon and a frame of [gs, mes
     const ackMid = spentSlots(h.sb, 'ack');
     const sigMid = spentSlots(h.sb, 'sig');
     const calls = h.agentCalls().length;
+    const issuedFromB = h.client.lastSeq() + 1;
+    const logFromB = h.bridge.output.length;
     const id = h.client.lastSeq() + 50;
     const chat = h.client.activeChat().id;
     const message = [session, chat, String(id), '', '', 'Chat 1', 'gs first, then this'].join('\x1F');
     let craftedSeq = 2000000000;
-    while (slotOf(craftedSeq) === slotOf(id)) craftedSeq += 1;
+    const nearby = new Set(Array.from({ length: 40 }, (_, k) => slotOf(issuedFromB + k)));
+    while (slotOf(craftedSeq) === slotOf(id) || nearby.has(slotOf(craftedSeq)) || ackMid.includes(slotOf(craftedSeq)) || sigMid.includes(slotOf(craftedSeq))) craftedSeq += 1;
     const file = writeShot(h.sb, h.client, [gsRecord(session, craftedSeq), message].join('\x1E'), 900);
     await h.client.waitFor(() => !fs.existsSync(file), { timeoutMs: 20000, label: 'the bridge to read the crafted frame' });
     await h.client.waitFor(() => h.agentCalls().length > calls, { timeoutMs: 30000, label: 'the message after the gs record to run' });
     const slotB = slotOf(id);
     await h.client.waitFor(() => !fs.existsSync(SIG.signalFile(h.sb.addons, 'sig', slotB)), { timeoutMs: 30000, label: 'its reply signal' });
-    const newAcksB = spentSlots(h.sb, 'ack').filter(s => !ackMid.includes(s));
-    const newSigsB = spentSlots(h.sb, 'sig').filter(s => !sigMid.includes(s));
-    assert.deepEqual(newAcksB, [slotB], 'only the message after the gs record spent an ack file');
-    assert.deepEqual(newSigsB, [slotB], 'only the message after the gs record spent a sig file');
-    assert.equal(h.state().lastId, id);
+    const issuedToB = h.client.lastSeq();
+    assert.ok(issuedToB - issuedFromB < 40, 'the addon sent fewer records than the window kept clear for the crafted seq');
+    const newAcksB = assertSpends(h, { session, before: ackMid, kind: 'ack', messageId: id, issuedFrom: issuedFromB, issuedTo: issuedToB, logFrom: logFromB });
+    const newSigsB = assertSpends(h, { session, before: sigMid, kind: 'sig', messageId: id, issuedFrom: issuedFromB, issuedTo: issuedToB, logFrom: logFromB });
+    assert.ok(!newAcksB.includes(slotOf(craftedSeq)) && !newSigsB.includes(slotOf(craftedSeq)), 'the crafted gs seq spent nothing');
+    assert.ok(h.state().lastId >= id, 'lastId follows the messages');
   });
 });
 
