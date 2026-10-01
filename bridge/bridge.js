@@ -745,6 +745,15 @@ function gameContext() {
   return (state.context && state.context.text) || '';
 }
 
+function openGameData(contextText) {
+  try {
+    return GD.openStore({ dataDir: HOME.data, clientBuild: GD.clientBuildOf(contextText || '') });
+  } catch (e) {
+    log(`wowdata: cannot open the synced data for reference tokens (${e.message})`);
+    return null;
+  }
+}
+
 const loggedDataChecks = new Set();
 function gameDataServer(tag) {
   let server = null;
@@ -958,6 +967,7 @@ const core = {
   get claudeDir() { return CLAUDE_DIR; },
   runAgent,
   goals: (tool, args) => goalStore.call(tool, args),
+  gameData: () => openGameData((state.context && state.context.text) || ''),
   agentPids: () => [...running.values()].map(r => r.child).concat(T.titleChildren()).filter(Boolean).map(c => c.pid),
 };
 
@@ -965,6 +975,7 @@ const goalStore = GOALS.createGoals({
   dir: HOME.goals,
   context: () => state.context,
   streamOptions: () => core.options('stream'),
+  gameData: openGameData,
   log,
 });
 

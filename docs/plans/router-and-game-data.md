@@ -86,7 +86,8 @@ Data first, router last. Each step must pay off on its own before the next one s
 - [x] One `buildCheck` per answer: `exact`, `family`, `build-mismatch`, `unknown`, `no-data`. The client build comes from the `Game:` line of the situation block.
 - [x] Wiring: Claude `ask` runs only (`runAgent(job, { gameData: true })`), and only when data is synced. No `--strict-mcp-config` (decision 5). `alwaysLoad` is a real stdio config key in Claude Code 2.1.286.
 - [x] Proof on 2026-09-30: a real sync of 1.60.1.70094 (38,704 rows, 0 dropped), the server over stdio, and one headless `claude -p --model haiku --allowedTools mcp__wowdata --mcp-config …` run that called `wow_flights` with no permission denial and returned The Sepulcher (TaxiNodes 10) at 45.56, 42.42 on uiMap 1421.
-- [ ] Next: route reply text through `gamerefs.expand` (R1), add `{npc:ID}` and `{quest:ID}` names when a source exists, and wire the server for the other agents (Codex `mcp add`).
+- [x] Orders and the roast stream card go through `gamerefs.checkText` (R1): tokens expand, unknown IDs refuse the whole text, and the word allowlist runs on the rest.
+- [ ] Next: add `{npc:ID}` and `{quest:ID}` names when a source exists, decide whether chat replies expand tokens, and wire the server for the other agents (Codex `mcp add`) and the live session.
 
 ## 6. Step 4: `wow-data` skill and prompt change
 

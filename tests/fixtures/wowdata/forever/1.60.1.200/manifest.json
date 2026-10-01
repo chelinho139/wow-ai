@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "flavor": "forever",
+  "source": "wago.tools",
+  "product": "wow_cn_beta",
+  "build": "1.60.1.200",
+  "buildFamily": "1.60.1",
+  "fetchedAt": "2026-09-30T12:00:00.000Z",
+  "entities": {
+    "items": { "file": "items.jsonl", "table": "ItemSparse", "rows": 3 },
+    "skilllines": { "file": "skilllines.jsonl", "table": "SkillLine", "rows": 1 },
+    "uimaps": { "file": "uimaps.jsonl", "table": "UiMap", "rows": 2 }
+  }
+}

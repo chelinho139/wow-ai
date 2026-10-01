@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const ST = require('./plugins/stream');
+const GR = require('./gamerefs');
 
 const STORE_VERSION = 1;
 const GOALS_FILE = 'goals.json';
@@ -37,9 +38,6 @@ const PROFESSION_SKILL_IDS = Object.freeze({
 const ORDER_WORDS = Object.freeze(new Set(require('./order-words.json')));
 const ORDER_CHARS_TEXT = "letters A-Z, digits, spaces and , . ' - : ! ? %";
 const ORDER_CHAR_RE = /^[A-Za-z0-9 ,.'\-:!?%]$/;
-const ORDER_WORD_SPLIT_RE = /[^a-z0-9']+/;
-const NUMBER_WORD_RE = /^\d+(?:st|nd|rd|th|x|g|s|c|k)?$/;
-const POSSESSIVE_RE = /'s$/;
 const CONTEXT_STALE_MS = 15 * 60 * 1000;
 const ADDON_CONTEXT_MAX_BYTES = 900;
 
@@ -117,50 +115,17 @@ function knownNames(snap) {
 }
 
 function orderWords(text) {
-  return String(text || '').toLowerCase().split(ORDER_WORD_SPLIT_RE)
-    .map(w => w.replace(/^'+|'+$/g, ''))
-    .filter(Boolean);
-}
-
-function nameWordLists(names) {
-  const usable = (names || []).map(n => String(n || '').normalize('NFKC').trim()).filter(n => n && !refusedChar(n));
-  const lists = usable.map(n => orderWords(n)).filter(words => words.length);
-  return lists.sort((a, b) => b.length - a.length);
-}
-
-function nameAt(words, i, lists) {
-  const plain = w => w.replace(POSSESSIVE_RE, '');
-  return lists.find(list => list.every((w, k) => i + k < words.length && (words[i + k] === w || (k === list.length - 1 && plain(words[i + k]) === w)))) || null;
-}
-
-function plainWord(word) {
-  return NUMBER_WORD_RE.test(word) || ORDER_WORDS.has(word) || ORDER_WORDS.has(word.replace(POSSESSIVE_RE, ''));
-}
-
-function refusedWords(text, names) {
-  const words = orderWords(text);
-  const lists = nameWordLists(names);
-  const refused = [];
-  for (let i = 0; i < words.length;) {
-    const name = nameAt(words, i, lists);
-    if (name) { i += name.length; continue; }
-    if (!plainWord(words[i]) && !refused.includes(words[i])) refused.push(words[i]);
-    i += 1;
-  }
-  return refused;
+  return GR.displayWords(text);
 }
 
 function codePoint(ch) {
   return `U+${ch.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}`;
 }
 
-function refusedChar(s) {
-  return [...s].find(ch => !ORDER_CHAR_RE.test(ch)) || null;
-}
-
 function refusedCharText(ch) {
   const shown = /^[\x21-\x7e]$/.test(ch) ? `"${ch}"` : codePoint(ch);
-  const why = ch === '/' ? ' Orders are advice only: no slash commands.' : '';
+  const braces = ch === '{' || ch === '}' ? ` Braces may only open and close a whole reference token: ${GR.TOKEN_FORMS}.` : '';
+  const why = ch === '/' ? ' Orders are advice only: no slash commands.' : braces;
   return `The order text has the character ${shown}, which orders may not use. Allowed: ${ORDER_CHARS_TEXT}.${why}`;
 }
 
@@ -169,17 +134,23 @@ function namesText(names) {
   return shown.length ? shown.join(', ') : 'none reported yet';
 }
 
-function validateOrderText(text, names = []) {
-  const s = typeof text === 'string' ? text.normalize('NFKC').trim() : '';
-  if (!s) return fail('The order text is empty.');
-  if (s.length > ORDER_TEXT_MAX) return fail(`The order text is ${s.length} characters; the limit is ${ORDER_TEXT_MAX}.`);
-  const ch = refusedChar(s);
-  if (ch) return fail(refusedCharText(ch));
-  const refused = refusedWords(s, names);
-  if (refused.length) {
-    return fail(`The order uses words that are not allowed: ${refused.map(w => `"${w}"`).join(', ')}. No zone, NPC, item or quest names. An order may use only numbers, plain words from the order vocabulary, and these reported names: ${namesText(names)}.`);
-  }
-  return done(s);
+function lengthText(r) {
+  if (r.expanded) return `The order is ${r.length} characters once its tokens are expanded; the limit is ${r.max}.`;
+  return `The order text is ${r.length} characters; the limit is ${r.max}.`;
+}
+
+function refusedWordsText(words, names, gameData) {
+  return `The order uses words that are not allowed: ${words.map(w => `"${w}"`).join(', ')}. No zone, NPC, item or quest names. An order may use only numbers, plain words from the order vocabulary, and these reported names: ${namesText(names)}. ${GR.tokenHint(gameData)}`;
+}
+
+function validateOrderText(text, names = [], gameData = null) {
+  const r = GR.checkText(text, { store: gameData, names, plainWords: ORDER_WORDS, charRe: ORDER_CHAR_RE, maxLength: ORDER_TEXT_MAX });
+  if (r.ok) return r.refs.length ? { ok: true, text: r.text, refs: GR.refSummary(r.refs) } : done(r.text);
+  if (r.problem === GR.PROBLEM.empty) return fail('The order text is empty.');
+  if (r.problem === GR.PROBLEM.length) return fail(lengthText(r));
+  if (r.problem === GR.PROBLEM.char) return fail(refusedCharText(r.char));
+  if (r.problem === GR.PROBLEM.words) return fail(refusedWordsText(r.words, names, gameData));
+  return fail(`The whole order was refused and nothing was saved. ${GR.errorsText(r.errors, gameData)}`);
 }
 
 function emptyStore(character) {
@@ -273,7 +244,7 @@ function retireOrder(doc, status, stamp) {
   doc.orders.current = null;
 }
 
-function issueOrder(doc, args, snap, now) {
+function issueOrder(doc, args, snap, now, gameData) {
   const stamp = now();
   if (args.clear === true) {
     if (!doc.orders.current) return fail('There is no current order to clear.');
@@ -282,12 +253,12 @@ function issueOrder(doc, args, snap, now) {
   }
   const stale = staleContextText(snap, stamp);
   if (stale) return fail(stale);
-  const checked = validateOrderText(args.text, knownNames(snap));
+  const checked = validateOrderText(args.text, knownNames(snap), gameData(snap.text));
   if (!checked.ok) return checked;
   const goalId = args.goalId === undefined || args.goalId === null || args.goalId === '' ? null : String(args.goalId);
   if (goalId && !doc.goals.some(g => g.id === goalId)) return fail(`There is no goal ${goalId}. goal_list shows the ids.`);
   retireOrder(doc, 'superseded', stamp);
-  doc.orders.current = { id: `o_${doc.rev + 1}`, text: checked.text, goalId, issuedAt: stamp };
+  doc.orders.current = { id: `o_${doc.rev + 1}`, text: checked.text, goalId, issuedAt: stamp, ...(checked.refs ? { refs: checked.refs } : {}) };
   return done(`Issued order ${doc.orders.current.id}: "${checked.text}".`);
 }
 
@@ -341,6 +312,7 @@ function createGoals(opts) {
   const post = opts.post || ST.postControl;
   const now = opts.now || Date.now;
   const log = opts.log || (() => {});
+  const gameData = opts.gameData || (() => null);
 
   async function push(doc, snap) {
     const options = streamOptions() || {};
@@ -366,7 +338,7 @@ function createGoals(opts) {
     let doc;
     try { doc = readStore(file, snap.character.key); } catch (e) { return fail(e.message); }
     if (tool === TOOL.list) return done(JSON.stringify(listView(doc, snap), null, 2));
-    const change = tool === TOOL.set ? setGoal(doc, args, snap, now) : issueOrder(doc, args, snap, now);
+    const change = tool === TOOL.set ? setGoal(doc, args, snap, now) : issueOrder(doc, args, snap, now, gameData);
     if (!change.ok) return change;
     doc.rev += 1;
     try { writeStore(file, doc); } catch (e) { return fail(`Could not save ${file}: ${e.message}`); }
@@ -399,11 +371,11 @@ function toolSchemas() {
     },
     {
       name: TOOL.order,
-      description: `Issue the one current order shown on the stream overlay, or clear it. Advice only. The text may not name any zone, NPC, item or quest, in any letter case. It may use only the character's name, the professions in the game's Professions line, numbers, and plain English words from a fixed vocabulary; any other word is refused and the error names it. At most ${ORDER_TEXT_MAX} characters, using only ${ORDER_CHARS_TEXT}, so no slash commands or macros. Refused when the game context is more than ${CONTEXT_STALE_MS / 60000} minutes old.`,
+      description: `Issue the one current order shown on the stream overlay, or clear it. Advice only. Never type a zone, NPC, item or quest name, in any letter case. Name a game thing only with a reference token, which the bridge expands to its real name from the synced Forever client data: ${GR.TOKEN_FORMS} (x and y from 0 to 100). Take each ID from the wowdata tools, never from memory or Classic; an ID the data does not have refuses the whole order. {npc:ID}, {quest:ID} and {faction:ID} have no name source yet and are refused. Without synced data no token works and only reported names may appear. Every other word must be the character's name, a profession in the game's Professions line, a number, or a plain English word from a fixed vocabulary; any other word is refused and the error names it. At most ${ORDER_TEXT_MAX} characters after expansion, using only ${ORDER_CHARS_TEXT} outside tokens, so no slash commands or macros. Refused when the game context is more than ${CONTEXT_STALE_MS / 60000} minutes old.`,
       inputSchema: {
         type: 'object',
         properties: {
-          text: { type: 'string', maxLength: ORDER_TEXT_MAX, description: 'The order in plain words, for example "Skin 30 more, then train Skinning"' },
+          text: { type: 'string', maxLength: GR.TOKEN_TEXT_MAX, description: 'The order in plain words with reference tokens for game names, for example "Skin 30 more, then train Skinning" or "Buy 20 {item:ID} at {map:ID,45.6,42.4}"' },
           goalId: { type: 'string', description: 'The goal this order serves (an id from goal_list)' },
           clear: { type: 'boolean', description: 'true clears the current order' },
         },
