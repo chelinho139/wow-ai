@@ -1,32 +1,43 @@
 # Step 1 measurement: `ask` on Opus 5.5 vs Sonnet 5.5
 
-Plan: [`router-and-game-data.md` §3 and §12](../router-and-game-data.md). Run on 2026-09-30 with Claude Code 2.1.286. Raw results: [`step1-ask-model.json`](step1-ask-model.json).
+Plan: [`router-and-game-data.md` §3 and §12](../router-and-game-data.md). Raw results: [`step1-ask-model.json`](step1-ask-model.json). The JSON records `claudeVersion` (2.1.286), `ranAt` (2026-10-01T01:21:51Z), `claudePath` (`~/.local/bin/claude`) and, per run, the full argv with the system prompt replaced by its size and SHA-256.
 
 ## Result
 
-- **Sonnet 5.5 costs 2.1x less**: $0.145 vs $0.306 mean per first turn, $1.45 vs $3.06 for the 10 prompts.
-- **Sonnet 5.5 is faster**: median wall latency 8.1 s vs 14.1 s. Sonnet was faster on 9 of 10 prompts.
-- **Answers are shorter on Sonnet**: 538 vs 680 characters mean.
+Three kinds of turn, priced separately. Mean cost per turn, error runs left out:
+
+| Turn | Opus 5.5 | Sonnet 5.5 | Ratio |
+|---|---|---|---|
+| Cold first turn (new folder, n = 1 each) | $0.274 | $0.212 (did a web search) | not comparable |
+| First turn of a new chat in a used folder | $0.233 (n = 4) | $0.130 (n = 5) | **1.8x** |
+| Resumed turn in the same chat | $0.031 (n = 5), median $0.025 | $0.034 (n = 6), median $0.016 | **about the same** |
+
+- **A new chat costs about the same with or without a warm folder.** Each new session in the same folder still wrote about 26k tokens to cache and read only 18.2k. Only a resumed turn reads the whole prefix (about 44k) from cache.
+- **Resumed turns are cheap on both models**: $0.02 to $0.04. One Sonnet resumed turn (`macro-pickpocket`) missed the cache and cost $0.115; it sets the Sonnet mean.
+- **Latency (median wall time)**: new chat 13.5 s Opus vs 11.0 s Sonnet; resumed turn 7.0 s vs 6.1 s.
 - **Quality is for the owner to judge** from the answers below. Every answer names game nouns from model memory, so every answer is **unverified**.
-- **Recommendation:** use `claude-sonnet-5-5` for `ask` if the answers below hold up for you. The default model in config is not changed by this PR.
+- **Recommendation:** Sonnet 5.5 saves about $0.10 on the first turn of each chat and little after that. Switch only if the answers below hold up. The default model in config is not changed by this PR.
 
 ## Method
 
-- Script: `node dev/measure-ask.js` (`--budget 4.9`). It runs each prompt once per model, headless, `-p --output-format stream-json --verbose`, with the real `claude` from `A.resolveCommand` (never `dev/fake-claude.js`).
-- Same shape as a bridge `ask` run: the config comes from `dev/sandbox.js` `buildConfig` (so `bridge/config.example.json`'s `agents.claude` block), the argv from `AGENTS.claude.args`, the stdin from `AGENTS.claude.input`, the env from `AGENTS.claude.env`, the system prompt from `P.systemPrompt(ctx, primer, { tools: ask.tools, surfaces: ask.surfaces })` and the message from `P.messagePrompt`. `CLAUDE_WOW_MAP_FILE` and `CLAUDE_WOW_UI_FILE` point into the run folder.
-- Tools: `--permission-mode acceptEdits --allowedTools WebSearch WebFetch Bash(git:*) …` as in `config.example.json`. The owner's own `config.json` allows more (`Write`, `Skill`, `mcp__wow-stream`, more `Bash`), so live runs can differ.
-- Extra flags, for the measurement only: `--no-session-persistence` and `--max-budget-usd` (at most $1 per run).
+- Script: `node dev/measure-ask.js --budget 2.68`. Headless `-p --output-format stream-json --verbose`, with the real `claude` from `A.resolveCommand` (never `dev/fake-claude.js`).
+- Same shape as a bridge `ask` run: config from `dev/sandbox.js` `buildConfig` (so `bridge/config.example.json`'s `agents.claude` block), argv from `AGENTS.claude.args`, stdin from `AGENTS.claude.input`, env from `AGENTS.claude.env`, system prompt from `P.systemPrompt(ctx, primer, { tools: ask.tools, surfaces: ask.surfaces })`, message from `P.messagePrompt`. The system prompt was byte-identical on all 23 runs (one SHA-256).
+- One stable folder per model for the whole run, like the live `ask` scratch folder. The first run in it is `cold-first`; later new sessions are `warm-first`.
+- After each first turn, the script resumes that session (`--resume <session_id>`, the same system prompt and situation block) with the follow-up "thanks. in one sentence, what is the first thing I should do?" (`resumed`).
+- Cost is Claude Code's `total_cost_usd`. On a resumed run that field and `modelUsage` are the **session total**, so a resumed turn's cost is the session total minus the first turn's. The bridge's `claudeCost` matched to the cent, except $0.01 per web search.
+- Tools: `--permission-mode acceptEdits --allowedTools WebSearch WebFetch Bash(git:*) …` as in `config.example.json`. The owner's own `config.json` allows more, so live runs can differ.
+- Extra flag for the measurement only: `--max-budget-usd` (at most $1 of new spend per run).
 - Situation block: the context the live addon last reported for Bone (level 20 Orc Rogue, Horde, Undercity, client 1.60.1.70124), copied verbatim into the script.
-- Each run is a new session in a new temp folder. Prompt order alternates (Opus first on odd prompts, Sonnet first on even ones).
-- Cost is Claude Code's `total_cost_usd` (API list price, not a subscription bill). The bridge's own `claudeCost` matched it to the cent on every run, except $0.01 per web search (see below).
-- The runs inherit the user's `~/.claude` setup (plan decision 5), the same as live `ask` runs. Its global `CLAUDE.md` shaped the answer style.
+- Prompt order alternates (Opus first on odd prompts, Sonnet first on even ones).
+- The runs inherit the user's `~/.claude` setup (plan decision 5), the same as live `ask` runs.
 
 ## Limits
 
-- n = 1 per prompt per model. Latency includes Claude Code start-up and varies between runs.
-- First turns only. About 34k tokens of each run were a cold 1-hour cache write (Opus: 34.5k written, 28.3k read on average). That write is about 90% of each Opus run's cost. A resumed chat reads most of it from cache, so later turns cost less on both models and the gap moves toward the output rates ($20 vs $10 per MTok).
-- A new folder per run changes the dynamic part of Claude Code's system prompt. The live `ask` scratch folder is stable, so cross-chat caching can be better there.
-- Web search costs $10 per 1,000 searches. The bridge's `claudeCost` leaves that fee out ($0.01 per search here). `modelUsage.<model>.webSearchRequests` carries the count if this should change.
+- **Stopped at the budget.** Total spend $3.01: $0.31 on an aborted first attempt that counted session totals as turn cost, and $2.70 here. 23 runs covered 6 of 10 prompts; `route-next-zone`, `advice-talents`, `advice-money` and `lore-city` did not run.
+- `route-turnins` on Opus hit its per-run cap (`error_max_budget_usd`) with no answer. It is left out of the means.
+- n = 1 per prompt per phase. Cold-first is one run per model, and Sonnet's did a web search (144.6k tokens read), so those two are not comparable.
+- I did not find why a new session in a used folder writes about 26k tokens again. The measured cost is what a live new chat pays today.
+- Web search costs $10 per 1,000 searches. The bridge's `claudeCost` leaves that fee out.
 
 ## Rates check
 
@@ -42,43 +53,50 @@ Plan: [`router-and-game-data.md` §3 and §12](../router-and-game-data.md). Run 
 
 ## Flags
 
-Every answer below names specific items, NPCs, spells, zones, quests or coordinates from model memory (Classic data at best), so all 20 are **unverified** for Forever. Notes I can check against the prompt itself, without game knowledge:
+Every answer below names items, NPCs, spells, zones, quests or coordinates from model memory (Classic data at best), so all of them are **unverified** for Forever. Notes I can check against the prompt itself, without game knowledge:
 
-- `route-next-zone`, Sonnet: says "6 are marked *". The situation block marks 7 quests with `*`.
-- `where-trainer`: the two models put the trainer at different coordinates on map 1458 (Opus 83.7, 70.0; Sonnet 72, 32). At most one can be right.
-- `where-fishing`: Opus searched the web and marked the map. Sonnet did not search, said it was unsure and did not mark the map.
-- `route-turnins`: Sonnet listed the 7 ready quest IDs and declined to route them without names. Opus drew a 4-stop route from memory and said so.
-- Map marks written: Opus 3 (`where-trainer`, `where-fishing`, `route-turnins`), Sonnet 1 (`where-trainer`).
+- `where-skinning`, Opus resumed: says Skinning is 187/225 and not capped. That matches the situation block; the prompt said "capped at 225".
+- `route-turnins`, Sonnet: lists the 7 ready quest IDs (235, 1060, 1483, 264, 1130, 1489, 2479). That matches the `*` marks. It declined to route them without names.
+- `where-skinning`: the two models name different trainer spots; Sonnet named none.
+- `where-trainer`: Opus marked a spot from memory; Sonnet searched the web, found no coordinates and marked nothing.
+- Map marks written: Opus 2 (`where-trainer`, `where-fishing`), Sonnet 0.
 
 ## Numbers
 
-| Model | Runs | Total cost | Mean cost | Median wall latency | Mean answer length |
-|---|---|---|---|---|---|
-| opus[1m] | 10 | $3.0616 | $0.3062 | 14.1 s | 680 chars |
-| claude-sonnet-5-5 | 10 | $1.4541 | $0.1454 | 8.1 s | 538 chars |
+| Model | Phase | Runs (errors) | Total cost | Mean cost | Mean cache write / read | Median wall latency | Mean answer length |
+|---|---|---|---|---|---|---|---|
+| opus[1m] | cold-first | 1 (0) | $0.2744 | $0.2744 | 32.8k / 10.3k | 13.3 s | 635 chars |
+| opus[1m] | warm-first | 4 (1) | $1.2092 | $0.2327 | 26.6k / 18.2k | 13.5 s | 530 chars |
+| opus[1m] | resumed | 5 (0) | $0.1531 | $0.0306 | 2.2k / 44.5k | 7.0 s | 156 chars |
+| claude-sonnet-5-5 | cold-first | 1 (0) | $0.2119 | $0.2119 | 36.4k / 144.6k | 21.8 s | 474 chars |
+| claude-sonnet-5-5 | warm-first | 5 (0) | $0.6497 | $0.1299 | 26.4k / 36.2k | 11.0 s | 489 chars |
+| claude-sonnet-5-5 | resumed | 6 (0) | $0.2032 | $0.0339 | 6.0k / 40.6k | 6.1 s | 246 chars |
 
-| Prompt | Model | Cost | Wall latency | Answer length | Tools |
-|---|---|---|---|---|---|
-| where-trainer | opus[1m] | $0.2857 | 15.8 s | 662 chars | none |
-| where-trainer | claude-sonnet-5-5 | $0.1420 | 17.7 s | 558 chars | none |
-| where-skinning | claude-sonnet-5-5 | $0.1398 | 8.1 s | 282 chars | none |
-| where-skinning | opus[1m] | $0.2888 | 13.7 s | 450 chars | none |
-| where-fishing | opus[1m] | $0.3496 | 17.7 s | 624 chars | ToolSearch, WebSearch |
-| where-fishing | claude-sonnet-5-5 | $0.1418 | 9.0 s | 494 chars | none |
-| macro-opener | claude-sonnet-5-5 | $0.1388 | 6.3 s | 391 chars | none |
-| macro-opener | opus[1m] | $0.2865 | 9.3 s | 473 chars | none |
-| macro-pickpocket | opus[1m] | $0.2906 | 14.1 s | 579 chars | none |
-| macro-pickpocket | claude-sonnet-5-5 | $0.1385 | 7.3 s | 409 chars | none |
-| route-turnins | claude-sonnet-5-5 | $0.1948 | 17.8 s | 596 chars | ToolSearch, WebSearch |
-| route-turnins | opus[1m] | $0.3914 | 38.1 s | 1289 chars | ToolSearch, WebSearch |
-| route-next-zone | opus[1m] | $0.2958 | 16.6 s | 704 chars | none |
-| route-next-zone | claude-sonnet-5-5 | $0.1423 | 10.3 s | 758 chars | none |
-| advice-talents | claude-sonnet-5-5 | $0.1374 | 5.7 s | 546 chars | none |
-| advice-talents | opus[1m] | $0.2947 | 13.6 s | 644 chars | none |
-| advice-money | opus[1m] | $0.2936 | 16.9 s | 674 chars | none |
-| advice-money | claude-sonnet-5-5 | $0.1382 | 8.0 s | 696 chars | none |
-| lore-city | claude-sonnet-5-5 | $0.1405 | 8.6 s | 650 chars | none |
-| lore-city | opus[1m] | $0.2849 | 8.9 s | 704 chars | none |
+| Prompt | Phase | Model | Cost | Cache write / read | Wall latency | Answer length | Tools |
+|---|---|---|---|---|---|---|---|
+| where-trainer | cold-first | opus[1m] | $0.2744 | 32.8k / 10.3k | 13.3 s | 635 chars | none |
+| where-trainer | resumed | opus[1m] | $0.0421 | 3.4k / 43.2k | 9.9 s | 257 chars | none |
+| where-trainer | cold-first | claude-sonnet-5-5 | $0.2119 | 36.4k / 144.6k | 21.8 s | 474 chars | ToolSearch, WebSearch |
+| where-trainer | resumed | claude-sonnet-5-5 | $0.0162 | 1.1k / 46.7k | 6.8 s | 253 chars | none |
+| where-skinning | warm-first | claude-sonnet-5-5 | $0.1132 | 24.7k / 18.2k | 13.4 s | 410 chars | none |
+| where-skinning | resumed | claude-sonnet-5-5 | $0.0257 | 4.0k / 42.9k | 5.1 s | 243 chars | none |
+| where-skinning | warm-first | opus[1m] | $0.2300 | 26.8k / 18.2k | 10.9 s | 402 chars | none |
+| where-skinning | resumed | opus[1m] | $0.0247 | 1.5k / 44.9k | 6.5 s | 179 chars | none |
+| where-fishing | warm-first | opus[1m] | $0.2306 | 26.7k / 18.2k | 10.4 s | 567 chars | none |
+| where-fishing | resumed | opus[1m] | $0.0235 | 1.5k / 44.9k | 5.9 s | 113 chars | none |
+| where-fishing | warm-first | claude-sonnet-5-5 | $0.1142 | 26.0k / 18.2k | 11.0 s | 520 chars | none |
+| where-fishing | resumed | claude-sonnet-5-5 | $0.0158 | 1.5k / 44.2k | 5.4 s | 233 chars | none |
+| macro-opener | warm-first | claude-sonnet-5-5 | $0.1107 | 26.0k / 18.2k | 7.6 s | 341 chars | none |
+| macro-opener | resumed | claude-sonnet-5-5 | $0.0157 | 1.2k / 44.2k | 11.2 s | 229 chars | none |
+| macro-opener | warm-first | opus[1m] | $0.2305 | 26.8k / 18.2k | 16.1 s | 515 chars | none |
+| macro-opener | resumed | opus[1m] | $0.0228 | 1.5k / 45.0k | 7.6 s | 109 chars | none |
+| macro-pickpocket | warm-first | opus[1m] | $0.2397 | 26.3k / 18.2k | 20.1 s | 634 chars | none |
+| macro-pickpocket | resumed | opus[1m] | $0.0401 | 3.3k / 44.5k | 7.0 s | 121 chars | none |
+| macro-pickpocket | warm-first | claude-sonnet-5-5 | $0.1099 | 26.0k / 18.2k | 6.9 s | 546 chars | none |
+| macro-pickpocket | resumed | claude-sonnet-5-5 | $0.1146 | 27.1k / 18.2k | 7.7 s | 222 chars | none |
+| route-turnins | warm-first | claude-sonnet-5-5 | $0.2017 | 29.2k / 108.3k | 18.4 s | 629 chars | ToolSearch, WebSearch |
+| route-turnins | resumed | claude-sonnet-5-5 | $0.0152 | 1.2k / 47.4k | 4.7 s | 294 chars | none |
+| route-turnins | warm-first | opus[1m] | $0.2784 | 26.8k / 18.2k | 25.7 s | 0 chars | ToolSearch (error: error_max_budget_usd) |
 
 ## Answers
 
@@ -88,311 +106,274 @@ Verbatim `result` text. Triple backticks inside an answer are shown as `'''`. Al
 
 Prompt: "where is my class trainer in this city?"
 
-#### opus[1m]
+Follow-up: "thanks. in one sentence, what is the first thing I should do?"
+
+#### opus[1m], cold-first
 
 ```text
-Your rogue trainers are in the Rogues' Quarter, in the southeast corner of the Undercity. Carolyn Ward, Miles Dexter and Josef Gregorian stand there, at about 83.7, 70.0.
+Your rogue trainers are in the Rogues' Quarter, in the east part of Undercity, at about 84, 72. They are Carolyn Ward, Miles Dexter and Josef Gregorian. From the Canals, go east and then south down the ramp into the Quarter.
 
-From the canals, go east through the inner ring and take the southeast exit. These are Classic coordinates, so the spot can be a little off in Forever. I put a marker on your map.
+These coordinates come from Classic data and can be a little off in Forever. I marked the spot on your map.
 
 '''wowmap
-{"op":"set","layer":"trainer","title":"Rogue Trainers","points":[{"m":1458,"x":83.7,"y":70.0,"label":"Rogues' Quarter - Rogue Trainers","kind":"trainer"}]}
+{"op":"set","layer":"trainer","title":"Rogue Trainers","points":[{"m":1458,"x":84,"y":72,"label":"Rogue Trainers (Rogues' Quarter)","kind":"trainer"}]}
 '''
 
 TL;DR:
-Rogue trainers are in the Rogues' Quarter, southeast Undercity, at about 83.7, 70.0 (Classic coordinates). I marked it on your map.
+Rogue trainers are in the Rogues' Quarter, east Undercity, at about 84, 72 (Carolyn Ward and others). I marked it on your map.
 ```
 
-#### claude-sonnet-5-5
+#### opus[1m], resumed
 
 ```text
-Your rogue trainer is Whisper Gloomshade in the Rogues' Quarter, on the east side of Undercity, around 72, 32. That's from memory, not checked against this client, so treat the spot as approximate. I marked it on your map.
+Go to the Rogues' Quarter (84, 72) and train your new level 20 skills. If you are short on gold, turn in your 7 completed quests first.
 
-'''wowmap
-{"op":"set","layer":"trainer","title":"Rogue trainer","ordered":false,"loop":false,"points":[{"m":1458,"x":72,"y":32,"label":"Whisper Gloomshade (Rogue trainer)","kind":"trainer"}]}
-'''
+TL;DR:
+Train your level 20 skills at the Rogues' Quarter (84, 72). Short on gold? Turn in your 7 completed quests first.
+```
 
-TL;DR: Rogue trainer Whisper Gloomshade is in the Rogues' Quarter, east side, about 72, 32 (from memory, unverified). Marked on your map.
+#### claude-sonnet-5-5, cold-first
+
+```text
+Your rogue trainers are in the Rogues' Quarter: Carolyn Ward (up to level 40), Miles Dexter and Gregory Charles. I found no exact coordinates, so I haven't marked the map. Look for the rogue-class icon on the Undercity map (press M).
+
+Sources:
+https://warcraft.wiki.gg/wiki/Rogue_trainers
+https://warcraft.wiki.gg/wiki/Miles_Dexter
+
+TL;DR: Rogue trainers (Carolyn Ward, Miles Dexter, Gregory Charles) are in the Rogues' Quarter. I found no coordinates, so nothing is marked.
+```
+
+#### claude-sonnet-5-5, resumed
+
+```text
+Go to the Rogues' Quarter and train your level 20 skills (you have 21s 29c, so it may not cover everything), then turn in your seven ready quests.
+
+TL;DR: Train at the Rogues' Quarter trainer first, then turn in your ready quests (marked * in your log).
 ```
 
 ### where-skinning (where-is)
 
 Prompt: "my skinning is capped at 225. where do I train the next rank?"
 
-#### claude-sonnet-5-5
+Follow-up: "thanks. in one sentence, what is the first thing I should do?"
+
+#### claude-sonnet-5-5, warm-first
 
 ```text
-Your skinning is capped at 225 because the next rank, Artisan, requires character level 35. You are level 20, so no trainer can teach it yet.
+You can't train it yet. Artisan Skinning (225 to 300) needs level 35, and you are level 20.
 
-TL;DR: Artisan Skinning (225-300) needs level 35. You are level 20, so you cannot train it until then. Check the trainer when you reach 35.
+At level 35, train it at any Skinning trainer, such as the ones in Orgrimmar, Thunder Bluff or Undercity. I don't know the exact Undercity trainer or spot, so I haven't marked one.
+
+TL;DR: Artisan Skinning needs level 35 (you're 20). Train it then at any Skinning trainer, e.g. in Orgrimmar. Keep skinning until then.
 ```
 
-#### opus[1m]
+#### claude-sonnet-5-5, resumed
 
 ```text
-You cannot train it yet. Artisan Skinning (225-300) needs character level 35, and you are level 20.
+Turn in your finished quests (235, 1060, 1483, 264, 1130, 1489, 2479) before anything else, since you're already in the city.
 
-At 35, train it from a city skinning trainer. In Classic, Killian Hagey teaches it in the Undercity Rogues' Quarter, and Thuwd teaches it in Orgrimmar. WoW Forever may differ from Classic, so check with the trainer.
+TL;DR: Turn in the 7 ready quests (235, 1060, 1483, 264, 1130, 1489, 2479) first, then keep skinning until level 35.
+```
+
+#### opus[1m], warm-first
+
+```text
+You cannot train it yet, because Artisan Skinning (225 to 300) needs character level 35 and you are 20. At level 35, any city skinning trainer can teach it. In Undercity, that is Killian Hagey in the Rogues' Quarter, at about 70, 58. These are Classic rules, so Forever may differ.
 
 TL;DR:
-Artisan Skinning needs level 35 (you are 20). At 35, try Killian Hagey in UC or Thuwd in Org (Classic data, may differ here).
+Artisan Skinning needs level 35 (you are 20). Then train with Killian Hagey, Undercity Rogues' Quarter, ~70, 58.
+```
+
+#### opus[1m], resumed
+
+```text
+Your Skinning is 187/225, so it is not capped yet: keep skinning beasts until you reach 225.
+
+TL;DR:
+Skinning is 187/225, not capped yet: keep skinning beasts until you reach 225.
 ```
 
 ### where-fishing (where-is)
 
 Prompt: "where can I buy a fishing pole near here?"
 
-#### opus[1m]
+Follow-up: "thanks. in one sentence, what is the first thing I should do?"
+
+#### opus[1m], warm-first
 
 ```text
-Lizbeth Cromwell, the Fishing Supplies vendor, sells the Fishing Pole. She stands near the fishing trainer Armand Cromwell, at about 80.6, 31.0 in the canal ring on the east side, by the Magic Quarter. The coordinates are from a classic database, so they may be a little off in Forever. I marked the spot on your map.
+Lizbeth Cromwell, the fishing supplier, sells the Fishing Pole for about 23 copper. She stands next to Armand Cromwell, the fishing trainer, near 80.6, 31.0 in the Canals on the east side. I took that spot from Classic data, and Forever spawns can differ.
+
+TL;DR:
+Fishing Pole: Lizbeth Cromwell, Undercity Canals east, about 80.6, 31.0 (beside trainer Armand Cromwell). Marked on your map.
 
 '''wowmap
 {"op":"set","layer":"fishing","title":"Fishing Pole vendor","points":[{"m":1458,"x":80.6,"y":31.0,"label":"Lizbeth Cromwell - Fishing Supplies","kind":"vendor"}]}
 '''
-
-TL;DR:
-Lizbeth Cromwell (Fishing Supplies) sells poles, near Armand Cromwell at about 80.6, 31.0 Undercity. Marked on your map.
 ```
 
-#### claude-sonnet-5-5
+#### opus[1m], resumed
 
 ```text
-Armand Cromwell, the Undercity fishing trainer, should sell Fishing Poles. I think they're in the Trade Quarter, but I'm not sure of the exact spot. I can't check coordinates here, so I haven't marked the map.
+TL;DR:
+Walk east through the Canals to Lizbeth Cromwell at about 80.6, 31.0 and buy the Fishing Pole (about 23c).
+```
 
-Failing that, the general goods vendors in the Trade Quarter often stock one. Fishing is 4/75, so you can also learn Apprentice rank from Armand.
+#### claude-sonnet-5-5, warm-first
 
-TL;DR: Try Armand Cromwell, fishing trainer in the Undercity Trade Quarter (unsure of spot); general goods vendors there are the backup.
+```text
+Try the Cromwells in the Trade Quarter, the south-west part of Undercity. I think Armand Cromwell trains Fishing there and Lizbeth Cromwell sells poles, but I haven't verified either name or their spots on this client. I haven't marked the map.
+
+If they don't sell poles, Orgrimmar has a fishing supplies vendor near its fishing trainer, and so do most Horde towns with a trainer.
+
+TL;DR: Probably Lizbeth Cromwell, Trade Quarter in Undercity (unverified). Check the Fishing trainer, Armand Cromwell, if she's not there.
+```
+
+#### claude-sonnet-5-5, resumed
+
+```text
+Turn in your finished quests first (you have several ready), then go to the Trade Quarter and ask the Cromwells for a pole.
+
+TL;DR: Hand in your ready quests first, then visit the Trade Quarter for a fishing pole (vendor unverified).
 ```
 
 ### macro-opener (macro)
 
 Prompt: "make me a macro that opens with my stun when I am stealthed and uses my normal combo point builder when I am not"
 
-#### claude-sonnet-5-5
+Follow-up: "thanks. in one sentence, what is the first thing I should do?"
+
+#### claude-sonnet-5-5, warm-first
 
 ```text
-'''wowmacro Opener
+'''wowmacro StealthOpen
 #showtooltip
 /cast [stealth] Cheap Shot; Sinister Strike
 '''
 
-Cheap Shot while stealthed, Sinister Strike otherwise. Use `[stealth,@target]` if you need it, but the plain form works. Make sure Cheap Shot and Sinister Strike are on your bars or known by name.
+Stealthed, it casts Cheap Shot. Otherwise it casts Sinister Strike. If you use daggers, replace Sinister Strike with Backstab.
 
-TL;DR: Macro "Opener" casts Cheap Shot when stealthed, otherwise Sinister Strike. Click the button to create it.
+TL;DR: Macro "StealthOpen" casts Cheap Shot while stealthed and Sinister Strike otherwise. Swap in Backstab if you use daggers.
 ```
 
-#### opus[1m]
+#### claude-sonnet-5-5, resumed
 
 ```text
+Click the macro button in the chat to create "StealthOpen", drop it on your action bar, then use it from stealth on your next target.
+
+TL;DR: First, create the StealthOpen macro with the chat button and put it on your action bar.
+```
+
+#### opus[1m], warm-first
+
+```text
+Cheap Shot is your stealth stun, but in vanilla you learn it at level 26, and you are 20. Until then, change "Cheap Shot" to "Garrote" in the macro. WoW: Forever may train it at a different level.
+
 '''wowmacro Opener
 #showtooltip
+/startattack
 /cast [stealth] Cheap Shot; Sinister Strike
 '''
-In stealth, the macro casts Cheap Shot. Out of stealth, it casts Sinister Strike.
-In vanilla, rogues learn Cheap Shot at level 26, and you are 20. Until then, change "Cheap Shot" to "Garrote" or "Ambush". Forever can differ from vanilla, so check your spellbook.
+
+In stealth, it casts Cheap Shot. Out of stealth, it casts Sinister Strike and starts auto-attack.
 
 TL;DR:
-Macro "Opener": Cheap Shot in stealth, else Sinister Strike. Cheap Shot comes at 26 in vanilla, so use Garrote until then.
+Macro: Cheap Shot in stealth, otherwise Sinister Strike. You learn Cheap Shot at 26, so use Garrote in it until then.
+```
+
+#### opus[1m], resumed
+
+```text
+TL;DR:
+Click the addon's macro button, change "Cheap Shot" to "Garrote" in the macro, and put it on your bar.
 ```
 
 ### macro-pickpocket (macro)
 
 Prompt: "macro: pick pocket my target, then start attacking it"
 
-#### opus[1m]
+Follow-up: "thanks. in one sentence, what is the first thing I should do?"
+
+#### opus[1m], warm-first
 
 ```text
-This picks your target's pocket from stealth, then starts auto attack in the same press. Out of stealth, it only starts the attack.
+Press it twice from stealth. The first press picks the pocket. The second press opens with Garrote, which also starts your auto-attack.
 
-'''wowmacro PickAttack
-#showtooltip Pick Pocket
-/cast [stealth] Pick Pocket
-/startattack
+'''wowmacro PickOpen
+#showtooltip
+/castsequence reset=target/combat Pick Pocket, Garrote
+/startattack [nostealth]
 '''
 
-The auto attack breaks stealth, so you lose your opener (Cheap Shot or Ambush). To keep the opener, delete the /startattack line. Then press the macro once to pick the pocket and use your opener as the second press.
+I did not put Pick Pocket and the attack on one press. The attack can break stealth before the loot comes through. Turn on Auto Loot so the loot window does not stall you. You get Cheap Shot at level 26; then you can change Garrote to Cheap Shot.
 
 TL;DR:
-Macro PickAttack: picks the pocket from stealth, then auto attacks. The attack breaks stealth, so you lose Cheap Shot or Ambush.
+Macro PickOpen: in stealth, press 1 picks the pocket, press 2 opens with Garrote and starts auto-attack. Turn on Auto Loot.
 ```
 
-#### claude-sonnet-5-5
+#### opus[1m], resumed
 
 ```text
+TL;DR:
+Click the PickOpen button the addon shows to create the macro, then drag it from your cursor onto your action bar.
+```
+
+#### claude-sonnet-5-5, warm-first
+
+```text
+Pick Pocket needs stealth, so the macro stealths you first if you aren't already. Attack follows once Pick Pocket lands.
+
 '''wowmacro PickAttack
 #showtooltip Pick Pocket
-/cast Pick Pocket
-/startattack
+/cast [nostealth] Stealth
+/cast [stealth,harm] Pick Pocket
+/startattack [harm]
 '''
 
-It casts Pick Pocket on your target, then turns on auto-attack in the same press. Pick Pocket only works while you are stealthed, so stealth first and be behind the target. The attack breaks stealth after the pick.
+Press it once to stealth, press it again to pick pocket and start attacking. Pick Pocket takes you out of stealth only on a failure. Attacking right after it is fine.
 
-TL;DR: Macro "PickAttack" casts Pick Pocket, then /startattack. Stealth first. Click the button to create it.
+TL;DR: Macro "PickAttack": stealths, then Pick Pocket on your target, then auto-attacks. Press it twice from out of stealth.
+```
+
+#### claude-sonnet-5-5, resumed
+
+```text
+Click the macro button to create "PickAttack", drag it to your action bar, then press it once to stealth.
+
+TL;DR: Create the PickAttack macro, put it on your bar, and press it once to stealth before you use it on a target.
 ```
 
 ### route-turnins (route)
 
 Prompt: "which quests in my log are ready to turn in, and in what order should I hand them in? mark the route on my map"
 
-#### claude-sonnet-5-5
+Follow-up: "thanks. in one sentence, what is the first thing I should do?"
+
+#### claude-sonnet-5-5, warm-first
 
 ```text
-Seven quests in your log are ready to turn in: 235, 264, 1060, 1130, 1483, 1489 and 2479. I can't give you a route or mark the map, because I can't confirm where they hand in. Your log lists only quest IDs, and my search found no turn-in locations for them.
+Seven quests are ready to turn in, but I couldn't look up where each one is handed in, so I haven't marked the map. My search didn't find the turn-in NPCs. I won't guess at coordinates or an order.
 
-Open your quest log (L) and look at each ready quest's name. Tell me the names or shift-click them into chat. I'll then order the hand-ins by distance from Undercity and mark them.
+Ready (quest IDs): 235, 1060, 1483, 264, 1130, 1489, 2479.
 
-TL;DR: Ready to turn in: 235, 264, 1060, 1130, 1483, 1489, 2479. I couldn't look up where they hand in, so no route yet. Shift-click the quest names to me.
+- **Hand in first:** anything whose NPC is in Undercity, since you're standing there.
+- **How to find the rest:** open the quest log and click each quest. Or tell me the quest names and I'll route them.
+
+TL;DR: Ready quest IDs are 235, 1060, 1483, 264, 1130, 1489 and 2479. I couldn't find their turn-in NPCs, so no route is drawn. Send me the names and I'll route them.
 ```
 
-#### opus[1m]
+#### claude-sonnet-5-5, resumed
 
 ```text
-I could not check the quest database, so this is from memory. These are the 7 quests ready to hand in: 235, 1060, 1483, 264, 1130, 1489, 2479. I am sure of where 4 of them go:
+Open your quest log and check which of the seven ready quests name an Undercity NPC, then hand those in first because you're already standing in Undercity.
 
-1. 2479 Hinott's Assistance: Serge Hinott, Tarren Mill, Hillsbrad 61.6, 19.2. It is close, so do it first.
-2. Take the Tirisfal zeppelin to Orgrimmar, then fly to the Crossroads.
-3. 1060 Letter to Jin'Zil: Malaka'jin, Stonetalon 74.5, 97.9.
-4. 1483 Ziz Fizziks: Windshear Crag, Stonetalon 59.0, 67.4.
-5. 1489 Hamuul Runetotem: Elder Rise, Thunder Bluff 78.6, 28.6.
-
-I don't know where 235, 264 and 1130 end. 1130 (Melor Sends Word) is most likely in Thunder Bluff. Tell me the names of the other two from your log and I will add them.
-
-I drew a 4-stop route named "Turn-ins".
-
-'''wowmap
-{"op":"set","layer":"turnins","title":"Turn-ins","ordered":true,"loop":false,"points":[{"m":1424,"x":61.6,"y":19.2,"label":"Hinott's Assistance - Serge Hinott","kind":"turnin"},{"m":1442,"x":74.5,"y":97.9,"label":"Letter to Jin'Zil","kind":"turnin"},{"m":1442,"x":59.0,"y":67.4,"label":"Ziz Fizziks","kind":"turnin"},{"m":1456,"x":78.6,"y":28.6,"label":"Hamuul Runetotem","kind":"turnin"}]}
-'''
-
-TL;DR:
-7 ready. Route on map: Tarren Mill, Jin'Zil, Ziz Fizziks, Hamuul (Thunder Bluff). Send me the names of quests 235 and 264.
+TL;DR: Open the quest log, find the ready quests whose turn-in NPC is in Undercity, and hand those in first. I don't know which they are.
 ```
 
-### route-next-zone (route)
-
-Prompt: "I am level 20. where should I go to level next, and why?"
-
-#### opus[1m]
+#### opus[1m], warm-first
 
 ```text
-Go to Hillsbrad Foothills now. It is a level 20–30 zone, and you can walk there from Undercity through Silverpine.
-
-- You have a quest ready to turn in there: 2479 (Hinott's Assistance), to Serge Hinott in Tarren Mill.
-- Tarren Mill has a flight path and a lot of quests for your level.
-- After Hillsbrad, take the zeppelin back to Kalimdor. You have several finished quests to hand in: 1060, 1483 and 1130 in Stonetalon, and 1489 and 264 in the Barrens. That is free XP.
-
-These quest locations come from the original game. Forever can differ, so check them in game.
-
-TL;DR:
-Go to Tarren Mill in Hillsbrad (20–30) and turn in Hinott's Assistance, then hand in your finished Stonetalon and Barrens quests.
-```
-
-#### claude-sonnet-5-5
-
-```text
-Go to Hillsbrad Foothills (Tarren Mill). It is the closest 20-30 zone from Undercity and has plenty of quests for your level.
-
-- Turn in your ready quests (6 are marked *) before you leave, since you are already in Undercity.
-- Take the Undercity flight path to Tarren Mill and pick up the quests there.
-- Hillsbrad is dense with beasts, so your Skinning (187/225) will keep levelling as you go.
-- Ashenvale is the alternative, but it is a long trip from Undercity.
-- Shadowfang Keep is also a good dungeon at 20+ if you can find a group.
-
-I did not check this against Forever-specific quest data, so some NPCs or quests may differ from Classic.
-
-TL;DR: Turn in your ready quests, then fly to Tarren Mill and level in Hillsbrad Foothills from 20 to about 30.
-```
-
-### advice-talents (advice)
-
-Prompt: "which talent tree should I use for solo questing at my level?"
-
-#### claude-sonnet-5-5
-
-```text
-Combat (Assassination) or Subtlety are the usual picks. For solo questing at 20, go Combat: Improved Sinister Strike, Dagger/Sword Specialization, Precision and Lightning Reflexes. It gives more damage and survives better than the others.
-
-Assassination is a fine alternative if you want faster kills with Malice and Lethality. Subtlety is weaker for questing until later.
-
-Forever's talent layout may differ from Classic, so check the names in your tree.
-
-TL;DR: Combat is the best pick for solo questing at 20; Assassination is the alternative.
-```
-
-#### opus[1m]
-
-```text
-Use Combat with swords. It is the safest and fastest tree for solo questing in vanilla.
-
-- Points 1–10: Improved Sinister Strike 2/2, Lightning Reflexes 3/5, Precision 5/5
-- Points 11–20: Dual Wield Specialization 5/5, then the rest into Lightning Reflexes or Deflection
-- Level 30: Blade Flurry. After that, Sword Specialization 5/5.
-
-Use a slow sword in your main hand for Sinister Strike, and a fast weapon in your off hand.
-
-This is the standard vanilla build. Forever can change talents, so check that the tooltips match.
-
-TL;DR:
-Combat Swords: Imp Sinister Strike 2, Precision 5, Dual Wield Spec 5, then Blade Flurry at 30 and Sword Spec.
-```
-
-### advice-money (advice)
-
-Prompt: "I only have about 21 silver. what should I spend money on first at this level?"
-
-#### opus[1m]
-
-```text
-Spend it on class training at a rogue trainer first. Undercity's Rogues' Quarter has them, and level 20 brings new ranks. Next, buy poisons if your trainer offers them, but WoW: Forever may differ, so check there.
-
-- Before you spend, turn in your 7 ready quests (235, 1060, 1483, 264, 1130, 1489, 2479). The silver from them likely covers training.
-- Skip vendor gear and the auction house. Quest rewards and your own Leatherworking are cheaper.
-- Sell spare leather or hides only after you have the leather you need for Leatherworking.
-
-TL;DR:
-Turn in your 7 ready quests, then buy level 20 rogue training in the Rogues' Quarter; poisons next if offered. Skip vendor gear.
-```
-
-#### claude-sonnet-5-5
-
-```text
-Train Rogue skills and buy a bigger bag first. Skip gear.
-
-- Rogue trainer: at level 20 you likely have new ranks to learn. Check the Undercity trainer. Use any copper left on the cheap, useful ranks.
-- Poisons: you need a Rogue level 20 quest for Poisons. Skip it for now. It costs too much.
-- Bag: with Leatherworking you can craft your own. Buy Light Leather from the AH or the vendor only if you are short.
-- Keep a few silver for Thistle Tea and flash powder only if you hit those levels.
-
-I did not check this against current game data, so ranks and prices may differ.
-
-TL;DR: Spend first on Rogue trainer skills, then a bigger bag. Keep a little silver in reserve. I did not verify prices.
-```
-
-### lore-city (lore)
-
-Prompt: "who leads this city and what is its story, in short?"
-
-#### claude-sonnet-5-5
-
-```text
-Sylvanas Windrunner, the Dark Lady, leads Undercity. The dreadlord Varimathras is her lieutenant.
-
-Undercity is a vast complex of tunnels and sewers beneath the ruined Lordaeron capital. After Arthas destroyed Lordaeron, Sylvanas freed the Forsaken, undead who broke from the Lich King's control. She took the ruins as the Forsaken's home and joined them to the Horde. Her enemies are the Scourge and the Alliance, which she blames for her fall. The Apothecary Lab, under Putress, works on plague weapons there.
-
-TL;DR: Sylvanas Windrunner rules Undercity. She led the Forsaken out of the Scourge, took the ruins under Lordaeron and joined the Horde.
-```
-
-#### opus[1m]
-
-```text
-Sylvanas Windrunner, the Banshee Queen, rules Undercity. She leads the Forsaken from the Royal Quarter.
-
-- Undercity lies under the ruins of Lordaeron, the old human capital.
-- Prince Arthas killed his father, King Terenas, and the Scourge burned the city.
-- Sylvanas and other undead broke free from the Lich King. They called themselves the Forsaken and took the crypts below the city.
-- They joined the Horde for convenience, not out of loyalty. The dreadlord Varimathras serves Sylvanas, and the Royal Apothecary Society works on a new plague.
-
-TL;DR:
-Sylvanas Windrunner rules. Undercity is under ruined Lordaeron, which Arthas destroyed. Her undead broke free of the Lich King and joined the Horde.
+(no answer)
 ```
 
