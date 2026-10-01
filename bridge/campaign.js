@@ -13,7 +13,8 @@ const CAMPAIGN_FILE = 'campaign.json';
 const BEATS_MAX = 12;
 const NARRATION_LINES_MAX = 5;
 const LIVE_LINES_MAX = 3;
-const LIVE_TEXT_MAX = 400;
+const BODY_LINES_MAX = 21;
+const BODY_CHARS_PER_LINE = 36;
 const NARRATION_MAX = 400;
 const TITLE_MAX = 60;
 const LEVEL_LIMIT = 100;
@@ -77,6 +78,11 @@ function staleContextText(snap, nowMs, tool) {
   return `The game context is ${Math.floor(age / 60000)} minutes old; campaign writes need one from the last ${minutes} minutes. Wait for the player's next message from the game, then call ${tool} again.`;
 }
 
+function contextIsFor(context, characterKey) {
+  const who = context && typeof context === 'object' ? G.characterOf(context.text) : null;
+  return !!who && typeof characterKey === 'string' && who.key === characterKey;
+}
+
 function characterNames(snap) {
   return snap.character ? [snap.character.name] : [];
 }
@@ -132,11 +138,11 @@ function checkTrigger(raw, store) {
   if (spec.type === TRIGGER.zone) {
     const mapID = wholeNumber(spec.mapID, 1, Number.MAX_SAFE_INTEGER);
     const row = mapID === null ? null : store.byId('uimaps', mapID);
-    if (!row) return fail(`zone trigger: mapID ${spec.mapID} is not a map in the Forever client data for build ${store.build}. Look the uiMapID up with the wowdata tools; never use an ID from memory or from Classic.`);
+    if (!row) return fail(`zone trigger: mapID ${spec.mapID} is not a map in the synced data for the client's build (${store.build}). Look the uiMapID up with the wowdata tools; never use an ID from memory.`);
     return { ok: true, trigger: { type: spec.type, mapID }, refs: [{ kind: 'map', id: mapID, name: row.name, trust: store.rowTrust, build: store.build }] };
   }
   const questID = wholeNumber(spec.questID, 1, Number.MAX_SAFE_INTEGER);
-  if (questID === null || !store.byId('quests', questID)) return fail(`quest_turnin trigger: questID ${spec.questID} is not a quest in the Forever client data for build ${store.build}. Look it up with the wowdata tools.`);
+  if (questID === null || !store.byId('quests', questID)) return fail(`quest_turnin trigger: questID ${spec.questID} is not a quest in the synced data for the client's build (${store.build}). Look it up with the wowdata tools.`);
   return { ok: true, trigger: { type: spec.type, questID }, refs: [{ kind: 'quest', id: questID, trust: store.rowTrust, build: store.build }] };
 }
 
@@ -213,6 +219,33 @@ function recheck(text, names, maxLength) {
   return r.ok ? r.text : null;
 }
 
+function bodyLines(text) {
+  return Math.max(1, Math.ceil(text.length / BODY_CHARS_PER_LINE));
+}
+
+function fitBody(narration, live) {
+  let room = BODY_LINES_MAX;
+  const take = line => {
+    const need = bodyLines(line);
+    if (need > room) return false;
+    room -= need;
+    return true;
+  };
+  const newest = live.length ? live[live.length - 1] : null;
+  const keptNewest = newest !== null && take(newest);
+  const keptNarration = [];
+  for (const line of narration) {
+    if (!take(line)) break;
+    keptNarration.push(line);
+  }
+  const keptLive = keptNewest ? [newest] : [];
+  for (const line of live.slice(0, -1).reverse()) {
+    if (!take(line)) break;
+    keptLive.unshift(line);
+  }
+  return { narration: keptNarration, live: keptLive };
+}
+
 function slotPayload(doc, snap) {
   const out = { rev: Math.max(0, Math.floor(Number(doc.rev) || 0)), char: snap.character ? snap.character.key : '', beat: null, manual: false };
   const c = doc.campaign;
@@ -224,16 +257,10 @@ function slotPayload(doc, snap) {
   const names = characterNames(snap).concat(storedRefNames(beat));
   const title = recheck(beat.title, names, TITLE_MAX);
   if (!title) return { ...out, withheld: `beat ${beat.id} is not shown: its title fails the story text check` };
-  const narration = (beat.narration || []).map(l => recheck(l, names, NARRATION_MAX)).filter(Boolean);
+  const checkedNarration = (beat.narration || []).map(l => recheck(l, names, NARRATION_MAX)).filter(Boolean);
   const checkedLive = (Array.isArray(c.live) ? c.live : []).map(l => recheck(l && l.text, characterNames(snap).concat((l && l.names) || []), NARRATION_MAX)).filter(Boolean);
-  const dropped = (beat.narration || []).length + (c.live || []).length - narration.length - checkedLive.length;
-  const live = [];
-  let liveChars = 0;
-  for (const line of [...checkedLive].reverse()) {
-    if (liveChars + line.length > LIVE_TEXT_MAX) break;
-    live.unshift(line);
-    liveChars += line.length;
-  }
+  const dropped = (beat.narration || []).length + (c.live || []).length - checkedNarration.length - checkedLive.length;
+  const { narration, live } = fitBody(checkedNarration, checkedLive);
   return { ...out, beat: { id: String(beat.id), title, narration, live }, ...(dropped ? { withheld: `${dropped} line(s) of beat ${beat.id} failed the story text check` } : {}) };
 }
 
@@ -278,6 +305,13 @@ function createCampaigns(opts) {
   const gameData = opts.gameData || (() => null);
   const onChange = opts.onChange || (() => {});
   const standing = opts.standing || (() => null);
+  const telemetryOn = opts.telemetryOn !== false;
+
+  function checkBeatHere(spec, names, data, label) {
+    const r = checkBeat(spec, names, data, label);
+    if (r.ok && !telemetryOn && r.beat.trigger.type !== TRIGGER.manual) return fail(`${label}: a ${r.beat.trigger.type} trigger can never fire, because game state telemetry is off in this bridge (telemetry.enabled is false). Use a manual trigger or beat_trigger.`);
+    return r;
+  }
   let cached = { file: '', stamp: '', doc: null };
   let lastSlotProblem = '';
 
@@ -359,9 +393,9 @@ function createCampaigns(opts) {
   }
 
   function manual(character) {
-    if (!TL.CHARACTER_KEY_RE.test(String(character || ''))) return 'the record names no character';
+    if (!TL.CHARACTER_KEY_RE.test(String(character || ''))) return { fired: false, text: 'the record names no character' };
     const fired = fireFrom(character, [{ type: TRIGGER.manual }], { standingToo: false });
-    return fired.length ? `beat ${fired[0].id} fired` : 'the next beat does not wait for /dm next; nothing fired';
+    return fired.length ? { fired: true, text: `beat ${fired[0].id} fired` } : { fired: false, text: 'the next beat does not wait for /dm next; nothing fired' };
   }
 
   function startCampaign(doc, args, snap, data, stamp) {
@@ -373,7 +407,7 @@ function createCampaigns(opts) {
     if (!Array.isArray(raw) || raw.length > BEATS_MAX) return fail(`beats must be a list of at most ${BEATS_MAX} beat objects.`);
     const beats = [];
     for (const [i, spec] of raw.entries()) {
-      const r = checkBeat(spec, names, data, `Beat ${i + 1}`);
+      const r = checkBeatHere(spec, names, data, `Beat ${i + 1}`);
       if (!r.ok) return fail(`The campaign was refused and nothing was saved. ${r.text}`);
       beats.push({ id: `b${i + 1}`, ...r.beat, addedAt: stamp });
     }
@@ -385,7 +419,7 @@ function createCampaigns(opts) {
     const c = doc.campaign;
     if (!c) return fail(`There is no campaign. Start one with ${TOOL.start}.`);
     if (c.beats.length >= BEATS_MAX) return fail(`The campaign already has ${BEATS_MAX} beats.`);
-    const r = checkBeat(args, characterNames(snap), data, 'The beat');
+    const r = checkBeatHere(args, characterNames(snap), data, 'The beat');
     if (!r.ok) return r;
     const id = `b${c.beats.length + 1}`;
     c.beats.push({ id, ...r.beat, addedAt: stamp });
@@ -483,12 +517,13 @@ function createCampaigns(opts) {
   return { call, slotLua, onEvents, manual, file: key => storeFile(root, key) };
 }
 
-function createBridgeCampaigns({ home, context, onChange, standing, log = () => {} }) {
+function createBridgeCampaigns({ home, context, onChange, standing, telemetryOn = true, log = () => {} }) {
   return createCampaigns({
     dir: home.goals,
     context,
     onChange,
     standing,
+    telemetryOn,
     gameData: contextText => {
       try { return GR.openFor(home.data, contextText); } catch (e) {
         log(`campaign: cannot open the synced game data (${e.message})`);
@@ -500,7 +535,7 @@ function createBridgeCampaigns({ home, context, onChange, standing, log = () => 
 }
 
 function storyRules() {
-  return `Story text is checked in the bridge: only ${NARRATE_CHARS_TEXT}; every word must be a number, the character's name or an everyday English word, in any letter case; no links, handles, calls to action or ads; T-rated. Name a game thing only with a reference token, which the bridge expands from the synced Forever client data: ${GR.TOKEN_FORMS}. Take each ID from the wowdata tools, never from memory or Classic. {npc:ID} and {quest:ID} have no name source yet and are refused.`;
+  return `Story text is checked in the bridge: only ${NARRATE_CHARS_TEXT}; every word must be a number, the character's name or an everyday English word, in any letter case; no links, handles, calls to action or ads; T-rated. Name a game thing only with a reference token, which the bridge expands from the synced data for the client's build: ${GR.TOKEN_FORMS}. Take each ID from the wowdata tools, never from memory. {npc:ID} and {quest:ID} have no name source yet and are refused.`;
 }
 
 function triggerSchema() {
@@ -543,7 +578,7 @@ function toolSchemas() {
     },
     {
       name: TOOL.add,
-      description: `Add a beat at the end of the running campaign. Every trigger ID must be in the synced Forever data. ${storyRules()}`,
+      description: `Add a beat at the end of the running campaign. Every trigger ID must be in the synced data for the client's build. ${storyRules()}`,
       inputSchema: beatSchema(),
     },
     {
@@ -553,14 +588,14 @@ function toolSchemas() {
     },
     {
       name: TOOL.narrate,
-      description: `Add one line of live narration, at most ${NARRATION_MAX} characters after expansion, under the current beat in the DM frame (the last ${LIVE_LINES_MAX} lines are kept; a new beat clears them). Nothing is sent to game chat. ${storyRules()}`,
+      description: `Add one line of live narration, at most ${NARRATION_MAX} characters after expansion, under the current beat in the DM frame. The bridge keeps the last ${LIVE_LINES_MAX} lines; the frame always shows the newest one, then as much of the beat's narration and the older lines as fits on the page (about ${BODY_LINES_MAX} lines of ${BODY_CHARS_PER_LINE} characters). A new beat clears them. Nothing is sent to game chat. ${storyRules()}`,
       inputSchema: { type: 'object', properties: { text: { type: 'string', maxLength: GR.TOKEN_TEXT_MAX } }, required: ['text'] },
     },
   ];
 }
 
 module.exports = {
-  STORE_VERSION, CAMPAIGN_FILE, BEATS_MAX, NARRATION_LINES_MAX, LIVE_LINES_MAX, NARRATION_MAX, TITLE_MAX, SLOT_LUA_MAX_BYTES, FIRED_MAX,
+  STORE_VERSION, CAMPAIGN_FILE, BEATS_MAX, NARRATION_LINES_MAX, LIVE_LINES_MAX, NARRATION_MAX, TITLE_MAX, SLOT_LUA_MAX_BYTES, FIRED_MAX, BODY_LINES_MAX, BODY_CHARS_PER_LINE,
   TRIGGER, TRIGGER_TYPES, TOOL, TOOL_NAMES, WRITE_TOOL_NAMES, MANUAL_KIND, MANUAL_TEXT, AD_WORDS, NARRATE_WORDS, BEAT_EVENT,
-  isDmRecord, checkStory, checkTrigger, happeningsFrom, standingHappenings, slotPayload, luaDm, readStore, storeFile, createCampaigns, createBridgeCampaigns, toolSchemas,
+  isDmRecord, contextIsFor, fitBody, checkStory, checkTrigger, happeningsFrom, standingHappenings, slotPayload, luaDm, readStore, storeFile, createCampaigns, createBridgeCampaigns, toolSchemas,
 };

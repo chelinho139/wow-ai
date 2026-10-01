@@ -312,6 +312,9 @@ test('bridge.js catches anything telemetry.submit and luaGs throw and logs it', 
   const body = submitBody();
   assert.match(body, /try \{ applied = telemetry\.submit\(job\); \} catch \(e\) \{ log\(/);
   assert.match(body, /try \{ campaignStore\.onEvents\(job\.name, applied\.events\); \} catch \(e\) \{ log\(/);
+  assert.match(body, /if \(applied && applied\.status === 'applied'\) \{\n\s+if \(CAMPAIGN\.contextIsFor\(state\.context, job\.name\)\) noteContextHeard\(\);/, 'a game state record for the context\'s character confirms the context');
+  const dmAt = body.indexOf('if (CAMPAIGN.isDmRecord(job))');
+  assert.ok(dmAt > 0 && dmAt < body.indexOf('else noteContextHeard();'), 'a /dm next record (no context) is handled before it could refresh the context time');
   const src = fs.readFileSync(BRIDGE_SOURCE, 'utf8');
   assert.match(src, /try \{ gsLua = telemetry\.luaGs\(\); \} catch \(e\) \{ log\(/);
 });

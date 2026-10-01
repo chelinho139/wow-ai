@@ -868,6 +868,7 @@ function submit(job) {
     let applied = null;
     try { applied = telemetry.submit(job); } catch (e) { log(`telemetry: gs #${job.id} not applied (${e && e.message ? e.message : e})`); }
     if (applied && applied.status === 'applied') {
+      if (CAMPAIGN.contextIsFor(state.context, job.name)) noteContextHeard();
       try { campaignStore.onEvents(job.name, applied.events); } catch (e) { log(`campaign: beat trigger check failed (${e && e.message ? e.message : e})`); }
     }
     return;
@@ -879,6 +880,18 @@ function submit(job) {
     return;
   }
   clearSignalsAhead(job.id);
+  if (CAMPAIGN.isDmRecord(job)) {
+    markHandled(job);
+    saveState();
+    ackJob(job);
+    let result = { fired: false, text: 'not a known DM request; ignored' };
+    if (job.text === CAMPAIGN.MANUAL_TEXT) {
+      try { result = campaignStore.manual(job.name); } catch (e) { result = { fired: false, text: `failed (${e && e.message ? e.message : e})` }; }
+    }
+    log(`${tagOf(job)} /dm next for ${String(job.name || '-').slice(0, 64).replace(/[\x00-\x1f\x7f]/g, '?')}: ${result.text}`);
+    if (!result.fired) publishNow();
+    return;
+  }
   if (job.ctx !== undefined) setContext(job);
   else noteContextHeard();
   if (job.forget) {
@@ -895,19 +908,6 @@ function submit(job) {
     saveState();
     ackJob(job);
     cancelRun(job);
-    publishNow();
-    return;
-  }
-  if (CAMPAIGN.isDmRecord(job)) {
-    markHandled(job);
-    saveState();
-    let note;
-    if (job.text !== CAMPAIGN.MANUAL_TEXT) note = 'not a known DM request; ignored';
-    else {
-      try { note = campaignStore.manual(job.name); } catch (e) { note = `failed (${e && e.message ? e.message : e})`; }
-    }
-    log(`${tagOf(job)} /dm next for ${String(job.name || '-').slice(0, 64).replace(/[\x00-\x1f\x7f]/g, '?')}: ${note}`);
-    ackJob(job);
     publishNow();
     return;
   }
@@ -1081,6 +1081,7 @@ const campaignStore = CAMPAIGN.createBridgeCampaigns({
   context: () => state.context,
   onChange: () => publishNow(true, { refresh: true }),
   standing: TL.standingReader(telemetry, TELEMETRY_ON),
+  telemetryOn: TELEMETRY_ON,
   log,
 });
 

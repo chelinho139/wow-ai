@@ -181,8 +181,8 @@ test('dm frame: appears on the natural slot load that carries a beat, drawn like
   assert.equal(vm.evaluate('ClaudeWoWDM.debug.parchment'), 'QuestBG-Parchment');
   assert.equal(vm.evaluate('ClaudeWoWDM.debug.native.frame'), 'false', 'no C_XMLUtil in the stub: the plain frame');
   assert.equal(vm.num('ClaudeWoWDM.debug.renders'), 1);
-  assert.equal(vm.evaluate('ClaudeWoWDMFrame.paper.point'), 'TOPLEFT');
-  assert.equal(vm.num('ClaudeWoWDMFrame.paper.y'), -62, 'where QuestFramePanelTemplate puts its parchment');
+  assert.equal(vm.evaluate('ClaudeWoWDMFrame.parchmentArea.point'), 'TOPLEFT');
+  assert.equal(vm.num('ClaudeWoWDMFrame.parchmentArea.y'), -62, 'where QuestFramePanelTemplate puts its parchment');
   vm.run('RESULT = false; for _, n in ipairs(UISpecialFrames) do if n == "ClaudeWoWDMFrame" then RESULT = true end end');
   assert.equal(vm.evaluate('RESULT'), 'true', 'Escape closes it');
 });
@@ -204,18 +204,19 @@ do
   local mt = getmetatable(probe)
   local base = mt.__index
   mt.__index = function(t, k)
-    if k == "SetTexture" then return function(self, file) if STUB.noTextureFile then return false end self.file = file return true end end
+    if k == "SetTexture" then return function(self, file) if STUB.noTextureFile and file == "Interface\\\\QuestFrame\\\\UI-QuestLog-TopLeft" then error("no such file") end self.file = file return true end end
     if k == "SetMaxLines" then return function(self, n) self.maxLines = n end end
     return base(t, k)
   end
 end
 `;
 
-test('dm frame: every fallback branch draws; the parchment goes atlas, then the quest page file, then a color', () => {
+test('dm frame: every fallback branch draws; the parchment is the window\'s own art: the atlas, the Classic Era quest page, then a color', () => {
   const cases = [
-    ['no template, no atlas', 'C_Texture.GetAtlasExists = function() return nil end', { frame: 'false', plain: 'false', template: null, close: 'none', parchment: 'Interface\\QuestFrame\\UI-QuestGreeting-TopLeft' }],
-    ['Classic Era: the frame template, no parchment atlas', 'C_XMLUtil = { GetTemplateInfo = function(n) if n == "ButtonFrameTemplate" then return {} end end }; C_Texture.GetAtlasExists = function() return false end', { frame: 'true', plain: null, template: 'ButtonFrameTemplate', close: null, parchment: 'Interface\\QuestFrame\\UI-QuestGreeting-TopLeft' }],
-    ['no file either', 'C_Texture.GetAtlasExists = function() return nil end; STUB.noTextureFile = true', { frame: 'false', plain: 'false', template: null, close: 'none', parchment: 'color' }],
+    ['no template, no atlas, not Era', 'C_Texture.GetAtlasExists = function() return nil end', { frame: 'false', plain: 'false', template: null, close: 'none', parchment: 'color' }],
+    ['Classic Era: no template, no atlas', 'C_Texture.GetAtlasExists = function() return nil end; function GetBuildInfo() return "1.15.9", "70003", "Oct 1 2026", 11509 end', { frame: 'false', plain: 'false', template: null, close: 'none', parchment: 'Interface\\QuestFrame\\UI-QuestLog-TopLeft' }],
+    ['Classic Era: the frame template, no parchment atlas', 'C_XMLUtil = { GetTemplateInfo = function(n) if n == "ButtonFrameTemplate" then return {} end end }; C_Texture.GetAtlasExists = function() return false end; function GetBuildInfo() return "1.15.9", "70003", "Oct 1 2026", 11509 end', { frame: 'true', plain: null, template: 'ButtonFrameTemplate', close: null, parchment: 'Interface\\QuestFrame\\UI-QuestLog-TopLeft' }],
+    ['Classic Era, no quest page file either', 'C_Texture.GetAtlasExists = function() return nil end; STUB.noTextureFile = true; function GetBuildInfo() return "1.15.9", "70003", "Oct 1 2026", 11509 end', { frame: 'false', plain: 'false', template: null, close: 'none', parchment: 'color' }],
     ['plain templates only', 'C_XMLUtil = { GetTemplateInfo = function(n) if n == "BackdropTemplate" or n == "UIPanelCloseButton" then return {} end end }', { frame: 'false', plain: 'true', template: 'BackdropTemplate', close: 'UIPanelCloseButton', parchment: 'QuestBG-Parchment' }],
     ['GetTemplateInfo answers nil for all', 'C_XMLUtil = { GetTemplateInfo = function() return nil end }', { frame: 'false', plain: 'false', template: null, close: 'none', parchment: 'QuestBG-Parchment' }],
   ];
@@ -230,6 +231,9 @@ test('dm frame: every fallback branch draws; the parchment goes atlas, then the 
     assert.equal(vm.evaluate('ClaudeWoWDM.debug.close'), want.close, why);
     assert.equal(vm.evaluate('ClaudeWoWDM.debug.parchment'), want.parchment, why);
     assert.equal(vm.evaluate('ClaudeWoWDM.debug.lastError'), null, why);
+    assert.equal(vm.evaluate('ClaudeWoWDM.debug.parchmentSize'), '322x404', `${why}: one size for any art`);
+    assert.equal(vm.num('ClaudeWoWDMFrame.paper.width'), 322, why);
+    assert.equal(vm.num('ClaudeWoWDMFrame.paper.height'), 404, why);
   }
 });
 
@@ -240,6 +244,7 @@ test('dm frame: the body is bounded so the largest beat stays on the parchment',
   assert.ok(bottom <= L('parchmentTop') + L('parchmentHeight'), `the body ends at ${bottom}, inside the parchment`);
   assert.ok(bottom <= L('frameHeight') - L('hintSpace'), 'and above the hint');
   assert.ok(L('bodyMaxLines') * L('bodyLineHeight') <= L('bodyHeight'), 'the line cap fits the height');
+  assert.equal(L('bodyMaxLines'), C.BODY_LINES_MAX, 'the bridge budgets the body for the same number of lines');
   const huge = Array.from({ length: 8 }, () => 'quiet '.repeat(66).trim());
   nextSlot(vm, dmLua({ beat: { ...BEAT1, lines: huge } }));
   tick(vm);
@@ -271,6 +276,46 @@ test('dm frame: a new beat in combat waits for the end of combat to open', () =>
   assert.equal(shown(vm), false);
   vm.run('STUB.combat = false; STUB.FireEvent("PLAYER_REGEN_ENABLED")');
   assert.equal(shown(vm), true);
+  vm.run('ClaudeWoWDMFrame:Hide(); STUB.combat = true; SlashCmdList.CLAUDEWOWDM("")');
+  assert.equal(shown(vm), false, '/dm in combat waits too');
+  assert.equal(printedCount(vm, 'shows after combat'), 1, 'and says so');
+  vm.run('STUB.combat = false; STUB.FireEvent("PLAYER_REGEN_ENABLED")');
+  assert.equal(shown(vm), true);
+});
+
+test('/dm next: an old Inbox.lua read at login does not prove the bridge takes /dm next', () => {
+  const stale = newVM({ beforeLogin: `ClaudeWoW_Inbox = { now = time() - 3600, replies = {}, dm = ${dmLua({ manual: true, now: 'time()' })} }` });
+  stale.run('SlashCmdList.CLAUDEWOWDM("next")');
+  assert.equal(dmRecords(stale).length, 0);
+  assert.equal(printedCount(stale, 'cannot take /dm next'), 1);
+  const fresh = newVM({ beforeLogin: `ClaudeWoW_Inbox = { now = time(), replies = {}, dm = ${dmLua({ manual: true })} }` });
+  fresh.run('SlashCmdList.CLAUDEWOWDM("next")');
+  assert.equal(printedCount(fresh, 'Asked the bridge for the next beat'), 1, 'a fresh one does');
+});
+
+const CHAT_LOG_API = `
+SENT, LOGGING = {}, false
+function SendSystemMessage(text) SENT[#SENT + 1] = text end
+function LoggingChat(on) if on ~= nil then LOGGING = on end return LOGGING end
+`;
+
+test('/dm next on the chat log: an ack signal while the ack poll is pending costs one slot load, not two', () => {
+  const vm = newVM({ prelude: ARMED_SIGNALS + CHAT_LOG_API });
+  const slot = dm => `STUB.onLoadAddOn = function(name) ClaudeWoW_SlotData = { now = time(), cwd = "", plugin = "ask", plugins = { "ask" }, transport = "screenshot", strip = { on = 255, off = 0 }, chatlog = { line = 200, filler = 4096, key = "0123456789abcdef0123456789abcdef" }, acks = { { session = ClaudeWoWDB.session, id = ClaudeWoWDB.lastSeq } }, replies = {}, dm = ${dm} } end`;
+  vm.run(slot(dmLua({ manual: true })));
+  tick(vm);
+  tick(vm, 30);
+  assert.equal(vm.evaluate('ClaudeWoW.ChatLog.Mode()'), 'true', 'the chat log transport is on');
+  const sentBefore = vm.num('#SENT');
+  vm.run('SlashCmdList.CLAUDEWOWDM("next")');
+  assert.ok(vm.num('#SENT') > sentBefore, 'the record went out on the chat log');
+  const id = vm.num('ClaudeWoWDB.lastSeq');
+  vm.run(slot(dmLua({ rev: 2, beat: BEAT1 })));
+  const loads = vm.num('STUB.loads');
+  ack(vm, id);
+  for (let i = 0; i < 10; i++) tick(vm, 1);
+  assert.equal(shown(vm), true, 'the beat arrived');
+  assert.equal(vm.num('STUB.loads'), loads + 1, 'one load for the ack and the beat');
 });
 
 test('dm frame: the explicit empty field hides it; a slot without the field (an old bridge) changes nothing', () => {

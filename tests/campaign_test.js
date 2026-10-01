@@ -67,6 +67,7 @@ function rig(opts = {}) {
     now: () => clock,
     gameData: opts.gameData || openData,
     standing: key => (key === BONE_KEY ? { ...where } : null),
+    telemetryOn: opts.telemetryOn,
     log: m => logs.push(m),
     onChange: () => { changes += 1; },
   });
@@ -155,9 +156,9 @@ test('story text: names, links, handles, calls to action and ads are refused', (
 test('triggers: zone and quest IDs must be in the synced data; level, death and manual need no data', () => {
   const data = openData(BONE_CONTEXT);
   assert.deepEqual(C.checkTrigger({ type: 'zone', mapID: 9101 }, data).refs, [{ kind: 'map', id: 9101, name: 'Fixture Pines', trust: 'client-data', build: '1.60.1.200' }]);
-  assert.match(C.checkTrigger({ type: 'zone', mapID: 1999 }, data).text, /not a map in the Forever client data/);
+  assert.match(C.checkTrigger({ type: 'zone', mapID: 1999 }, data).text, /not a map in the synced data for the client's build/);
   assert.equal(C.checkTrigger({ type: 'quest_turnin', questID: 7101 }, data).ok, true);
-  assert.match(C.checkTrigger({ type: 'quest_turnin', questID: 7999 }, data).text, /not a quest in the Forever client data/);
+  assert.match(C.checkTrigger({ type: 'quest_turnin', questID: 7999 }, data).text, /not a quest in the synced data for the client's build/);
   assert.equal(C.checkTrigger({ type: 'level', level: 21 }, null).ok, true);
   assert.equal(C.checkTrigger({ type: 'level', level: 1 }, null).ok, false);
   assert.equal(C.checkTrigger({ type: 'level', level: 21.5 }, null).ok, false);
@@ -327,12 +328,12 @@ test('campaign writes need a fresh game context; ending a campaign always works'
 test('/dm next fires only a beat that waits for it, and only for the character the record names', async () => {
   const r = rig();
   try {
-    assert.match(r.store.manual(BONE_KEY), /nothing fired/);
+    assert.match(r.store.manual(BONE_KEY).text, /nothing fired/);
     await r.store.call('campaign_start', { title: 'Story', beats: [beat('Begin', ['Go.'], { type: 'manual' }), beat('Later', ['Go on.'], { type: 'death' })] });
-    assert.match(r.store.manual('Ash-ClassicBetaPvP2'), /nothing fired/);
-    assert.match(r.store.manual('bad key!'), /names no character/);
-    assert.match(r.store.manual(BONE_KEY), /beat b1 fired/);
-    assert.match(r.store.manual(BONE_KEY), /nothing fired/, 'the next beat waits for a death');
+    assert.match(r.store.manual('Ash-ClassicBetaPvP2').text, /nothing fired/);
+    assert.match(r.store.manual('bad key!').text, /names no character/);
+    assert.deepEqual(r.store.manual(BONE_KEY), { fired: true, text: 'beat b1 fired' });
+    assert.match(r.store.manual(BONE_KEY).text, /nothing fired/, 'the next beat waits for a death');
     assert.equal(r.read().campaign.current, 'b1');
   } finally { r.cleanup(); }
   assert.equal(C.isDmRecord({ kind: 'dm', text: 'next' }), true);
@@ -393,16 +394,43 @@ test('slot field: text edited into the store by hand is checked again and withhe
   } finally { r.cleanup(); }
 });
 
-test('slot field: live lines shown add up to at most 400 characters, newest first kept', async () => {
+test('slot field: the body fits the page; the newest live line always shows, older live lines go first, then narration from the end', async () => {
+  const lineCount = lines => lines.reduce((n, l) => n + Math.max(1, Math.ceil(l.length / C.BODY_CHARS_PER_LINE)), 0);
   const r = rig();
   try {
-    await r.store.call('campaign_start', { title: 'Story', beats: [beat('Begin', ['Line one.'], { type: 'manual' })] });
+    const story = n => `${'quiet '.repeat(12)}line ${n}.`;
+    await r.store.call('campaign_start', { title: 'Story', beats: [beat('Begin', [1, 2, 3, 4, 5].map(story), { type: 'manual' })] });
     r.store.manual(BONE_KEY);
     const long = n => `${'quiet '.repeat(49)}${n}.`;
     for (const n of ['one', 'two', 'three']) assert.equal((await r.store.call('narrate', { text: long(n) })).ok, true);
     const lines = field(field(slotTable(r.store.slotLua()), 'beat'), 'lines').fields.map(f => luaString(f.value));
-    assert.deepEqual(lines, ['Line one.', long('three')]);
+    assert.equal(lines.at(-1), long('three'), 'the newest live line is last and shown');
+    assert.ok(!lines.includes(long('one')) && !lines.includes(long('two')), 'older live lines went first');
+    assert.deepEqual(lines.slice(0, -1), [1, 2, 3, 4].map(story), 'then narration from the end');
+    assert.ok(lineCount(lines) <= C.BODY_LINES_MAX, `${lineCount(lines)} estimated lines`);
   } finally { r.cleanup(); }
+  assert.deepEqual(C.fitBody(['a.'], ['x'.repeat(300), 'y'.repeat(300), 'z'.repeat(300)]), { narration: ['a.'], live: ['y'.repeat(300), 'z'.repeat(300)] });
+  const huge = 'w'.repeat(400);
+  assert.deepEqual(C.fitBody([huge, huge], [huge]), { narration: [], live: [huge] }, 'a 12-line live line leaves no room for a 12-line narration line');
+});
+
+test('with telemetry off in the bridge, only manual beats are taken', async () => {
+  const r = rig({ telemetryOn: false });
+  try {
+    const res = await r.store.call('campaign_start', { title: 'Story', beats: [beat('Here', ['A cold wind.'], { type: 'zone', mapID: 9101 })] });
+    assert.equal(res.ok, false);
+    assert.match(res.text, /can never fire, because game state telemetry is off/);
+    assert.equal((await r.store.call('campaign_start', { title: 'Story', beats: [beat('Begin', ['Go.'], { type: 'manual' })] })).ok, true);
+    assert.match((await r.store.call('beat_add', beat('Fallen', ['Get up.'], { type: 'death' }))).text, /telemetry is off/);
+  } finally { r.cleanup(); }
+});
+
+test('a game state record counts as hearing from the game only for the character the context names', () => {
+  const ctx = { text: BONE_CONTEXT, at: 1 };
+  assert.equal(C.contextIsFor(ctx, BONE_KEY), true);
+  assert.equal(C.contextIsFor(ctx, 'Ash-ClassicBetaPvP2'), false);
+  assert.equal(C.contextIsFor(null, BONE_KEY), false);
+  assert.equal(C.contextIsFor({ text: 'Game: x' }, BONE_KEY), false);
 });
 
 test('slot field: at most 1600 bytes; live lines go first, then narration from the end', () => {

@@ -1910,7 +1910,7 @@ local function Tick()
 			NotedBridge()
 			if (rec.text or "") ~= "" and ClaudeWoWVoice then ClaudeWoWVoice.Started(id) end
 			if rec.hello and run.lateProbe and not run.lateProbe.result then run.helloPollAt = now + 1 end
-			if rec.dm then run.dmPollAt = now + 1 end
+			if rec.dm and not (run.ackPollAt and not PresenceWorks()) then run.dmPollAt = now + 1 end
 		end
 		-- A hello only needs the bridge to have been seen; it never escalates.
 		-- A forget is the same, but the bridge must have been seen a moment after
@@ -1996,7 +1996,8 @@ local function ProcessInbox()
 	if inbox.achievements and ClaudeWoWAchievements then ClaudeWoWAchievements.Sync(inbox.achievements, inbox.now) end
 	if inbox.goals and ClaudeWoWOrders then ClaudeWoWOrders.SyncInbox(inbox.goals, inbox.now) end
 	if type(inbox.dm) == "table" then
-		run.bridgeDm = true
+		local stamp = tonumber(inbox.now)
+		if stamp and time() - stamp <= Q.INBOX_FRESH_SECONDS then run.bridgeDm = true end
 		if ClaudeWoWDM then ClaudeWoWDM.SyncInbox(inbox.dm) end
 	end
 	if inbox.widgets and ClaudeWoWWidgets then ClaudeWoWWidgets.Sync(inbox.widgets) end
@@ -3086,6 +3087,7 @@ local function SendCancel(chat, id)
 end
 
 Q.DM_NEXT_GAP_SECONDS = 5
+Q.INBOX_FRESH_SECONDS = 300
 
 function ClaudeWoW.SendDmNext(charKey)
 	if not db or db.settings.mode ~= "pixel" then return "reload" end
@@ -4889,8 +4891,8 @@ function Q.LayoutClassicPage(page, w, h)
 	end
 end
 
-function Q.ClassicParchment(tex, inset)
-	if not Q.IsClassicEra() then return false end
+function Q.BuildClassicPage(tex, inset)
+	if not Q.IsClassicEra() then return nil end
 	inset = inset or 0
 	local holder = tex:GetParent()
 	local page = CreateFrame("Frame", nil, holder)
@@ -4900,16 +4902,29 @@ function Q.ClassicParchment(tex, inset)
 	page.pieces = {}
 	for i, spec in ipairs(Q.CLASSIC_PAGE) do
 		local piece = i == 1 and tex or holder:CreateTexture(nil, "BACKGROUND", nil, 1)
-		if not pcall(piece.SetTexture, piece, spec.file) then return false end
+		if not pcall(piece.SetTexture, piece, spec.file) then return nil end
 		piece:SetTexCoord(spec.coords[1], spec.coords[2], spec.coords[3], spec.coords[4])
 		page.pieces[i] = piece
 	end
 	page:SetScript("OnSizeChanged", function(self, w, h) Q.LayoutClassicPage(self, w, h) end)
 	Q.LayoutClassicPage(page, Try(page.GetWidth, page) or 300, Try(page.GetHeight, page) or 300)
+	return page
+end
+
+function Q.ClassicParchment(tex, inset)
+	local page = Q.BuildClassicPage(tex, inset)
+	if not page then return false end
 	ui.art = ui.art or {}
 	ui.art.parchment = Q.CLASSIC_PAGE[1].file
 	ui.classicPage = page
 	return true
+end
+
+function ClaudeWoW.PaintParchment(tex)
+	local atlas = Q.QUEST_ART.parchment
+	if atlas and Q.ArtAllowed("parchment") and Q.AtlasExists(atlas) and pcall(tex.SetAtlas, tex, atlas) then return atlas end
+	if Q.BuildClassicPage(tex, 0) then return Q.CLASSIC_PAGE[1].file end
+	return nil
 end
 
 function Q.IsClassicEra()

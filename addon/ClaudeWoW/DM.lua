@@ -7,8 +7,8 @@ local FRAME_HEIGHT = 496
 local FRAME_TITLE = "Dungeon Master"
 local PARCHMENT_X = 7
 local PARCHMENT_Y = -62
-local PARCHMENT_FALLBACK_WIDTH = 322
-local PARCHMENT_FALLBACK_HEIGHT = 404
+local PARCHMENT_WIDTH = 322
+local PARCHMENT_HEIGHT = 404
 local TEXT_X = 20
 local TEXT_Y = -18
 local TEXT_WIDTH = 286
@@ -30,7 +30,7 @@ local INK_DIM = { 0.38, 0.30, 0.20 }
 T.LAYOUT = {
 	frameHeight = FRAME_HEIGHT,
 	parchmentTop = -PARCHMENT_Y,
-	parchmentHeight = PARCHMENT_FALLBACK_HEIGHT,
+	parchmentHeight = PARCHMENT_HEIGHT,
 	textTop = -TEXT_Y,
 	titleHeight = 24,
 	lineGap = LINE_GAP,
@@ -40,9 +40,6 @@ T.LAYOUT = {
 	hintSpace = HINT_Y + 18,
 }
 T.TEMPLATES = { frame = "ButtonFrameTemplate", plain = "BackdropTemplate", close = "UIPanelCloseButton" }
-T.ATLAS = { parchment = "QuestBG-Parchment" }
-T.FILES = { parchment = "Interface\\QuestFrame\\UI-QuestGreeting-TopLeft" }
-T.PARCHMENT_FILE_COORDS = { 32 / 256, 248 / 256, 92 / 256, 248 / 256 }
 T.FONTS = {
 	title = { "QuestTitleFont", "GameFontNormalLarge" },
 	body = { "QuestFont", "GameFontHighlight" },
@@ -66,12 +63,6 @@ function T.TemplateExists(name)
 	if type(C_XMLUtil) ~= "table" or type(C_XMLUtil.GetTemplateInfo) ~= "function" then return false end
 	local ok, info = pcall(C_XMLUtil.GetTemplateInfo, name)
 	return ok and info ~= nil
-end
-
-function T.AtlasExists(name)
-	if type(C_Texture) ~= "table" or type(C_Texture.GetAtlasExists) ~= "function" then return false end
-	local ok, exists = pcall(C_Texture.GetAtlasExists, name)
-	return ok and exists == true
 end
 
 local function FontName(pair)
@@ -168,27 +159,24 @@ local function DecoratePlain(f)
 	end
 end
 
-local function TextureFileSet(tex, file)
-	local ok, set = pcall(tex.SetTexture, tex, file)
-	return ok and set ~= false and set ~= nil
-end
-
 local function BuildParchment(f)
-	local paper = f:CreateTexture(nil, "BACKGROUND", nil, 1)
-	paper:SetPoint("TOPLEFT", f, "TOPLEFT", PARCHMENT_X, PARCHMENT_Y)
-	if T.AtlasExists(T.ATLAS.parchment) and pcall(paper.SetAtlas, paper, T.ATLAS.parchment, true) then
-		T.debug.parchment = T.ATLAS.parchment
-		return paper
-	end
-	paper:SetSize(PARCHMENT_FALLBACK_WIDTH, PARCHMENT_FALLBACK_HEIGHT)
-	if TextureFileSet(paper, T.FILES.parchment) then
-		local c = T.PARCHMENT_FILE_COORDS
-		paper:SetTexCoord(c[1], c[2], c[3], c[4])
-		T.debug.parchment = T.FILES.parchment
+	local area = CreateFrame("Frame", nil, f)
+	area:SetPoint("TOPLEFT", f, "TOPLEFT", PARCHMENT_X, PARCHMENT_Y)
+	area:SetSize(PARCHMENT_WIDTH, PARCHMENT_HEIGHT)
+	local paper = area:CreateTexture(nil, "BACKGROUND", nil, 1)
+	paper:SetPoint("TOPLEFT", area, "TOPLEFT", 0, 0)
+	paper:SetSize(PARCHMENT_WIDTH, PARCHMENT_HEIGHT)
+	f.parchmentArea = area
+	local paint = ClaudeWoW and ClaudeWoW.PaintParchment
+	local ok, art = false, nil
+	if type(paint) == "function" then ok, art = pcall(paint, paper) end
+	if ok and art then
+		T.debug.parchment = art
 	else
 		paper:SetColorTexture(PARCHMENT_FALLBACK_COLOR[1], PARCHMENT_FALLBACK_COLOR[2], PARCHMENT_FALLBACK_COLOR[3], PARCHMENT_FALLBACK_COLOR[4])
 		T.debug.parchment = "color"
 	end
+	T.debug.parchmentSize = PARCHMENT_WIDTH .. "x" .. PARCHMENT_HEIGHT
 	return paper
 end
 
@@ -331,7 +319,9 @@ function T.Toggle()
 	if not ok then
 		DrawFailed(err)
 		T.signature = nil
+		return
 	end
+	if T.showAfterCombat then Print("The Dungeon Master shows after combat.") end
 end
 
 local NEXT_REPLIES = {
