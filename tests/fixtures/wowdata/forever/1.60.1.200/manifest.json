@@ -7,8 +7,8 @@
   "buildFamily": "1.60.1",
   "fetchedAt": "2026-09-30T12:00:00.000Z",
   "entities": {
-    "items": { "file": "items.jsonl", "table": "ItemSparse", "rows": 3 },
+    "items": { "file": "items.jsonl", "table": "ItemSparse", "rows": 4 },
     "skilllines": { "file": "skilllines.jsonl", "table": "SkillLine", "rows": 1 },
-    "uimaps": { "file": "uimaps.jsonl", "table": "UiMap", "rows": 2 }
+    "uimaps": { "file": "uimaps.jsonl", "table": "UiMap", "rows": 3 }
   }
 }

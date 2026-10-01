@@ -5,7 +5,9 @@ const KNOWN_KINDS = Object.freeze(['item', 'npc', 'quest', 'map', 'skill', 'fact
 const TOKEN = new RegExp(`\\{(${KNOWN_KINDS.join('|')}):([^{}\\n]{0,40})\\}`, 'g');
 const ID_ONLY = /^\s*(\d{1,9})\s*$/;
 const MAP_ARGS = /^\s*(\d{1,9})\s*,\s*(\d{1,3}(?:\.\d{1,2})?)\s*,\s*(\d{1,3}(?:\.\d{1,2})?)\s*$/;
-const UNSAFE_NAME = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}|{}]/u;
+const SAFE_NAME = /^[A-Za-z0-9 ,.'\-:!?%()"]+$/;
+const GLUE = /[\p{L}\p{N}{}]/u;
+const MODEL_TRUST = 'model';
 const TOKEN_SEPARATOR = ' ';
 const TYPOGRAPHIC_APOSTROPHE = /[‘’]/g;
 const WORD_SPLIT = /[^a-z0-9']+/;
@@ -25,7 +27,7 @@ const REASON = Object.freeze({
   unsafeName: 'unsafeName',
 });
 const STORE_REASONS = Object.freeze(new Set([REASON.noData, REASON.buildMismatch, REASON.buildUnknown]));
-const PROBLEM = Object.freeze({ empty: 'empty', length: 'length', char: 'char', words: 'words', refs: 'refs' });
+const PROBLEM = Object.freeze({ empty: 'empty', length: 'length', char: 'char', glued: 'glued', words: 'words', refs: 'refs' });
 
 function parseRefs(text) {
   const refs = [];
@@ -37,16 +39,12 @@ function withoutRefs(text) {
   return String(text || '').replace(TOKEN, TOKEN_SEPARATOR);
 }
 
-function percentText(n) {
-  return n.toFixed(1);
-}
-
 function missingRow(store, entity) {
   return { reason: store.has(entity) ? REASON.unknownId : REASON.tableUnavailable };
 }
 
 function safeName(name) {
-  return typeof name === 'string' && name.trim() !== '' && !UNSAFE_NAME.test(name);
+  return typeof name === 'string' && name.trim() !== '' && SAFE_NAME.test(name);
 }
 
 function resolveNamed(entity) {
@@ -69,7 +67,7 @@ function resolveMap(store, args) {
   const row = store.byId('uimaps', Number(m[1]));
   if (!row) return missingRow(store, 'uimaps');
   if (!safeName(row.name)) return { reason: REASON.unsafeName };
-  return { id: row.id, name: row.name, x, y, text: `${row.name} (${percentText(x)}, ${percentText(y)})` };
+  return { id: row.id, name: row.name, point: { x, y, trust: MODEL_TRUST }, text: row.name };
 }
 
 const RESOLVERS = Object.freeze({ item: resolveNamed('items'), skill: resolveNamed('skilllines'), map: resolveMap });
@@ -135,10 +133,12 @@ function errorsText(errors, store) {
   return errors.map(e => tokenErrorText(e, store)).join(' ');
 }
 
-function tokenHint(store) {
-  const problem = storeProblem(store);
-  if (problem) return storeProblemText(problem, store);
-  return `Name a game thing with a reference token instead (${TOKEN_FORMS}), using an ID from the wowdata tools; the bridge writes the real name.`;
+function tokenHint() {
+  return `Name a game thing with a reference token instead (${TOKEN_FORMS}), using an ID from the wowdata tools; the bridge writes the real name. Tokens work only once game data is synced for the client's build (claude-wow data sync); until then only names the game reported may appear.`;
+}
+
+function gluedText(token) {
+  return `${token} touches a letter, a digit or another token. Put a space or punctuation on both sides of every token.`;
 }
 
 function displayWords(text) {
@@ -179,30 +179,39 @@ function refusedWords(text, names, plainWords, charRe) {
   return refused;
 }
 
-function checkText(raw, { store = null, names = [], plainWords, charRe, maxLength }) {
+function gluedToken(text, tokens) {
+  return tokens.find(t => GLUE.test(text[t.index - 1] || '') || GLUE.test(text[t.index + t.token.length] || '')) || null;
+}
+
+function checkText(raw, { store = null, tokens: allowTokens = true, names = [], plainWords, charRe, maxLength }) {
   const s = typeof raw === 'string' ? raw.normalize('NFKC').trim() : '';
   if (!s) return { ok: false, problem: PROBLEM.empty };
-  const tokens = parseRefs(s);
+  const tokens = allowTokens ? parseRefs(s) : [];
   const inputMax = tokens.length ? TOKEN_TEXT_MAX : maxLength;
   if (s.length > inputMax) return { ok: false, problem: PROBLEM.length, length: s.length, max: inputMax };
-  const rest = withoutRefs(s);
+  const rest = tokens.length ? withoutRefs(s) : s;
   const ch = refusedChar(rest, charRe);
   if (ch) return { ok: false, problem: PROBLEM.char, char: ch };
+  const glued = gluedToken(s, tokens);
+  if (glued) return { ok: false, problem: PROBLEM.glued, token: glued.token };
   const words = refusedWords(rest, names, plainWords, charRe);
   if (words.length) return { ok: false, problem: PROBLEM.words, words };
   if (!tokens.length) return { ok: true, text: s, refs: [] };
-  const expanded = createExpander(store).expand(s);
-  if (!expanded.ok) return { ok: false, problem: PROBLEM.refs, errors: expanded.errors };
+  const opened = typeof store === 'function' ? store() : store;
+  const expanded = createExpander(opened).expand(s);
+  if (!expanded.ok) return { ok: false, problem: PROBLEM.refs, errors: expanded.errors, store: opened };
+  const shownCh = refusedChar(expanded.text, charRe);
+  if (shownCh) return { ok: false, problem: PROBLEM.char, char: shownCh, expanded: true };
   if (expanded.text.length > maxLength) return { ok: false, problem: PROBLEM.length, length: expanded.text.length, max: maxLength, expanded: true };
   return { ok: true, text: expanded.text, refs: expanded.refs };
 }
 
 function refSummary(refs) {
-  return (refs || []).map(r => ({ kind: r.kind, id: r.id, name: r.name, trust: r.trust, build: r.build }));
+  return (refs || []).map(r => ({ kind: r.kind, id: r.id, name: r.name, trust: r.trust, build: r.build, ...(r.point ? { point: r.point } : {}) }));
 }
 
 module.exports = {
   KNOWN_KINDS, REASON, PROBLEM, TOKEN_FORMS, TOKEN_TEXT_MAX,
-  parseRefs, withoutRefs, createExpander, storeProblem, errorsText, tokenHint,
+  parseRefs, withoutRefs, createExpander, storeProblem, errorsText, tokenHint, gluedText,
   displayWords, refusedChar, refusedWords, checkText, refSummary,
 };

@@ -31,7 +31,7 @@
   "mailbox", "auction", "recipe", "recipes", "quest", "quests", "xp", "experience", "time", "minute", "minutes", "hour",
   "hours", "second", "seconds", "step", "steps", "round", "rounds", "trip", "trips", "batch", "batches", "stack",
   "stacks", "item", "items", "mob", "mobs", "enemy", "enemies", "target", "targets", "durability", "gear", "weapon",
-  "weapons", "armor", "bit", "lot", "lots", "task", "tasks", "way", "route", "spot", "spots", "area", "town", "city",
+  "weapons", "armor", "bit", "lot", "lots", "task", "tasks", "way", "route", "spot", "spots", "area", "town",
   "road", "map", "group", "party", "dungeon", "break", "moment", "session", "chat", "player", "character", "good",
   "great", "nice", "well", "quick", "quickly", "fast", "slow", "easy", "hard", "safe", "cheap", "full", "new", "old",
   "high", "low", "higher", "lower", "best", "better", "min", "extra", "current", "free", "ready", "far", "long", "short",

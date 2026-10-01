@@ -176,69 +176,125 @@ test('roast overlay: a TL;DR that names a game thing the recap does not have is 
   assert.equal(roast.overlayCommand(game, doneWith('Hogger says ||hi.')).roast.text, undefined);
 });
 
-const WOWDATA = path.join(__dirname, 'fixtures', 'wowdata');
-const GD = require('../bridge/gamedata');
-const fixtureData = (clientBuild = '1.60.1.70124') => GD.openStore({ dataDir: WOWDATA, clientBuild });
+const WOWDATA = path.join(__dirname, 'fixtures', 'wowdata', 'forever', '1.60.1.200');
 
 test('roast overlay: every word of the line must be a number, a recap word or a plain word, so lowercase, hidden-character and title-case names are dropped', () => {
   const game = FIXTURES.gameRecap.recap;
-  const line = (summary, data = null) => roast.overlayCommand(game, { status: 'done', text: 'Roast.', summary }, data).roast.text;
+  const line = summary => roast.overlayCommand(game, { status: 'done', text: 'Roast.', summary }).roast.text;
   assert.equal(line('hogger sends his regards.'), 'hogger sends his regards.', 'a recap name passes in any case');
   assert.equal(line('Duskwood ate you alive.'), 'Duskwood ate you alive.');
   assert.equal(line('hogger and van cleef send regards.'), undefined, 'a lowercase game name the recap does not have is dropped');
   assert.equal(line('next time, try orgrimmar.'), undefined);
-  assert.equal(line('Hogger sends you to Under city.'), 'Hogger sends you to Under city.', 'precondition: both halves are plain words');
-  assert.equal(line('Hogger sends you to Under​city.'), undefined, 'a zero-width space cannot split a name into two plain words');
-  assert.equal(line('Hogger sends you to Under⁠city.'), undefined);
+  assert.equal(line('Hogger sends you to Under city.'), undefined, 'a place name spaced into two words is refused: "city" is not a plain word');
+  assert.equal(line('Hogger taught you to back stab.'), 'Hogger taught you to back stab.', 'precondition: both halves are plain words');
+  assert.equal(line('Hogger taught you to back​stab.'), undefined, 'a zero-width space cannot split a name into two plain words');
+  assert.equal(line('Hogger taught you to back⁠stab.'), undefined);
   assert.equal(line('Hogger says ‮ouch.'), undefined);
   assert.equal(line('ǅungeon time, Hogger.'), undefined, 'a title-case letter is not an escape hatch');
   assert.equal(line('Ｈｏｇｇｅｒ sends regards.'), 'Hogger sends regards.', 'fullwidth letters are NFKC-normalized before the check');
   assert.equal(line(`Hogger ${'ha '.repeat(120)}`), undefined, `longer than ${roast.ROAST_TEXT_MAX} characters`);
 });
 
-test('roast overlay: reference tokens expand from the fixture data; an unknown or Classic-only ID drops the line; no data drops any token', () => {
+const ORDINARY_ROASTS = [
+  DONE.text,
+  'Hogger sends his regards.',
+  'That fight ended before it even started.',
+  'You saw the claw coming and still said yes.',
+  'Kiting works better when you actually run away.',
+  'Your guild will hear about this one.',
+  'Twenty three levels of experience, zero levels of caution.',
+  'Rend did the rest while you were busy losing.',
+  'A level 11 bully just made a level 23 hero look silly.',
+  'Next time, maybe bring a friend and a plan.',
+  'Duskwood is spooky, but Hogger is scarier.',
+  'Respect the claw. Always respect the claw.',
+  'You lost to Hogger, which is honestly a rite of passage.',
+  'Bold strategy: let the brute hit you first and hope he gets tired.',
+  'That was not a pull, that was a donation.',
+  'Your armor called in sick today.',
+  'Somewhere, Hogger is telling this story at dinner.',
+  'Pro tip: health bars go down faster when you stand still.',
+  'The Night Elf Hunter forgot to bring a pet again.',
+  'Absorbed 4, took 61, learned nothing.',
+  'Even the healers in Darkshire saw that coming.',
+  "You died doing what you loved: standing in the wrong place.",
+  'Hogger did not even need the second hit.',
+  "Imagine losing a staring contest to Hogger. Oh wait, you just did.",
+];
+
+test('roast overlay: ordinary rule-abiding roast lines are shown', () => {
+  assert.equal(ORDINARY_ROASTS[0], 'Hogger clawed you so hard the overkill has its own respawn timer.', 'starts with the recorded reply');
+  for (const summary of ORDINARY_ROASTS) {
+    const checked = roast.checkLine(FIXTURES.gameRecap.recap, { status: 'done', text: 'Roast.', summary });
+    assert.deepEqual(checked, { text: summary, refused: '' }, summary);
+  }
+});
+
+test('roast overlay: no reference tokens; any brace drops the line', () => {
   const game = FIXTURES.gameRecap.recap;
   const outcome = summary => ({ status: 'done', text: 'Roast.', summary });
-  assert.equal(roast.overlayCommand(game, outcome('Hogger took your {item:501} too.'), fixtureData()).roast.text, 'Hogger took your Fixture Blade too.');
-  assert.equal(roast.overlayCommand(game, outcome('Hogger took your {item:999} too.'), fixtureData()).roast.text, undefined);
-  assert.equal(roast.overlayCommand(game, outcome('Hogger took your {item:2318} too.'), fixtureData()).roast.text, undefined, 'a Classic ID absent from the Forever data');
-  assert.equal(roast.overlayCommand(game, outcome('Hogger took your {item:501} too.'), fixtureData('1.61.0.1')).roast.text, undefined, 'data for another build family');
-  assert.equal(roast.overlayCommand(game, outcome('Hogger took your {item:501} too.'), null).roast.text, undefined, 'no synced data');
-  assert.equal(roast.overlayCommand(game, outcome('Hogger took your {item:501} in Silverpine.'), fixtureData()).roast.text, undefined, 'a token never excuses a raw name');
-  assert.equal(roast.overlayCommand(game, outcome('Hogger sends his regards.'), null).roast.text, 'Hogger sends his regards.', 'without data a line with no token is shown as before');
-  assert.deepEqual(roast.checkLine(game, outcome('Hogger took your {item:2318} too.'), fixtureData()), {
-    text: '', refused: '{item:2318}: that item ID is not in the Forever client data for build 1.60.1.200. Look the ID up with the wowdata tools; never use an ID from memory or from Classic.',
-  });
-  assert.match(roast.checkLine(game, outcome('Hogger took your {item:501}.'), null).refused, /No game data is synced/);
-  assert.match(roast.checkLine(game, outcome('Go to silverpine.'), null).refused, /words neither in the recap nor plain: silverpine/);
+  assert.equal(roast.overlayCommand(game, outcome('Hogger took your {item:501} too.')).roast.text, undefined);
+  assert.equal(roast.checkLine(game, outcome('Hogger took your {item:501} too.')).refused, 'the character U+007B is not allowed');
+  assert.equal(roast.overlayCommand(game, outcome('Hogger took your } too.')).roast.text, undefined);
+  assert.match(roast.checkLine(game, outcome('Go to silverpine.')).refused, /words neither in the recap nor plain: silverpine/);
 });
 
-test('roast vocabulary: lowercase, no duplicates, no game proper name, no word the order list refuses as a game name', () => {
+function fixtureNames() {
+  const names = [];
+  for (const f of fs.readdirSync(WOWDATA).filter(n => n.endsWith('.jsonl'))) {
+    for (const row of fs.readFileSync(path.join(WOWDATA, f), 'utf8').split('\n').filter(Boolean)) names.push(JSON.parse(row).name);
+  }
+  return names;
+}
+
+test('roast vocabulary: a couple of thousand lowercase words, no duplicates, no single-word game name from the fixture data, no race, class, profession or place', () => {
   const words = require('../bridge/roast-words.json');
+  assert.ok(words.length >= 1500, `${words.length} words`);
   assert.equal(new Set(words).size, words.length, 'no duplicates');
   for (const w of words) assert.match(w, /^[a-z][a-z']*$/, w);
-  for (const n of ['horde', 'alliance', 'orc', 'rogue', 'thrall', 'orgrimmar', 'undercity', 'silverpine', 'durotar', 'barrens',
-    'worgen', 'defias', 'murloc', 'kobold', 'wolves', 'wolf', 'light', 'hearthstone', 'forest', 'leather', 'linen', 'stealth', 'forever',
-    'skinning', 'leatherworking', 'tailoring', 'mining', 'herbalism']) assert.ok(!roast.ROAST_WORDS.has(n), n);
+  const single = fixtureNames().filter(n => !/\s/.test(n.trim())).map(n => n.trim().toLowerCase());
+  assert.ok(single.includes('ember'), 'precondition: the fixture data has a single-word name');
+  for (const n of single) assert.ok(!roast.ROAST_WORDS.has(n), n);
+  const professions = Object.values(require('../bridge/goals').PROFESSION_SKILL_IDS).flatMap(n => n.toLowerCase().split(' ')).filter(w => w !== 'first');
+  for (const n of ['horde', 'alliance', 'orc', 'troll', 'tauren', 'undead', 'human', 'dwarf', 'gnome', 'elf', 'rogue', 'warrior',
+    'mage', 'priest', 'hunter', 'druid', 'paladin', 'shaman', 'warlock', 'thrall', 'orgrimmar', 'undercity', 'crossroads', 'barrens',
+    'brill', 'ratchet', 'everlook', 'sepulcher', 'bulwark', 'durotar', 'mulgore', 'silverpine', 'tirisfal', 'stormwind', 'ironforge',
+    'darnassus', 'murloc', 'kobold', 'gnoll', 'worgen', 'defias', 'scourge', 'light', 'hearthstone', 'forest', 'leather', 'linen',
+    'wolves', 'wolf', 'stealth', 'forever', 'city', ...professions]) assert.ok(!roast.ROAST_WORDS.has(n), n);
 });
 
-test('roast overlay: the finished hook reads the bridge game data and logs why a line was left off the card', async () => {
+test('roast overlay: talking back in the roast chat never reaches the card, even when it names places', async () => {
   const svc = await overlayServer();
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'wowai-roast-refs-'));
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'wowai-roast-talkback-'));
+  try {
+    const { core } = overlayCore({ url: svc.url }, path.join(base, 'scratch'));
+    const talk = { id: 13, kind: 'roast', text: 'tell me about Silverpine and Thrall' };
+    roast.handle(talk, core);
+    assert.equal(talk.recap, undefined, 'a typed line is not a recap, so it never becomes the name list');
+    assert.equal(talk.text, 'tell me about Silverpine and Thrall', 'passed through as is');
+    assert.equal(await roast.finished(talk, { status: 'done', text: 'Sure.', summary: 'Silverpine and Thrall send regards.' }, core), null);
+    assert.equal(svc.bodies.length, 0, 'no card');
+    const death = { id: 14, kind: 'roast', text: FIXTURES.gameRecap.recap };
+    roast.handle(death, core);
+    await roast.finished(death, DONE, core);
+    assert.equal(svc.bodies.length, 1, 'precondition: a real recap in the same chat does send a card');
+  } finally {
+    svc.server.close();
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('roast overlay: the finished hook checks the line once and logs why it was left off the card', async () => {
+  const svc = await overlayServer();
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'wowai-roast-log-'));
   try {
     const { core, logs } = overlayCore({ url: svc.url }, path.join(base, 'scratch'));
-    core.gameData = () => fixtureData();
-    const run = async (id, summary) => {
-      const job = { id, kind: 'roast', text: FIXTURES.gameRecap.recap };
-      roast.handle(job, core);
-      await roast.finished(job, { status: 'done', text: 'Roast.', summary }, core);
-    };
-    await run(11, 'Hogger took your {item:501} too.');
-    await run(12, 'Hogger took your {item:2318} too.');
-    assert.equal(svc.bodies[0].body.roast.text, 'Hogger took your Fixture Blade too.');
-    assert.equal(svc.bodies[1].body.roast.text, undefined, 'the card still goes out without the line');
-    assert.equal(svc.bodies[1].body.roast.killer, 'Hogger');
-    assert.ok(logs.some(l => /#12 roast: line left off the card \(\{item:2318\}: that item ID is not in the Forever client data/.test(l)), logs.join('\n'));
+    const job = { id: 12, kind: 'roast', text: FIXTURES.gameRecap.recap };
+    roast.handle(job, core);
+    await roast.finished(job, { status: 'done', text: 'Roast.', summary: 'Hogger and Van Cleef send regards.' }, core);
+    assert.equal(svc.bodies[0].body.roast.text, undefined, 'the card still goes out without the line');
+    assert.equal(svc.bodies[0].body.roast.killer, 'Hogger');
+    assert.ok(logs.some(l => /#12 roast: line left off the card \(words neither in the recap nor plain: van, cleef\)/.test(l)), logs.join('\n'));
   } finally {
     svc.server.close();
     fs.rmSync(base, { recursive: true, force: true });

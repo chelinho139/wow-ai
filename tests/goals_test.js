@@ -155,7 +155,7 @@ test('order vocabulary: lowercase, no duplicates, a few hundred plain words, no 
   const properNames = ['horde', 'alliance', 'orc', 'troll', 'tauren', 'undead', 'human', 'dwarf', 'gnome', 'elf', 'rogue', 'warrior',
     'mage', 'priest', 'hunter', 'druid', 'paladin', 'shaman', 'warlock', 'thrall', 'orgrimmar', 'undercity', 'crossroads', 'barrens',
     'brill', 'ratchet', 'everlook', 'sepulcher', 'bulwark', 'durotar', 'mulgore', 'silverpine', 'tirisfal', 'stormwind', 'ironforge',
-    'darnassus', 'murloc', 'kobold', 'gnoll', 'worgen', 'defias', 'scourge', 'light', 'hearthstone', 'forest', 'leather', 'linen'];
+    'darnassus', 'murloc', 'kobold', 'gnoll', 'worgen', 'defias', 'scourge', 'light', 'hearthstone', 'forest', 'leather', 'linen', 'city'];
   for (const n of properNames) assert.ok(!G.ORDER_WORDS.has(n), n);
 });
 
@@ -287,14 +287,14 @@ test('order tokens: {item:ID}, {skill:ID} and {map:ID,x,y} expand from the fixtu
   try {
     const res = await r.store.call('order_issue', { text: 'Buy 2 {item:501}, then train {skill:40} at {map:9003,27.5,25}' });
     assert.equal(res.ok, true, res.text);
-    const want = 'Buy 2 Fixture Blade, then train Fixture Craft at Fixture Town (27.5, 25.0)';
-    assert.match(res.text, new RegExp(`"${want.replace(/[().]/g, '\\$&')}"`));
+    const want = 'Buy 2 Fixture Blade, then train Fixture Craft at Fixture Town';
+    assert.match(res.text, new RegExp(`"${want}"`));
     const current = r.read().orders.current;
-    assert.equal(current.text, want);
+    assert.equal(current.text, want, 'a map token shows the map name only, never the typed coordinates');
     assert.deepEqual(current.refs, [
       { kind: 'item', id: 501, name: 'Fixture Blade', trust: 'client-data', build: FIXTURE_BUILD },
       { kind: 'skill', id: 40, name: 'Fixture Craft', trust: 'client-data', build: FIXTURE_BUILD },
-      { kind: 'map', id: 9003, name: 'Fixture Town', trust: 'client-data', build: FIXTURE_BUILD },
+      { kind: 'map', id: 9003, name: 'Fixture Town', trust: 'client-data', build: FIXTURE_BUILD, point: { x: 27.5, y: 25, trust: 'model' } },
     ]);
     assert.equal(r.posts[0].command.orders.order.text, want, 'the overlay gets the expanded names, never a raw token');
     assert.equal((await r.store.call('order_issue', { text: 'Raise Leatherworking to 150' })).ok, true, 'a plain order still works with data synced');
@@ -302,7 +302,7 @@ test('order tokens: {item:ID}, {skill:ID} and {map:ID,x,y} expand from the fixtu
   } finally { r.cleanup(); }
 });
 
-test('order tokens: an unknown ID, a Classic-only ID and a kind with no name source refuse the whole order and save nothing', async () => {
+test('order tokens: unknown IDs, a malformed map token, a kind with no name source and an unsafe data name refuse the whole order and save nothing', async () => {
   const r = rig({ gameData: openFixtureData });
   try {
     const refuse = async (text, re) => {
@@ -316,7 +316,8 @@ test('order tokens: an unknown ID, a Classic-only ID and a kind with no name sou
     await refuse('go to {map:4242,10,10}', /\{map:4242,10,10\}: that map ID/);
     await refuse('go to {map:9003,101,10}', /coordinates run from 0 to 100/);
     await refuse('kill {npc:1} for {quest:2} and {faction:3}', /\{npc:1\}: there is no verified source of npc names yet, so leave that name out\. \{quest:2\}: .*quest names.*\{faction:3\}: .*faction names/);
-    await refuse('buy 2 {item:503}', /characters that cannot be shown/);
+    await refuse('buy 2 {item:503}', /\{item:503\}: the name in the data has characters that cannot be shown/);
+    await refuse('buy 2 {item:504}', /\{item:504\}: the name in the data has characters that cannot be shown/);
     assert.equal(fs.existsSync(r.file), false, 'nothing was written');
     assert.equal(r.posts.length, 0, 'nothing was pushed');
   } finally { r.cleanup(); }
@@ -341,13 +342,60 @@ test('order tokens: a raw game name next to a valid token is still refused, in a
   };
   refuse('Buy 2 {item:501} in Silverpine', /not allowed: "silverpine"\..*reported names: Leatherworking, Bone\. Name a game thing with a reference token instead/);
   refuse('buy 2 {item:501} from thrall in orgrimmar', /not allowed: "thrall", "orgrimmar"/);
-  refuse('buy 2 {item:501} in Under​city', /U\+200B/);
-  refuse('buy 2 {item:501} in Under­city', /U\+00AD/);
-  refuse('buy 2 {item:501} in the ‮city', /U\+202E/);
-  refuse('buy 2 {item:501} from ǅungeon', /U\+017E/);
-  refuse('buy 2 {item:501}s', /not allowed: "s"/);
+  refuse('go to Under city', /not allowed: "city"/);
+  refuse('buy 2 {item:501} in Under city', /not allowed: "city"/);
+  refuse('buy 2 {item:501} near the​town', /^The order text has the character U\+200B/);
+  refuse('buy 2 {item:501} near the­town', /^The order text has the character U\+00AD/);
+  refuse('buy 2 {item:501} in the ‮town', /^The order text has the character U\+202E/);
+  refuse('buy 2 {item:501} from ǅungeon', /^The order text has the character U\+017E/);
   refuse('buy {item:501} {item 2}', /"\{"/);
-  assert.equal(G.validateOrderText('buy 2 {item:501} in the town', NAMES, store).ok, true);
+  assert.equal(G.validateOrderText('buy 2 {item:501} near the town', NAMES, store).ok, true, 'precondition: the same words without the hidden character pass');
+});
+
+test('order tokens: a token glued to a letter, a digit or another token is refused with the reason', () => {
+  const store = fixtureData();
+  for (const [text, token] of [['buy 2{item:501} now', '{item:501}'], ['buy {item:501}now', '{item:501}'], ['buy {item:501}{item:502}', '{item:501}'], ['buy 2 {item:501}s', '{item:501}']]) {
+    const r = G.validateOrderText(text, NAMES, store);
+    assert.equal(r.ok, false, text);
+    assert.equal(r.text, `${token} touches a letter, a digit or another token. Put a space or punctuation on both sides of every token.`, text);
+  }
+  assert.equal(G.validateOrderText('buy 2 {item:501}, {item:502}.', NAMES, store).text, 'buy 2 Fixture Blade, Fixture Letter.');
+});
+
+test('order tokens: the expanded text goes through the order character set again', () => {
+  const store = fixtureData();
+  const quoted = { ...store, byId: (entity, id) => (entity === 'items' && id === 501 ? { id: 501, name: 'Fixture (Rare)' } : store.byId(entity, id)) };
+  const r = G.validateOrderText('buy {item:501}', NAMES, quoted);
+  assert.equal(r.ok, false);
+  assert.match(r.text, /A name from the game data has the character U\+0028, which orders may not show/);
+});
+
+test('order tokens: the game data is opened only when the order has a token', async () => {
+  let opened = 0;
+  const r = rig({ gameData: text => { opened += 1; return openFixtureData(text); } });
+  try {
+    assert.equal((await r.store.call('order_issue', { text: 'Raise Leatherworking to 150' })).ok, true);
+    assert.equal((await r.store.call('order_issue', { text: 'go to Silverpine' })).ok, false);
+    assert.equal(opened, 0, 'a plain or refused-by-words order never opens the data');
+    assert.equal((await r.store.call('order_issue', { text: 'buy 2 {item:501}' })).ok, true);
+    assert.equal(opened, 1);
+  } finally { r.cleanup(); }
+});
+
+test('order tokens through the store the bridge builds: CLAUDE_WOW_HOME data and the context client build expand {item:501}', async () => {
+  const dir = tmpDir('bridgegoals');
+  try {
+    const home = require('../bridge/home').resolve({ CLAUDE_WOW_HOME: dir });
+    fs.cpSync(WOWDATA, home.data, { recursive: true });
+    const store = G.createBridgeGoals({ home, context: () => ({ text: BONE_CONTEXT, at: NOW, receivedAt: Date.now() }), streamOptions: () => ({ ...ST.INERT_OPTIONS }) });
+    const res = await store.call('order_issue', { text: 'Buy 2 {item:501}' });
+    assert.equal(res.ok, true, res.text);
+    const saved = JSON.parse(fs.readFileSync(path.join(home.goals, BONE_KEY, G.GOALS_FILE), 'utf8'));
+    assert.equal(saved.orders.current.text, 'Buy 2 Fixture Blade');
+    assert.equal(saved.orders.current.refs[0].build, FIXTURE_BUILD);
+    const bridgeSrc = fs.readFileSync(BRIDGE, 'utf8');
+    assert.match(bridgeSrc, /const goalStore = GOALS\.createBridgeGoals\(\{\s*home: HOME,/, 'bridge.js builds its goal store with this factory and its home');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('order tokens: without synced data, or with data for another build or an unknown client build, no token expands and the order says why', async () => {
@@ -358,8 +406,7 @@ test('order tokens: without synced data, or with data for another build or an un
     assert.equal(tokenOrder.ok, false);
     assert.match(tokenOrder.text, /No game data is synced for this build yet \(claude-wow data sync\).*only names the game itself reported may appear/);
     const word = G.validateOrderText('Buy 2 in Silverpine', NAMES, none);
-    assert.match(word.text, /"silverpine".*No game data is synced for this build yet/);
-    assert.doesNotMatch(word.text, /Name a game thing with a reference token/);
+    assert.match(word.text, /"silverpine".*Tokens work only once game data is synced for the client's build \(claude-wow data sync\); until then only names the game reported may appear\./);
     assert.deepEqual(G.validateOrderText('Raise Leatherworking to 150', NAMES, none), { ok: true, text: 'Raise Leatherworking to 150' }, 'Phase 0 orders work as before');
     assert.match(G.validateOrderText('Buy 2 {item:501}', NAMES, null).text, /No game data is synced/);
   } finally { fs.rmSync(empty, { recursive: true, force: true }); }

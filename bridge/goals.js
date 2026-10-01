@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const ST = require('./plugins/stream');
 const GR = require('./gamerefs');
+const GD = require('./gamedata');
 
 const STORE_VERSION = 1;
 const GOALS_FILE = 'goals.json';
@@ -139,8 +140,12 @@ function lengthText(r) {
   return `The order text is ${r.length} characters; the limit is ${r.max}.`;
 }
 
-function refusedWordsText(words, names, gameData) {
-  return `The order uses words that are not allowed: ${words.map(w => `"${w}"`).join(', ')}. No zone, NPC, item or quest names. An order may use only numbers, plain words from the order vocabulary, and these reported names: ${namesText(names)}. ${GR.tokenHint(gameData)}`;
+function refusedWordsText(words, names) {
+  return `The order uses words that are not allowed: ${words.map(w => `"${w}"`).join(', ')}. No zone, NPC, item or quest names. An order may use only numbers, plain words from the order vocabulary, and these reported names: ${namesText(names)}. ${GR.tokenHint()}`;
+}
+
+function expandedCharText(ch) {
+  return `A name from the game data has the character ${codePoint(ch)}, which orders may not show. Leave that name out.`;
 }
 
 function validateOrderText(text, names = [], gameData = null) {
@@ -148,9 +153,10 @@ function validateOrderText(text, names = [], gameData = null) {
   if (r.ok) return r.refs.length ? { ok: true, text: r.text, refs: GR.refSummary(r.refs) } : done(r.text);
   if (r.problem === GR.PROBLEM.empty) return fail('The order text is empty.');
   if (r.problem === GR.PROBLEM.length) return fail(lengthText(r));
-  if (r.problem === GR.PROBLEM.char) return fail(refusedCharText(r.char));
-  if (r.problem === GR.PROBLEM.words) return fail(refusedWordsText(r.words, names, gameData));
-  return fail(`The whole order was refused and nothing was saved. ${GR.errorsText(r.errors, gameData)}`);
+  if (r.problem === GR.PROBLEM.char) return fail(r.expanded ? expandedCharText(r.char) : refusedCharText(r.char));
+  if (r.problem === GR.PROBLEM.glued) return fail(GR.gluedText(r.token));
+  if (r.problem === GR.PROBLEM.words) return fail(refusedWordsText(r.words, names));
+  return fail(`The whole order was refused and nothing was saved. ${GR.errorsText(r.errors, r.store)}`);
 }
 
 function emptyStore(character) {
@@ -253,7 +259,7 @@ function issueOrder(doc, args, snap, now, gameData) {
   }
   const stale = staleContextText(snap, stamp);
   if (stale) return fail(stale);
-  const checked = validateOrderText(args.text, knownNames(snap), gameData(snap.text));
+  const checked = validateOrderText(args.text, knownNames(snap), () => gameData(snap.text));
   if (!checked.ok) return checked;
   const goalId = args.goalId === undefined || args.goalId === null || args.goalId === '' ? null : String(args.goalId);
   if (goalId && !doc.goals.some(g => g.id === goalId)) return fail(`There is no goal ${goalId}. goal_list shows the ids.`);
@@ -349,6 +355,25 @@ function createGoals(opts) {
   return { call, file: key => storeFile(root, key) };
 }
 
+function openGameData(dataDir, contextText, log) {
+  try {
+    return GD.openStore({ dataDir, clientBuild: GD.clientBuildOf(contextText || '') });
+  } catch (e) {
+    log(`goals: cannot open the synced game data for reference tokens (${e.message})`);
+    return null;
+  }
+}
+
+function createBridgeGoals({ home, context, streamOptions, log = () => {} }) {
+  return createGoals({
+    dir: home.goals,
+    context,
+    streamOptions,
+    gameData: contextText => openGameData(home.data, contextText, log),
+    log,
+  });
+}
+
 function toolSchemas() {
   return [
     {
@@ -371,7 +396,7 @@ function toolSchemas() {
     },
     {
       name: TOOL.order,
-      description: `Issue the one current order shown on the stream overlay, or clear it. Advice only. Never type a zone, NPC, item or quest name, in any letter case. Name a game thing only with a reference token, which the bridge expands to its real name from the synced Forever client data: ${GR.TOKEN_FORMS} (x and y from 0 to 100). Take each ID from the wowdata tools, never from memory or Classic; an ID the data does not have refuses the whole order. {npc:ID}, {quest:ID} and {faction:ID} have no name source yet and are refused. Without synced data no token works and only reported names may appear. Every other word must be the character's name, a profession in the game's Professions line, a number, or a plain English word from a fixed vocabulary; any other word is refused and the error names it. At most ${ORDER_TEXT_MAX} characters after expansion, using only ${ORDER_CHARS_TEXT} outside tokens, so no slash commands or macros. Refused when the game context is more than ${CONTEXT_STALE_MS / 60000} minutes old.`,
+      description: `Issue the one current order shown on the stream overlay, or clear it. Advice only. Never type a zone, NPC, item or quest name, in any letter case. Name a game thing only with a reference token, which the bridge expands to its real name from the synced Forever client data: ${GR.TOKEN_FORMS}. A map token shows only the map's name; its x and y (0 to 100) are kept with the order as your estimate, never shown as fact. Put a space or punctuation on both sides of each token. Take each ID from the wowdata tools, never from memory or Classic; an ID the data does not have refuses the whole order. {npc:ID}, {quest:ID} and {faction:ID} have no name source yet and are refused. Without synced data no token works and only reported names may appear. Every other word must be the character's name, a profession in the game's Professions line, a number, or a plain English word from a fixed vocabulary; any other word is refused and the error names it. The text you send may be up to ${GR.TOKEN_TEXT_MAX} characters with its tokens (${ORDER_TEXT_MAX} without any); the order as shown, after expansion, is at most ${ORDER_TEXT_MAX} characters. Use only ${ORDER_CHARS_TEXT}, so no slash commands or macros. Refused when the game context is more than ${CONTEXT_STALE_MS / 60000} minutes old.`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -388,5 +413,5 @@ module.exports = {
   STORE_VERSION, GOALS_FILE, ACTIVE_GOALS_MAX, ORDER_HISTORY_MAX, ORDER_TEXT_MAX, GOAL_TITLE_MAX, OVERLAY_GOALS_MAX, TARGET_RANK_LIMIT,
   TOOL, TOOL_NAMES, WRITE_TOOL_NAMES, PROFESSION_SKILL_IDS, ORDER_WORDS, CONTEXT_STALE_MS, ADDON_CONTEXT_MAX_BYTES,
   parseProfessions, characterOf, snapshotOf, skillIdForName, validateOrderText, orderWords,
-  readStore, writeStore, overlayPayload, overlayCommand, listView, storeFile, createGoals, toolSchemas,
+  readStore, writeStore, overlayPayload, overlayCommand, listView, storeFile, createGoals, createBridgeGoals, toolSchemas,
 };

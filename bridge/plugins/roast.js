@@ -88,24 +88,23 @@ function recapNames(recap) {
   return GR.displayWords(recap);
 }
 
-function refusedText(r, gameData) {
+function refusedText(r) {
   if (r.problem === GR.PROBLEM.length) return `${r.length} characters, the limit is ${r.max}`;
   if (r.problem === GR.PROBLEM.char) return `the character U+${r.char.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')} is not allowed`;
   if (r.problem === GR.PROBLEM.words) return `words neither in the recap nor plain: ${r.words.join(', ')}`;
-  if (r.problem === GR.PROBLEM.refs) return GR.errorsText(r.errors, gameData);
   return 'it is empty';
 }
 
-function checkLine(recap, outcome, gameData = null) {
+function checkLine(recap, outcome) {
   const line = roastLine(outcome);
   if (!line) return { text: '', refused: '' };
-  const r = GR.checkText(line, { store: gameData, names: recapNames(recap), plainWords: ROAST_WORDS, charRe: ROAST_CHAR_RE, maxLength: ROAST_TEXT_MAX });
-  return r.ok ? { text: r.text, refused: '' } : { text: '', refused: refusedText(r, gameData) };
+  const r = GR.checkText(line, { tokens: false, names: recapNames(recap), plainWords: ROAST_WORDS, charRe: ROAST_CHAR_RE, maxLength: ROAST_TEXT_MAX });
+  return r.ok ? { text: r.text, refused: '' } : { text: '', refused: refusedText(r) };
 }
 
-function overlayCommand(recap, outcome, gameData = null) {
+function overlayCommand(recap, outcome, checked = checkLine(recap, outcome)) {
   const facts = recapFacts(recap);
-  const { text } = checkLine(recap, outcome, gameData);
+  const { text } = checked;
   const roast = {};
   if (text) roast.text = text;
   for (const key of ['killer', 'ability', 'overkill', 'zone']) {
@@ -127,10 +126,9 @@ async function sendToOverlay(job, outcome, core) {
     return null;
   }
   const url = stream.serviceUrl(options);
-  const gameData = typeof core.gameData === 'function' ? core.gameData() : null;
-  const checked = checkLine(job.recap, outcome, gameData);
+  const checked = checkLine(job.recap, outcome);
   if (checked.refused) core.log(`${core.tag(job)} roast: line left off the card (${checked.refused})`);
-  const command = overlayCommand(job.recap, outcome, gameData);
+  const command = overlayCommand(job.recap, outcome, checked);
   try {
     const result = await stream.postControl(url, command);
     core.log(`${core.tag(job)} roast: overlay -> ${result.status}${result.message ? ' ' + result.message : ''}`);
@@ -158,7 +156,7 @@ const plugin = {
       core.fail(job, `The roast plugin needs a scratch folder and could not create ${path.resolve(cwd)}: ${e.message}\nSet plugins.roast.cwd in config.json to a folder that works.`);
       return;
     }
-    if (isRoast(job)) {
+    if (isRecap(job.text)) {
       job.recap = String(job.text || '');
       job.text = roastPrompt(job.text);
     }

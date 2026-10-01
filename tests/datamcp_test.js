@@ -320,11 +320,11 @@ test('reference tokens: {item:ID}, {skill:ID} and {map:ID,x,y} expand to canonic
   const ex = GR.createExpander(GD.openStore({ dataDir, clientBuild: '1.60.1.70124' }));
   const r = ex.expand('Bring {item:501} x2 to {map:9003,27.5,25} and train {skill:40}.');
   assert.equal(r.ok, true);
-  assert.equal(r.text, 'Bring Fixture Blade x2 to Fixture Town (27.5, 25.0) and train Fixture Craft.');
+  assert.equal(r.text, 'Bring Fixture Blade x2 to Fixture Town and train Fixture Craft.', 'a map token shows the name only; the typed coordinates are not canonical');
   assert.deepEqual(r.refs.map(x => [x.kind, x.id, x.name]), [['item', 501, 'Fixture Blade'], ['map', 9003, 'Fixture Town'], ['skill', 40, 'Fixture Craft']]);
-  assert.deepEqual(r.refs[1], { token: '{map:9003,27.5,25}', kind: 'map', id: 9003, name: 'Fixture Town', x: 27.5, y: 25, source: 'wago.tools', build: BUILD, trust: 'client-data' });
+  assert.deepEqual(r.refs[1], { token: '{map:9003,27.5,25}', kind: 'map', id: 9003, name: 'Fixture Town', point: { x: 27.5, y: 25, trust: 'model' }, source: 'wago.tools', build: BUILD, trust: 'client-data' });
   assert.deepEqual(ex.expand('no tokens, {not:1} and {"a":1} stay'), { ok: true, text: 'no tokens, {not:1} and {"a":1} stay', refs: [], errors: [] });
-  assert.equal(ex.expand('{map: 9002 , 0, 100}').text, 'Fixture Vale (0.0, 100.0)');
+  assert.equal(ex.expand('{map: 9002 , 0, 100}').text, 'Fixture Vale');
 });
 
 test('reference tokens: unknown IDs, bad tokens, coordinates off the map and kinds with no names are rejected', async () => {
