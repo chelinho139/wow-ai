@@ -69,6 +69,7 @@ registry.register(require('./plugins/stream'));
 registry.register(require('./plugins/live'));
 const LP = require('./liveproto');
 const T = require('./titles');
+const GOALS = require('./goals');
 
 const HERE = __dirname;
 // Config, state, transcripts, log and scratch live in the home folder (home.js:
@@ -727,11 +728,16 @@ function readOutbox() {
 function setContext(job) {
   const text = String(job.ctx || '').replace(/\r/g, '').trim().slice(0, 2000);
   const prev = (state.context && state.context.text) || '';
-  if (text === prev) return;
-  state.context = text ? { text, at: Date.now(), session: job.session || '' } : null;
+  if (text === prev) { noteContextHeard(); return; }
+  const heardAt = Date.now();
+  state.context = text ? { text, at: heardAt, receivedAt: heardAt, session: job.session || '' } : null;
   saveState();
   const who = (text.split('\n').find(l => /^Character:/i.test(l)) || text.split('\n')[0] || '').slice(0, 100);
   log(`#${job.id}${job.session ? '@' + job.session : ''} game context ${text ? 'updated: ' + who : 'cleared'}`);
+}
+
+function noteContextHeard() {
+  if (state.context) state.context.receivedAt = Date.now();
 }
 
 function gameContext() {
@@ -806,6 +812,7 @@ function submit(job) {
   if (alreadyHandled(job)) return;
   clearSignalsAhead(job.id);
   if (job.ctx !== undefined) setContext(job);
+  else noteContextHeard();
   if (job.forget) {
     // A deleted chat: forget it and ack. No agent run.
     markHandled(job);
@@ -950,7 +957,16 @@ const core = {
   get liveHome() { return liveHomeArg(); },
   get claudeDir() { return CLAUDE_DIR; },
   runAgent,
+  goals: (tool, args) => goalStore.call(tool, args),
+  agentPids: () => [...running.values()].map(r => r.child).concat(T.titleChildren()).filter(Boolean).map(c => c.pid),
 };
+
+const goalStore = GOALS.createGoals({
+  dir: HOME.goals,
+  context: () => state.context,
+  streamOptions: () => core.options('stream'),
+  log,
+});
 
 function liveHomeArg() {
   return HOME.source === 'CLAUDE_WOW_HOME' ? HOME.dir : '';
@@ -991,6 +1007,21 @@ function stopPlugins() {
 // resuming (the coding plugin: the folder changed). The plugin's own
 // instructions (tools) go into the system prompt; its surfaces say whether the
 // run may mark the map and whether macro blocks in the reply become buttons.
+const IN_GAME_NEVER_GRANTED = LP.GOAL_WRITE_TOOLS;
+function inGameDeniedTools() {
+  return [...IN_GAME_NEVER_GRANTED, ...homeGuardRules()];
+}
+
+function homeGuardRules() {
+  let real = HOME.dir;
+  try { real = fs.realpathSync(HOME.dir); } catch {}
+  const homes = [...new Set([HOME.dir, real])];
+  return homes.flatMap(dir => [
+    P.absolutePathRule('Read', LP.tokenFile(dir)),
+    P.absolutePathRule('Edit', path.join(dir, path.basename(HOME.goals), '**')),
+  ]);
+}
+
 function runAgent(job, opts = {}) {
   const key = chatKey(job);
   const cwd = opts.cwd || DEFAULT_CWD;
@@ -1008,8 +1039,8 @@ function runAgent(job, opts = {}) {
   job.agent = agentId;
   const agent = A.AGENTS[agentId];
   const chosen = chatSettings(job);
-  const grantForGood = P.splitGrants(job.allow);
-  const grantOnce = P.splitGrants(job.allowOnce);
+  const grantForGood = P.splitGrants(P.withoutRules(job.allow, IN_GAME_NEVER_GRANTED));
+  const grantOnce = P.splitGrants(P.withoutRules(job.allowOnce, IN_GAME_NEVER_GRANTED));
   if (grantForGood.rules.length) {
     const added = allowRules(agentId, grantForGood.rules);
     log(`${tag} allowed for ${agentId}: ${grantForGood.rules.join(', ')}${added.length ? '' : ' (already allowed)'}`);
@@ -1019,7 +1050,7 @@ function runAgent(job, opts = {}) {
   }
   const dataServer = opts.gameData && agentId === 'claude' ? gameDataServer(tag) : null;
   const runOnlyRules = dataServer ? [...grantOnce.rules, ...dataServer.rules] : grantOnce.rules;
-  const acfg = A.withChatSettings(P.withRunOnlyRules(A.agentConfig(cfg, agentId), runOnlyRules), agentId, chosen);
+  const acfg = A.withChatSettings(P.withRunDeniedRules(P.withRunOnlyRules(A.agentConfig(cfg, agentId), runOnlyRules), inGameDeniedTools()), agentId, chosen);
   const runDirs = [...grantForGood.dirs, ...grantOnce.dirs].map(d => P.resolveCwd(d, DEFAULT_CWD));
   if (runDirs.length) {
     acfg.addDirs = [...new Set([...A.addDirs(acfg), ...runDirs])];
@@ -1117,7 +1148,7 @@ function runAgent(job, opts = {}) {
   if (job.title) nameChat(job, key);
 
   const granted = P.grantsFor(acfg, cwd);
-  const parser = agent.parser({ cwd, granted, isDir: isDirectory });
+  const parser = agent.parser({ cwd, granted, isDir: isDirectory, neverOffer: IN_GAME_NEVER_GRANTED });
   job.activity = ACH.createRunLog(agentId);
   const progress = [];
   let sessionId = resume || '';
@@ -1333,6 +1364,19 @@ function nameChat(job, key) {
   });
 }
 
+function tellPluginFinished(plugin, job, outcome) {
+  if (!plugin || typeof plugin.finished !== 'function') return;
+  if (exitWhenIdle) {
+    log(`${tagOf(job)} ${plugin.id}: finished hook skipped, this bridge exits when idle (--inject or --once)`);
+    return;
+  }
+  const failed = e => log(`${tagOf(job)} ${plugin.id}: finished hook failed (${e && e.message ? e.message : e})`);
+  try {
+    const pending = plugin.finished(job, outcome, core);
+    if (pending && typeof pending.then === 'function') pending.then(null, failed);
+  } catch (e) { failed(e); }
+}
+
 function finish(job, status, text, session, denied) {
   if (job.finished) return; // spawn failures fire both 'error' and 'close'
   const named = titles.get(chatKey(job));
@@ -1369,6 +1413,7 @@ function finish(job, status, text, session, denied) {
   const usage = P.usageFields(job.usage);
   publish(chatKey(job), { chat: job.chat, id: job.id, status, text, summary, cwd: job.cwd, session, denied, macros, agent: job.agent || '', plugin: job.plugin || '', lateOk: status === 'error' && !!job.lateOk, ...usage }, true);
   signal('sig', job.id, true);
+  tellPluginFinished(plugin, job, { status, text, summary });
   const growth = usage.turns ? `, turn ${usage.turns}${usage.ctx ? ', ctx ' + P.tokensLabel(usage.ctx) + (usage.window ? ' of ' + P.tokensLabel(usage.window) : '') : ''}${usage.cost !== undefined ? ', ~$' + usage.cost.toFixed(2) + ' API so far' : ''}` : '';
   log(`#${job.id}${job.session ? '@' + job.session : ''} ${status} (${text.length} chars${summary ? ', summary ' + summary.length : ', no summary'}${growth})`);
   drainQueue();

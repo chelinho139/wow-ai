@@ -3,10 +3,13 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const G = require('./goals');
 
 const SERVER_NAME = 'claude-wow';
 const REPLY_TOOL = 'wow_reply';
-const FULL_REPLY_TOOL = `mcp__${SERVER_NAME}__${REPLY_TOOL}`;
+const fullToolName = tool => `mcp__${SERVER_NAME}__${tool}`;
+const FULL_REPLY_TOOL = fullToolName(REPLY_TOOL);
+const GOAL_WRITE_TOOLS = Object.freeze(G.WRITE_TOOL_NAMES.map(fullToolName));
 const SOCKET_NAME = 'live.sock';
 const TOKEN_NAME = 'live.token';
 const UNIX_PATH_MAX = 103;
@@ -225,6 +228,19 @@ async function commandLine(pid, { platform = process.platform, run } = {}) {
   } catch { return null; }
 }
 
+async function parentPid(pid, { platform = process.platform, run } = {}) {
+  const n = Number(pid);
+  if (!Number.isInteger(n) || n <= 0) return null;
+  const win = platform === 'win32';
+  const [file, args] = win
+    ? ['powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter 'ProcessId=${n}').ParentProcessId`]]
+    : ['ps', ['-o', 'ppid=', '-p', String(n)]];
+  try {
+    const out = Number(String((await (run || execText)(file, args, win ? WINDOWS_COMMAND_LINE_TIMEOUT_MS : COMMAND_LINE_TIMEOUT_MS)) || '').trim());
+    return Number.isInteger(out) && out > 0 ? out : null;
+  } catch { return null; }
+}
+
 function restartCommand(session, home) {
   return startCommand({ repo: (session && session.cwd) || '', home, resume: (session && session.id) || '' });
 }
@@ -267,8 +283,8 @@ function socketOwnerOnly(file) {
 }
 
 module.exports = {
-  SERVER_NAME, REPLY_TOOL, PASS_TEXT, DEV_FLAG, CHANNELS_FLAG, CHANNEL_ARG, PERMISSION_ID_RE, MAX_LINE, UNIX_PATH_MAX,
+  SERVER_NAME, REPLY_TOOL, FULL_REPLY_TOOL, GOAL_WRITE_TOOLS, fullToolName, PASS_TEXT, DEV_FLAG, CHANNELS_FLAG, CHANNEL_ARG, PERMISSION_ID_RE, MAX_LINE, UNIX_PATH_MAX,
   endpoint, tokenFile, writeToken, readToken, proof, sameProof, nonce, encode, lineReader,
   cleanMeta, channelMeta, channelContent, channelNotification, permissionVerdict, ruleForPermission, permissionPrompt,
-  isVerdictJob, startCommand, restartCommand, channelFlagValues, listensToChannel, isPrintMode, sessionListens, commandLine, shellQuote, instructions, replyToolSchema, socketOwnerOnly, homeHash,
+  isVerdictJob, startCommand, restartCommand, channelFlagValues, listensToChannel, isPrintMode, sessionListens, commandLine, parentPid, shellQuote, instructions, replyToolSchema, socketOwnerOnly, homeHash,
 };

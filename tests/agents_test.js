@@ -568,6 +568,12 @@ test('API-equivalent cost: per-model list rates, cache reads and writes priced a
   assert.ok(Math.abs(top.usd - (1000 * 5 + 100 * 25 + 10000 * 0.5 + 2000 * 5 * 1.25) / 1e6) < 1e-12, top.usd);
   assert.deepEqual(A.claudeCost({ usage: { input_tokens: 1 } }, 'claude-new-9').unknown, ['claude-new-9']);
   for (const r of A.CLAUDE_RATES) assert.ok(r.input > 0 && r.output > 0 && r.match instanceof RegExp);
+  const opus55 = A.claudeCost({ usage: {}, modelUsage: { 'claude-opus-5-5[1m]': { inputTokens: 1e6, outputTokens: 1e6, cacheReadInputTokens: 1e6, cacheCreationInputTokens: 1e6 } } }, '');
+  assert.ok(Math.abs(opus55.usd - (4 + 20 + 0.2 + 4 * 1.25)) < 1e-9, `Opus 5.5 lists $4 in, $20 out, $0.20 cache read: ${opus55.usd}`);
+  const sonnet55 = A.claudeCost({ usage: {}, modelUsage: { 'claude-sonnet-5-5': { inputTokens: 1e6, outputTokens: 1e6, cacheReadInputTokens: 1e6, cacheCreationInputTokens: 1e6 } } }, '');
+  assert.ok(Math.abs(sonnet55.usd - (2 + 10 + 0.2 + 2 * 1.25)) < 1e-9, `Sonnet 5.5 lists $2 in, $10 out: ${sonnet55.usd}`);
+  assert.deepEqual([A.claudeRate('claude-opus-5').input, A.claudeRate('claude-opus-5-20260301').input], [5, 5], 'Opus 5 keeps its own rate');
+  assert.deepEqual([A.claudeRate('claude-opus-4-5').input, A.claudeRate('claude-sonnet-4-5').input], [5, 3]);
   // Through the parser: the result carries the run's cost, or names the model it could not price.
   const p = A.claudeParser();
   p.feed({ type: 'assistant', message: { model: 'claude-new-9', content: [{ type: 'text', text: 'hi' }], usage: { input_tokens: 5, cache_read_input_tokens: 100, cache_creation_input_tokens: 0, output_tokens: 1 } } });

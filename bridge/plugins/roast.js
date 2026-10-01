@@ -3,14 +3,31 @@
 const fs = require('fs');
 const path = require('path');
 const ask = require('./ask');
+const stream = require('./stream');
 
 const KIND = 'roast';
 const RECAP_PREFIX = 'Death recap:';
+const OVERLAY_ACTION = 'roast';
+const PLACEHOLDER_SOURCES = new Set(['something unseen', 'the environment']);
+const PLACEHOLDER_ABILITIES = new Set(['an attack', 'The environment']);
+const PLACEHOLDER_ZONES = new Set(['somewhere unmapped']);
+const HEAD_RE = /^Death recap: .+? just died in (.+)\.$/;
+const KILLING_BLOW_RE = /^-\d+(?:\.\d+)?s (.+?)(?: \(level [^)]*\))?: (.+?) \d+(?: crit)?(?: \(tick\))?(?:, overkill (\d+))?(?:, absorbed \d+)? <- killing blow$/;
+const BRIDGE_NOTE_RE = /(?:^|\n\n)\[bridge\]/;
+const PLAIN_WORDS = new Set([
+  'i', "i'm", "i'd", "i'll", 'me', 'my', 'you', "you're", "you've", "you'll", 'your', 'yours', 'he', 'she', 'it', "it's", 'its', 'we', 'they', 'them', 'their',
+  'a', 'an', 'the', 'this', 'that', "that's", 'these', 'those', 'there', "there's", 'here', "here's",
+  'and', 'but', 'or', 'so', 'if', 'when', 'then', 'not', 'no', 'yes', 'nope', 'just', 'even', 'still', 'also', 'next', 'maybe', 'never', 'always', 'again',
+  'what', "what's", 'who', "who's", 'why', 'how', 'well', 'oh', 'wow', 'ouch', 'hey', 'nice', 'good', 'great', 'pro', 'tip', 'rip', 'gg', 'lol',
+  'at', 'in', 'on', 'to', 'of', 'for', 'with', 'from', 'by', 'one', 'some', 'someone', 'something', 'somehow', 'death', 'dead', 'died',
+  "don't", "didn't", "can't", "won't", "let's", 'tl', 'dr',
+]);
 
 const TOOLS = [
   'This chat is the player\'s death roast. When a message is a death recap (it starts with "Death recap:"), the player has just died in World of Warcraft and the addon sent you the last hits before the death: from the game\'s death recap (who hit them, with what, for how much, the overkill, the levels), or, when the game shared none, the hits they took with no attacker named plus their target at death. The zone is always there.',
   'Reply with a short, funny, affectionate roast of that death: two or three sentences, like a friend in guild chat who saw it happen. Use the specifics (the mob, the ability, the overkill, a level gap, the zone) because the details are the joke. Punch at the play, never at the person. No slurs, nothing about real-world identity, appearance or intelligence, nothing cruel. At most one practical tip, and only if it is also funny.',
   'If a screenshot of the screen is attached, you may use what you see in it. Do not use the map or write macros in this chat. Your TL;DR line is the best line of the roast.',
+  'Name only the mobs, abilities, zones and levels that appear in the recap, spelled exactly as they appear there. Never name any other mob, ability, zone, item, quest or character from the game, even one you remember: your TL;DR line is shown to stream viewers.',
   'A message that is not a death recap is the player talking back: answer it in the same playful tone, briefly.',
 ].join('\n');
 
@@ -34,6 +51,89 @@ function scratchFolder(options) {
   return ask.scratchFolder(options);
 }
 
+function recapFacts(recap) {
+  const lines = String(recap || '').split('\n').map(l => l.trim());
+  const facts = {};
+  const head = HEAD_RE.exec(lines[0] || '');
+  if (head && !PLACEHOLDER_ZONES.has(head[1])) facts.zone = head[1];
+  const blowLine = lines.find(l => l.endsWith('<- killing blow'));
+  const blow = blowLine ? KILLING_BLOW_RE.exec(blowLine) : null;
+  if (!blow) return facts;
+  const [, source, ability, overkill] = blow;
+  const summary = `Killing blow: ${source}'s ${ability}.`;
+  if (!lines.some(l => l.includes(summary))) return facts;
+  if (!PLACEHOLDER_SOURCES.has(source)) facts.killer = source;
+  if (!PLACEHOLDER_ABILITIES.has(ability)) facts.ability = ability;
+  if (overkill !== undefined) facts.overkill = Number(overkill);
+  return facts;
+}
+
+function withoutBridgeNotes(text) {
+  const raw = String(text || '');
+  const note = BRIDGE_NOTE_RE.exec(raw);
+  return (note ? raw.slice(0, note.index) : raw).trim();
+}
+
+function roastLine(outcome) {
+  if (!outcome || outcome.status !== 'done') return '';
+  return withoutBridgeNotes(outcome.summary) || withoutBridgeNotes(outcome.text);
+}
+
+function wordsOf(text) {
+  return (String(text || '').replace(/[‘’]/g, "'").match(/[A-Za-z][A-Za-z']*/g) || [])
+    .map(w => w.replace(/'+$/, ''));
+}
+
+function possessiveStem(word) {
+  return word.replace(/'s$/i, '');
+}
+
+function namesOnlyFromRecap(text, recap) {
+  if (text.includes('|')) return false;
+  const recapWords = new Set(wordsOf(recap).flatMap(w => [w, possessiveStem(w)]));
+  return wordsOf(text).every(word => {
+    if (!/^[A-Z]/.test(word)) return true;
+    if (PLAIN_WORDS.has(word.toLowerCase())) return true;
+    return recapWords.has(word) || recapWords.has(possessiveStem(word));
+  });
+}
+
+function overlayCommand(recap, outcome) {
+  const facts = recapFacts(recap);
+  const line = roastLine(outcome);
+  const text = line && namesOnlyFromRecap(line, recap) ? line : '';
+  const roast = {};
+  if (text) roast.text = text;
+  for (const key of ['killer', 'ability', 'overkill', 'zone']) {
+    if (facts[key] !== undefined) roast[key] = facts[key];
+  }
+  return { action: OVERLAY_ACTION, roast };
+}
+
+async function sendToOverlay(job, outcome, core) {
+  if (!job || typeof job.recap !== 'string') return null;
+  const status = outcome && outcome.status;
+  if (status !== 'done') {
+    core.log(`${core.tag(job)} roast: overlay not told, the run ended with ${status || 'no status'}`);
+    return null;
+  }
+  const options = core.options('stream');
+  if (!stream.isEnabled(options)) {
+    core.log(`${core.tag(job)} roast: overlay not told, plugins.stream.enabled is false`);
+    return null;
+  }
+  const url = stream.serviceUrl(options);
+  const command = overlayCommand(job.recap, outcome);
+  try {
+    const result = await stream.postControl(url, command);
+    core.log(`${core.tag(job)} roast: overlay -> ${result.status}${result.message ? ' ' + result.message : ''}`);
+    return result;
+  } catch (e) {
+    core.log(`${core.tag(job)} roast: overlay at ${url} not reached (${e && e.message ? e.message : e})`);
+    return null;
+  }
+}
+
 const plugin = {
   id: 'roast',
   label: 'Death roast',
@@ -51,9 +151,13 @@ const plugin = {
       core.fail(job, `The roast plugin needs a scratch folder and could not create ${path.resolve(cwd)}: ${e.message}\nSet plugins.roast.cwd in config.json to a folder that works.`);
       return;
     }
-    if (isRoast(job)) job.text = roastPrompt(job.text);
+    if (isRoast(job)) {
+      job.recap = String(job.text || '');
+      job.text = roastPrompt(job.text);
+    }
     core.runAgent(job, { cwd });
   },
+  finished: sendToOverlay,
 };
 
 module.exports = plugin;
@@ -63,3 +167,6 @@ module.exports.TOOLS = TOOLS;
 module.exports.isRecap = isRecap;
 module.exports.isRoast = isRoast;
 module.exports.roastPrompt = roastPrompt;
+module.exports.recapFacts = recapFacts;
+module.exports.overlayCommand = overlayCommand;
+module.exports.sendToOverlay = sendToOverlay;
