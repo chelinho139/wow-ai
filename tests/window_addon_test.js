@@ -358,7 +358,27 @@ test('on Classic Era, where the quest parchment atlas is missing, the transcript
     C_Texture.GetAtlasExists = function(name) if name == "QuestBG-Parchment" then return false end return realExists(name) end` });
   open(vm);
   vm.run('ClaudeWoW.Render()');
-  assert.equal(vm.evaluate('ClaudeWoW.UI.art.parchment'), 'Interface\\QuestFrame\\UI-QuestGreeting-TopLeft');
+  assert.equal(vm.evaluate('ClaudeWoW.UI.art.parchment'), 'Interface\\QuestFrame\\UI-QuestLog-TopLeft');
+  const page = 'ClaudeWoW.UI.classicPage';
+  assert.equal(vm.num(`#${page}.pieces`), 4, 'the quest log page is drawn from its four textures');
+  vm.run(`${page}.scripts.OnSizeChanged(${page}, 592, 516)`);
+  assert.equal(vm.num(`${page}.pieces[1].width`) + vm.num(`${page}.pieces[2].width`), 592, 'the pieces fill the width');
+  assert.equal(vm.num(`${page}.pieces[1].height`) + vm.num(`${page}.pieces[3].height`), 516, 'and the height');
+  assert.equal(vm.num(`${page}.pieces[2].x`), vm.num(`${page}.pieces[1].width`), 'the right piece starts where the left one ends');
+});
+
+test('the chat list orders by last activity: the open empty chat, then chats by their last message, then other empty chats', () => {
+  const vm = nativeVM();
+  vm.run(`
+    for _, c in ipairs(ClaudeWoWDB.chats) do c.cwd = "" c.history = {} c.created = 100 end
+    ClaudeWoW.NewChat("Old talk"); ClaudeWoWDB.chats[#ClaudeWoWDB.chats].history = { { role = "user", t = 500, text = "a" } }; ClaudeWoWDB.chats[#ClaudeWoWDB.chats].created = 50
+    ClaudeWoW.NewChat("Fresh talk"); ClaudeWoWDB.chats[#ClaudeWoWDB.chats].history = { { role = "user", t = 900, text = "b" }, { role = "assistant", text = "no time" } }; ClaudeWoWDB.chats[#ClaudeWoWDB.chats].created = 60
+    ClaudeWoW.NewChat("Blank later"); ClaudeWoWDB.chats[#ClaudeWoWDB.chats].created = 950
+    ClaudeWoW.NewChat("Open blank")
+    ClaudeWoW.Render()
+  `);
+  const order = shownRows(vm).split('|');
+  assert.deepEqual(order.slice(0, 4), ['Open blank', 'Fresh talk', 'Old talk', 'Blank later']);
 });
 
 test('general chats sit under Chats at the top, project chats under their project, and the dropdown under the input switches the project', () => {
