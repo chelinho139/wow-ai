@@ -615,3 +615,74 @@ test('the character line comes from ClaudeWoW.CharacterLine, the same text GameC
   assert.equal(vm.evaluate('ClaudeWoW.CharacterLine()'), null);
   assert.equal(vm.evaluate('ClaudeWoWTelemetry.CharacterKey()'), null);
 });
+
+test('an urgent event that changes nothing does not stay urgent: a later silent change waits for the gates', () => {
+  const vm = ready();
+  shoot(vm);
+  vm.run('STUB.FireEvent("NEW_RECIPE_LEARNED")');
+  tick(vm, 5);
+  assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'false', 'nothing to record for a recipe event without an id');
+  vm.run('STUB.money = STUB.money + 31');
+  tick(vm, 5);
+  tick(vm, 5);
+  assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'false', 'a money change with no event is not shot at once');
+});
+
+test('Inbox.lua an hour old does not arm telemetry: nothing rides on the login hello', () => {
+  const vm = newVM({ saved: 'ClaudeWoWDB = { settings = { transport = "screenshot", stripLevels = { on = 255, off = 0, codec = 1 } } }' });
+  vm.run('ClaudeWoW_Inbox = { now = time() - 3600, cwd = "", transport = "screenshot", strip = { on = 255, off = 0 }, gs = { v = 1, watch = { items = {}, factions = {} }, chars = {} }, replies = {} }');
+  vm.run('STUB.FireEvent("ADDON_LOADED", "ClaudeWoW"); STUB.FireEvent("PLAYER_LOGIN")');
+  vm.run('STUB.RunTimers()');
+  const hello = shoot(vm);
+  assert.ok(hello.jobs.some(j => j.hello));
+  assert.deepEqual(gsJobs(hello), [], 'a stale Inbox.lua is not a bridge that is listening');
+  assert.equal(vm.evaluate('ClaudeWoWTelemetry.Active()'), 'false');
+});
+
+test('/claude config telemetry off stops telemetry and on starts it again', () => {
+  const vm = ready();
+  shoot(vm);
+  vm.run('SlashCmdList.CLAUDE("config telemetry off")');
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.telemetry'), 'false');
+  vm.run('STUB.FireEvent("PLAYER_DEAD")');
+  tick(vm, 130);
+  assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'false', 'off: no shot even for a death');
+  vm.run('ClaudeWoW.Send("still talking")');
+  assert.deepEqual(gsJobs(shoot(vm)), [], 'off: nothing rides on messages');
+  vm.run('SlashCmdList.CLAUDE("config telemetry on")');
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.telemetry'), 'true');
+  assert.equal(vm.evaluate('ClaudeWoWTelemetry.Status()'), 'on');
+});
+
+test('a newer urgent event keeps its own retry when an older urgent shot fails', () => {
+  const vm = ready();
+  shoot(vm);
+  vm.run('STUB.level = 24; STUB.FireEvent("PLAYER_LEVEL_UP", 24)');
+  tick(vm, 5);
+  for (let i = 0; i < 2; i++) vm.run('local f = ClaudeWoWStrip; if f.shown and f.scripts.OnUpdate then f.scripts.OnUpdate(f, 0.016) end');
+  vm.run('STUB.FireEvent("PLAYER_DEAD")');
+  vm.run('STUB.FireEvent("SCREENSHOT_FAILED")');
+  assert.ok(gsJobs(shoot(vm, 'SCREENSHOT_FAILED')).length, 'the death goes at once, and its shot fails too');
+  assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'true', 'the death still has its one urgent retry');
+});
+
+test('a player message does not wait behind a telemetry-only shot the client is writing', () => {
+  const vm = ready();
+  for (let i = 0; i < 2; i++) vm.run('local f = ClaudeWoWStrip; if f.shown and f.scripts.OnUpdate then f.scripts.OnUpdate(f, 0.016) end');
+  const shots = vm.num('STUB.screenshots');
+  vm.run('ClaudeWoW.Send("right now")');
+  assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'true');
+  const frame = decodeStrip(vm);
+  assert.ok(P.jobsFromStrip(frame.id, frame.text).some(j => j.text === 'right now'), 'the message is drawn at once');
+  vm.run('STUB.FireEvent("SCREENSHOT_SUCCEEDED")');
+  for (let i = 0; i < 2; i++) vm.run('local f = ClaudeWoWStrip; if f.shown and f.scripts.OnUpdate then f.scripts.OnUpdate(f, 0.016) end');
+  assert.equal(vm.num('STUB.screenshots'), shots + 1, 'the message got its own screenshot');
+  vm.run('STUB.FireEvent("SCREENSHOT_SUCCEEDED")');
+  const chat = vm.evaluate('ClaudeWoWDB.chats[1].id');
+  const id = vm.num('ClaudeWoWDB.chats[1].pendingId');
+  nextSlot(vm, slotBody(GS, `, replies = { { chat = "${chat}", id = ${id}, status = "done", text = "ok" } }`));
+  tick(vm, 6);
+  tick(vm, 125);
+  const [again] = gsJobs(shoot(vm));
+  assert.ok(again && sectionsOf(again).sections.money, 'the telemetry record that gave way is sent again');
+});

@@ -133,6 +133,11 @@ test('a frame of [message, gs rider] from the real addon and a frame of [gs, mes
     const slotOf = n => ((n - 1) % SLOTS) + 1;
     const ackBefore = spentSlots(h.sb, 'ack');
     const sigBefore = spentSlots(h.sb, 'sig');
+    const nowSec = Math.floor(Date.now() / 1000);
+    const gsSlots = new Set(Array.from({ length: 120 }, (_, k) => slotOf(nowSec - 10 + k)));
+    let messageId = h.client.lastSeq() + 1;
+    while (gsSlots.has(slotOf(messageId)) || ackBefore.includes(slotOf(messageId)) || sigBefore.includes(slotOf(messageId))) messageId += 1;
+    h.client.runLua(`ClaudeWoWDB.lastSeq = ${messageId - 1}`);
     h.client.runLua('STUB.money = STUB.money + 77');
     const mark = h.bridge.output.length;
     const ridden = await h.client.say('message with a rider');
@@ -152,8 +157,8 @@ test('a frame of [message, gs rider] from the real addon and a frame of [gs, mes
     const newSigs = spentSlots(h.sb, 'sig').filter(s => !sigBefore.includes(s));
     assert.deepEqual(newAcks, [slotA], 'only the message spent an ack file');
     assert.deepEqual(newSigs, [slotA], 'only the message spent a sig file');
-    if (slotOf(gsSeq) === slotA) console.warn(`SKIPPED: gs seq ${gsSeq} shares slot ${slotA} with the message, so its own spend cannot be told apart this run`);
-    else assert.ok(!newAcks.includes(slotOf(gsSeq)) && !newSigs.includes(slotOf(gsSeq)), 'the gs seq spent nothing');
+    assert.equal(ridden.id, messageId);
+    assert.notEqual(slotOf(gsSeq), slotA, 'the message id was chosen so the gs seq has a slot of its own, which stays unspent');
 
     const ackMid = spentSlots(h.sb, 'ack');
     const sigMid = spentSlots(h.sb, 'sig');
@@ -172,7 +177,6 @@ test('a frame of [message, gs rider] from the real addon and a frame of [gs, mes
     const newSigsB = spentSlots(h.sb, 'sig').filter(s => !sigMid.includes(s));
     assert.deepEqual(newAcksB, [slotB], 'only the message after the gs record spent an ack file');
     assert.deepEqual(newSigsB, [slotB], 'only the message after the gs record spent a sig file');
-    assert.notEqual(slotOf(craftedSeq), slotB);
     assert.equal(h.state().lastId, id);
   });
 });

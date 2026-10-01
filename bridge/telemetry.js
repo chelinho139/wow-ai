@@ -40,6 +40,8 @@ const IMPORTANCE = Object.freeze({
 });
 const GS_CHARACTERS_MAX = 4;
 const REJECTED_KEYS_LOGGED = 20;
+const KEY_CHARS_MAX = 64;
+const LONG_KEY_SHOWN = 80;
 
 const LINE_RE = /^([a-z]+):([0-9a-f]{8}):(.*)$/;
 const HASH_RE = /^[0-9a-f]{8}$/;
@@ -432,6 +434,7 @@ function createTelemetry(opts) {
   const loggedMissing = new Map();
   let primed = false;
   const rejectedKeys = new Set();
+  const longKeysLogged = new Set();
 
   function snapshotFile(character) {
     return path.join(dir, character, SNAPSHOT_FILE);
@@ -475,10 +478,14 @@ function createTelemetry(opts) {
     if (!SESSION_RE.test(session) || !Number.isSafeInteger(seq) || seq <= 0) return { status: 'invalid' };
     const character = String(job.name || '');
     if (!CHARACTER_KEY_RE.test(character)) {
-      if (!rejectedKeys.has(character) && rejectedKeys.size < REJECTED_KEYS_LOGGED) {
-        rejectedKeys.add(character);
-        log(`telemetry: dropped a game state record whose character key ${JSON.stringify(character.slice(0, 80))} is not letters, digits, _ and - (a name with characters the addon cannot classify)`);
-      }
+      const sendable = character !== '' && [...character].length <= KEY_CHARS_MAX;
+      const seen = sendable ? rejectedKeys : longKeysLogged;
+      const shown = sendable ? character : character.slice(0, LONG_KEY_SHOWN);
+      if (!seen.has(shown)) {
+        log(`telemetry: dropped a game state record whose character key ${JSON.stringify(shown)}${character.length > LONG_KEY_SHOWN ? ` (${character.length} characters, cut)` : ''} is not 1 to ${KEY_CHARS_MAX} letters, digits, _ and - (a name with characters the addon cannot classify)`);
+      } else seen.delete(shown);
+      seen.add(shown);
+      while (seen.size > REJECTED_KEYS_LOGGED) seen.delete(seen.values().next().value);
       return { status: 'no-character' };
     }
     if (!remember(session, seq)) return { status: 'duplicate' };
@@ -525,7 +532,6 @@ function createTelemetry(opts) {
   function luaGs() {
     prime();
     const w = watch();
-    for (const snap of snapshots.values()) pruneCompleted(snap, w);
     const recent = [...snapshots.values()].filter(s => s.session).sort((a, b) => b.updatedAt - a.updatedAt);
     return luaGsTable(recent, w, [...rejectedKeys]);
   }

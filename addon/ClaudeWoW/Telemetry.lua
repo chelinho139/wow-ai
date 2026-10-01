@@ -40,6 +40,7 @@ T.CHARS_MAX = 20
 T.KEY_MAX_CHARS = 64
 T.KEY_MAX_BYTES = 256
 T.INFLIGHT_MAX = 4
+T.INBOX_MAX_AGE = 300
 
 local US = "\31"
 local state = { bridge = false, known = {}, sentAt = {}, sentSeq = {}, sent = {}, inflight = {}, urgent = false, urgentRestored = false, refusedMine = false, hint = false, watch = { items = {}, factions = {} } }
@@ -265,10 +266,43 @@ function T.Sections()
 	return s
 end
 
+local function Print(msg)
+	print("|cff66ccff[Claude WoW]|r " .. msg)
+end
+
+function T.IsOn()
+	return not (type(ClaudeWoWDB) == "table" and type(ClaudeWoWDB.settings) == "table" and ClaudeWoWDB.settings.telemetry == false)
+end
+
+function T.SetOn(on)
+	if type(ClaudeWoWDB) ~= "table" then return end
+	ClaudeWoWDB.settings = type(ClaudeWoWDB.settings) == "table" and ClaudeWoWDB.settings or {}
+	ClaudeWoWDB.settings.telemetry = on and true or false
+	if on then state.hint = true end
+end
+
+function T.Toggle()
+	T.SetOn(not T.IsOn())
+end
+
+function T.Status()
+	return T.IsOn() and "on" or "off"
+end
+
+function T.Command(rest)
+	rest = tostring(rest or ""):lower()
+	if rest == "on" or rest == "off" then T.SetOn(rest == "on") end
+	if T.IsOn() then
+		Print("Game state telemetry is on: money, level, zone, profession ranks, watched items, gear IDs, reputation, deaths and recipes go to the bridge on screenshots the addon takes anyway, plus one of its own at most every 2 minutes. /claude config telemetry off stops it.")
+	else
+		Print("Game state telemetry is off: no game state records and no telemetry screenshots. /claude config telemetry on starts it again.")
+	end
+end
+
 local function Enabled()
 	return state.bridge and type(ClaudeWoWDB) == "table" and type(ClaudeWoWDB.session) == "string"
 		and not (type(ClaudeWoWDB.settings) == "table" and ClaudeWoWDB.settings.context == false)
-		and not state.refusedMine
+		and not state.refusedMine and T.IsOn()
 end
 
 local function SentLastHour(now)
@@ -325,7 +359,10 @@ function T.Take(room, solo)
 	if not T.Allowed(now, solo) then return nil end
 	local rec, sent, left, seq = T.Record(room)
 	state.hint = left and true or false
-	if not rec then return nil end
+	if not rec then
+		if not left then state.urgent = false end
+		return nil
+	end
 	state.lastAt = now
 	if solo then state.lastSoloAt = now end
 	local restoreUrgent = state.urgent and not state.urgentRestored
@@ -355,7 +392,7 @@ local function Settle(rec, lost)
 					end
 				end
 				state.hint = true
-				if f.urgent then
+				if f.urgent and not state.urgent then
 					state.urgent = true
 					state.urgentRestored = true
 				end
@@ -412,6 +449,12 @@ function T.Sync(gs)
 		end
 	end
 	if changed then state.hint = true end
+end
+
+function T.SyncInbox(gs, bridgeNow)
+	local stamp = tonumber(bridgeNow)
+	if stamp == nil or time() - stamp > T.INBOX_MAX_AGE then return T.Sync(nil) end
+	return T.Sync(gs)
 end
 
 function T.Active()

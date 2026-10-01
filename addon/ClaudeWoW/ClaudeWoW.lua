@@ -719,7 +719,7 @@ end
 -- nil (no event within SHOT_TIMEOUT: the file may or may not exist).
 local function ScreenshotDone(ok)
 	local shot = run.shot
-	if not shot then return end
+	if not shot or not shot.fired then return end
 	run.shot = nil
 	HideStrip()
 	Tm.Settle(ok == true and "Delivered" or "Lost", shot.telemetry)
@@ -874,7 +874,9 @@ RefreshStrip = function()
 	if run.shot and run.shot.fired then
 		-- The client is writing a shot of the previous strip; ScreenshotDone takes
 		-- another for the records still unshot.
-		return
+		if not run.shot.solo then return end
+		Tm.Settle("Lost", run.shot.telemetry)
+		run.shot = nil
 	end
 	local retry = false
 	for _, rec in ipairs(included) do
@@ -1737,7 +1739,7 @@ local function ProcessInbox()
 	if inbox.achievements and ClaudeWoWAchievements then ClaudeWoWAchievements.Sync(inbox.achievements, inbox.now) end
 	if inbox.goals and ClaudeWoWOrders then ClaudeWoWOrders.SyncInbox(inbox.goals, inbox.now) end
 	if inbox.widgets and ClaudeWoWWidgets then ClaudeWoWWidgets.Sync(inbox.widgets) end
-	if ClaudeWoWTelemetry then ClaudeWoWTelemetry.Sync(inbox.gs) end
+	if ClaudeWoWTelemetry then ClaudeWoWTelemetry.SyncInbox(inbox.gs, inbox.now) end
 end
 
 local quietReplyHandlers = {}
@@ -4713,6 +4715,7 @@ function Q.ListSettingsMenu(anchor)
 		local shown = pcall(MenuUtil.CreateContextMenu, anchor, function(_, root)
 			root:CreateCheckbox("Show message previews", Q.PreviewsOn, TogglePreviews)
 			if ClaudeWoWOrders then root:CreateCheckbox("Show the Orders card", ClaudeWoWOrders.IsOn, ClaudeWoWOrders.Toggle) end
+			if ClaudeWoWTelemetry then root:CreateCheckbox("Send game state to Claude", ClaudeWoWTelemetry.IsOn, ClaudeWoWTelemetry.Toggle) end
 			root:CreateDivider()
 			root:CreateButton("Commands and tips", function() ClaudeWoW.ShowHelp() end)
 			root:CreateButton("Expand all folders", function() SetAll(false) end)
@@ -5488,7 +5491,7 @@ HELP = table.concat({
 	"/claude --agent <name> [text]      which CLI runs the chat: claude, codex, grok, agy or hermes",
 	"    Flags come before the text and combine: /claude --model opus fix the build starts a new chat on opus. With -c they change the current chat. --flag=value and \"quoted values\" work, a value of - clears a setting, and a flag with no value shows it. The bridge tells you when an agent has no such option",
 	"/claude orders [on|off]            show or hide the Orders card under the quest tracker",
-	"/claude config [key] [value]       settings: voice, roast, whisper, echo, vision, roll, achievements, orders, ui, map, macro, context, signal, mode, longchat, auto, bind, diag. Alone it lists them with their values",
+	"/claude config [key] [value]       settings: voice, roast, whisper, echo, vision, roll, achievements, orders, telemetry, ui, map, macro, context, signal, mode, longchat, auto, bind, diag. Alone it lists them with their values",
 	"/claude config ui [setting]        the tabs and the window: whisper on|off, dim <10-100>|off, dodge on|off, autohide on|off, reset",
 	"/claude cd <folder>                folder this chat's agent works in (relative to the bridge's folder; alone = the default). A chat with a folder is a coding session there, one without is general in-game chat",
 	"/claude look <question>            send one message to the current chat with a picture of your screen",
@@ -5538,6 +5541,7 @@ local COMMAND_ARGS = {
 	vision = { [""] = true, on = true, off = true },
 	look = true,
 	roast = { [""] = true, on = true, off = true },
+	telemetry = { [""] = true, on = true, off = true },
 	auto = OnOffOrNumber,
 	echo = function(rest) return rest == "" or rest == "summary" or rest == "full" or rest == "short" or rest == "off" or tonumber(rest) ~= nil end,
 	bind = 1, agent = 1, plugin = 1, live = 0,
@@ -5559,7 +5563,7 @@ Cli.CLAUDE_VERBS = {
 }
 
 Cli.CONFIG_KEYS = {
-	"voice", "roast", "whisper", "echo", "vision", "roll", "achievements", "orders", "context", "signal",
+	"voice", "roast", "whisper", "echo", "vision", "roll", "achievements", "orders", "telemetry", "context", "signal",
 	"mode", "longchat", "auto", "plugin", "ui", "map", "macro", "bind", "diag",
 }
 Cli.CONFIG_ALIASES = { toasts = "achievements", ctx = "context" }
@@ -5725,6 +5729,7 @@ function Cli.ConfigValue(key)
 	if key == "roll" then return s.lootRoll == false and "off" or "on" end
 	if key == "achievements" then return s.toasts == false and "toasts off" or "toasts on" end
 	if key == "orders" then return ClaudeWoWOrders and ClaudeWoWOrders.Status() or "" end
+	if key == "telemetry" then return ClaudeWoWTelemetry and ClaudeWoWTelemetry.Status() or "" end
 	if key == "context" then return (s.context and "on" or "off") .. ", " .. ContextThresholdLabel() end
 	if key == "signal" then return s.signal and "on" or "off" end
 	if key == "mode" then return tostring(s.mode) end
@@ -5743,6 +5748,7 @@ Cli.CONFIG_HELP = {
 	roll = "on|off: a denied command pops a Need/Greed/Pass roll, or an Allow & retry button",
 	achievements = "on|off|test: achievement toasts; alone it lists what you earned",
 	orders = "on|off: the Orders card under the quest tracker (also /claude orders and the chat list's gear menu)",
+	telemetry = "on|off: send game state (money, level, zone, professions, watched items, gear, reputation) to the bridge; also the chat list's gear menu",
 	context = "on|off|<tokens>: the game context the agent gets, and the context-size warning (0 = never)",
 	signal = "on|off: the cheap sound-file readiness check",
 	mode = "pixel|reload: the transport",
@@ -6498,6 +6504,8 @@ RunCommand = function(cmd, rest)
 		if ClaudeWoWAchievements then ClaudeWoWAchievements.Command(rest) else print("|cff66ccff[Claude WoW]|r the achievements module did not load") end
 	elseif cmd == "orders" then
 		if ClaudeWoWOrders then ClaudeWoWOrders.Command(rest) else print("|cff66ccff[Claude WoW]|r the orders module did not load") end
+	elseif cmd == "telemetry" then
+		if ClaudeWoWTelemetry then ClaudeWoWTelemetry.Command(rest) else print("|cff66ccff[Claude WoW]|r the telemetry module did not load") end
 	elseif cmd == "ui" then
 		Cli.Ui(c, rest)
 	elseif cmd == "agent" then

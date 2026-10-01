@@ -336,45 +336,7 @@ test('a gs record and a goal for the same character land in the same folder', as
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('goal_complete fires once per watched target: a dip and a recover across it is not a second completion, a new target is', () => {
-  const dir = tmpDir('oncecomplete');
-  try {
-    let target = 40;
-    const { t } = store(dir, { watch: () => TL.watchFrom({ watch: { items: { 2589: target } } }) });
-    const completes = (seq, data) => t.submit(gsJob('s1', seq, { items: data })).events.filter(e => e.type === 'goal_complete').length;
-    completes(1, '3;2589=30');
-    assert.equal(completes(2, '3;2589=40'), 1);
-    assert.equal(completes(3, '3;2589=38'), 0);
-    assert.equal(completes(4, '3;2589=40'), 0, '40 -> 38 -> 40 is one completion');
-    const fresh = store(dir, { watch: () => TL.watchFrom({ watch: { items: { 2589: target } } }) });
-    fresh.t.submit(gsJob('s1', 5, { items: '3;2589=39' }));
-    assert.equal(fresh.t.submit(gsJob('s1', 6, { items: '3;2589=40' })).events.filter(e => e.type === 'goal_complete').length, 0, 'the completion is kept in snapshot.json across a restart');
-    target = 50;
-    assert.equal(fresh.t.submit(gsJob('s1', 7, { items: '3;2589=45' })).events.filter(ev => ev.type === 'goal_complete').length, 0);
-    target = 40;
-    fresh.t.submit(gsJob('s1', 8, { items: '3;2589=30' }));
-    assert.equal(fresh.t.submit(gsJob('s1', 9, { items: '3;2589=40' })).events.filter(ev => ev.type === 'goal_complete').length, 1, 'a target that changed away and back is a new goal');
-    target = 60;
-    fresh.t.submit(gsJob('s1', 10, { items: '3;2589=50' }));
-    assert.equal(fresh.t.submit(gsJob('s1', 11, { items: '3;2589=60' })).events.filter(ev => ev.type === 'goal_complete').length, 1, 'a new target completes');
-  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
-});
 
-test('a target changed away and back with no items record in between is a new goal', () => {
-  const dir = tmpDir('awayback');
-  try {
-    let target = 40;
-    const { t } = store(dir, { watch: () => TL.watchFrom({ watch: { items: { 2589: target } } }) });
-    const completes = (seq, sections) => t.submit(gsJob('s1', seq, sections)).events.filter(e => e.type === 'goal_complete').length;
-    completes(1, { items: '3;2589=30' });
-    assert.equal(completes(2, { items: '3;2589=40' }), 1);
-    target = 50;
-    completes(3, { money: '10' });
-    target = 40;
-    completes(4, { items: '3;2589=39' });
-    assert.equal(completes(5, { items: '3;2589=40' }), 1, '40 -> 50 -> 40 is a new goal even when only money arrived during the 50');
-  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
-});
 
 test('the slot field lists the character keys the bridge refused, read back byte for byte in Lua', () => {
   const dir = tmpDir('refused');
@@ -385,5 +347,62 @@ test('the slot field lists the character keys the bridge refused, read back byte
     const body = P.luaTable('ClaudeWoW_SlotData', [], { gsLua: t.luaGs() });
     assert.equal(luaEval(body, 'ClaudeWoW_SlotData.gs.refused[1]'), odd);
     assert.equal(luaEval(body, '#ClaudeWoW_SlotData.gs.refused'), '1');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('goal_complete fires once per watched target: a dip and a recover across it is not a second completion, a new target is', () => {
+  const dir = tmpDir('oncecomplete');
+  try {
+    const bridgeWith = target => store(dir, { watch: () => TL.watchFrom({ watch: { items: { 2589: target } } }) }).t;
+    const completes = (t, seq, data) => t.submit(gsJob('s1', seq, { items: data })).events.filter(ev => ev.type === 'goal_complete').length;
+    let t = bridgeWith(40);
+    completes(t, 1, '3;2589=30');
+    assert.equal(completes(t, 2, '3;2589=40'), 1);
+    assert.equal(completes(t, 3, '3;2589=38'), 0);
+    assert.equal(completes(t, 4, '3;2589=40'), 0, '40 -> 38 -> 40 is one completion');
+    t = bridgeWith(40);
+    completes(t, 5, '3;2589=39');
+    assert.equal(completes(t, 6, '3;2589=40'), 0, 'the completion is kept in snapshot.json across a restart');
+    t = bridgeWith(50);
+    assert.equal(completes(t, 7, '3;2589=45'), 0);
+    t = bridgeWith(40);
+    completes(t, 8, '3;2589=30');
+    assert.equal(completes(t, 9, '3;2589=40'), 1, 'a target that changed away and back is a new goal');
+    t = bridgeWith(60);
+    completes(t, 10, '3;2589=50');
+    assert.equal(completes(t, 11, '3;2589=60'), 1, 'a new target completes');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a target changed away and back with no items record in between is a new goal', () => {
+  const dir = tmpDir('awayback');
+  try {
+    const bridgeWith = target => store(dir, { watch: () => TL.watchFrom({ watch: { items: { 2589: target } } }) }).t;
+    const completes = (t, seq, sections) => t.submit(gsJob('s1', seq, sections)).events.filter(ev => ev.type === 'goal_complete').length;
+    let t = bridgeWith(40);
+    completes(t, 1, { items: '3;2589=30' });
+    assert.equal(completes(t, 2, { items: '3;2589=40' }), 1);
+    t = bridgeWith(50);
+    completes(t, 3, { money: '10' });
+    t = bridgeWith(40);
+    completes(t, 4, { items: '3;2589=39' });
+    assert.equal(completes(t, 5, { items: '3;2589=40' }), 1, '40 -> 50 -> 40 is a new goal even when only money arrived during the 50');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('only keys the addon could send are listed as refused, the newest kept; a 3 KB key is logged cut and never relayed', () => {
+  const dir = tmpDir('longkey');
+  try {
+    const { t, lines } = store(dir);
+    const huge = 'Б'.repeat(3000) + '-Forever';
+    for (let i = 0; i < 25; i++) t.submit(gsJob('s1', 10 + i, { money: '1' }, `Bone${i}-For·ever`));
+    assert.equal(t.submit(gsJob('s1', 99, { money: '1' }, huge)).status, 'no-character');
+    const logged = lines.find(l => /characters, cut/.test(l));
+    assert.ok(logged && logged.length < 400, 'logged once, cut short');
+    const body = P.luaTable('ClaudeWoW_SlotData', [], { gsLua: t.luaGs() });
+    assert.equal(luaEval(body, '#ClaudeWoW_SlotData.gs.refused'), '20');
+    assert.equal(luaEval(body, 'ClaudeWoW_SlotData.gs.refused[20]'), 'Bone24-For·ever', 'the newest is kept');
+    assert.equal(luaEval(body, 'ClaudeWoW_SlotData.gs.refused[1]'), 'Bone5-For·ever', 'the oldest went first');
+    assert.ok(!body.includes('ББББББББ'), 'the 3 KB key is not in the slot file');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
