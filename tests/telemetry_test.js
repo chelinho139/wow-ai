@@ -166,7 +166,10 @@ test('a record without a usable character in its name field is dropped with one 
     assert.equal(t.submit(gsJob('s1', 1, { money: '1' }, '')).status, 'no-character');
     assert.equal(t.submit(gsJob('s1', 2, { money: '2' }, '../../etc')).status, 'no-character');
     assert.equal(t.submit(gsJob('s1', 3, { money: '3' }, 'Bone Sleeve-Forever')).status, 'no-character');
-    assert.equal(lines.filter(l => /named no usable character/.test(l)).length, 1);
+    assert.equal(t.submit(gsJob('s1', 4, { money: '4' }, '../../etc')).status, 'no-character');
+    assert.equal(lines.filter(l => /character key "\.\.\/\.\.\/etc"/.test(l)).length, 1, 'one line per distinct rejected key');
+    assert.equal(lines.filter(l => /dropped a game state record whose character key/.test(l)).length, 3, 'each distinct raw key is named once');
+    assert.ok(lines.some(l => l.includes(JSON.stringify('Bone Sleeve-Forever'))), 'the raw key is in the log');
     assert.deepEqual(fs.readdirSync(dir), []);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
@@ -330,5 +333,29 @@ test('a gs record and a goal for the same character land in the same folder', as
     assert.equal(path.dirname(t.snapshotFile(key)), path.dirname(goals.file(key)));
     assert.ok(fs.existsSync(t.snapshotFile(key)) && fs.existsSync(goals.file(key)));
     assert.deepEqual(fs.readdirSync(dir), [key], 'one folder for the character');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('goal_complete fires once per watched target: a dip and a recover across it is not a second completion, a new target is', () => {
+  const dir = tmpDir('oncecomplete');
+  try {
+    let target = 40;
+    const { t } = store(dir, { watch: () => TL.watchFrom({ watch: { items: { 2589: target } } }) });
+    const completes = (seq, data) => t.submit(gsJob('s1', seq, { items: data })).events.filter(e => e.type === 'goal_complete').length;
+    completes(1, '3;2589=30');
+    assert.equal(completes(2, '3;2589=40'), 1);
+    assert.equal(completes(3, '3;2589=38'), 0);
+    assert.equal(completes(4, '3;2589=40'), 0, '40 -> 38 -> 40 is one completion');
+    const fresh = store(dir, { watch: () => TL.watchFrom({ watch: { items: { 2589: target } } }) });
+    fresh.t.submit(gsJob('s1', 5, { items: '3;2589=39' }));
+    assert.equal(fresh.t.submit(gsJob('s1', 6, { items: '3;2589=40' })).events.filter(e => e.type === 'goal_complete').length, 0, 'the completion is kept in snapshot.json across a restart');
+    target = 50;
+    assert.equal(fresh.t.submit(gsJob('s1', 7, { items: '3;2589=45' })).events.filter(ev => ev.type === 'goal_complete').length, 0);
+    target = 40;
+    fresh.t.submit(gsJob('s1', 8, { items: '3;2589=30' }));
+    assert.equal(fresh.t.submit(gsJob('s1', 9, { items: '3;2589=40' })).events.filter(ev => ev.type === 'goal_complete').length, 1, 'a target that changed away and back is a new goal');
+    target = 60;
+    fresh.t.submit(gsJob('s1', 10, { items: '3;2589=50' }));
+    assert.equal(fresh.t.submit(gsJob('s1', 11, { items: '3;2589=60' })).events.filter(ev => ev.type === 'goal_complete').length, 1, 'a new target completes');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

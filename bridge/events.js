@@ -109,6 +109,7 @@ function follow(opts) {
   const resolve = typeof opts.file === 'function' ? opts.file : () => opts.file;
   const list = typeof opts.list === 'function' ? opts.list : () => [];
   const resolveEvery = opts.resolveEvery || RESOLVE_EVERY_TICKS;
+  const chunk = opts.chunk || READ_CHUNK_MAX;
   const coalescer = createCoalescer({ windowMs: opts.windowMs, wakesPerHour: opts.wakesPerHour, now: opts.now });
   const resume = new Map();
   let file = null;
@@ -119,18 +120,18 @@ function follow(opts) {
   let ticks = 0;
 
   function noteNewFiles(atStart) {
-    for (const f of list()) if (!resume.has(f)) resume.set(f, atStart && !opts.fromStart ? sizeOf(f) : 0);
+    for (const f of list()) if (!resume.has(f)) resume.set(f, { offset: atStart && !opts.fromStart ? sizeOf(f) : 0, partial: '' });
   }
 
   function attach(found, atStart) {
     file = found;
-    partial = '';
     let st = null;
     try { st = fs.statSync(file); } catch {}
     inode = st ? st.ino : null;
-    if (resume.has(file)) offset = resume.get(file);
-    else offset = st && atStart && !opts.fromStart ? st.size : 0;
-    if (st && offset > st.size) offset = 0;
+    const saved = resume.get(file);
+    offset = saved ? saved.offset : st && atStart && !opts.fromStart ? st.size : 0;
+    partial = saved ? saved.partial : '';
+    if (st && offset > st.size) { offset = 0; partial = ''; }
   }
 
   function feed(text) {
@@ -144,7 +145,7 @@ function follow(opts) {
 
   function readRange(target, from, to) {
     if (to <= from) return 0;
-    const len = Math.min(to - from, READ_CHUNK_MAX);
+    const len = Math.min(to - from, chunk);
     const buf = Buffer.alloc(len);
     const fd = fs.openSync(target, 'r');
     try { fs.readSync(fd, buf, 0, len, from); } finally { fs.closeSync(fd); }
@@ -156,7 +157,13 @@ function follow(opts) {
     const rotated = path.join(path.dirname(file), TL.EVENTS_ROTATED_FILE);
     let st;
     try { st = fs.statSync(rotated); } catch { return; }
-    if (inode !== null && st.ino === inode && st.size > offset) readRange(rotated, offset, st.size);
+    if (inode === null || st.ino !== inode) return;
+    let at = offset;
+    while (at < st.size) {
+      const got = readRange(rotated, at, st.size);
+      if (!got) break;
+      at += got;
+    }
   }
 
   function readNew() {
@@ -172,7 +179,7 @@ function follow(opts) {
     noteNewFiles(atStart);
     const found = resolve();
     if (!found || found === file) return;
-    if (file) { readNew(); resume.set(file, offset); }
+    if (file) { readNew(); resume.set(file, { offset, partial }); }
     attach(found, atStart);
   }
 

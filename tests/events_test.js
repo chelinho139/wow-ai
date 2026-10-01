@@ -190,3 +190,48 @@ test('claude-wow events without --follow prints the recent events at or above --
     assert.equal(bad.status, 2);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('the rotated file is drained to its end, however many reads that takes', () => {
+  const dir = tmpGoals('drainloop');
+  const file = path.join(dir, 'Bone-Forever', TL.EVENTS_FILE);
+  try {
+    appendEvents(file, [ev('zone', 2, { from: 1, to: 2 })]);
+    const now = clock();
+    const out = sink();
+    const f = EV.follow({ file, min: 1, out, err: sink(), now, pollMs: 0, chunk: 16 });
+    appendEvents(file, [ev('death', 3, { at: 1 }), ev('bags_full', 2, { free: 0 }), ev('recipe', 3, { id: 3275, at: 2 })]);
+    fs.renameSync(file, path.join(path.dirname(file), TL.EVENTS_ROTATED_FILE));
+    appendEvents(file, [ev('level_up', 3, { from: 20, to: 21 })]);
+    for (let i = 0; i < 40; i++) f.tick();
+    now.advance(EV.BURST_WINDOW_MS);
+    f.tick();
+    assert.deepEqual(out.lines().map(e => e.type), ['death', 'bags_full', 'recipe', 'level_up']);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('switching between character files keeps each file\'s half-read line', () => {
+  const dir = tmpGoals('partial');
+  try {
+    const bone = path.join(dir, 'Bone-Forever', TL.EVENTS_FILE);
+    const alt = path.join(dir, 'Alt-Forever', TL.EVENTS_FILE);
+    fs.mkdirSync(path.dirname(bone), { recursive: true });
+    fs.mkdirSync(path.dirname(alt), { recursive: true });
+    fs.writeFileSync(bone, '');
+    const now = clock();
+    const out = sink();
+    let newest = bone;
+    const f = EV.follow({ file: () => newest, list: () => [bone, alt].filter(p => fs.existsSync(p)), min: 1, out, err: sink(), now, pollMs: 0, resolveEvery: 1 });
+    const line = JSON.stringify(ev('death', 3, { at: 5 }));
+    fs.appendFileSync(bone, line.slice(0, 20));
+    f.tick();
+    appendEvents(alt, [ev('zone', 2, { from: 1, to: 2 })]);
+    newest = alt;
+    f.tick();
+    newest = bone;
+    fs.appendFileSync(bone, line.slice(20) + '\n');
+    f.tick();
+    now.advance(EV.BURST_WINDOW_MS);
+    f.tick();
+    assert.ok(out.lines().map(e => e.type).includes('death'), 'the line split across the switch is read whole');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

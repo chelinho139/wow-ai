@@ -193,7 +193,7 @@ The addon sends quiet `kind=gs` records with the character's game state: money, 
 
 `/claude config context off` in the game also stops the telemetry.
 
-Event importance: 1 money and item ticks, skill, gear and reputation changes; 2 a watched count crossing a threshold, a zone change, bags full, a new reputation rank; 3 level up, death, a new recipe, a watched item reaching its target (`goal_complete`). `claude-wow events --follow` merges events that arrive within 10 s into one burst (per kind: the first `from`, the last `to`), prints one JSON line per event, and prints at most 40 bursts an hour; later events wait, merged, until the hour frees a slot.
+Event importance: 1 money and item ticks, skill, gear and reputation changes; 2 a watched count crossing a threshold, a zone change, bags full, a new reputation rank; 3 level up, death, a new recipe, a watched item reaching its target (`goal_complete`, once per target). `claude-wow events --follow` merges events that arrive within 10 s into one burst (per kind: the first `from`, the last `to`), prints one JSON line per event, and prints at most 40 bursts an hour; later events wait, merged, until the hour frees a slot.
 
 ## Game data
 

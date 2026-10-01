@@ -37,7 +37,8 @@ T.PROBES = {
 T.URGENT_EVENTS = { PLAYER_LEVEL_UP = true, PLAYER_DEAD = true, NEW_RECIPE_LEARNED = true }
 T.CHANGE_EVENTS = { "PLAYER_MONEY", "PLAYER_XP_UPDATE", "ZONE_CHANGED_NEW_AREA", "BAG_UPDATE_DELAYED", "PLAYER_EQUIPMENT_CHANGED", "SKILL_LINES_CHANGED", "UPDATE_FACTION" }
 T.CHARS_MAX = 20
-T.KEY_MAX_BYTES = 64
+T.KEY_MAX_CHARS = 64
+T.KEY_MAX_BYTES = 256
 T.INFLIGHT_MAX = 4
 
 local US = "\31"
@@ -66,16 +67,45 @@ local function WholeNumber(v)
 	return type(v) == "number" and v >= 0 and v == math.floor(v) and v or nil
 end
 
-function T.CharacterKey()
-	local name = Try(UnitName, "player")
-	local realm = Try(GetRealmName)
-	if type(name) ~= "string" or type(realm) ~= "string" then return nil end
-	name = name:match("^[^%s,%(]+")
+local function Trim(s)
+	return (s:gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+local function CodePoints(s)
+	local n = 0
+	for i = 1, #s do
+		local b = s:byte(i)
+		if b < 128 or b >= 192 then n = n + 1 end
+	end
+	return n
+end
+
+function T.KeyFromCharacterLine(line)
+	local name, rest = line:match("^([^%s,%(]+)(.*)$")
+	if not name then return nil end
+	local realm = ""
+	local afterOn = rest:match("^%s+on(%s.*)$")
+	local stop = afterOn and (afterOn:find("[,%(]") or (#afterOn + 1))
+	local region = afterOn and afterOn:sub(2, stop - 1) or ""
+	if afterOn and region ~= "" then
+		realm = Trim(region)
+	elseif not (rest:match("^%s*$") or rest:match("^%s*[,%(]")) then
+		return nil
+	end
 	realm = realm:gsub("%s+", "")
-	if not name or realm == "" then return nil end
-	local key = (name .. "-" .. realm):gsub("[^%w_%-\128-\255]", "")
-	if key == "" or #key > T.KEY_MAX_BYTES or key:sub(1, 1) == "-" then return nil end
+	local key = (realm ~= "" and (name .. "-" .. realm) or name):gsub("[^%w_%-\128-\255]", "")
+	if key == "" or CodePoints(key) > T.KEY_MAX_CHARS then return nil end
 	return key
+end
+
+function T.CharacterKey()
+	local context = ClaudeWoW and ClaudeWoW.GameContext and Try(ClaudeWoW.GameContext)
+	if type(context) ~= "string" then return nil end
+	for line in (context .. "\n"):gmatch("([^\n]*)\n") do
+		local value = line:match("^[Cc][Hh][Aa][Rr][Aa][Cc][Tt][Ee][Rr]%s*:%s*(.+)$")
+		if value then return T.KeyFromCharacterLine(Trim(value)) end
+	end
+	return nil
 end
 
 local function Root()
@@ -265,7 +295,7 @@ function T.Record(room)
 	local seq = math.max((WholeNumber(root.seq) or 0) + 1, time())
 	local head = table.concat({ (ClaudeWoWDB.session:gsub("[\30\31]", " ")), "", Int(seq), "", "kind=" .. T.KIND, key, T.VERSION }, US)
 	local limit = math.min(room, T.RECORD_MAX)
-	if #head > limit then return nil end
+	if #head > limit then return nil, nil, true end
 	local sections = T.Sections()
 	local lines, size, sent, left = {}, #head, {}, false
 	for _, name in ipairs(T.ORDER) do
@@ -299,6 +329,7 @@ function T.Take(room, solo)
 	if not rec then return nil end
 	state.lastAt = now
 	if solo then state.lastSoloAt = now end
+	local wasUrgent = state.urgent
 	state.urgent = false
 	state.sent[#state.sent + 1] = now
 	for name, hash in pairs(sent) do
@@ -306,7 +337,7 @@ function T.Take(room, solo)
 		state.sentAt[name] = now
 		state.sentSeq[name] = seq
 	end
-	table.insert(state.inflight, { rec = rec, sent = sent })
+	table.insert(state.inflight, { rec = rec, sent = sent, urgent = wasUrgent })
 	while #state.inflight > T.INFLIGHT_MAX do table.remove(state.inflight, 1) end
 	return rec
 end
@@ -324,6 +355,7 @@ local function Settle(rec, lost)
 					end
 				end
 				state.hint = true
+				if f.urgent then state.urgent = true end
 			end
 			return true
 		end
@@ -353,10 +385,12 @@ function T.Sync(gs)
 		state.bridge = false
 		return
 	end
+	local changed = not state.bridge
 	state.bridge = true
-	state.hint = true
 	local watch = type(gs.watch) == "table" and gs.watch or {}
-	state.watch = { items = IdList(watch.items, T.WATCH_ITEMS_MAX), factions = IdList(watch.factions, T.WATCH_FACTIONS_MAX) }
+	local items, factions = IdList(watch.items, T.WATCH_ITEMS_MAX), IdList(watch.factions, T.WATCH_FACTIONS_MAX)
+	if table.concat(items, ",") ~= table.concat(state.watch.items, ",") or table.concat(factions, ",") ~= table.concat(state.watch.factions, ",") then changed = true end
+	state.watch = { items = items, factions = factions }
 	local entry = Entry(gs)
 	local hashes = entry and entry.hashes or {}
 	local bridgeSeq = entry and WholeNumber(entry.seq) or 0
@@ -364,10 +398,12 @@ function T.Sync(gs)
 	for _, name in ipairs(T.ORDER) do
 		local at, seq = state.sentAt[name], state.sentSeq[name]
 		if not at or (seq and bridgeSeq >= seq) or now - at >= T.RESEND_AFTER then
-			local h = hashes[name]
-			state.known[name] = type(h) == "string" and h or nil
+			local h = type(hashes[name]) == "string" and hashes[name] or nil
+			if state.known[name] ~= h then changed = true end
+			state.known[name] = h
 		end
 	end
+	if changed then state.hint = true end
 end
 
 function T.Active()
@@ -381,6 +417,7 @@ end
 
 function T.OnEvent(event, ...)
 	if T.URGENT_EVENTS[event] then state.urgent = true else state.hint = true end
+	if event ~= "PLAYER_DEAD" and event ~= "NEW_RECIPE_LEARNED" then return end
 	local mine = Mine()
 	if not mine then return end
 	if event == "PLAYER_DEAD" then

@@ -39,6 +39,7 @@ const IMPORTANCE = Object.freeze({
   goal_complete: 3,
 });
 const GS_CHARACTERS_MAX = 4;
+const REJECTED_KEYS_LOGGED = 20;
 
 const LINE_RE = /^([a-z]+):([0-9a-f]{8}):(.*)$/;
 const HASH_RE = /^[0-9a-f]{8}$/;
@@ -314,8 +315,21 @@ function diffSection(name, prev, next, watch) {
   return SECTION_DIFFS[name](prev, next, watch);
 }
 
+function onceCompleted(snap, name, events, watch) {
+  if (name !== 'items') return events;
+  for (const id of Object.keys(snap.completed)) {
+    if (watch.items.get(Number(id)) !== snap.completed[id]) delete snap.completed[id];
+  }
+  return events.filter(e => {
+    if (e.type !== 'goal_complete') return true;
+    if (snap.completed[e.data.id] === e.data.target) return false;
+    snap.completed[e.data.id] = e.data.target;
+    return true;
+  });
+}
+
 function emptySnapshot(character) {
-  return { v: SNAPSHOT_VERSION, character, session: '', seq: 0, updatedAt: 0, sections: {} };
+  return { v: SNAPSHOT_VERSION, character, session: '', seq: 0, updatedAt: 0, sections: {}, completed: {} };
 }
 
 function cleanSection(name, s) {
@@ -340,6 +354,11 @@ function readSnapshot(file, character, log = () => {}) {
   snap.session = typeof doc.session === 'string' && SESSION_RE.test(doc.session) ? doc.session : '';
   snap.seq = Number.isSafeInteger(doc.seq) && doc.seq >= 0 ? doc.seq : 0;
   snap.updatedAt = Number.isSafeInteger(doc.updatedAt) ? doc.updatedAt : 0;
+  if (doc.completed && typeof doc.completed === 'object' && !Array.isArray(doc.completed)) {
+    for (const [id, target] of Object.entries(doc.completed)) {
+      if (/^\d{1,12}$/.test(id) && Number.isSafeInteger(target) && target > 0) snap.completed[id] = target;
+    }
+  }
   const dropped = [];
   for (const [name, s] of Object.entries(doc.sections)) {
     const clean = cleanSection(name, s);
@@ -403,7 +422,7 @@ function createTelemetry(opts) {
   const snapshots = new Map();
   const loggedMissing = new Map();
   let primed = false;
-  let warnedNoCharacter = false;
+  const rejectedKeys = new Set();
 
   function snapshotFile(character) {
     return path.join(dir, character, SNAPSHOT_FILE);
@@ -447,7 +466,10 @@ function createTelemetry(opts) {
     if (!SESSION_RE.test(session) || !Number.isSafeInteger(seq) || seq <= 0) return { status: 'invalid' };
     const character = String(job.name || '');
     if (!CHARACTER_KEY_RE.test(character)) {
-      if (!warnedNoCharacter) { warnedNoCharacter = true; log('telemetry: a game state record named no usable character; dropped (the addon names the character in every record)'); }
+      if (!rejectedKeys.has(character) && rejectedKeys.size < REJECTED_KEYS_LOGGED) {
+        rejectedKeys.add(character);
+        log(`telemetry: dropped a game state record whose character key ${JSON.stringify(character.slice(0, 80))} is not letters, digits, _ and - (a name with characters the addon cannot classify)`);
+      }
       return { status: 'no-character' };
     }
     if (!remember(session, seq)) return { status: 'duplicate' };
@@ -468,7 +490,7 @@ function createTelemetry(opts) {
       if (!incoming) continue;
       const prev = snap.sections[name];
       if (prev && prev.seq >= seq) continue;
-      events.push(...diffSection(name, prev && prev.value, incoming.value, w));
+      events.push(...onceCompleted(snap, name, diffSection(name, prev && prev.value, incoming.value, w), w));
       snap.sections[name] = { seq, hash: incoming.hash, at: stamp, data: incoming.data, value: incoming.value };
       applied.push(name);
       if (name === 'cap') noteMissing(character, incoming.value);

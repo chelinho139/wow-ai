@@ -483,3 +483,98 @@ test('/claude config context off also stops telemetry', () => {
   tick(vm, 5);
   assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'false');
 });
+
+test('the Lua character key equals goals.js characterOf on the same game context, case by case', () => {
+  const cases = [
+    ['Bone', 'Forever'],
+    ['Bone', 'Forever Realm'],
+    ['Bone', "Forever's Realm"],
+    ['Bone', 'Forever (PvP)'],
+    ['Bone', 'A, B'],
+    ['Bone', ''],
+    ['Bone', null],
+    ['Боне', 'Вечность'],
+    ['Bóne', 'Éternité'],
+    ['Bone', '  Spaced   Out  '],
+  ];
+  const vm = newVM();
+  for (const [name, realm] of cases) {
+    vm.run(`function UnitName(unit) return ${JSON.stringify(name)} end; function GetRealmName() return ${realm === null ? 'nil' : JSON.stringify(realm)} end`);
+    const who = G.characterOf(vm.evaluate('ClaudeWoW.GameContext()'));
+    assert.equal(vm.evaluate('ClaudeWoWTelemetry.CharacterKey()'), who ? who.key : null, `${name} / ${realm}`);
+  }
+  vm.run(`function UnitName(unit) return ${JSON.stringify('B'.repeat(70))} end; function GetRealmName() return "Forever" end`);
+  assert.equal(vm.evaluate('ClaudeWoWTelemetry.CharacterKey()'), null, 'over 64 characters the addon sends no key');
+  vm.run(`function UnitName(unit) return ${JSON.stringify('Б'.repeat(60))} end`);
+  assert.equal(vm.evaluate('ClaudeWoWTelemetry.CharacterKey()'), null, 'the cap counts characters, not bytes');
+  vm.run(`function UnitName(unit) return ${JSON.stringify('Б'.repeat(50))} end`);
+  assert.equal(vm.evaluate('ClaudeWoWTelemetry.CharacterKey()'), `${'Б'.repeat(50)}-Forever`);
+});
+
+test('an urgent record whose shot fails stays urgent: the next shot goes at once', () => {
+  const vm = ready();
+  shoot(vm);
+  vm.run('STUB.level = 24; STUB.FireEvent("PLAYER_LEVEL_UP", 24)');
+  tick(vm, 5);
+  const failed = shoot(vm, 'SCREENSHOT_FAILED');
+  assert.ok(sectionsOf(gsJobs(failed)[0]).sections.level, 'the level-up record was on the failed shot');
+  tick(vm, 5);
+  const again = gsJobs(shoot(vm));
+  assert.equal(again.length, 1, 'sent again within a tick, not after the 2-minute window');
+  assert.ok(sectionsOf(again[0]).sections.level);
+});
+
+test('a slot that changes nothing for the addon does not wake the pump; a new watch list does', () => {
+  const vm = ready();
+  const [first] = gsJobs(shoot(vm));
+  const luaHashes = first.text.split('\n').slice(1).map(l => l.split(':')).map(([n, h]) => `${n} = "${h}"`).join(', ');
+  const roundTrip = (watchItems) => {
+    vm.run('ClaudeWoW.Send("ping")');
+    shoot(vm);
+    const chat = vm.evaluate('ClaudeWoWDB.chats[1].id');
+    const id = vm.num('ClaudeWoWDB.chats[1].pendingId');
+    nextSlot(vm, slotBody(`{ v = 1, watch = { items = { ${watchItems} }, factions = { 530 } }, chars = { { character = "${CHARACTER}", session = ClaudeWoWDB.session, seq = ${first.id}, hashes = { ${luaHashes} } } } }`, `, replies = { { chat = "${chat}", id = ${id}, status = "done", text = "pong" } }`));
+    tick(vm, 6);
+    tick(vm, 2);
+    vm.run('COLLECTED = 0; local sections = ClaudeWoWTelemetry.Sections; ClaudeWoWTelemetry.Sections = function(...) COLLECTED = COLLECTED + 1; return sections(...) end');
+    tick(vm, 125);
+  };
+  tick(vm, 61);
+  roundTrip('2589');
+  assert.equal(vm.num('COLLECTED'), 0, 'same watch list, same hashes: nothing collected');
+  roundTrip('2589, 2592');
+  const [items] = gsJobs(shoot(vm));
+  assert.deepEqual(Object.keys(sectionsOf(items).sections), ['items'], 'a new watch list is collected and sent');
+});
+
+test('change events never write the saved variables; only a death or a new recipe does', () => {
+  const vm = ready();
+  shoot(vm);
+  const key = `ClaudeWoWDB.telemetry.chars["${CHARACTER}"]`;
+  vm.run(`${key}.seen = 7`);
+  for (const ev of ['PLAYER_MONEY', 'PLAYER_XP_UPDATE', 'ZONE_CHANGED_NEW_AREA', 'BAG_UPDATE_DELAYED', 'PLAYER_EQUIPMENT_CHANGED', 'SKILL_LINES_CHANGED', 'UPDATE_FACTION', 'PLAYER_LEVEL_UP']) vm.run(`STUB.FireEvent("${ev}")`);
+  assert.equal(vm.num(`${key}.seen`), 7);
+  vm.run('STUB.FireEvent("PLAYER_DEAD")');
+  assert.ok(vm.num(`${key}.seen`) > 7);
+});
+
+test('when a record head does not fit the room left, the change still waits for a shot of its own', () => {
+  const vm = ready();
+  const [first] = gsJobs(shoot(vm));
+  const luaHashes = first.text.split('\n').slice(1).map(l => l.split(':')).map(([n, h]) => `${n} = "${h}"`).join(', ');
+  tick(vm, 31);
+  vm.run('STUB.money = STUB.money + 29; STUB.FireEvent("PLAYER_MONEY")');
+  vm.run('local take = ClaudeWoWTelemetry.Take; ClaudeWoWTelemetry.Take = function(room, solo) if not solo then return take(10, solo) end return take(room, solo) end');
+  vm.run('ClaudeWoW.Send("tight frame")');
+  assert.deepEqual(gsJobs(shoot(vm)), [], 'no room for even the head');
+  const chat = vm.evaluate('ClaudeWoWDB.chats[1].id');
+  const id = vm.num('ClaudeWoWDB.chats[1].pendingId');
+  nextSlot(vm, slotBody(`{ v = 1, watch = { items = { 2589 }, factions = { 530 } }, chars = { { character = "${CHARACTER}", session = ClaudeWoWDB.session, seq = ${first.id}, hashes = { ${luaHashes} } } } }`, `, replies = { { chat = "${chat}", id = ${id}, status = "done", text = "ok" } }`));
+  tick(vm, 6);
+  tick(vm, 2);
+  assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'false', 'inside the 2-minute window nothing goes yet');
+  tick(vm, 90);
+  const [solo] = gsJobs(shoot(vm));
+  assert.ok(solo, 'the pending change still has a hint and goes on its own shot');
+  assert.deepEqual(Object.keys(sectionsOf(solo).sections), ['money']);
+});
