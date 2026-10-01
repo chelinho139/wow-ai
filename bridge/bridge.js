@@ -71,6 +71,7 @@ registry.register(require('./plugins/live'));
 const LP = require('./liveproto');
 const T = require('./titles');
 const GOALS = require('./goals');
+const TL = require('./telemetry');
 
 const HERE = __dirname;
 // Config, state, transcripts, log and scratch live in the home folder (home.js:
@@ -248,6 +249,13 @@ for (const [k, v] of Object.entries(state.handled)) {
     state.handled[k] = m;
   }
 }
+
+const TELEMETRY_ON = TL.telemetryEnabled(cfg.telemetry);
+const telemetry = TL.createTelemetry({
+  dir: HOME.goals,
+  log,
+  watch: () => TL.watchFrom(cfg.telemetry),
+});
 
 // Bridge-side transcripts. The beta client sometimes wipes addon saved data; since
 // every prompt and reply passes through here, this copy lets the addon recover.
@@ -504,7 +512,11 @@ function slotFile(globalName, records, urgent = true) {
   const lp = livePlugin();
   const liveInfo = lp ? { sessions: lp.status(), start: liveStartCommand() } : null;
   const goalsLua = goalStore.slotLua();
-  return P.luaTable(globalName, records, { live: liveInfo, sessions: sessionList(), cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), plugin: DEFAULT_PLUGIN, plugins: registry.ids(), map, widgets, transport: TRANSPORT, levels: LEVELS, codec: STRIP_CODEC, transportNote, achievementsLua, goalsLua, presence: presenceInfo() });
+  let gsLua = '';
+  if (TELEMETRY_ON) {
+    try { gsLua = telemetry.luaGs(); } catch (e) { log(`telemetry: slot field gs left out (${e && e.message ? e.message : e})`); }
+  }
+  return P.luaTable(globalName, records, { live: liveInfo, sessions: sessionList(), cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), plugin: DEFAULT_PLUGIN, plugins: registry.ids(), map, widgets, transport: TRANSPORT, levels: LEVELS, codec: STRIP_CODEC, transportNote, achievementsLua, goalsLua, gsLua, presence: presenceInfo() });
 }
 
 function recentClaudeSessions() {
@@ -809,6 +821,11 @@ function allowRules(agentId, rules) {
 // ---------------------------------------------------------------------------
 
 function submit(job) {
+  if (TL.isTelemetry(job)) {
+    if (!TELEMETRY_ON) return;
+    try { telemetry.submit(job); } catch (e) { log(`telemetry: gs #${job.id} not applied (${e && e.message ? e.message : e})`); }
+    return;
+  }
   if (job.shot) fallbackToPixel(job.shot, job); // even for a message already handled: the report stands
   noteSignalReport(job);
   if (alreadyHandled(job)) return;

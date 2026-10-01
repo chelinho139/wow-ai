@@ -38,6 +38,7 @@ const FILES = [
   'addon/ClaudeWoW/Orders.lua',
   'addon/ClaudeWoW/Widgets.lua',
   'addon/ClaudeWoW/Window.lua',
+  'addon/ClaudeWoW/Telemetry.lua',
   'addon/ClaudeWoW/Bindings.xml',
   'addon/ClaudeWoW/Portrait.tga',
   'bridge/capture.ps1',
