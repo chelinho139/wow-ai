@@ -2847,6 +2847,19 @@ function connectIn(vm, cwd) {
   assert.equal(vm.evaluate('ClaudeWoW.IsConnected()'), 'true');
 }
 
+test('projects: a chat started by /claude in a whisper tab says general chat, not the bridge folder; one started with --project names its project', () => {
+  const vm = newVM();
+  vm.run(WHISPER_DOCK);
+  login(vm);
+  connectIn(vm, '/Users/me/every');
+  vm.run('SlashCmdList.CLAUDE("where should i go now")');
+  const general = chatTabText(vm, vm.evaluate('ClaudeWoWDB.activeChat'));
+  assert.match(general, / - general chat\. Type here/);
+  assert.doesNotMatch(general, /coding in/);
+  vm.run('SlashCmdList.CLAUDE("--project every fix the build")');
+  assert.match(chatTabText(vm, vm.evaluate('ClaudeWoWDB.activeChat')), /\nproject: every\n/);
+});
+
 test('projects: a chat has none by default; --project, #name and none attach and detach one, and the wire carries the folder', () => {
   const vm = newVM();
   login(vm);
