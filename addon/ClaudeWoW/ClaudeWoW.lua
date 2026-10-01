@@ -3259,6 +3259,7 @@ function ClaudeWoW.SwitchChat(id)
 		prev.draft = typed ~= "" and typed or nil
 	end
 	db.activeChat = c.id
+	c.opened = time()
 	c.unread = 0
 	ui.chatPage = nil
 	if ui.input then
@@ -3388,12 +3389,10 @@ function Cli.ProjectMenu(anchor)
 			for _, p in ipairs(Cli.KnownProjects()) do
 				root:CreateButton(FolderName(p), function() Cli.PickProject(c, p) end)
 			end
-			root:CreateDivider()
-			root:CreateButton("Other folder...", function() ClaudeWoW.FolderPrompt(c.id) end)
 		end)
 		if shown then return end
 	end
-	ClaudeWoW.FolderPrompt(c.id)
+	Cli.Out(c, "project: " .. Cli.ProjectLabel(c) .. " (known: " .. Cli.ProjectNames() .. "). Use /claude --project <name|path|none>.")
 end
 
 function Cli.UpdateProjectButton()
@@ -3947,7 +3946,7 @@ function ClaudeWoW.UpdateStatus()
 	if ui.title then
 		local t = c and Display(c.name) or "Claude WoW"
 		if ui.chatTitle then
-			t = "Claude WoW"
+			t = Q.PANEL_TITLE
 		else
 			local folder = FolderName(ChatFolder(c))
 			if folder ~= "" then t = t .. "  |cff888888" .. Display(folder) .. "|r" end
@@ -4730,6 +4729,14 @@ function Q.AtlasExists(name)
 	return C_Texture and C_Texture.GetAtlasExists and C_Texture.GetAtlasExists(name) and true or false
 end
 
+Q.PANEL_TITLE = "Claude"
+
+function Q.WhenLabel(t)
+	t = tonumber(t)
+	if not t then return "" end
+	if date("%Y-%m-%d", t) == date("%Y-%m-%d", time()) then return "at " .. date("%H:%M", t) end
+	return "on " .. date("%b %d", t)
+end
 Q.CLASSIC_ERA_ART = { parchment = true, reply = true }
 Q.CLASSIC_ERA_GEAR = "Interface\\Icons\\INV_Misc_Gear_01"
 Q.CLASSIC_PAGE = {
@@ -4865,7 +4872,7 @@ function Q.ChatObjectives(c)
 	local first = tostring(last.text or ""):match("^%s*([^\n]*)") or ""
 	return {
 		who .. ": " .. first,
-		count .. (count == 1 and " message" or " messages") .. (last.t and (", last at " .. date("%H:%M", last.t)) or ""),
+		count .. (count == 1 and " message" or " messages") .. (last.t and (", last " .. Q.WhenLabel(last.t)) or ""),
 	}
 end
 
@@ -5091,13 +5098,6 @@ function ClaudeWoW.RenderQuestList()
 		end
 		table.insert(groups[key], c)
 	end
-	for i, key in ipairs(order) do
-		if key == Q.NO_FOLDER and i > 1 then
-			table.remove(order, i)
-			table.insert(order, 1, key)
-			break
-		end
-	end
 	local width = Try(q.scroll.GetWidth, q.scroll) or (Q.LIST_W - 32)
 	if width < 80 then width = Q.LIST_W - 32 end
 	q.content:SetWidth(width)
@@ -5155,11 +5155,12 @@ function ClaudeWoW.RenderQuestList()
 end
 
 function Q.LastActive(c)
+	local opened = tonumber(c.opened)
 	for i = #(c.history or {}), 1, -1 do
 		local t = tonumber(c.history[i].t)
-		if t then return t end
+		if t then return math.max(t, opened or 0) end
 	end
-	return nil
+	return opened
 end
 
 function Q.NewestFirst(chats)
@@ -5456,7 +5457,7 @@ local function BuildUI()
 	local nativeTitle = native and Try(f.GetTitleText, f)
 	local title = nativeTitle or f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
 	if not nativeTitle then title:SetPoint("LEFT", dotHolder, "RIGHT", 6, 0) end
-	title:SetText("Claude WoW")
+	title:SetText(Q.PANEL_TITLE)
 	ui.title = title
 
 	local status = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
