@@ -9,6 +9,7 @@ const SS = require('../sessions');
 const DEFAULTS = { waitMs: 3000, permissionTimeoutMs: 120000, helloTimeoutMs: 5000, pickupMs: 45000, pickupPollMs: 5000 };
 const CLAUDE_INFO_TTL_MS = 5000;
 const DETECT_WAIT_MS = 25000;
+const ANCESTRY_DEPTH_MAX = 64;
 
 function pickupMarkers(chatId, messageId) {
   const plain = `chat_id="${chatId}" message_id="${messageId}"`;
@@ -27,6 +28,7 @@ function createLive(overrides = {}) {
   let nextConn = 1;
   let platform = overrides.platform || process.platform;
   const commandLineOf = overrides.commandLine || (pid => LP.commandLine(pid, { platform }));
+  const parentOf = overrides.parentOf || (pid => LP.parentPid(pid, { platform }));
 
   const opt = key => {
     const o = core ? core.options('live') : {};
@@ -272,6 +274,32 @@ function createLive(overrides = {}) {
     core.reply(p.job, LP.permissionPrompt(msg, s.name), [rule]);
   }
 
+  function agentRunPids() {
+    const pids = core && typeof core.agentPids === 'function' ? core.agentPids() : [];
+    return new Set((Array.isArray(pids) ? pids : []).map(Number).filter(n => Number.isInteger(n) && n > 0));
+  }
+
+  async function checkGoalCaller(s) {
+    if (!s.pid || !s.ppid) return 'the channel server did not name its process and its Claude Code process';
+    const parent = await parentOf(s.pid);
+    if (parent !== s.ppid) return `pid ${s.pid} is not a child of Claude Code pid ${s.ppid}`;
+    const runs = agentRunPids();
+    let pid = s.pid;
+    for (let depth = 0; pid > 1 && depth < ANCESTRY_DEPTH_MAX; depth++) {
+      if (runs.has(pid)) return `pid ${s.pid} runs under agent run pid ${pid}, which the bridge started from the game`;
+      pid = depth === 0 ? s.ppid : await parentOf(pid);
+      if (!pid) break;
+    }
+    return '';
+  }
+
+  async function goalCallerRefusal(s) {
+    if (s.goalCallerTrusted) return '';
+    const why = await checkGoalCaller(s);
+    s.goalCallerTrusted = !why;
+    return why;
+  }
+
   async function onGoalCall(s, msg) {
     const answer = r => sendTo(s, { type: 'goal_result', call: msg.call, ok: !!(r && r.ok), text: String((r && r.text) || '') });
     if (!core || typeof core.goals !== 'function') { answer({ ok: false, text: 'This bridge has no goal store.' }); return; }
@@ -279,6 +307,12 @@ function createLive(overrides = {}) {
     if (!s.listening) {
       log(`${tool} from "${s.name}" refused: the session is not listening on the channel`);
       answer({ ok: false, text: `${tool} only works in a session started with ${LP.DEV_FLAG} ${LP.CHANNEL_ARG}, never in a -p run.` });
+      return;
+    }
+    const why = await goalCallerRefusal(s);
+    if (why) {
+      log(`${tool} from "${s.name}" refused: ${why}`);
+      answer({ ok: false, text: `${tool} was refused: ${why}.` });
       return;
     }
     let result;

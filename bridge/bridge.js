@@ -726,11 +726,16 @@ function readOutbox() {
 function setContext(job) {
   const text = String(job.ctx || '').replace(/\r/g, '').trim().slice(0, 2000);
   const prev = (state.context && state.context.text) || '';
-  if (text === prev) return;
-  state.context = text ? { text, at: Date.now(), session: job.session || '' } : null;
+  if (text === prev) { noteContextHeard(); return; }
+  const heardAt = Date.now();
+  state.context = text ? { text, at: heardAt, receivedAt: heardAt, session: job.session || '' } : null;
   saveState();
   const who = (text.split('\n').find(l => /^Character:/i.test(l)) || text.split('\n')[0] || '').slice(0, 100);
   log(`#${job.id}${job.session ? '@' + job.session : ''} game context ${text ? 'updated: ' + who : 'cleared'}`);
+}
+
+function noteContextHeard() {
+  if (state.context) state.context.receivedAt = Date.now();
 }
 
 function gameContext() {
@@ -787,6 +792,7 @@ function submit(job) {
   if (alreadyHandled(job)) return;
   clearSignalsAhead(job.id);
   if (job.ctx !== undefined) setContext(job);
+  else noteContextHeard();
   if (job.forget) {
     // A deleted chat: forget it and ack. No agent run.
     markHandled(job);
@@ -932,6 +938,7 @@ const core = {
   get claudeDir() { return CLAUDE_DIR; },
   runAgent,
   goals: (tool, args) => goalStore.call(tool, args),
+  agentPids: () => [...running.values()].map(r => r.child).concat(T.titleChildren()).filter(Boolean).map(c => c.pid),
 };
 
 const goalStore = GOALS.createGoals({
@@ -980,7 +987,20 @@ function stopPlugins() {
 // resuming (the coding plugin: the folder changed). The plugin's own
 // instructions (tools) go into the system prompt; its surfaces say whether the
 // run may mark the map and whether macro blocks in the reply become buttons.
-const IN_GAME_DENIED_TOOLS = LP.GOAL_WRITE_TOOLS;
+const IN_GAME_NEVER_GRANTED = LP.GOAL_WRITE_TOOLS;
+function inGameDeniedTools() {
+  return [...IN_GAME_NEVER_GRANTED, ...homeGuardRules()];
+}
+
+function homeGuardRules() {
+  let real = HOME.dir;
+  try { real = fs.realpathSync(HOME.dir); } catch {}
+  const homes = [...new Set([HOME.dir, real])];
+  return homes.flatMap(dir => [
+    P.absolutePathRule('Read', LP.tokenFile(dir)),
+    P.absolutePathRule('Edit', path.join(dir, path.basename(HOME.goals), '**')),
+  ]);
+}
 
 function runAgent(job, opts = {}) {
   const key = chatKey(job);
@@ -999,8 +1019,8 @@ function runAgent(job, opts = {}) {
   job.agent = agentId;
   const agent = A.AGENTS[agentId];
   const chosen = chatSettings(job);
-  const grantForGood = P.splitGrants(P.withoutRules(job.allow, IN_GAME_DENIED_TOOLS));
-  const grantOnce = P.splitGrants(P.withoutRules(job.allowOnce, IN_GAME_DENIED_TOOLS));
+  const grantForGood = P.splitGrants(P.withoutRules(job.allow, IN_GAME_NEVER_GRANTED));
+  const grantOnce = P.splitGrants(P.withoutRules(job.allowOnce, IN_GAME_NEVER_GRANTED));
   if (grantForGood.rules.length) {
     const added = allowRules(agentId, grantForGood.rules);
     log(`${tag} allowed for ${agentId}: ${grantForGood.rules.join(', ')}${added.length ? '' : ' (already allowed)'}`);
@@ -1008,7 +1028,7 @@ function runAgent(job, opts = {}) {
   if (grantOnce.rules.length) {
     log(`${tag} allowed for this run only (${agentId}): ${grantOnce.rules.join(', ')}`);
   }
-  const acfg = A.withChatSettings(P.withRunDeniedRules(P.withRunOnlyRules(A.agentConfig(cfg, agentId), grantOnce.rules), IN_GAME_DENIED_TOOLS), agentId, chosen);
+  const acfg = A.withChatSettings(P.withRunDeniedRules(P.withRunOnlyRules(A.agentConfig(cfg, agentId), grantOnce.rules), inGameDeniedTools()), agentId, chosen);
   const runDirs = [...grantForGood.dirs, ...grantOnce.dirs].map(d => P.resolveCwd(d, DEFAULT_CWD));
   if (runDirs.length) {
     acfg.addDirs = [...new Set([...A.addDirs(acfg), ...runDirs])];
@@ -1106,7 +1126,7 @@ function runAgent(job, opts = {}) {
   if (job.title) nameChat(job, key);
 
   const granted = P.grantsFor(acfg, cwd);
-  const parser = agent.parser({ cwd, granted, isDir: isDirectory, neverOffer: IN_GAME_DENIED_TOOLS });
+  const parser = agent.parser({ cwd, granted, isDir: isDirectory, neverOffer: IN_GAME_NEVER_GRANTED });
   job.activity = ACH.createRunLog(agentId);
   const progress = [];
   let sessionId = resume || '';
@@ -1159,7 +1179,7 @@ function runAgent(job, opts = {}) {
     if (r.session) sessionId = r.session;
     if (r.usage) usage = r.usage;
     for (const p of r.progress) pushProgress(p);
-    for (const d of P.withoutRules(r.denied, IN_GAME_DENIED_TOOLS)) denied.add(d);
+    for (const d of r.denied) denied.add(d);
     if (Array.isArray(r.deniedAgain)) for (const d of r.deniedAgain) deniedAgain.add(d);
     notes.push(...r.notes);
     if (r.done) result = r.done;

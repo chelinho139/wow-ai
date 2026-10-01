@@ -71,7 +71,8 @@ const DEAF = 'claude --dangerously-skip-permissions';
 async function rig(opts = {}) {
   const home = tmpHome();
   const commandLine = opts.commandLine || (() => LISTENING);
-  const live = createLive(opts.realPickup ? { commandLine } : { commandLine, pickedUp: opts.pickedUp || (() => false) });
+  const parentOf = opts.parentOf || (async pid => (pid === process.pid ? (opts.ppid || 777) : null));
+  const live = createLive(opts.realPickup ? { commandLine, parentOf } : { commandLine, parentOf, pickedUp: opts.pickedUp || (() => false) });
   const { core, calls } = fakeCore(home, opts);
   live.start(core);
   await until(() => fs.existsSync(LP.endpoint(home)) || !POSIX);
@@ -220,7 +221,7 @@ test('bridge to session: a message becomes a channel notification, wow_reply goe
 test('goal tools: the live session calls goal_set, goal_list and order_issue through the bridge socket; the bridge is the only writer', async () => {
   const G = require('../bridge/goals');
   const home = tmpHome();
-  const ctx = { text: 'Character: Bone on Forever, level 20 Orc Rogue (Horde)\nProfessions: Skinning 187/225', at: 5 };
+  const ctx = { text: 'Character: Bone on Forever, level 20 Orc Rogue (Horde)\nProfessions: Skinning 187/225', at: Date.now() };
   const posts = [];
   const store = G.createGoals({ dir: path.join(home, 'goals'), context: () => ctx, streamOptions: () => ({ url: 'http://127.0.0.1:9' }), post: async (url, command) => { posts.push(command); return { ok: true, status: 200 }; } });
   const r = await rig();
@@ -264,6 +265,51 @@ test('goal tools: a connected session that is not listening on the channel is re
     assert.match(res.content[0].text, /only works in a session started with --dangerously-load-development-channels server:claude-wow/);
     assert.deepEqual(calls, []);
   } finally { r.cleanup(); }
+});
+
+async function goalCallRefused(r, id) {
+  await initialize(r.ch, r.out);
+  r.ch.feed(JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'goal_set', arguments: { profession: 'Skinning', rank: 200 } } }) + '\n');
+  return (await until(() => r.out.lines.find(l => l.id === id))).result;
+}
+
+test('goal tools: a hello whose pid is not really a child of the claimed Claude Code pid is refused', async () => {
+  const r = await rig({ parentOf: async pid => (pid === process.pid ? 4321 : null) });
+  const calls = [];
+  r.core.goals = async tool => { calls.push(tool); return { ok: true, text: 'done' }; };
+  try {
+    assert.equal(r.live.status().length, 1, 'the session counts as listening');
+    const res = await goalCallRefused(r, 31);
+    assert.equal(res.isError, true);
+    assert.match(res.content[0].text, new RegExp(`goal_set was refused: pid ${process.pid} is not a child of Claude Code pid 777`));
+    assert.deepEqual(calls, []);
+  } finally { r.cleanup(); }
+});
+
+test('goal tools: a listening session that runs under an agent run the bridge started from the game is refused', async () => {
+  const tree = { [process.pid]: 777, 777: 555, 555: 1 };
+  const r = await rig({ parentOf: async pid => tree[pid] || null });
+  const calls = [];
+  r.core.goals = async tool => { calls.push(tool); return { ok: true, text: 'done' }; };
+  r.core.agentPids = () => [555];
+  try {
+    const res = await goalCallRefused(r, 32);
+    assert.equal(res.isError, true);
+    assert.match(res.content[0].text, /runs under agent run pid 555, which the bridge started from the game/);
+    assert.deepEqual(calls, []);
+    r.core.agentPids = () => [999];
+    r.ch.feed(JSON.stringify({ jsonrpc: '2.0', id: 33, method: 'tools/call', params: { name: 'goal_list', arguments: {} } }) + '\n');
+    const ok = (await until(() => r.out.lines.find(l => l.id === 33))).result;
+    assert.equal(ok.isError, false, ok.content[0].text);
+    assert.deepEqual(calls, ['goal_list']);
+  } finally { r.cleanup(); }
+});
+
+test('parentPid reads the real parent from ps', { skip: !POSIX }, async () => {
+  assert.equal(await LP.parentPid(process.pid), process.ppid);
+  assert.equal(await LP.parentPid(0), null);
+  assert.equal(await LP.parentPid(4242, { run: async () => ' 77\n' }), 77);
+  assert.equal(await LP.parentPid(4242, { run: async () => '' }), null);
 });
 
 test('goal tools with no bridge connected do nothing and say so', async () => {

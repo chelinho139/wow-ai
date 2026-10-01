@@ -68,53 +68,92 @@ test('context parsing: the Professions line with ranks, the character and realm 
   assert.equal(G.characterOf('Game: World of Warcraft'), null);
 });
 
-test('order text validator: plain words, numbers and reported names pass', () => {
+test('order text validator: numbers, plain words and reported names pass in any letter case', () => {
   const names = ['Leatherworking', 'First Aid', 'Bone'];
   for (const text of [
-    'Skin 30 hides, then raise Leatherworking to 150.',
+    'Skin 30 more, then raise Leatherworking to 150.',
     'Bone, train First Aid now',
+    'raise leatherworking to 150 and first aid to 100',
     'Let\'s cook 20 more',
     'craft until 125',
+    'Bone\'s next goal: 50% of first aid\'s max!',
+    'sell to a vendor, then buy from the trainer? 2g 50s',
   ]) assert.deepEqual(G.validateOrderText(text, names), { ok: true, text }, text);
   assert.equal(G.validateOrderText('  Skin 10  ', names).text, 'Skin 10', 'trimmed');
+  assert.equal(G.validateOrderText('ｓｋｉｎ １０', names).text, 'skin 10', 'stored NFKC-normalized');
 });
 
-test('order text validator: an unreported capitalized word is rejected, also inside a longer word or mid-sentence', () => {
+test('order text validator: every word that is not a number, a plain word or a reported name is refused and named', () => {
   const names = ['Leatherworking', 'Bone'];
   const cases = [
-    ['Go to Silverpine Forest', ['Silverpine', 'Forest']],
-    ['skin wolves near the Sepulcher', ['Sepulcher']],
-    ['Raise Leatherworkingx to 150', ['Leatherworkingx']],
-    ['Bonesaw time', ['Bonesaw']],
-    ['raise Tailoring to 50', ['Tailoring']],
-    ['buy a heavy KIT', ['KIT']],
+    ['go to orgrimmar and buy from thrall', ['orgrimmar', 'thrall']],
+    ['kill worgen in silverpine forest', ['worgen', 'silverpine', 'forest']],
+    ['Go to Silverpine Forest', ['silverpine', 'forest']],
+    ['skin wolves near the Sepulcher', ['wolves', 'sepulcher']],
+    ['Raise Leatherworkingx to 150', ['leatherworkingx']],
+    ['Bonesaw time', ['bonesaw']],
+    ['raise Tailoring to 50', ['tailoring']],
+    ['raise first aid to 50', ['aid']],
+    ['buy a heavy KIT', ['heavy', 'kit']],
+    ['Ⓞrgrimmar now', ['orgrimmar']],
+    ['go to Ｏｒｇｒｉｍｍａｒ', ['orgrimmar']],
+    ['use this wowmacro now', ['wowmacro']],
   ];
   for (const [text, words] of cases) {
     const r = G.validateOrderText(text, names);
     assert.equal(r.ok, false, text);
-    assert.match(r.text, new RegExp(`not reported: ${words.join(', ')}\\.`), text);
+    assert.ok(r.text.includes(`not allowed: ${words.map(w => `"${w}"`).join(', ')}.`), `${text}: ${r.text}`);
+    assert.match(r.text, /No zone, NPC, item or quest names/);
+    assert.match(r.text, /reported names: Leatherworking, Bone\./);
   }
-  assert.equal(G.validateOrderText('Raise Leatherworking to 150', []).ok, false, 'a profession is only allowed once the game reported it');
+  const unreported = G.validateOrderText('Raise Leatherworking to 150', []);
+  assert.equal(unreported.ok, false, 'a profession is only allowed once the game reported it');
+  assert.match(unreported.text, /"leatherworking"/);
+  assert.match(unreported.text, /reported names: none reported yet/);
 });
 
-test('order text validator: macros, slash commands, escape characters, line breaks and long text are rejected', () => {
+test('order text validator: any character outside the plain set is refused, so no slash commands, markup, accents or hidden characters', () => {
   const reject = (text, re) => {
-    const r = G.validateOrderText(text, ['Leatherworking']);
+    const r = G.validateOrderText(text, ['Leatherworking', 'Bone']);
     assert.equal(r.ok, false, text);
     assert.match(r.text, re, text);
   };
-  reject('use this wowmacro now', /no wowmacro/);
-  reject('/cast stealth', /no slash commands/);
-  reject('then /use the kit', /no slash commands/);
-  reject('type "/sit" now', /no slash commands/);
-  reject('skin |cff00ff00 now', /\| \{ \} < >/);
-  reject('see {item:2318}', /\| \{ \} < >/);
-  reject('one\ntwo', /line breaks/);
+  reject('/cast stealth', /"\/".*no slash commands/);
+  reject('/1 lfg', /"\/".*no slash commands/);
+  reject('skin 10,/cast stealth', /"\/".*no slash commands/);
+  reject('then /use the kit', /"\/"/);
+  reject('skin 30 and/or fish', /"\/"/);
+  reject('type "/sit" now', /character """/);
+  reject('skin |cff00ff00 now', /"\|"/);
+  reject('see {item:2318}', /"\{"/);
+  reject('see <b>', /"<"/);
+  reject('one\ntwo', /U\+000A/);
+  reject('go to Orgrímmar', /U\+00ED/);
+  reject('go to Go​ldshire', /U\+200B/);
+  reject('go to Gold­shire', /U\+00AD/);
+  reject('go to Gold⁠shire', /U\+2060/);
+  reject('ǅungeon', /U\+017E/);
+  reject('Boné', /U\+00E9/);
+  reject('skin ́', /U\+0301/);
   reject('x'.repeat(G.ORDER_TEXT_MAX + 1), /limit is 90/);
   reject('', /empty/);
   reject(undefined, /empty/);
-  assert.equal(G.validateOrderText('skin 30 and/or fish', []).ok, true, 'a slash inside a word is not a command');
-  assert.equal(G.validateOrderText('x'.repeat(G.ORDER_TEXT_MAX), []).ok, true);
+  assert.match(G.validateOrderText('/cast', []).text, /Allowed: letters A-Z, digits, spaces and , \. ' - : ! \? %\./);
+  assert.equal(G.validateOrderText('1'.repeat(G.ORDER_TEXT_MAX), []).ok, true);
+});
+
+test('order vocabulary: lowercase, no duplicates, a few hundred plain words, no profession and no game proper name', () => {
+  const words = require('../bridge/order-words.json');
+  assert.equal(new Set(words).size, words.length, 'no duplicates');
+  assert.ok(words.length >= 250, `${words.length} words`);
+  for (const w of words) assert.match(w, /^[a-z][a-z']*$/, w);
+  const professions = Object.values(G.PROFESSION_SKILL_IDS).flatMap(n => n.toLowerCase().split(' ')).filter(w => w !== 'first');
+  for (const p of professions) assert.ok(!G.ORDER_WORDS.has(p), `${p} is allowed only when the game reports it`);
+  const properNames = ['horde', 'alliance', 'orc', 'troll', 'tauren', 'undead', 'human', 'dwarf', 'gnome', 'elf', 'rogue', 'warrior',
+    'mage', 'priest', 'hunter', 'druid', 'paladin', 'shaman', 'warlock', 'thrall', 'orgrimmar', 'undercity', 'crossroads', 'barrens',
+    'brill', 'ratchet', 'everlook', 'sepulcher', 'bulwark', 'durotar', 'mulgore', 'silverpine', 'tirisfal', 'stormwind', 'ironforge',
+    'darnassus', 'murloc', 'kobold', 'gnoll', 'worgen', 'defias', 'scourge', 'light', 'hearthstone', 'forest', 'leather', 'linen'];
+  for (const n of properNames) assert.ok(!G.ORDER_WORDS.has(n), n);
 });
 
 test('goal_set: a profession goal by name or skillID, progress from the game context, saved per character', async () => {
@@ -250,23 +289,72 @@ test('display push: the exact orders contract, on every change and never on a re
       action: 'orders',
       orders: {
         order: { text: 'Craft until Leatherworking hits 125', goal: 'Leatherworking 150', pct: 71 },
-        goals: [{ title: 'Leatherworking 150', pct: 71 }, { title: 'Skinning 225', pct: 83 }, { title: 'Cooking 75', pct: 14 }],
+        goals: [{ title: 'Skinning 225', pct: 83 }, { title: 'Cooking 75', pct: 14 }, { title: 'First Aid 150', pct: 64 }],
         asOf: CONTEXT_AT,
       },
     });
     assert.deepEqual(r.posts[0].command.orders.order, null);
+    assert.equal(r.posts[3].command.orders.goals.length, G.OVERLAY_GOALS_MAX, 'without an order the first three goals show');
+    assert.equal(r.posts[3].command.orders.goals[0].title, 'Leatherworking 150');
     await r.store.call('order_issue', { text: 'fish 10' });
     assert.deepEqual(r.posts[5].command.orders.order, { text: 'fish 10', goal: '', pct: null });
+    assert.deepEqual(r.posts[5].command.orders.goals.map(g => g.title), ['Leatherworking 150', 'Skinning 225', 'Cooking 75']);
   } finally { r.cleanup(); }
 });
 
-test('display push: a goal the context no longer reports leaves the overlay list; no context time falls back to now', () => {
+test('display push: a goal the context no longer reports leaves the overlay list; no context time sends asOf null, never now', () => {
   const doc = { goals: [{ id: 'g_197', title: 'Tailoring 50', target: { skillID: 197, rank: 50 } }, { id: 'g_393', title: 'Skinning 225', target: { skillID: 393, rank: 225 } }], orders: { current: { text: 'x'.repeat(120), goalId: 'g_197' }, history: [] } };
-  const payload = G.overlayPayload(doc, G.snapshotOf({ text: BONE_CONTEXT }), () => 42);
+  const payload = G.overlayPayload(doc, G.snapshotOf({ text: BONE_CONTEXT }));
   assert.deepEqual(payload.goals, [{ title: 'Skinning 225', pct: 83 }]);
   assert.equal(payload.order.text.length, G.ORDER_TEXT_MAX);
   assert.equal(payload.order.pct, null);
-  assert.equal(payload.asOf, 42);
+  assert.equal(payload.asOf, null);
+  assert.equal(G.overlayPayload(doc, G.snapshotOf({ text: BONE_CONTEXT, at: 7, receivedAt: 99 })).asOf, 7, 'asOf is when the context was taken, not when it was last confirmed');
+});
+
+test('order_issue is refused when the game context is older than 15 minutes; clearing still works, and goal_list shows both times', async () => {
+  const r = rig();
+  try {
+    let ctx = { text: BONE_CONTEXT, at: NOW - G.CONTEXT_STALE_MS - 60000 };
+    const store = G.createGoals({ dir: r.dir, context: () => ctx, streamOptions: () => ({ ...ST.INERT_OPTIONS }), now: () => NOW });
+    const stale = await store.call('order_issue', { text: 'skin 10' });
+    assert.equal(stale.ok, false);
+    assert.match(stale.text, /context is 16 minutes old; orders need one from the last 15 minutes/);
+    assert.equal(fs.existsSync(r.file), false, 'a refused order writes nothing');
+    ctx = { text: BONE_CONTEXT, at: NOW - G.CONTEXT_STALE_MS - 60000, receivedAt: NOW - 1000 };
+    assert.equal((await store.call('order_issue', { text: 'skin 10' })).ok, true, 'an unchanged context the game confirmed just now is fresh');
+    const list = JSON.parse((await store.call('goal_list', {})).text);
+    assert.equal(list.asOf, NOW - G.CONTEXT_STALE_MS - 60000);
+    assert.equal(list.contextReceivedAt, NOW - 1000);
+    ctx = { text: BONE_CONTEXT, at: NOW - G.CONTEXT_STALE_MS - 60000 };
+    assert.equal((await store.call('order_issue', { clear: true })).ok, true);
+    ctx = { text: BONE_CONTEXT, at: 0 };
+    assert.match((await store.call('order_issue', { text: 'skin 10' })).text, /does not know when the game sent its context/);
+  } finally { r.cleanup(); }
+});
+
+test('context cut by the addon at 900 bytes: the last Professions entry is dropped, so a cut rank never counts', async () => {
+  const src = fs.readFileSync(ADDON, 'utf8');
+  assert.equal(Number((/^local CONTEXT_MAX = (\d+)/m.exec(src) || [])[1]), G.ADDON_CONTEXT_MAX_BYTES, 'mirrors CONTEXT_MAX in ClaudeWoW.lua');
+  const head = 'Character: Bone on Forever, level 20 Orc Rogue (Horde)\n';
+  const tail = 'Professions: Leatherworking 107/150, Skinning 18';
+  const cut = head + 'Money: 1g'.padEnd(G.ADDON_CONTEXT_MAX_BYTES - head.length - tail.length - 1, '.') + '\n' + tail;
+  assert.equal(Buffer.byteLength(cut), G.ADDON_CONTEXT_MAX_BYTES);
+  assert.deepEqual(G.parseProfessions(cut).map(p => [p.name, p.rank]), [['Leatherworking', 107]]);
+  const r = rig({ ctx: cut });
+  try {
+    const res = await r.store.call('goal_set', { profession: 'Skinning', rank: 200 });
+    assert.equal(res.ok, false, 'the cut entry is not a reported profession');
+  } finally { r.cleanup(); }
+});
+
+test('context under the cap keeps its last Professions entry, and a cap-length context whose last line is not Professions keeps all', () => {
+  const short = 'Character: Bone\nProfessions: Leatherworking 107/150, Skinning 18';
+  assert.deepEqual(G.parseProfessions(short).map(p => [p.name, p.rank]), [['Leatherworking', 107], ['Skinning', 18]]);
+  const head = 'Character: Bone\nProfessions: Leatherworking 107/150, Skinning 187/225\nQuest log (id, * = ready to turn in): ';
+  const full = head + '1'.repeat(G.ADDON_CONTEXT_MAX_BYTES - head.length);
+  assert.equal(Buffer.byteLength(full), G.ADDON_CONTEXT_MAX_BYTES);
+  assert.deepEqual(G.parseProfessions(full).map(p => p.name), ['Leatherworking', 'Skinning']);
 });
 
 test('display push: stream off never posts, and a stream service that is down does not fail the write', async () => {
@@ -293,6 +381,8 @@ test('MCP tool schemas: goal_set, goal_list and order_issue; only the two writer
   const acfg = P.withRunDeniedRules({ allowedTools: ['WebSearch'], deniedTools: ['Bash(rm:*)'] }, LP.GOAL_WRITE_TOOLS);
   assert.deepEqual(acfg.deniedTools, ['Bash(rm:*)', 'mcp__claude-wow__goal_set', 'mcp__claude-wow__order_issue']);
   assert.deepEqual(P.withoutRules(['WebSearch', 'mcp__claude-wow__order_issue'], LP.GOAL_WRITE_TOOLS), ['WebSearch']);
+  assert.equal(P.absolutePathRule('Read', '/Users/me/.claude-wow/live.token'), 'Read(//Users/me/.claude-wow/live.token)');
+  assert.equal(P.absolutePathRule('Edit', 'C:\\Users\\me\\.claude-wow\\goals\\**'), 'Edit(//c/Users/me/.claude-wow/goals/**)');
 });
 
 function hex(s) {
@@ -341,6 +431,38 @@ function argList(argv, flag) {
   return out;
 }
 
+function writeOutbox(saved, id, ctx) {
+  const ctxLine = ctx === undefined ? '' : `["ctx"] = "${hex(ctx)}",\n`;
+  fs.writeFileSync(saved, `ClaudeWoWDB = {\n["outbox"] = {\n["id"] = ${id},\n["session"] = "sess1",\n["chat"] = "chat1",\n["text"] = "${hex('hi')}",\n["cwd"] = "",\n["plugin"] = "ask",\n${ctxLine}["t"] = 1,\n},\n}\n`);
+}
+
+test('the bridge stamps when the game last confirmed its context: a message without a context keeps the text and its time, and moves receivedAt', { timeout: 60000 }, () => {
+  const dir = tmpDir('heard');
+  try {
+    const { home, saved } = fakeInstall(dir);
+    const run = () => {
+      const r = spawnSync(process.execPath, [BRIDGE, '--once'], { encoding: 'utf8', env: { ...process.env, CLAUDE_WOW_HOME: home }, timeout: 60000 });
+      assert.equal(r.status, 0, r.stdout + r.stderr);
+      return JSON.parse(fs.readFileSync(path.join(home, 'state.json'), 'utf8')).context;
+    };
+    writeOutbox(saved, 7, BONE_CONTEXT);
+    const first = run();
+    assert.equal(first.text, BONE_CONTEXT);
+    assert.equal(first.receivedAt, first.at);
+    const stateFile = path.join(home, 'state.json');
+    const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    state.context.at = 1000;
+    state.context.receivedAt = 1000;
+    fs.writeFileSync(stateFile, JSON.stringify(state));
+    writeOutbox(saved, 8);
+    const before = Date.now();
+    const second = run();
+    assert.equal(second.text, BONE_CONTEXT);
+    assert.equal(second.at, 1000, 'the context time stays when the text did not change');
+    assert.ok(second.receivedAt >= before, `receivedAt ${second.receivedAt} moved to this message`);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('in-game ask runs: goal write tools are denied, a Need roll can never grant or persist them, and the roll never offers them', { timeout: 60000 }, () => {
   const dir = tmpDir('askrun');
   try {
@@ -353,7 +475,10 @@ test('in-game ask runs: goal write tools are denied, a Need roll can never grant
     assert.equal(r.status, 0, out);
     assert.match(out, /\[ask\]/, out);
     const argv = JSON.parse(fs.readFileSync(argvFile, 'utf8'));
-    assert.deepEqual(argList(argv, '--disallowedTools'), LP.GOAL_WRITE_TOOLS);
+    const homes = [...new Set([home, fs.realpathSync(home)])];
+    const guards = homes.flatMap(h => [`Read(/${h}/live.token)`, `Edit(/${h}/goals/**)`]);
+    assert.deepEqual(argList(argv, '--disallowedTools'), [...LP.GOAL_WRITE_TOOLS, ...guards], 'the token and the goal store are off limits by their real path too');
+    assert.ok(guards.every(g => /^(Read|Edit)\(\/\/[^/]/.test(g)), 'absolute paths take the // prefix');
     const allowed = argList(argv, '--allowedTools');
     assert.ok(allowed.includes('WebFetch') && allowed.includes('Glob'), 'other granted rules still work, for good and once');
     for (const tool of LP.GOAL_WRITE_TOOLS) assert.ok(!allowed.includes(tool), `${tool} is never allowed`);

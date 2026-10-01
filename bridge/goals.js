@@ -34,24 +34,14 @@ const PROFESSION_SKILL_IDS = Object.freeze({
   356: 'Fishing',
 });
 
-const PLAIN_WORDS = new Set([
-  'A', 'An', 'The', 'And', 'Or', 'But', 'So', 'Then', 'Next', 'Now', 'First', 'Last', 'Again', 'Also', 'Only', 'Just',
-  'Until', 'While', 'After', 'Before', 'When', 'If', 'Once', 'At', 'In', 'On', 'To', 'For', 'From', 'With', 'Without',
-  'By', 'Of', 'Up', 'Down', 'Out', 'Off', 'Into', 'Each', 'Every', 'All', 'Some', 'More', 'Less', 'No', 'Not', 'Do',
-  "Don't", 'Get', 'Go', 'Make', 'Keep', 'Stop', 'Start', 'Finish', 'Use', 'Buy', 'Sell', 'Craft', 'Train', 'Learn',
-  'Level', 'Raise', 'Reach', 'Gather', 'Skin', 'Fish', 'Cook', 'Mine', 'Pick', 'Loot', 'Collect', 'Farm', 'Grind',
-  'Kill', 'Bandage', 'Repair', 'Rest', 'Bank', 'Hold', 'Save', 'Spend', 'Turn', 'Hand', 'Return', 'Visit', 'Check',
-  'Practice', 'Work', 'Push', 'Try', 'Aim', 'Focus', 'Head', 'Find', 'Bring', 'Clear', 'Empty', 'Let', "Let's",
-  'Your', 'You', 'My', 'I', 'We', 'Our', 'It', 'This', 'That', 'These', 'Those', 'Here', 'There', 'Today', 'Tonight',
-  'Yes', 'Ok', 'Okay', 'Good', 'Great', 'Nice', 'Well', 'Done', 'Quick', 'Fast', 'Slow', 'Easy', 'One', 'Two',
-  'Three', 'Four', 'Five', 'Ten', 'Max', 'Goal', 'Order', 'Skill', 'Rank', 'Points',
-]);
-
-const MACRO_RE = /wowmacro/i;
-const SLASH_COMMAND_RE = /(^|[\s"'(])\/\p{L}/u;
-const FORBIDDEN_CHARS_RE = /[|{}<>`\\\u0000-\u001f\u007f]/;
-const WORD_SPLIT_RE = /[^\p{L}\p{N}']+/u;
-const CAPITAL_RE = /\p{Lu}/u;
+const ORDER_WORDS = Object.freeze(new Set(require('./order-words.json')));
+const ORDER_CHARS_TEXT = "letters A-Z, digits, spaces and , . ' - : ! ? %";
+const ORDER_CHAR_RE = /^[A-Za-z0-9 ,.'\-:!?%]$/;
+const ORDER_WORD_SPLIT_RE = /[^a-z0-9']+/;
+const NUMBER_WORD_RE = /^\d+(?:st|nd|rd|th|x|g|s|c|k)?$/;
+const POSSESSIVE_RE = /'s$/;
+const CONTEXT_STALE_MS = 15 * 60 * 1000;
+const ADDON_CONTEXT_MAX_BYTES = 900;
 
 function fail(text) {
   return { ok: false, text };
@@ -77,10 +67,18 @@ function skillIdForName(name) {
   return hit ? Number(hit[0]) : null;
 }
 
+function professionsCutByAddon(ctxText) {
+  const text = String(ctxText || '');
+  const lines = text.trimEnd().split('\n');
+  return Buffer.byteLength(text, 'utf8') >= ADDON_CONTEXT_MAX_BYTES && /^Professions\s*:/i.test(lines[lines.length - 1]);
+}
+
 function parseProfessions(ctxText) {
   const line = contextLine(ctxText, 'Professions');
   if (!line) return [];
-  return line.split(/,\s*/).map(part => {
+  const parts = line.split(/,\s*/);
+  if (professionsCutByAddon(ctxText)) parts.pop();
+  return parts.map(part => {
     const m = /^(.+?)(?:\s+(\d+)(?:\/(\d+))?)?$/.exec(part.trim());
     if (!m) return null;
     const name = m[1].trim();
@@ -101,7 +99,15 @@ function characterOf(ctxText) {
 function snapshotOf(context) {
   const c = context && typeof context === 'object' ? context : {};
   const text = String(c.text || '');
-  return { text, at: Number(c.at) || 0, character: characterOf(text), professions: parseProfessions(text) };
+  const at = Number(c.at) || 0;
+  return { text, at, receivedAt: Number(c.receivedAt) || at, character: characterOf(text), professions: parseProfessions(text) };
+}
+
+function staleContextText(snap, nowMs) {
+  if (!snap.receivedAt) return 'The bridge does not know when the game sent its context. Send any message from the game, then issue the order.';
+  const age = nowMs - snap.receivedAt;
+  if (age <= CONTEXT_STALE_MS) return '';
+  return `The game context is ${Math.floor(age / 60000)} minutes old; orders need one from the last ${CONTEXT_STALE_MS / 60000} minutes. Wait for the player's next message from the game, then issue the order.`;
 }
 
 function knownNames(snap) {
@@ -110,30 +116,68 @@ function knownNames(snap) {
   return names;
 }
 
-function escapeRegExp(s) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function orderWords(text) {
+  return String(text || '').toLowerCase().split(ORDER_WORD_SPLIT_RE)
+    .map(w => w.replace(/^'+|'+$/g, ''))
+    .filter(Boolean);
 }
 
-function maskKnownNames(text, names) {
-  const unique = [...new Set((names || []).map(n => String(n || '').trim()).filter(Boolean))].sort((a, b) => b.length - a.length);
-  return unique.reduce((out, n) => out.replace(new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(n)}(?![\\p{L}\\p{N}])`, 'gu'), ' '), text);
+function nameWordLists(names) {
+  const usable = (names || []).map(n => String(n || '').normalize('NFKC').trim()).filter(n => n && !refusedChar(n));
+  const lists = usable.map(n => orderWords(n)).filter(words => words.length);
+  return lists.sort((a, b) => b.length - a.length);
 }
 
-function unknownCapitalized(text, names) {
-  const words = maskKnownNames(text, names).split(WORD_SPLIT_RE);
-  return [...new Set(words.filter(w => CAPITAL_RE.test(w) && !PLAIN_WORDS.has(w)))];
+function nameAt(words, i, lists) {
+  const plain = w => w.replace(POSSESSIVE_RE, '');
+  return lists.find(list => list.every((w, k) => i + k < words.length && (words[i + k] === w || (k === list.length - 1 && plain(words[i + k]) === w)))) || null;
+}
+
+function plainWord(word) {
+  return NUMBER_WORD_RE.test(word) || ORDER_WORDS.has(word) || ORDER_WORDS.has(word.replace(POSSESSIVE_RE, ''));
+}
+
+function refusedWords(text, names) {
+  const words = orderWords(text);
+  const lists = nameWordLists(names);
+  const refused = [];
+  for (let i = 0; i < words.length;) {
+    const name = nameAt(words, i, lists);
+    if (name) { i += name.length; continue; }
+    if (!plainWord(words[i]) && !refused.includes(words[i])) refused.push(words[i]);
+    i += 1;
+  }
+  return refused;
+}
+
+function codePoint(ch) {
+  return `U+${ch.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}`;
+}
+
+function refusedChar(s) {
+  return [...s].find(ch => !ORDER_CHAR_RE.test(ch)) || null;
+}
+
+function refusedCharText(ch) {
+  const shown = /^[\x21-\x7e]$/.test(ch) ? `"${ch}"` : codePoint(ch);
+  const why = ch === '/' ? ' Orders are advice only: no slash commands.' : '';
+  return `The order text has the character ${shown}, which orders may not use. Allowed: ${ORDER_CHARS_TEXT}.${why}`;
+}
+
+function namesText(names) {
+  const shown = (names || []).map(n => String(n || '').trim()).filter(Boolean);
+  return shown.length ? shown.join(', ') : 'none reported yet';
 }
 
 function validateOrderText(text, names = []) {
-  const s = typeof text === 'string' ? text.trim() : '';
+  const s = typeof text === 'string' ? text.normalize('NFKC').trim() : '';
   if (!s) return fail('The order text is empty.');
   if (s.length > ORDER_TEXT_MAX) return fail(`The order text is ${s.length} characters; the limit is ${ORDER_TEXT_MAX}.`);
-  if (FORBIDDEN_CHARS_RE.test(s)) return fail('The order text may not contain line breaks or any of | { } < > ` \\.');
-  if (MACRO_RE.test(s)) return fail('Orders are advice only: no wowmacro blocks.');
-  if (SLASH_COMMAND_RE.test(s)) return fail('Orders are advice only: no slash commands.');
-  const unknown = unknownCapitalized(s, names);
-  if (unknown.length) {
-    return fail(`The order names words the game has not reported: ${unknown.join(', ')}. Use plain lowercase words and numbers; the only names allowed are the character and the professions in the Professions line.`);
+  const ch = refusedChar(s);
+  if (ch) return fail(refusedCharText(ch));
+  const refused = refusedWords(s, names);
+  if (refused.length) {
+    return fail(`The order uses words that are not allowed: ${refused.map(w => `"${w}"`).join(', ')}. No zone, NPC, item or quest names. An order may use only numbers, plain words from the order vocabulary, and these reported names: ${namesText(names)}.`);
   }
   return done(s);
 }
@@ -236,6 +280,8 @@ function issueOrder(doc, args, snap, now) {
     retireOrder(doc, 'cleared', stamp);
     return done('Cleared the current order.');
   }
+  const stale = staleContextText(snap, stamp);
+  if (stale) return fail(stale);
   const checked = validateOrderText(args.text, knownNames(snap));
   if (!checked.ok) return checked;
   const goalId = args.goalId === undefined || args.goalId === null || args.goalId === '' ? null : String(args.goalId);
@@ -254,16 +300,18 @@ function listView(doc, snap) {
   return {
     character: doc.character,
     asOf: snap.at || null,
+    contextReceivedAt: snap.receivedAt || null,
     goals: doc.goals.map(g => goalView(g, snap)),
     order: doc.orders.current,
     ordersInHistory: doc.orders.history.length,
   };
 }
 
-function overlayPayload(doc, snap, now = Date.now) {
+function overlayPayload(doc, snap) {
   const current = doc.orders.current;
   const orderGoal = current && current.goalId ? doc.goals.find(g => g.id === current.goalId) : null;
   const goals = doc.goals
+    .filter(g => g !== orderGoal)
     .map(g => ({ title: clip(g.title, GOAL_TITLE_MAX), pct: progressOf(g, snap).pct }))
     .filter(g => g.pct !== null)
     .slice(0, OVERLAY_GOALS_MAX);
@@ -274,12 +322,12 @@ function overlayPayload(doc, snap, now = Date.now) {
       pct: orderGoal ? progressOf(orderGoal, snap).pct : null,
     } : null,
     goals,
-    asOf: snap.at || now(),
+    asOf: snap.at || null,
   };
 }
 
-function overlayCommand(doc, snap, now) {
-  return { action: OVERLAY_ACTION, orders: overlayPayload(doc, snap, now) };
+function overlayCommand(doc, snap) {
+  return { action: OVERLAY_ACTION, orders: overlayPayload(doc, snap) };
 }
 
 function storeFile(root, characterKey) {
@@ -299,7 +347,7 @@ function createGoals(opts) {
     if (!ST.isEnabled(options)) return 'The stream overlay is off (plugins.stream.enabled is false).';
     const url = ST.serviceUrl(options);
     try {
-      const r = await post(url, overlayCommand(doc, snap, now));
+      const r = await post(url, overlayCommand(doc, snap));
       if (r && r.ok) return 'The stream overlay shows it.';
       log(`goals: overlay push to ${url} answered ${r ? r.status : 'nothing'}`);
       return `The stream service did not take the update (${r && r.message ? r.message : 'status ' + (r ? r.status : '?')}).`;
@@ -351,11 +399,11 @@ function toolSchemas() {
     },
     {
       name: TOOL.order,
-      description: `Issue the one current order shown on the stream overlay, or clear it. Advice only: no macros and no slash commands. At most ${ORDER_TEXT_MAX} characters of plain words and numbers; the only capitalized names allowed are the character and the professions the game reported. Other game names are rejected.`,
+      description: `Issue the one current order shown on the stream overlay, or clear it. Advice only. The text may not name any zone, NPC, item or quest, in any letter case. It may use only the character's name, the professions in the game's Professions line, numbers, and plain English words from a fixed vocabulary; any other word is refused and the error names it. At most ${ORDER_TEXT_MAX} characters, using only ${ORDER_CHARS_TEXT}, so no slash commands or macros. Refused when the game context is more than ${CONTEXT_STALE_MS / 60000} minutes old.`,
       inputSchema: {
         type: 'object',
         properties: {
-          text: { type: 'string', maxLength: ORDER_TEXT_MAX, description: 'The order, for example "Skin 30 hides, then train" with plain words' },
+          text: { type: 'string', maxLength: ORDER_TEXT_MAX, description: 'The order in plain words, for example "Skin 30 more, then train Skinning"' },
           goalId: { type: 'string', description: 'The goal this order serves (an id from goal_list)' },
           clear: { type: 'boolean', description: 'true clears the current order' },
         },
@@ -366,7 +414,7 @@ function toolSchemas() {
 
 module.exports = {
   STORE_VERSION, GOALS_FILE, ACTIVE_GOALS_MAX, ORDER_HISTORY_MAX, ORDER_TEXT_MAX, GOAL_TITLE_MAX, OVERLAY_GOALS_MAX, TARGET_RANK_LIMIT,
-  TOOL, TOOL_NAMES, WRITE_TOOL_NAMES, PROFESSION_SKILL_IDS, PLAIN_WORDS,
-  parseProfessions, characterOf, snapshotOf, skillIdForName, validateOrderText, maskKnownNames,
+  TOOL, TOOL_NAMES, WRITE_TOOL_NAMES, PROFESSION_SKILL_IDS, ORDER_WORDS, CONTEXT_STALE_MS, ADDON_CONTEXT_MAX_BYTES,
+  parseProfessions, characterOf, snapshotOf, skillIdForName, validateOrderText, orderWords,
   readStore, writeStore, overlayPayload, overlayCommand, listView, storeFile, createGoals, toolSchemas,
 };
