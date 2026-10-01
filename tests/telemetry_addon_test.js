@@ -30,6 +30,7 @@ C_Item.GetItemCount = function(id) return STUB.itemCounts[id] or 0 end
 STUB.equipped = { [1] = 16707, [16] = 2140 }
 function GetInventoryItemID(unit, slot) return STUB.equipped[slot] end
 STUB.factions = { [530] = { factionID = 530, reaction = 5, currentStanding = 3000 } }
+GetCurrentKeyBoardFocus = function() return STUB.focus end
 C_Reputation = {
   GetFactionDataByID = function(id) return STUB.factions[id] end,
   GetWatchedFactionData = function() return nil end,
@@ -81,7 +82,8 @@ function decodeStrip(vm) {
     acc = (acc << 3) | (cells[i] || 0); nbits += 3;
     while (nbits >= 8) { bytes.push((acc >> (nbits - 8)) & 0xff); nbits -= 8; acc &= (1 << nbits) - 1; }
   }
-  assert.equal(bytes[0], 0xc7); assert.equal(bytes[1], 0x1a);
+  assert.equal(bytes[0], 0xc7);
+  assert.equal(bytes[1], 0x1a);
   const len = bytes[4] * 256 + bytes[5];
   return { id: bytes[2] * 256 + bytes[3], text: Buffer.from(bytes.slice(6, 6 + len)).toString('utf8'), len };
 }
@@ -90,17 +92,18 @@ function nextSlot(vm, luaBody) {
   vm.run(`STUB.onLoadAddOn = function(name) ClaudeWoW_SlotData = ${luaBody} end`);
 }
 
-const GS = '{ v = 1, session = "", seq = 0, hashes = {}, watch = { items = { 2589 }, factions = { 530 } } }';
+const GS = '{ v = 1, watch = { items = { 2589 }, factions = { 530 } }, chars = {} }';
+const CHARACTER = 'Testchar-TestRealm';
 
 function slotBody(gs = GS, extra = '') {
   return `{ now = time(), cwd = "", transport = "screenshot", strip = { on = 255, off = 0 }, ${gs ? `gs = ${gs},` : ''} replies = {} ${extra} }`;
 }
 
-function shoot(vm) {
+function shoot(vm, outcome = 'SCREENSHOT_SUCCEEDED') {
   if (vm.evaluate('ClaudeWoWStrip and ClaudeWoWStrip.shown') !== 'true') return null;
   for (let i = 0; i < 2; i++) vm.run('local f = ClaudeWoWStrip; if f.shown and f.scripts.OnUpdate then f.scripts.OnUpdate(f, 0.016) end');
   const frame = decodeStrip(vm);
-  vm.run('STUB.FireEvent("SCREENSHOT_SUCCEEDED")');
+  vm.run(`STUB.FireEvent("${outcome}")`);
   return { frame, jobs: P.jobsFromStrip(frame.id, frame.text) };
 }
 
@@ -154,6 +157,7 @@ test('the first record is a telemetry-only shot with every section, stamped with
   assert.equal(gs.chat, '');
   assert.equal(gs.kind, 'gs');
   assert.equal(gs.hello, false);
+  assert.equal(gs.name, CHARACTER, 'the record names its character');
   assert.ok(gs.id >= vm.num('time()') - 1, 'the sequence is clock based, so a crash that lost the saved counter never goes back');
   assert.equal(vm.num('ClaudeWoWDB.lastSeq'), lastSeq, 'no message id was spent');
   assert.equal(vm.num('ClaudeWoWDB.telemetry.seq'), gs.id);
@@ -176,7 +180,7 @@ test('telemetry stays out of run.outbound: no ack wait, no retry, no pixelFailed
   assert.ok(gsJobs(shoot(vm)).length, 'the first record');
   const shots = vm.num('STUB.screenshots');
   const armedAtLogin = vm.num('ARMED');
-  for (let i = 0; i < 10; i++) tick(vm, 41);
+  for (let i = 0; i < 10; i++) { vm.run('STUB.FireEvent("PLAYER_MONEY")'); tick(vm, 41); }
   assert.equal(vm.num('STUB.screenshots'), shots, 'an unacknowledged record is never shot again');
   assert.equal(vm.evaluate('ClaudeWoW.IsConnected()'), 'true', 'pixelFailed was never set');
   assert.equal(vm.num('ARMED'), armedAtLogin, 'ArmAutoRefresh was never called after login');  assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'false');
@@ -185,7 +189,7 @@ test('telemetry stays out of run.outbound: no ack wait, no retry, no pixelFailed
 test('a telemetry-only shot comes at most once every 2 minutes; level up, death and a new recipe go at once', () => {
   const vm = ready();
   shoot(vm);
-  vm.run('STUB.money = STUB.money + 5');
+  vm.run('STUB.money = STUB.money + 5; STUB.FireEvent("PLAYER_MONEY")');
   tick(vm, 40);
   assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'false', 'a money tick waits for the 2-minute window');
   tick(vm, 81);
@@ -293,7 +297,7 @@ test('a slot whose hash for a section differs from what was sent makes the addon
     shoot(vm);
     const chat = vm.evaluate('ClaudeWoWDB.chats[1].id');
     const id = vm.num('ClaudeWoWDB.chats[1].pendingId');
-    nextSlot(vm, slotBody(`{ v = 1, session = ClaudeWoWDB.session, seq = ${first.id}, hashes = { ${luaHashes} }, watch = { items = { 2589 }, factions = { 530 } } }`, `, replies = { { chat = "${chat}", id = ${id}, status = "done", text = "pong" } }`));
+    nextSlot(vm, slotBody(`{ v = 1, watch = { items = { 2589 }, factions = { 530 } }, chars = { { character = "${CHARACTER}", session = ClaudeWoWDB.session, seq = ${first.id}, hashes = { ${luaHashes} } } } }`, `, replies = { { chat = "${chat}", id = ${id}, status = "done", text = "pong" } }`));
     tick(vm, 6);
     assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].pendingId'), null, 'the reply came through the slot');
   };
@@ -316,16 +320,155 @@ test('the capability probe names the collection functions this client lacks', ()
   assert.deepEqual(r.sections.equip.value, { slots: {} });
 });
 
-test('saved telemetry state stays bounded: learned recipes keep the last 8 and junk is dropped at login', () => {
+test('saved telemetry state is per character and bounded: the last 8 recipes, 20 characters, junk dropped at login', () => {
   const junk = Array.from({ length: 20 }, (_, i) => `{ id = ${i + 1}, t = 5 }`).join(', ');
-  const vm = ready({ saved: `ClaudeWoWDB = { telemetry = { seq = "x", junk = string.rep("y", 100), deaths = -3, learned = { ${junk}, { id = "bad" } } } }` });
+  const others = Array.from({ length: 25 }, (_, i) => `["Alt${i}-TestRealm"] = { deaths = 1, lastDeath = 1, learned = {}, seen = ${i} }`).join(', ');
+  const vm = ready({ saved: `ClaudeWoWDB = { telemetry = { seq = "x", junk = string.rep("y", 100), chars = { ${others}, ["${CHARACTER}"] = { deaths = -3, learned = { ${junk}, { id = "bad" } }, seen = 1000 }, [5] = {} } } }` });
+  const mine = `ClaudeWoWDB.telemetry.chars["${CHARACTER}"]`;
   assert.equal(vm.evaluate('ClaudeWoWDB.telemetry.junk'), null);
-  assert.equal(vm.num('#ClaudeWoWDB.telemetry.learned'), 8);
-  assert.equal(vm.num('ClaudeWoWDB.telemetry.learned[1].id'), 13);
-  assert.equal(vm.num('ClaudeWoWDB.telemetry.deaths'), 0);
+  assert.equal(vm.num('ClaudeWoWDB.telemetry.seq') > 0, true);
+  assert.equal(vm.num(`#${mine}.learned`), 8);
+  assert.equal(vm.num(`${mine}.learned[1].id`), 13);
+  assert.equal(vm.num(`${mine}.deaths`), 0);
+  vm.run('N = 0; for k in pairs(ClaudeWoWDB.telemetry.chars) do N = N + 1 end');
+  assert.equal(vm.num('N'), 20, 'the 20 most recently seen characters are kept');
+  assert.equal(vm.evaluate('ClaudeWoWDB.telemetry.chars["Alt0-TestRealm"]'), null, 'the oldest go first');
   for (let i = 0; i < 12; i++) vm.run(`STUB.FireEvent("NEW_RECIPE_LEARNED", ${100 + i})`);
-  assert.equal(vm.num('#ClaudeWoWDB.telemetry.learned'), 8);
-  assert.equal(vm.num('ClaudeWoWDB.telemetry.learned[8].id'), 111);
+  assert.equal(vm.num(`#${mine}.learned`), 8);
+  assert.equal(vm.num(`${mine}.learned[8].id`), 111);
+});
+
+test('deaths and recipes belong to the character: an alt on the same account starts at 0,0 after the main died', () => {
+  const main = ready();
+  shoot(main);
+  main.run('STUB.FireEvent("PLAYER_DEAD"); STUB.FireEvent("NEW_RECIPE_LEARNED", 3275)');
+  const deaths = main.num(`ClaudeWoWDB.telemetry.chars["${CHARACTER}"].deaths`);
+  const lastDeath = main.num(`ClaudeWoWDB.telemetry.chars["${CHARACTER}"].lastDeath`);
+  assert.equal(deaths, 1);
+  const saved = `ClaudeWoWDB = { telemetry = { seq = 5, chars = { ["${CHARACTER}"] = { deaths = ${deaths}, lastDeath = ${lastDeath}, learned = { { id = 3275, t = ${lastDeath} } }, seen = ${lastDeath} } } } }`;
+  const alt = ready({ saved, extra: GAME_STUB + '\nfunction UnitName(unit) return "Altchar" end' });
+  const [gs] = gsJobs(shoot(alt));
+  assert.equal(gs.name, 'Altchar-TestRealm');
+  const r = sectionsOf(gs).sections;
+  assert.deepEqual(r.life.value, { deaths: 0, lastDeath: 0 }, 'the main\'s death is not replayed for the alt');
+  assert.deepEqual(r.recipes.value, { learned: [] });
+  assert.equal(alt.num(`ClaudeWoWDB.telemetry.chars["${CHARACTER}"].deaths`), 1, 'the main keeps its own');
+});
+
+test('a two-part name keeps both parts in the character key', () => {
+  const vm = ready({ extra: GAME_STUB + '\nfunction GetUnitName(unit, showServer) return "Bone Sleeve" end\nfunction GetRealmName() return "Forever" end' });
+  const [gs] = gsJobs(shoot(vm));
+  assert.equal(gs.name, 'BoneSleeve-Forever');
+  assert.match(gs.name, TL.CHARACTER_KEY_RE);
+});
+
+test('a record whose shot fails is sent again, and a message retry never carries a record', () => {
+  const vm = ready();
+  shoot(vm);
+  tick(vm, 31);
+  vm.run('STUB.money = STUB.money + 13; STUB.FireEvent("PLAYER_MONEY")');
+  vm.run('ClaudeWoW.Send("will fail once")');
+  vm.run('STUB.FireEvent("PLAYER_DEAD")');
+  const failed = shoot(vm, 'SCREENSHOT_FAILED');
+  assert.ok(gsJobs(failed).length, 'the record rode on the shot that failed');
+  const retry = shoot(vm);
+  assert.ok(retry.jobs.some(j => j.text === 'will fail once'), 'the message is shot again');
+  assert.deepEqual(gsJobs(retry), [], 'nothing rides on a retry, even with an importance-3 event waiting');
+  const chat = vm.evaluate('ClaudeWoWDB.chats[1].id');
+  const id = vm.num('ClaudeWoWDB.chats[1].pendingId');
+  nextSlot(vm, slotBody(GS, `, replies = { { chat = "${chat}", id = ${id}, status = "done", text = "ok" } }`));
+  tick(vm, 6);
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].pendingId'), null);
+  const [again] = gsJobs(shoot(vm));
+  assert.ok(again, 'the record goes on a shot of its own');
+  const sections = sectionsOf(again).sections;
+  assert.deepEqual(sections.money.value, { copper: 12345 + 13 }, 'the money from the failed shot is sent again');
+  assert.ok(sections.life, 'with the death');
+});
+
+test('a message shot called off before it fires takes its record with it, and that record is sent again later', () => {
+  const vm = ready();
+  shoot(vm);
+  tick(vm, 31);
+  vm.run('STUB.money = STUB.money + 17; STUB.FireEvent("PLAYER_MONEY")');
+  vm.run('ClaudeWoW.Send("never mind")');
+  assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'true');
+  vm.run('ClaudeWoW.Cancel(ClaudeWoWDB.chats[1])');
+  assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'false', 'a shot whose message was cancelled is not kept for its record');
+  tick(vm, 125);
+  const [later] = gsJobs(shoot(vm));
+  assert.deepEqual(sectionsOf(later).sections.money.value, { copper: 12345 + 17 });
+});
+
+test('a slot that has seen the record but holds another hash makes the addon resend at once; one that has not seen it yet keeps the addon\'s own', () => {
+  const vm = ready();
+  const [first] = gsJobs(shoot(vm));
+  const roundTrip = (seq, luaHashes) => {
+    vm.run('ClaudeWoW.Send("ping")');
+    shoot(vm);
+    const chat = vm.evaluate('ClaudeWoWDB.chats[1].id');
+    const id = vm.num('ClaudeWoWDB.chats[1].pendingId');
+    nextSlot(vm, slotBody(`{ v = 1, watch = { items = { 2589 }, factions = { 530 } }, chars = { { character = "${CHARACTER}", session = ClaudeWoWDB.session, seq = ${seq}, hashes = { ${luaHashes} } } } }`, `, replies = { { chat = "${chat}", id = ${id}, status = "done", text = "pong" } }`));
+    tick(vm, 6);
+    assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].pendingId'), null);
+  };
+  roundTrip(first.id - 1, '');
+  tick(vm, 125);
+  assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'false', 'an older bridge seq within a minute: the record is probably on its way');
+  const vm2 = ready();
+  const [first2] = gsJobs(shoot(vm2));
+  const hashes2 = Object.fromEntries(first2.text.split('\n').slice(1).map(l => l.split(':').slice(0, 2)));
+  const wrong2 = Object.entries(hashes2).map(([n, h]) => `${n} = "${n === 'zone' ? '00000000' : h}"`).join(', ');
+  tick(vm2, 10);
+  vm2.run('ClaudeWoW.Send("ping")');
+  shoot(vm2);
+  const chat = vm2.evaluate('ClaudeWoWDB.chats[1].id');
+  const id = vm2.num('ClaudeWoWDB.chats[1].pendingId');
+  nextSlot(vm2, slotBody(`{ v = 1, watch = { items = { 2589 }, factions = { 530 } }, chars = { { character = "${CHARACTER}", session = ClaudeWoWDB.session, seq = ${first2.id}, hashes = { ${wrong2} } } } }`, `, replies = { { chat = "${chat}", id = ${id}, status = "done", text = "pong" } }`));
+  tick(vm2, 6);
+  tick(vm2, 110);
+  const [resent] = gsJobs(shoot(vm2));
+  assert.ok(resent, 'the bridge saw the record and holds another hash: sent again before the minute is up');
+  assert.deepEqual(Object.keys(sectionsOf(resent).sections), ['zone']);
+});
+
+test('Inbox.lua at login brings the bridge\'s hashes, so only what changed goes out', () => {
+  const probe = ready({ saved: 'ClaudeWoWDB = { session = "fixedsession" }' });
+  const [first] = gsJobs(shoot(probe));
+  const hashes = Object.entries(Object.fromEntries(first.text.split('\n').slice(1).map(l => l.split(':').slice(0, 2)))).map(([n, h]) => `${n} = "${h}"`).join(', ');
+  const vm = newVM({ saved: 'ClaudeWoWDB = { session = "fixedsession", settings = { transport = "screenshot", stripLevels = { on = 255, off = 0, codec = 1 } } }' });
+  vm.run(`ClaudeWoW_Inbox = { now = time(), cwd = "", transport = "screenshot", strip = { on = 255, off = 0 }, gs = { v = 1, watch = { items = { 2589 }, factions = { 530 } }, chars = { { character = "${CHARACTER}", session = "fixedsession", seq = ${first.id}, hashes = { ${hashes} } } } }, replies = {} }`);
+  vm.run('STUB.money = STUB.money + 21');
+  vm.run('STUB.FireEvent("ADDON_LOADED", "ClaudeWoW"); STUB.FireEvent("PLAYER_LOGIN")');
+  vm.run('STUB.RunTimers()');
+  const hello = shoot(vm);
+  assert.ok(hello.jobs.some(j => j.hello));
+  const [rider] = gsJobs(hello);
+  assert.ok(rider, 'the capability came from Inbox.lua, before any slot');
+  assert.deepEqual(Object.keys(sectionsOf(rider).sections), ['money'], 'only the section that changed since the bridge last heard');
+});
+
+test('the pump collects only after a change event or an importance-3 event', () => {
+  const vm = ready();
+  shoot(vm);
+  vm.run('STUB.money = STUB.money + 23');
+  tick(vm, 130);
+  assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'false', 'no PLAYER_MONEY: nothing collected');
+  vm.run('STUB.FireEvent("PLAYER_MONEY")');
+  tick(vm, 5);
+  const [gs] = gsJobs(shoot(vm));
+  assert.deepEqual(sectionsOf(gs).sections.money.value, { copper: 12345 + 23 });
+});
+
+test('no telemetry-only shot while the player is typing', () => {
+  const vm = ready();
+  shoot(vm);
+  vm.run('STUB.focus = ClaudeWoW.UI.input or CreateFrame("EditBox"); STUB.FireEvent("PLAYER_DEAD")');
+  tick(vm, 130);
+  assert.equal(vm.evaluate('ClaudeWoWStrip.shown'), 'false', 'an edit box has the keyboard');
+  vm.run('STUB.focus = nil');
+  tick(vm, 5);
+  assert.ok(gsJobs(shoot(vm)).length, 'it goes once the box lets go');
 });
 
 test('/claude config context off also stops telemetry', () => {

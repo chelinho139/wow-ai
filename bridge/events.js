@@ -8,6 +8,7 @@ const BURST_WINDOW_MS = 10000;
 const WAKES_PER_HOUR = 40;
 const HOUR_MS = 60 * 60 * 1000;
 const POLL_MS = 1000;
+const RESOLVE_EVERY_TICKS = 10;
 const IMPORTANCE_MIN = 1;
 const IMPORTANCE_MAX = 3;
 const RECENT_LINES = 50;
@@ -16,7 +17,7 @@ const READ_CHUNK_MAX = 1024 * 1024;
 const USAGE = [
   'claude-wow events [--follow] [--min N] [--character Name-Realm]',
   '  --follow     wait for new game events and print one JSON line per event',
-  '  --min N      only events of importance N or more (1 money and loot, 2 watched items, zone, bags full, 3 level up, death, new recipe)',
+  '  --min N      only events of importance N or more (1 money and loot, 2 watched items, zone, bags full, 3 level up, death, new recipe, a watched item target reached (goal_complete))',
   '  --character  the character folder under the goals folder (default: the one written to last)',
   `Bursts within ${BURST_WINDOW_MS / 1000} s are merged; at most ${WAKES_PER_HOUR} bursts are printed per hour, later ones wait.`,
 ].join('\n');
@@ -91,42 +92,49 @@ function eventsFile(goalsDir, character) {
   return newestEventsFile(goalsDir);
 }
 
+function allEventsFiles(goalsDir) {
+  let names = [];
+  try { names = fs.readdirSync(goalsDir); } catch { return []; }
+  return names.map(n => path.join(goalsDir, n, TL.EVENTS_FILE)).filter(f => { try { return fs.statSync(f).isFile(); } catch { return false; } });
+}
+
+function sizeOf(file) {
+  try { return fs.statSync(file).size; } catch { return 0; }
+}
+
 function follow(opts) {
   const out = opts.out || process.stdout;
   const err = opts.err || process.stderr;
   const min = opts.min || IMPORTANCE_MIN;
   const resolve = typeof opts.file === 'function' ? opts.file : () => opts.file;
+  const list = typeof opts.list === 'function' ? opts.list : () => [];
+  const resolveEvery = opts.resolveEvery || RESOLVE_EVERY_TICKS;
   const coalescer = createCoalescer({ windowMs: opts.windowMs, wakesPerHour: opts.wakesPerHour, now: opts.now });
+  const resume = new Map();
   let file = null;
   let offset = 0;
   let inode = null;
   let partial = '';
   let heldSaid = false;
+  let ticks = 0;
 
-  function attach(atStart) {
-    const found = resolve();
-    if (!found) return false;
-    file = found;
-    try {
-      const st = fs.statSync(file);
-      offset = opts.fromStart || !atStart ? 0 : st.size;
-      inode = st.ino;
-    } catch { offset = 0; inode = null; }
-    return true;
+  function noteNewFiles(atStart) {
+    for (const f of list()) if (!resume.has(f)) resume.set(f, atStart && !opts.fromStart ? sizeOf(f) : 0);
   }
 
-  function readNew() {
-    let st;
-    try { st = fs.statSync(file); } catch { return; }
-    if (st.size < offset || (inode !== null && st.ino !== inode)) { offset = 0; partial = ''; }
-    inode = st.ino;
-    if (st.size === offset) return;
-    const len = Math.min(st.size - offset, READ_CHUNK_MAX);
-    const buf = Buffer.alloc(len);
-    const fd = fs.openSync(file, 'r');
-    try { fs.readSync(fd, buf, 0, len, offset); } finally { fs.closeSync(fd); }
-    offset += len;
-    const lines = (partial + buf.toString('utf8')).split('\n');
+  function attach(found, atStart) {
+    file = found;
+    partial = '';
+    let st = null;
+    try { st = fs.statSync(file); } catch {}
+    inode = st ? st.ino : null;
+    if (resume.has(file)) offset = resume.get(file);
+    else offset = st && atStart && !opts.fromStart ? st.size : 0;
+    if (st && offset > st.size) offset = 0;
+  }
+
+  function feed(text) {
+    const lines = (partial + text).split('\n');
     partial = lines.pop();
     for (const line of lines) {
       const e = parseLine(line);
@@ -134,8 +142,44 @@ function follow(opts) {
     }
   }
 
+  function readRange(target, from, to) {
+    if (to <= from) return 0;
+    const len = Math.min(to - from, READ_CHUNK_MAX);
+    const buf = Buffer.alloc(len);
+    const fd = fs.openSync(target, 'r');
+    try { fs.readSync(fd, buf, 0, len, from); } finally { fs.closeSync(fd); }
+    feed(buf.toString('utf8'));
+    return len;
+  }
+
+  function drainRotated() {
+    const rotated = path.join(path.dirname(file), TL.EVENTS_ROTATED_FILE);
+    let st;
+    try { st = fs.statSync(rotated); } catch { return; }
+    if (inode !== null && st.ino === inode && st.size > offset) readRange(rotated, offset, st.size);
+  }
+
+  function readNew() {
+    let st;
+    try { st = fs.statSync(file); } catch { return; }
+    if (inode !== null && st.ino !== inode) { drainRotated(); offset = 0; partial = ''; }
+    else if (st.size < offset) { offset = 0; partial = ''; }
+    inode = st.ino;
+    offset += readRange(file, offset, st.size);
+  }
+
+  function reresolve(atStart) {
+    noteNewFiles(atStart);
+    const found = resolve();
+    if (!found || found === file) return;
+    if (file) { readNew(); resume.set(file, offset); }
+    attach(found, atStart);
+  }
+
   function tick() {
-    if (!file && !attach(false)) return;
+    ticks += 1;
+    if (!file || ticks % resolveEvery === 0) reresolve(false);
+    if (!file) return;
     readNew();
     const r = coalescer.flush();
     if (!r) return;
@@ -148,10 +192,11 @@ function follow(opts) {
     }
   }
 
-  attach(true);
+  reresolve(true);
   const timer = opts.pollMs === 0 ? null : setInterval(tick, opts.pollMs || POLL_MS);
   return { tick, stop: () => { if (timer) clearInterval(timer); }, file: () => file };
 }
+
 
 function recent(file, min, limit = RECENT_LINES) {
   let text = '';
@@ -186,11 +231,11 @@ function main(argv, { goalsDir = require('./home').resolve().goals, out = proces
     for (const e of recent(file, o.min)) out.write(JSON.stringify(e) + '\n');
     return 0;
   }
-  const f = follow({ file: () => eventsFile(goalsDir, o.character), min: o.min, out, err });
+  const f = follow({ file: () => eventsFile(goalsDir, o.character), list: o.character ? null : () => allEventsFiles(goalsDir), min: o.min, out, err });
   const stop = () => { f.stop(); process.exit(0); };
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);
   return null;
 }
 
-module.exports = { BURST_WINDOW_MS, WAKES_PER_HOUR, HOUR_MS, USAGE, coalesceKey, mergeEvents, createCoalescer, follow, recent, eventsFile, newestEventsFile, parseArgs, main };
+module.exports = { BURST_WINDOW_MS, WAKES_PER_HOUR, HOUR_MS, RESOLVE_EVERY_TICKS, allEventsFiles, USAGE, coalesceKey, mergeEvents, createCoalescer, follow, recent, eventsFile, newestEventsFile, parseArgs, main };

@@ -36,9 +36,12 @@ const IMPORTANCE = Object.freeze({
   level_up: 3,
   death: 3,
   recipe: 3,
+  goal_complete: 3,
 });
+const GS_CHARACTERS_MAX = 4;
 
 const LINE_RE = /^([a-z]+):([0-9a-f]{8}):(.*)$/;
+const HASH_RE = /^[0-9a-f]{8}$/;
 const DATA_RE = /^[0-9A-Za-z_.,=/;@-]*$/;
 const INT_RE = /^-?\d{1,15}$/;
 const API_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$/;
@@ -170,7 +173,7 @@ function parseRecord(text) {
     if (!DATA_RE.test(data)) { errors.push(`section ${name}: characters outside the wire set`); continue; }
     const value = SECTION_PARSERS[name](data);
     if (!value) { errors.push(`section ${name}: does not parse`); continue; }
-    sections[name] = { hash, value };
+    sections[name] = { hash, value, data };
   }
   return { sections, errors };
 }
@@ -257,6 +260,7 @@ const SECTION_DIFFS = {
       if (target) data.target = target;
       if (pct !== null) out.push(event('item', { ...data, threshold: pct }, IMPORTANCE.item_threshold));
       else out.push(event('item', data));
+      if (pct === 100) out.push(event('goal_complete', { id, count: to, target }));
     }
     if (prev.free !== null && next.free !== null && prev.free > 0 && next.free === 0) out.push(event('bags_full', { free: 0 }));
     return out;
@@ -314,13 +318,36 @@ function emptySnapshot(character) {
   return { v: SNAPSHOT_VERSION, character, session: '', seq: 0, updatedAt: 0, sections: {} };
 }
 
-function readSnapshot(file, character) {
+function cleanSection(name, s) {
+  if (!SECTION_NAMES.includes(name) || !s || typeof s !== 'object') return null;
+  if (!Number.isSafeInteger(s.seq) || s.seq < 0 || typeof s.hash !== 'string' || !HASH_RE.test(s.hash)) return null;
+  if (typeof s.data !== 'string' || !DATA_RE.test(s.data)) return null;
+  const value = SECTION_PARSERS[name](s.data);
+  if (!value) return null;
+  return { seq: s.seq, hash: s.hash, at: Number.isSafeInteger(s.at) ? s.at : 0, data: s.data, value };
+}
+
+function readSnapshot(file, character, log = () => {}) {
   let raw;
   try { raw = fs.readFileSync(file, 'utf8'); } catch { return emptySnapshot(character); }
   let doc;
-  try { doc = JSON.parse(raw); } catch { return emptySnapshot(character); }
-  if (!doc || doc.v !== SNAPSHOT_VERSION || typeof doc.sections !== 'object' || !doc.sections) return emptySnapshot(character);
-  return { ...emptySnapshot(character), ...doc, character };
+  try { doc = JSON.parse(raw); } catch { log(`telemetry: ${file} is not valid JSON; starting a fresh snapshot`); return emptySnapshot(character); }
+  if (!doc || typeof doc !== 'object' || doc.v !== SNAPSHOT_VERSION || !doc.sections || typeof doc.sections !== 'object' || Array.isArray(doc.sections)) {
+    log(`telemetry: ${file} is not a version ${SNAPSHOT_VERSION} snapshot; starting a fresh one`);
+    return emptySnapshot(character);
+  }
+  const snap = emptySnapshot(character);
+  snap.session = typeof doc.session === 'string' && SESSION_RE.test(doc.session) ? doc.session : '';
+  snap.seq = Number.isSafeInteger(doc.seq) && doc.seq >= 0 ? doc.seq : 0;
+  snap.updatedAt = Number.isSafeInteger(doc.updatedAt) ? doc.updatedAt : 0;
+  const dropped = [];
+  for (const [name, s] of Object.entries(doc.sections)) {
+    const clean = cleanSection(name, s);
+    if (clean) snap.sections[name] = clean;
+    else dropped.push(name);
+  }
+  if (dropped.length) log(`telemetry: ${file}: dropped unreadable section(s) ${dropped.slice(0, 5).join(', ')}`);
+  return snap;
 }
 
 function writeAtomic(file, content) {
@@ -350,29 +377,32 @@ function appendEvents(dir, character, events, { now = Date.now(), rotateBytes = 
   return rotated;
 }
 
-function luaString(s) {
-  return '"' + String(s).replace(/[^0-9A-Za-z_-]/g, '') + '"';
+function luaHashes(snap) {
+  return SECTION_NAMES
+    .filter(n => snap.sections[n] && HASH_RE.test(snap.sections[n].hash))
+    .map(n => `${n} = "${snap.sections[n].hash}"`)
+    .join(', ');
 }
 
-function luaGsTable(snapshot, watch) {
-  const snap = snapshot || emptySnapshot('');
-  const hashes = SECTION_NAMES
-    .filter(n => snap.sections[n] && /^[0-9a-f]{8}$/.test(snap.sections[n].hash))
-    .map(n => `${n} = ${luaString(snap.sections[n].hash)}`);
+function luaGsTable(snapshots, watch) {
+  const chars = (snapshots || [])
+    .filter(s => s && CHARACTER_KEY_RE.test(s.character) && SESSION_RE.test(s.session || ''))
+    .slice(0, GS_CHARACTERS_MAX)
+    .map(s => `{ character = "${s.character}", session = "${s.session || ''}", seq = ${Math.max(0, Math.floor(Number(s.seq) || 0))}, hashes = { ${luaHashes(s)} } }`);
   const items = [...watch.items.keys()];
-  return `\tgs = { v = ${GS_SLOT_VERSION}, session = ${luaString(snap.session || '')}, seq = ${Math.max(0, Math.floor(Number(snap.seq) || 0))}, hashes = { ${hashes.join(', ')} }, watch = { items = { ${items.join(', ')} }, factions = { ${watch.factions.join(', ')} } } },`;
+  return `\tgs = { v = ${GS_SLOT_VERSION}, watch = { items = { ${items.join(', ')} }, factions = { ${watch.factions.join(', ')} } }, chars = { ${chars.join(', ')} } },`;
 }
 
 function createTelemetry(opts) {
   const dir = opts.dir;
   const log = opts.log || (() => {});
   const now = opts.now || Date.now;
-  const characterKey = opts.characterKey || (() => null);
   const watch = opts.watch || (() => watchFrom(null));
   const rotateBytes = opts.rotateBytes || EVENTS_ROTATE_BYTES;
   const handled = { gs: {} };
   const snapshots = new Map();
   const loggedMissing = new Map();
+  let primed = false;
   let warnedNoCharacter = false;
 
   function snapshotFile(character) {
@@ -380,8 +410,19 @@ function createTelemetry(opts) {
   }
 
   function load(character) {
-    if (!snapshots.has(character)) snapshots.set(character, readSnapshot(snapshotFile(character), character));
+    if (!snapshots.has(character)) snapshots.set(character, readSnapshot(snapshotFile(character), character, log));
     return snapshots.get(character);
+  }
+
+  function prime() {
+    if (primed) return;
+    primed = true;
+    let names = [];
+    try { names = fs.readdirSync(dir); } catch { return; }
+    for (const name of names) {
+      if (!CHARACTER_KEY_RE.test(name)) continue;
+      try { if (fs.statSync(snapshotFile(name)).isFile()) load(name); } catch {}
+    }
   }
 
   function remember(session, seq) {
@@ -392,28 +433,24 @@ function createTelemetry(opts) {
     return true;
   }
 
-  function currentCharacter() {
-    const key = characterKey();
-    return typeof key === 'string' && CHARACTER_KEY_RE.test(key) ? key : null;
-  }
-
   function noteMissing(character, value) {
     const text = value.missing.join(', ');
     if (loggedMissing.get(character) === text) return;
     loggedMissing.set(character, text);
-    if (text) log(`telemetry: the game client is missing ${text}; those parts of the game state are not collected`);
-    else log('telemetry: the game client has every collection function');
+    if (text) log(`telemetry: ${character}'s game client is missing ${text}; those parts of the game state are not collected`);
+    else log(`telemetry: ${character}'s game client has every collection function`);
   }
 
   function submit(job) {
     const session = String(job.session || '');
-    const seq = Number(job.id);    if (!SESSION_RE.test(session) || !Number.isSafeInteger(seq) || seq <= 0) return { status: 'invalid' };
-    if (!remember(session, seq)) return { status: 'duplicate' };
-    const character = currentCharacter();
-    if (!character) {
-      if (!warnedNoCharacter) { warnedNoCharacter = true; log('telemetry: a game state record arrived before the game named its character; dropped until it does'); }
+    const seq = Number(job.id);
+    if (!SESSION_RE.test(session) || !Number.isSafeInteger(seq) || seq <= 0) return { status: 'invalid' };
+    const character = String(job.name || '');
+    if (!CHARACTER_KEY_RE.test(character)) {
+      if (!warnedNoCharacter) { warnedNoCharacter = true; log('telemetry: a game state record named no usable character; dropped (the addon names the character in every record)'); }
       return { status: 'no-character' };
     }
+    if (!remember(session, seq)) return { status: 'duplicate' };
     const parsed = parseRecord(job.text);
     if (parsed.errors.length) log(`telemetry: gs #${seq}@${session}: ${parsed.errors.slice(0, 3).join('; ')}`);
     const snap = load(character);
@@ -432,7 +469,7 @@ function createTelemetry(opts) {
       const prev = snap.sections[name];
       if (prev && prev.seq >= seq) continue;
       events.push(...diffSection(name, prev && prev.value, incoming.value, w));
-      snap.sections[name] = { seq, hash: incoming.hash, at: stamp, value: incoming.value };
+      snap.sections[name] = { seq, hash: incoming.hash, at: stamp, data: incoming.data, value: incoming.value };
       applied.push(name);
       if (name === 'cap') noteMissing(character, incoming.value);
     }
@@ -451,15 +488,16 @@ function createTelemetry(opts) {
   }
 
   function luaGs() {
-    const character = currentCharacter();
-    return luaGsTable(character ? load(character) : null, watch());
+    prime();
+    const recent = [...snapshots.values()].filter(s => s.session).sort((a, b) => b.updatedAt - a.updatedAt);
+    return luaGsTable(recent, watch());
   }
 
   return { submit, luaGs, handled, snapshot: load, snapshotFile };
 }
 
 module.exports = {
-  KIND, RECORD_VERSION, GS_SLOT_VERSION, SECTION_NAMES, RECORD_TEXT_MAX, SNAPSHOT_FILE, EVENTS_FILE, EVENTS_ROTATED_FILE, EVENTS_ROTATE_BYTES,
-  HANDLED_PER_SESSION, WATCH_ITEMS_MAX, WATCH_FACTIONS_MAX, WATCH_THRESHOLDS, IMPORTANCE,
+  KIND, RECORD_VERSION, GS_SLOT_VERSION, GS_CHARACTERS_MAX, SECTION_NAMES, RECORD_TEXT_MAX, SNAPSHOT_FILE, EVENTS_FILE, EVENTS_ROTATED_FILE, EVENTS_ROTATE_BYTES,
+  HANDLED_PER_SESSION, WATCH_ITEMS_MAX, WATCH_FACTIONS_MAX, WATCH_THRESHOLDS, IMPORTANCE, CHARACTER_KEY_RE,
   parseRecord, isTelemetry, watchFrom, telemetryEnabled, thresholdCrossed, diffSection, appendEvents, readSnapshot, luaGsTable, createTelemetry,
 };

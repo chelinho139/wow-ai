@@ -183,7 +183,7 @@ The bridge's banner prints the folder it chose (`home :`). The one-line installe
 
 ## Game state telemetry
 
-The addon sends quiet `kind=gs` records with the character's game state: money, level and XP, zone (uiMapID), profession ranks, watched item counts and free bag slots, equipped item IDs, watched factions, deaths and learned recipes. Only IDs and numbers, never names. The bridge merges them into `goals/<Name-Realm>/snapshot.json` and appends changes to `events.jsonl`. See [ARCHITECTURE.md](ARCHITECTURE.md#game-state-records-kindgs) for the transport rules.
+The addon sends quiet `kind=gs` records with the character's game state: money, level and XP, zone (uiMapID), profession ranks, watched item counts and free bag slots, equipped item IDs, watched factions, deaths and learned recipes. Only IDs and numbers, never names. Each record names its character (`Name-Realm`, both parts of a two-part name, spaces dropped). The bridge merges them into `goals/<character>/snapshot.json` and appends changes to `events.jsonl`. See [ARCHITECTURE.md](ARCHITECTURE.md#game-state-records-kindgs) for the transport rules.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -193,7 +193,7 @@ The addon sends quiet `kind=gs` records with the character's game state: money, 
 
 `/claude config context off` in the game also stops the telemetry.
 
-Event importance: 1 money and item ticks, skill, gear and reputation changes; 2 a watched count crossing a threshold, a zone change, bags full, a new reputation rank; 3 level up, death, a new recipe. `claude-wow events --follow` merges events that arrive within 10 s into one burst (per kind: the first `from`, the last `to`), prints one JSON line per event, and prints at most 40 bursts an hour; later events wait, merged, until the hour frees a slot.
+Event importance: 1 money and item ticks, skill, gear and reputation changes; 2 a watched count crossing a threshold, a zone change, bags full, a new reputation rank; 3 level up, death, a new recipe, a watched item reaching its target (`goal_complete`). `claude-wow events --follow` merges events that arrive within 10 s into one burst (per kind: the first `from`, the last `to`), prints one JSON line per event, and prints at most 40 bursts an hour; later events wait, merged, until the hour frees a slot.
 
 ## Game data
 

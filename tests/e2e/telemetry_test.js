@@ -29,7 +29,7 @@ function spentSlots(sb, kind) {
 function gsRecord(session, seq) {
   const money = String(1000 + seq);
   const hash = String(seq).padStart(8, '0');
-  return [session, '', String(seq), '', 'kind=gs', '', `gs1\nmoney:${hash}:${money}`].join('\x1F');
+  return [session, '', String(seq), '', 'kind=gs', CHARACTER, `gs1\nmoney:${hash}:${money}`].join('\x1F');
 }
 
 function stripCells(client, payload) {
@@ -99,7 +99,7 @@ test('300 gs records whose seqs overlap the message ids spend no ack or sig file
     assert.ok(Object.keys(state.handled[session]).every(id => Number(id) <= between.id), 'no gs seq in the message dedupe map');
     assert.equal(h.agentCalls().length, 2, 'no gs record ever reached an agent');
     assert.doesNotMatch(h.bridge.output, /gs1/, 'no gs text was logged or run as a prompt');
-    const published = new RegExp(`gs = \\{ v = 1, session = "${session}", seq = ${RECORDS}, hashes = \\{ money = "${String(RECORDS).padStart(8, '0')}" \\}`);
+    const published = new RegExp(`\\{ character = "${CHARACTER}", session = "${session}", seq = ${RECORDS}, hashes = \\{ money = "${String(RECORDS).padStart(8, '0')}" \\} \\}`);
     await h.client.waitFor(() => published.test(fs.readFileSync(path.join(h.sb.addons, 'ClaudeWoW_S001', 'Inbox.lua'), 'utf8')), { timeoutMs: 45000, label: 'the slot files to publish the gs hashes' });
   });
 });
@@ -115,8 +115,47 @@ test('the real addon sends its game state on a telemetry-only screenshot once th
     assert.deepEqual(snap.sections.level.value, { level: 23, xp: 1234, xpMax: 5000 });
     assert.deepEqual(snap.sections.zone.value, { mapID: 1431 });
     assert.ok(Array.isArray(snap.sections.cap.value.missing));
-    await h.bridge.waitForLine(/telemetry: the game client is missing /);
+    await h.bridge.waitForLine(/telemetry: Testchar-TestRealm's game client is missing /);
     assert.equal(h.agentCalls().length, 1);
+  });
+});
+
+test('a frame of [message, gs rider] from the real addon and a frame of [gs, message] each answer the message and spend exactly its one ack and one sig', async () => {
+  await withGame({ client: { speed: 8 }, speed: 8 }, async h => {
+    await h.client.say('warm up');
+    const snapFile = path.join(h.sb.home, 'goals', CHARACTER, TL.SNAPSHOT_FILE);
+    const readSnap = () => { try { return JSON.parse(fs.readFileSync(snapFile, 'utf8')); } catch { return null; } };
+    await h.client.waitFor(() => { const s = readSnap(); return s && s.sections.money; }, { timeoutMs: 60000, label: 'the first gs record' });
+    await new Promise(r => setTimeout(r, 5000));
+    const session = h.client.db().session;
+
+    const ackBefore = spentSlots(h.sb, 'ack');
+    const sigBefore = spentSlots(h.sb, 'sig');
+    h.client.runLua('STUB.money = STUB.money + 77; DEV.Fire("PLAYER_MONEY")');
+    const mark = h.bridge.output.length;
+    const ridden = await h.client.say('message with a rider');
+    assert.match(ridden.text, /message with a rider/);
+    await h.bridge.waitForLine(new RegExp(`telemetry: gs #\\d+@${session} for ${CHARACTER}: money`), { from: mark });
+    assert.match(h.bridge.output.slice(mark), /strip #\d+ \(screenshot .*\): 2 message\(s\)/, 'the message and its rider shared one frame');
+    assert.equal(readSnap().sections.money.value.copper, 12345 + 77);
+    const slotA = ((ridden.id - 1) % SLOTS) + 1;
+    assert.deepEqual(spentSlots(h.sb, 'ack').filter(s => !ackBefore.includes(s)), [slotA]);
+    assert.deepEqual(spentSlots(h.sb, 'sig').filter(s => !sigBefore.includes(s)), [slotA]);
+
+    const ackMid = spentSlots(h.sb, 'ack');
+    const sigMid = spentSlots(h.sb, 'sig');
+    const calls = h.agentCalls().length;
+    const id = h.client.lastSeq() + 50;
+    const chat = h.client.activeChat().id;
+    const message = [session, chat, String(id), '', '', 'Chat 1', 'gs first, then this'].join('\x1F');
+    const file = writeShot(h.sb, h.client, [gsRecord(session, 2000000000), message].join('\x1E'), 900);
+    await h.client.waitFor(() => !fs.existsSync(file), { timeoutMs: 20000, label: 'the bridge to read the crafted frame' });
+    await h.client.waitFor(() => h.agentCalls().length === calls + 1, { timeoutMs: 30000, label: 'the message after the gs record to run' });
+    const slotB = ((id - 1) % SLOTS) + 1;
+    await h.client.waitFor(() => !fs.existsSync(SIG.signalFile(h.sb.addons, 'sig', slotB)), { timeoutMs: 30000, label: 'its reply signal' });
+    assert.deepEqual(spentSlots(h.sb, 'ack').filter(s => !ackMid.includes(s)), [slotB]);
+    assert.deepEqual(spentSlots(h.sb, 'sig').filter(s => !sigMid.includes(s)), [slotB]);
+    assert.equal(h.state().lastId, id);
   });
 });
 

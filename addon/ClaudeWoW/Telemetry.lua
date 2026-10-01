@@ -35,9 +35,13 @@ T.PROBES = {
 	"C_Reputation.GetWatchedFactionData",
 }
 T.URGENT_EVENTS = { PLAYER_LEVEL_UP = true, PLAYER_DEAD = true, NEW_RECIPE_LEARNED = true }
+T.CHANGE_EVENTS = { "PLAYER_MONEY", "PLAYER_XP_UPDATE", "ZONE_CHANGED_NEW_AREA", "BAG_UPDATE_DELAYED", "PLAYER_EQUIPMENT_CHANGED", "SKILL_LINES_CHANGED", "UPDATE_FACTION" }
+T.CHARS_MAX = 20
+T.KEY_MAX_BYTES = 64
+T.INFLIGHT_MAX = 4
 
 local US = "\31"
-local state = { bridge = false, known = {}, sentAt = {}, sent = {}, urgent = false, watch = { items = {}, factions = {} } }
+local state = { bridge = false, known = {}, sentAt = {}, sentSeq = {}, sent = {}, inflight = {}, urgent = false, hint = false, watch = { items = {}, factions = {} } }
 
 local function Try(fn, ...)
 	if type(fn) ~= "function" then return nil end
@@ -58,27 +62,60 @@ local function Lookup(name)
 	return value
 end
 
-local function Store()
-	if type(ClaudeWoWDB) ~= "table" then return nil end
-	if type(ClaudeWoWDB.telemetry) ~= "table" then ClaudeWoWDB.telemetry = {} end
-	return ClaudeWoWDB.telemetry
-end
-
 local function WholeNumber(v)
 	return type(v) == "number" and v >= 0 and v == math.floor(v) and v or nil
 end
 
-function T.Sanitize()
-	local s = Store()
-	if not s then return end
+function T.CharacterKey()
+	local name = Try(GetUnitName, "player", true)
+	if type(name) ~= "string" or name == "" then name = Try(UnitName, "player") end
+	local realm = Try(GetRealmName)
+	if type(name) ~= "string" or name == "" or type(realm) ~= "string" or realm == "" then return nil end
+	local key = (name:gsub("%-.*$", "") .. "-" .. realm):gsub("[^%w_%-\128-\255]", "")
+	if key == "" or #key > T.KEY_MAX_BYTES or key:sub(1, 1) == "-" then return nil end
+	return key
+end
+
+local function Root()
+	if type(ClaudeWoWDB) ~= "table" then return nil end
+	if type(ClaudeWoWDB.telemetry) ~= "table" then ClaudeWoWDB.telemetry = {} end
+	local root = ClaudeWoWDB.telemetry
+	if type(root.chars) ~= "table" then root.chars = {} end
+	return root
+end
+
+local function CleanCharacter(c)
 	local learned = {}
-	for _, r in ipairs(type(s.learned) == "table" and s.learned or {}) do
+	for _, r in ipairs(type(c) == "table" and type(c.learned) == "table" and c.learned or {}) do
 		if type(r) == "table" and WholeNumber(r.id) and r.id > 0 and WholeNumber(r.t) then
 			learned[#learned + 1] = { id = r.id, t = r.t }
 		end
 	end
 	while #learned > T.LEARNED_MAX do table.remove(learned, 1) end
-	ClaudeWoWDB.telemetry = { seq = WholeNumber(s.seq) or 0, deaths = WholeNumber(s.deaths) or 0, lastDeath = WholeNumber(s.lastDeath) or 0, learned = learned }
+	c = type(c) == "table" and c or {}
+	return { deaths = WholeNumber(c.deaths) or 0, lastDeath = WholeNumber(c.lastDeath) or 0, learned = learned, seen = WholeNumber(c.seen) or 0 }
+end
+
+local function Mine()
+	local root, key = Root(), T.CharacterKey()
+	if not root or not key then return nil end
+	if type(root.chars[key]) ~= "table" then root.chars[key] = CleanCharacter(nil) end
+	local c = root.chars[key]
+	c.seen = time()
+	return c
+end
+
+function T.Sanitize()
+	local root = Root()
+	if not root then return end
+	local list = {}
+	for key, c in pairs(root.chars) do
+		if type(key) == "string" and key ~= "" and #key <= T.KEY_MAX_BYTES then list[#list + 1] = { key = key, c = CleanCharacter(c) } end
+	end
+	table.sort(list, function(a, b) return a.c.seen > b.c.seen end)
+	local chars = {}
+	for i = 1, math.min(#list, T.CHARS_MAX) do chars[list[i].key] = list[i].c end
+	ClaudeWoWDB.telemetry = { seq = WholeNumber(root.seq) or 0, chars = chars }
 end
 
 function T.Hash(s)
@@ -172,14 +209,14 @@ local function Factions()
 	return table.concat(parts, ",")
 end
 
-local function Recipes(store)
+local function Recipes(mine)
 	local parts = {}
-	for _, r in ipairs(store.learned or {}) do parts[#parts + 1] = Int(r.id) .. "@" .. Int(r.t) end
+	for _, r in ipairs(mine.learned or {}) do parts[#parts + 1] = Int(r.id) .. "@" .. Int(r.t) end
 	return table.concat(parts, ",")
 end
 
 function T.Sections()
-	local store = Store() or {}
+	local mine = Mine() or CleanCharacter(nil)
 	local s = { cap = table.concat(T.Missing(), ",") }
 	local copper = Try(GetMoney)
 	if WholeNumber(copper) then s.money = Int(copper) end
@@ -193,8 +230,8 @@ function T.Sections()
 	s.items = Items()
 	s.equip = Equipment()
 	s.factions = Factions()
-	s.life = Int(store.deaths or 0) .. "," .. Int(store.lastDeath or 0)
-	s.recipes = Recipes(store)
+	s.life = Int(mine.deaths or 0) .. "," .. Int(mine.lastDeath or 0)
+	s.recipes = Recipes(mine)
 	return s
 end
 
@@ -221,36 +258,42 @@ function T.Allowed(now, solo)
 end
 
 function T.Record(room)
-	local store = Store()
-	if not store then return nil end
-	local seq = math.max((WholeNumber(store.seq) or 0) + 1, time())
-	local head = table.concat({ (ClaudeWoWDB.session:gsub("[\30\31]", " ")), "", Int(seq), "", "kind=" .. T.KIND, "", T.VERSION }, US)
+	local root, key = Root(), T.CharacterKey()
+	if not root or not key then return nil end
+	local seq = math.max((WholeNumber(root.seq) or 0) + 1, time())
+	local head = table.concat({ (ClaudeWoWDB.session:gsub("[\30\31]", " ")), "", Int(seq), "", "kind=" .. T.KIND, key, T.VERSION }, US)
 	local limit = math.min(room, T.RECORD_MAX)
 	if #head > limit then return nil end
 	local sections = T.Sections()
-	local lines, size, sent = {}, #head, {}
+	local lines, size, sent, left = {}, #head, {}, false
 	for _, name in ipairs(T.ORDER) do
 		local data = sections[name]
 		if data then
 			local hash = T.Hash(data)
 			local line = "\n" .. name .. ":" .. hash .. ":" .. data
-			if hash ~= state.known[name] and size + #line <= limit then
-				lines[#lines + 1] = line
-				size = size + #line
-				sent[name] = hash
+			if hash ~= state.known[name] then
+				if size + #line <= limit then
+					lines[#lines + 1] = line
+					size = size + #line
+					sent[name] = hash
+				else
+					left = true
+				end
 			end
 		end
 	end
-	if next(sent) == nil then return nil end
-	store.seq = seq
-	return head .. table.concat(lines), sent
+	if next(sent) == nil then return nil, nil, left end
+	root.seq = seq
+	return head .. table.concat(lines), sent, left, seq
 end
 
 function T.Take(room, solo)
 	if not Enabled() then return nil end
+	if solo and Try(GetCurrentKeyBoardFocus) then return nil end
 	local now = GetTime()
 	if not T.Allowed(now, solo) then return nil end
-	local rec, sent = T.Record(room)
+	local rec, sent, left, seq = T.Record(room)
+	state.hint = left and true or false
 	if not rec then return nil end
 	state.lastAt = now
 	if solo then state.lastSoloAt = now end
@@ -259,8 +302,48 @@ function T.Take(room, solo)
 	for name, hash in pairs(sent) do
 		state.known[name] = hash
 		state.sentAt[name] = now
+		state.sentSeq[name] = seq
 	end
+	table.insert(state.inflight, { rec = rec, sent = sent })
+	while #state.inflight > T.INFLIGHT_MAX do table.remove(state.inflight, 1) end
 	return rec
+end
+
+local function Settle(rec, lost)
+	for i, f in ipairs(state.inflight) do
+		if f.rec == rec then
+			table.remove(state.inflight, i)
+			if lost then
+				for name, hash in pairs(f.sent) do
+					if state.known[name] == hash then
+						state.known[name] = nil
+						state.sentAt[name] = nil
+						state.sentSeq[name] = nil
+					end
+				end
+				state.hint = true
+			end
+			return true
+		end
+	end
+	return false
+end
+
+function T.Delivered(rec)
+	return Settle(rec, false)
+end
+
+function T.Lost(rec)
+	return Settle(rec, true)
+end
+
+local function Entry(gs)
+	local key = T.CharacterKey()
+	local session = type(ClaudeWoWDB) == "table" and ClaudeWoWDB.session
+	for _, e in ipairs(type(gs.chars) == "table" and gs.chars or {}) do
+		if type(e) == "table" and e.character == key and e.session == session and type(e.hashes) == "table" then return e end
+	end
+	return nil
 end
 
 function T.Sync(gs)
@@ -269,14 +352,16 @@ function T.Sync(gs)
 		return
 	end
 	state.bridge = true
+	state.hint = true
 	local watch = type(gs.watch) == "table" and gs.watch or {}
 	state.watch = { items = IdList(watch.items, T.WATCH_ITEMS_MAX), factions = IdList(watch.factions, T.WATCH_FACTIONS_MAX) }
-	local mine = type(ClaudeWoWDB) == "table" and gs.session == ClaudeWoWDB.session and type(gs.hashes) == "table"
-	local hashes = mine and gs.hashes or {}
+	local entry = Entry(gs)
+	local hashes = entry and entry.hashes or {}
+	local bridgeSeq = entry and WholeNumber(entry.seq) or 0
 	local now = GetTime()
 	for _, name in ipairs(T.ORDER) do
-		local at = state.sentAt[name]
-		if not at or now - at >= T.RESEND_AFTER then
+		local at, seq = state.sentAt[name], state.sentSeq[name]
+		if not at or (seq and bridgeSeq >= seq) or now - at >= T.RESEND_AFTER then
 			local h = hashes[name]
 			state.known[name] = type(h) == "string" and h or nil
 		end
@@ -288,24 +373,24 @@ function T.Active()
 end
 
 function T.Pump()
-	if not Enabled() or not T.Allowed(GetTime(), true) then return end
+	if not Enabled() or not (state.urgent or state.hint) or not T.Allowed(GetTime(), true) then return end
 	if ClaudeWoW and ClaudeWoW.TelemetryShot then ClaudeWoW.TelemetryShot() end
 end
 
 function T.OnEvent(event, ...)
-	local store = Store()
-	if not store then return end
+	if T.URGENT_EVENTS[event] then state.urgent = true else state.hint = true end
+	local mine = Mine()
+	if not mine then return end
 	if event == "PLAYER_DEAD" then
-		store.deaths = (WholeNumber(store.deaths) or 0) + 1
-		store.lastDeath = time()
+		mine.deaths = (WholeNumber(mine.deaths) or 0) + 1
+		mine.lastDeath = time()
 	elseif event == "NEW_RECIPE_LEARNED" then
 		local id = ...
 		if not (WholeNumber(id) and id > 0) then return end
-		store.learned = type(store.learned) == "table" and store.learned or {}
-		table.insert(store.learned, { id = id, t = time() })
-		while #store.learned > T.LEARNED_MAX do table.remove(store.learned, 1) end
+		mine.learned = type(mine.learned) == "table" and mine.learned or {}
+		table.insert(mine.learned, { id = id, t = time() })
+		while #mine.learned > T.LEARNED_MAX do table.remove(mine.learned, 1) end
 	end
-	if T.URGENT_EVENTS[event] then state.urgent = true end
 end
 
 local frame = CreateFrame("Frame")
@@ -314,6 +399,7 @@ frame:SetScript("OnEvent", function(_, event, ...)
 	if event == "PLAYER_LOGIN" then
 		T.Sanitize()
 		for name in pairs(T.URGENT_EVENTS) do pcall(frame.RegisterEvent, frame, name) end
+		for _, name in ipairs(T.CHANGE_EVENTS) do pcall(frame.RegisterEvent, frame, name) end
 		if C_Timer and C_Timer.NewTicker then C_Timer.NewTicker(T.PUMP_SECONDS, T.Pump) end
 		return
 	end

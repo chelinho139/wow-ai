@@ -703,11 +703,32 @@ end
 
 -- ok = true (SCREENSHOT_SUCCEEDED), false (SCREENSHOT_FAILED or the call raised),
 -- nil (no event within SHOT_TIMEOUT: the file may or may not exist).
+local Tm = {}
+
+function Tm.Settle(outcome, rec)
+	local telemetry = ClaudeWoWTelemetry
+	if rec and type(telemetry) == "table" and type(telemetry[outcome]) == "function" then pcall(telemetry[outcome], rec) end
+end
+
+function Tm.CallOff()
+	if run.shot and not run.shot.fired then
+		Tm.Settle("Lost", run.shot.telemetry)
+		run.shot = nil
+	end
+end
+
+function Tm.FrameRoom()
+	local geo = Codec.GEOMETRY[StripCodec()]
+	local bytes = math.floor((geo.rows * geo.cells - geo.ramp) * geo.bits / 8) - 8
+	return math.min(Codec.MAX_PAYLOAD, bytes)
+end
+
 local function ScreenshotDone(ok)
 	local shot = run.shot
 	if not shot then return end
 	run.shot = nil
 	HideStrip()
+	Tm.Settle(ok == true and "Delivered" or "Lost", shot.telemetry)
 	local stats = ShotStats()
 	if ok == true then stats.ok = stats.ok + 1
 	elseif ok == false then stats.failed = stats.failed + 1
@@ -770,7 +791,7 @@ local function TakeScreenshot()
 	return gen
 end
 
-local function TelemetryRecord(room, solo)
+function Tm.Record(room, solo)
 	local telemetry = ClaudeWoWTelemetry
 	if type(telemetry) ~= "table" or type(telemetry.Take) ~= "function" then return nil end
 	if room <= 0 or ShotsPaused(true) or run.shotOverride then return nil end
@@ -793,13 +814,14 @@ RefreshStrip = function()
 	if #ids == 0 then
 		-- Nothing left to send. A shot still counting frames is called off; one
 		-- the client is already writing keeps the strip until its event.
-		if run.shot and not run.shot.fired and not run.shot.telemetry then run.shot = nil end
+		if run.shot and not run.shot.solo then Tm.CallOff() end
 		if not run.shot then
-			local solo = ScreenshotMode() and TelemetryRecord(Codec.MAX_PAYLOAD, true)
+			local solo = ScreenshotMode() and Tm.Record(Tm.FrameRoom(), true)
 			if solo then
 				ShowStrip(0, solo)
 				TakeScreenshot()
 				run.shot.telemetry = solo
+				run.shot.solo = true
 				return
 			end
 			HideStrip()
@@ -819,7 +841,7 @@ RefreshStrip = function()
 	end
 	if not ScreenshotMode() then
 		-- A shot still counting frames (the transport just changed) is called off.
-		if run.shot and not run.shot.fired then run.shot = nil end
+		Tm.CallOff()
 		if NoScreenshot() and not run.noShotTold then
 			-- The bridge wants screenshots and this client has no Screenshot():
 			-- the strip stays up pixel-style, the retries and then the reload
@@ -837,7 +859,7 @@ RefreshStrip = function()
 		-- Screenshot() is missing, so the usual retries and then the reload
 		-- fallback take the message from here; nothing is dropped. Said once,
 		-- when a shot is actually withheld; Tick says when shooting resumes.
-		if run.shot and not run.shot.fired then run.shot = nil end
+		Tm.CallOff()
 		if not run.shotsPaused then
 			run.shotsPaused = true
 			local age = GetTime() - (run.bridgeSeen or run.startedAt or GetTime())
@@ -860,9 +882,15 @@ RefreshStrip = function()
 		-- another for the records still unshot.
 		return
 	end
-	local room = Codec.MAX_PAYLOAD - size - 1
+	local retry = false
+	for _, rec in ipairs(included) do
+		if (rec.tries or 1) > 1 or rec.shotFails then retry = true end
+	end
+	local room = Tm.FrameRoom() - size - 1
 	local waiting = run.shot and not run.shot.fired and run.shot.telemetry
-	local rider = (waiting and #waiting <= room) and waiting or TelemetryRecord(room, false)
+	local keep = waiting and not retry and #waiting <= room
+	if waiting and not keep then Tm.Settle("Lost", waiting) end
+	local rider = keep and waiting or (not retry and Tm.Record(room, false)) or nil
 	if rider then table.insert(parts, rider) end
 	ShowStrip(latest, table.concat(parts, RS))
 	local gen = TakeScreenshot()
@@ -1715,6 +1743,7 @@ local function ProcessInbox()
 	if inbox.achievements and ClaudeWoWAchievements then ClaudeWoWAchievements.Sync(inbox.achievements, inbox.now) end
 	if inbox.goals and ClaudeWoWOrders then ClaudeWoWOrders.SyncInbox(inbox.goals, inbox.now) end
 	if inbox.widgets and ClaudeWoWWidgets then ClaudeWoWWidgets.Sync(inbox.widgets) end
+	if ClaudeWoWTelemetry then ClaudeWoWTelemetry.Sync(inbox.gs) end
 end
 
 local quietReplyHandlers = {}

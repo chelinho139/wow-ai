@@ -19,8 +19,8 @@ function record(sections) {
   return ['gs1', ...Object.entries(sections).map(([name, data]) => `${name}:${'0'.repeat(8 - String(data.length).length)}${data.length}:${data}`)].join('\n');
 }
 
-function gsJob(session, seq, sections) {
-  return { session, chat: '', id: seq, cwd: '', kind: 'gs', name: '', text: record(sections) };
+function gsJob(session, seq, sections, character = CHARACTER) {
+  return { session, chat: '', id: seq, cwd: '', kind: 'gs', name: character, text: record(sections) };
 }
 
 function store(dir, opts = {}) {
@@ -29,7 +29,6 @@ function store(dir, opts = {}) {
     dir,
     log: l => lines.push(l),
     now: opts.now || (() => 1790000000000),
-    characterKey: opts.characterKey || (() => CHARACTER),
     watch: opts.watch || (() => TL.watchFrom({ watch: { items: { 2589: 40 }, factions: [530] } })),
     rotateBytes: opts.rotateBytes,
   });
@@ -159,14 +158,28 @@ test('the handled map per session stays bounded', () => {
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('a record before the game named its character is dropped with one log line, and nothing is written', () => {
+test('a record without a usable character in its name field is dropped with one log line, and nothing is written', () => {
   const dir = tmpDir('nochar');
   try {
-    const { t, lines } = store(dir, { characterKey: () => null });
-    assert.equal(t.submit(gsJob('s1', 1, { money: '1' })).status, 'no-character');
-    assert.equal(t.submit(gsJob('s1', 2, { money: '2' })).status, 'no-character');
-    assert.equal(lines.filter(l => /before the game named its character/.test(l)).length, 1);
+    const { t, lines } = store(dir);
+    assert.equal(t.submit(gsJob('s1', 1, { money: '1' }, '')).status, 'no-character');
+    assert.equal(t.submit(gsJob('s1', 2, { money: '2' }, '../../etc')).status, 'no-character');
+    assert.equal(t.submit(gsJob('s1', 3, { money: '3' }, 'Bone Sleeve-Forever')).status, 'no-character');
+    assert.equal(lines.filter(l => /named no usable character/.test(l)).length, 1);
     assert.deepEqual(fs.readdirSync(dir), []);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('each record goes to the character it names, whatever the bridge heard last: two clients never mix', () => {
+  const dir = tmpDir('twochars');
+  try {
+    const { t } = store(dir);
+    t.submit(gsJob('s1', 10, { money: '100' }, 'Bone-Forever'));
+    t.submit(gsJob('s2', 10, { money: '900' }, 'Alt-Forever'));
+    t.submit(gsJob('s1', 11, { money: '150' }, 'Bone-Forever'));
+    assert.deepEqual(t.snapshot('Bone-Forever').sections.money.value, { copper: 150 });
+    assert.deepEqual(t.snapshot('Alt-Forever').sections.money.value, { copper: 900 });
+    assert.equal(fs.existsSync(path.join(dir, 'Alt-Forever', TL.EVENTS_FILE)), false, 'the alt has only its baseline');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -179,7 +192,7 @@ test('watched item counts are importance 2 only when they cross 25/50/75/100% of
     assert.deepEqual(step(2, '3;2589=10'), [['item', 2, 25]], '10 of 40 is 25%');
     assert.deepEqual(step(3, '3;2589=15'), [['item', 1, null]], 'between marks: a loot tick');
     assert.deepEqual(step(4, '3;2589=14'), [['item', 1, null]], 'a count going down never crosses');
-    assert.deepEqual(step(5, '3;2589=40'), [['item', 2, 100]], 'several marks at once: the highest');
+    assert.deepEqual(step(5, '3;2589=40'), [['item', 2, 100], ['goal_complete', 3, null]], 'several marks at once: the highest, and the target is met');
     assert.deepEqual(step(6, '0;2589=41'), [['item', 1, null], ['bags_full', 2, null]]);
     assert.deepEqual(step(7, '0;2589=41'), [], 'already full: no second event');
     assert.deepEqual(step(8, '2;2589=41,2592=3'), [], 'an item that just joined the watch list is a baseline');
@@ -231,26 +244,65 @@ test('events.jsonl rotates at the size limit and keeps 2 files', () => {
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('the slot field gs carries the session, seq, hashes and watch list, and reads back in Lua', () => {
+test('the slot field gs carries each recent character with its session, seq and hashes, plus the watch list, and reads back in Lua', () => {
   const dir = tmpDir('lua');
   try {
-    const { t } = store(dir);
+    let clockMs = 0;
+    const { t } = store(dir, { now: () => ++clockMs });
+    assert.equal(luaEval(`X = {\n${t.luaGs()}\n}`, 'X.gs.v .. "/" .. #X.gs.chars'), '1/0', 'nothing known yet: the capability alone');
+    for (let i = 0; i < TL.GS_CHARACTERS_MAX + 2; i++) t.submit(gsJob('other', i + 1, { money: String(i) }, `Alt${i}-Forever`));
     const job = gsJob('abc123', 42, { money: '100', zone: '1421' });
     t.submit(job);
     const hashes = TL.parseRecord(job.text).sections;
     const body = P.luaTable('ClaudeWoW_SlotData', [], { gsLua: t.luaGs() });
     const get = expr => luaEval(body, expr);
     assert.equal(get('ClaudeWoW_SlotData.gs.v'), '1');
-    assert.equal(get('ClaudeWoW_SlotData.gs.session'), 'abc123');
-    assert.equal(get('ClaudeWoW_SlotData.gs.seq'), '42');
-    assert.equal(get('ClaudeWoW_SlotData.gs.hashes.money'), hashes.money.hash);
-    assert.equal(get('ClaudeWoW_SlotData.gs.hashes.zone'), hashes.zone.hash);
-    assert.equal(get('ClaudeWoW_SlotData.gs.hashes.items'), null);
+    assert.equal(get('#ClaudeWoW_SlotData.gs.chars'), String(TL.GS_CHARACTERS_MAX));
     assert.equal(get('ClaudeWoW_SlotData.gs.watch.items[1]'), '2589');
     assert.equal(get('ClaudeWoW_SlotData.gs.watch.factions[1]'), '530');
-    const empty = store(dir, { characterKey: () => null }).t.luaGs();
-    assert.equal(luaEval(`X = {\n${empty}\n}`, 'X.gs.v .. "/" .. X.gs.session .. "/" .. X.gs.seq'), '1//0', 'no character yet: the capability, nothing known');
+    const fresh = TL.createTelemetry({ dir, watch: () => TL.watchFrom(null), now: () => 1 });
+    const again = P.luaTable('ClaudeWoW_SlotData', [], { gsLua: fresh.luaGs() });
+    const find = `(function() for _, e in ipairs(ClaudeWoW_SlotData.gs.chars) do if e.character == "${CHARACTER}" then return e end end end)()`;
+    assert.equal(luaEval(again, `${find}.session`), 'abc123', 'a restarted bridge reads the snapshots back for the slot files');
+    assert.equal(luaEval(again, `${find}.seq`), '42');
+    assert.equal(luaEval(again, `${find}.hashes.money`), hashes.money.hash);
+    assert.equal(luaEval(again, `${find}.hashes.zone`), hashes.zone.hash);
+    assert.equal(luaEval(again, `${find}.hashes.items`), null);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a malformed snapshot.json never crashes the bridge: bad sections are dropped with a log line, unreadable files start fresh', () => {
+  const dir = tmpDir('malformed');
+  try {
+    const folder = path.join(dir, CHARACTER);
+    fs.mkdirSync(folder, { recursive: true });
+    const file = path.join(folder, TL.SNAPSHOT_FILE);
+    fs.writeFileSync(file, JSON.stringify({ v: 1, session: 's1', seq: 5, sections: {
+      money: { seq: 5, hash: '00000003', data: '100' },
+      zone: { seq: 'x', hash: '00000001', data: '1' },
+      level: { seq: 5, hash: '00000001', data: 'banana' },
+      items: null,
+      bogus: { seq: 1, hash: '00000001', data: '1' },
+      skills: { seq: 5, hash: '00000001' },
+    } }));
+    const { t, lines } = store(dir);
+    const r = t.submit(gsJob('s1', 6, { money: '120', zone: '1421', level: '20,1,2', items: '1;', skills: '' }));
+    assert.equal(r.status, 'applied');
+    assert.deepEqual(r.events.map(e => e.type), ['money'], 'only the section that survived has a baseline to compare with');
+    assert.ok(lines.some(l => /dropped unreadable section\(s\) zone, level, items, bogus, skills/.test(l)), lines.join('\n'));
+    for (const broken of ['{', '[]', JSON.stringify({ v: 1, sections: [] }), JSON.stringify({ v: 1, sections: { money: { seq: 1, hash: 'zz', value: { copper: 'lots' } } } })]) {
+      fs.writeFileSync(file, broken);
+      const fresh = store(dir);
+      assert.equal(fresh.t.submit(gsJob('s1', 7, { money: '130' })).status, 'applied', broken);
+    }
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('bridge.js catches anything telemetry.submit and luaGs throw and logs it', () => {
+  const body = submitBody();
+  assert.match(body, /try \{ telemetry\.submit\(job\); \} catch \(e\) \{ log\(/);
+  const src = fs.readFileSync(BRIDGE_SOURCE, 'utf8');
+  assert.match(src, /try \{ gsLua = telemetry\.luaGs\(\); \} catch \(e\) \{ log\(/);
 });
 
 test('watchFrom takes a target map or a plain list, caps both lists, and drops what is not an ID', () => {

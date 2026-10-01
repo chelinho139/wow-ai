@@ -127,8 +127,50 @@ test('follow waits for an events file to appear, picks the newest character fold
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('lines written just before a rotation are read from the rotated file before the new one', () => {
+  const dir = tmpGoals('drain');
+  const file = path.join(dir, 'Bone-Forever', TL.EVENTS_FILE);
+  try {
+    appendEvents(file, [ev('zone', 2, { from: 1, to: 2 })]);
+    const now = clock();
+    const out = sink();
+    const f = EV.follow({ file, min: 1, out, err: sink(), now, pollMs: 0 });
+    appendEvents(file, [ev('death', 3, { at: 1 }), ev('bags_full', 2, { free: 0 })]);
+    fs.renameSync(file, path.join(path.dirname(file), TL.EVENTS_ROTATED_FILE));
+    appendEvents(file, [ev('level_up', 3, { from: 20, to: 21 })]);
+    f.tick();
+    now.advance(EV.BURST_WINDOW_MS);
+    f.tick();
+    assert.deepEqual(out.lines().map(e => e.type), ['death', 'bags_full', 'level_up']);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('without --character the newest events file is looked for again, and a character that starts writing later is followed from what is new', () => {
+  const dir = tmpGoals('switch');
+  try {
+    const bone = path.join(dir, 'Bone-Forever', TL.EVENTS_FILE);
+    const alt = path.join(dir, 'Alt-Forever', TL.EVENTS_FILE);
+    appendEvents(alt, [ev('money', 1, { from: 0, to: 1, delta: 1 })]);
+    const past = new Date(Date.now() - 60000);
+    fs.utimesSync(alt, past, past);
+    appendEvents(bone, [ev('zone', 2, { from: 1, to: 2 })]);
+    const now = clock();
+    const out = sink();
+    const f = EV.follow({ file: () => EV.eventsFile(dir, ''), list: () => EV.allEventsFiles(dir), min: 1, out, err: sink(), now, pollMs: 0, resolveEvery: 2 });
+    assert.equal(f.file(), bone);
+    appendEvents(alt, [ev('death', 3, { at: 9 })]);
+    f.tick();
+    f.tick();
+    assert.equal(f.file(), alt, 'the alt is newest now');
+    now.advance(EV.BURST_WINDOW_MS);
+    f.tick();
+    assert.deepEqual(out.lines().map(e => e.type), ['death'], 'only what the alt wrote after following began');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('the events command parses its options and refuses bad ones', () => {
   assert.deepEqual(EV.parseArgs(['--follow', '--min', '2']), { follow: true, min: 2, character: '' });
+  assert.match(EV.USAGE, /goal_complete/, 'the usage names every importance-3 event');
   assert.equal(EV.parseArgs(['--min=3', '--character', 'Bone-Forever']).character, 'Bone-Forever');
   assert.match(EV.parseArgs(['--min', '4']).error, /--min takes 1 to 3/);
   assert.match(EV.parseArgs(['--min', 'x']).error, /--min/);
