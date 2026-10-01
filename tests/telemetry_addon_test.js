@@ -167,7 +167,7 @@ test('chat log transport: game state goes out as chat log frames of its own, nev
   const first = logFrames(vm).filter(f => gsJobs(f).length);
   assert.equal(first.length, 1, 'the first record went out on the chat log');
   assert.equal(first[0].id, 0, 'a frame with no message id');
-  assert.deepEqual(Object.keys(sectionsOf(gsJobs(first[0])[0]).sections), ['cap', 'level', 'zone', 'money', 'items', 'skills', 'equip', 'factions', 'life', 'recipes']);
+  assert.deepEqual(Object.keys(sectionsOf(gsJobs(first[0])[0]).sections), ['cap', 'level', 'zone', 'money', 'items', 'skills', 'equip', 'factions', 'life', 'recipes', 'quests']);
   for (let i = 0; i < 5; i++) { vm.run('STUB.money = STUB.money + 100; STUB.FireEvent("PLAYER_MONEY")'); tick(vm, 130); }
   const all = logFrames(vm).filter(f => gsJobs(f).length);
   assert.ok(all.length >= 5, `money changes went out on the chat log (${all.length} frames)`);

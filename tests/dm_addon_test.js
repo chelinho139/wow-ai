@@ -381,6 +381,24 @@ test('/dm next: one record with the character key, acked, then one slot load bri
   assert.equal(vm.num('STUB.loads'), loads + 1, 'and nothing more');
 });
 
+test('/dm next: an ack that rides the slot files comes with the beat, so no extra slot load follows', () => {
+  const vm = newVM();
+  nextSlot(vm, dmLua({ manual: true }));
+  tick(vm);
+  vm.run('SlashCmdList.CLAUDEWOWDM("next")');
+  const [rec] = dmRecords(vm);
+  assert.ok(rec, 'the record went out');
+  vm.run('ClaudeWoW.Send("meanwhile")');
+  const p = pending(vm);
+  vm.run(`STUB.onLoadAddOn = function(name) ClaudeWoW_SlotData = { now = time(), cwd = "", plugin = "ask", plugins = { "ask" }, acks = { { session = ClaudeWoWDB.session, id = ${rec.id} } }, replies = { { chat = "${p.chat}", id = ${p.id}, status = "done", text = "ok", agent = "", plugin = "ask" } }, dm = ${dmLua({ rev: 2, beat: BEAT1 })} } end`);
+  tick(vm);
+  assert.equal(shown(vm), true, 'the same slot read brought the beat');
+  assert.equal(dmRecords(vm).length, 0, 'and acked the record');
+  const loads = vm.num('STUB.loads');
+  for (let i = 0; i < 5; i++) tick(vm, 1);
+  assert.equal(vm.num('STUB.loads'), loads, 'no follow-up load for an ack read from a slot');
+});
+
 test('/dm next: while the first record waits for its ack, a later press adds no second one', () => {
   const vm = newVM({ prelude: ARMED_SIGNALS });
   nextSlot(vm, dmLua({ manual: true }));
