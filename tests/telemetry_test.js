@@ -304,7 +304,8 @@ test('a malformed snapshot.json never crashes the bridge: bad sections are dropp
 
 test('bridge.js catches anything telemetry.submit and luaGs throw and logs it', () => {
   const body = submitBody();
-  assert.match(body, /try \{ telemetry\.submit\(job\); \} catch \(e\) \{ log\(/);
+  assert.match(body, /try \{ applied = telemetry\.submit\(job\); \} catch \(e\) \{ log\(/);
+  assert.match(body, /try \{ campaignStore\.onEvents\(job\.name, applied\.events\); \} catch \(e\) \{ log\(/);
   const src = fs.readFileSync(BRIDGE_SOURCE, 'utf8');
   assert.match(src, /try \{ gsLua = telemetry\.luaGs\(\); \} catch \(e\) \{ log\(/);
 });

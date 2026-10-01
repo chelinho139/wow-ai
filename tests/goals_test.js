@@ -612,7 +612,8 @@ test('MCP tool schemas: goal_set, goal_list, order_issue and the two vote tools;
   assert.equal(G.toolSchemas()[2].inputSchema.properties.text.maxLength, GR.TOKEN_TEXT_MAX, 'raw text may carry tokens; the 90-character cap applies after expansion');
   assert.match(G.toolSchemas()[2].description, /\{item:ID\}, \{skill:ID\} or \{map:ID,x,y\}/);
   assert.match(G.toolSchemas()[2].description, /never from memory or another game version/);
-  assert.deepEqual(LP.GOAL_WRITE_TOOLS, ['mcp__claude-wow__goal_set', 'mcp__claude-wow__order_issue', 'mcp__claude-wow__goal_vote_open', 'mcp__claude-wow__goal_vote_close', 'mcp__claude-wow__route_draw']);
+  assert.deepEqual(LP.GOAL_WRITE_TOOLS, ['mcp__claude-wow__goal_set', 'mcp__claude-wow__order_issue', 'mcp__claude-wow__goal_vote_open', 'mcp__claude-wow__goal_vote_close', 'mcp__claude-wow__route_draw',
+    'mcp__claude-wow__campaign_start', 'mcp__claude-wow__campaign_end', 'mcp__claude-wow__beat_add', 'mcp__claude-wow__beat_trigger', 'mcp__claude-wow__narrate']);
   const acfg = P.withRunDeniedRules({ allowedTools: ['WebSearch'], deniedTools: ['Bash(rm:*)'] }, LP.GOAL_WRITE_TOOLS);
   assert.deepEqual(acfg.deniedTools, ['Bash(rm:*)', ...LP.GOAL_WRITE_TOOLS]);
   assert.deepEqual(P.withoutRules(['WebSearch', 'mcp__claude-wow__order_issue'], LP.GOAL_WRITE_TOOLS), ['WebSearch']);

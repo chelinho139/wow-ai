@@ -1,0 +1,25 @@
+{
+  "title": "A letter with no name",
+  "beats": [
+    {
+      "title": "A story begins",
+      "narration": ["Someone left a letter in your pack. Nobody saw who.", "It asks you to follow the road and keep quiet."],
+      "trigger": { "type": "manual" }
+    },
+    {
+      "title": "The quiet road",
+      "narration": ["The road into {map:1421,50,50} is quiet. Too quiet.", "A cold wind follows you down the road."],
+      "trigger": { "type": "zone", "mapID": 1421 }
+    },
+    {
+      "title": "Not over yet",
+      "narration": ["You fell. Get up. The story is not over."],
+      "trigger": { "type": "death" }
+    },
+    {
+      "title": "Home again",
+      "narration": ["The road ends in {map:1458,50,50}. Find a warm fire and rest.", "The letter was a test, and you passed it."],
+      "trigger": { "type": "zone", "mapID": 1458 }
+    }
+  ]
+}

@@ -5,12 +5,13 @@ const fs = require('fs');
 const path = require('path');
 const G = require('./goals');
 const OT = require('./observedtools');
+const C = require('./campaign');
 
 const SERVER_NAME = 'claude-wow';
 const REPLY_TOOL = 'wow_reply';
 const fullToolName = tool => `mcp__${SERVER_NAME}__${tool}`;
 const FULL_REPLY_TOOL = fullToolName(REPLY_TOOL);
-const GOAL_WRITE_TOOLS = Object.freeze([...G.WRITE_TOOL_NAMES, ...OT.WRITE_TOOL_NAMES].map(fullToolName));
+const GOAL_WRITE_TOOLS = Object.freeze([...G.WRITE_TOOL_NAMES, ...OT.WRITE_TOOL_NAMES, ...C.WRITE_TOOL_NAMES].map(fullToolName));
 const SOCKET_NAME = 'live.sock';
 const TOKEN_NAME = 'live.token';
 const UNIX_PATH_MAX = 103;

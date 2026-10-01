@@ -1046,7 +1046,7 @@ RefreshStrip = function()
 					rec.shot = "log"
 					rec.logged = true
 					rec.loggedAt = GetTime()
-					if (rec.forget or rec.cancelOf) and not run.helloPollAt and not run.ackPollAt then
+					if (rec.forget or rec.cancelOf or rec.dm) and not run.helloPollAt and not run.ackPollAt then
 						run.ackPollAt = GetTime() + ClaudeWoW.ChatLog.ACK_POLL_SECONDS
 					end
 				end
@@ -1821,6 +1821,10 @@ local function TryLoadSlot(why)
 	if type(data) == "table" and data.map and ClaudeWoWMap then ClaudeWoWMap.Sync(data.map) end
 	if type(data) == "table" and data.achievements and ClaudeWoWAchievements then ClaudeWoWAchievements.Sync(data.achievements, data.now) end
 	if type(data) == "table" and data.goals and ClaudeWoWOrders then ClaudeWoWOrders.SyncSlot(data.goals, data.now) end
+	if type(data) == "table" and type(data.dm) == "table" then
+		run.bridgeDm = true
+		if ClaudeWoWDM then ClaudeWoWDM.SyncSlot(data.dm) end
+	end
 	if type(data) == "table" and data.widgets and ClaudeWoWWidgets then ClaudeWoWWidgets.Sync(data.widgets) end
 	if type(data) == "table" and ClaudeWoWTelemetry then ClaudeWoWTelemetry.Sync(data.gs) end
 	if why == "signal" and not matched then
@@ -1890,6 +1894,10 @@ local function Tick()
 		run.ackPollAt = nil
 		if not ClaudeWoW.PresenceWorks() then TryLoadSlot("ack") end
 	end
+	if run.dmPollAt and now >= run.dmPollAt then
+		run.dmPollAt = nil
+		TryLoadSlot("dm")
+	end
 	if run.restoring and now - run.restoring > 25 then
 		run.restoring = nil
 		ClaudeWoW.Render()
@@ -1902,6 +1910,7 @@ local function Tick()
 			NotedBridge()
 			if (rec.text or "") ~= "" and ClaudeWoWVoice then ClaudeWoWVoice.Started(id) end
 			if rec.hello and run.lateProbe and not run.lateProbe.result then run.helloPollAt = now + 1 end
+			if rec.dm then run.dmPollAt = now + 1 end
 		end
 		-- A hello only needs the bridge to have been seen; it never escalates.
 		-- A forget is the same, but the bridge must have been seen a moment after
@@ -1930,7 +1939,7 @@ local function Tick()
 				rec.sentAt = now
 				rec.shot = nil
 				changed = true
-			elseif rec.forget or rec.cancelOf then
+			elseif rec.forget or rec.cancelOf or rec.dm then
 				-- The bridge is away; db.forget keeps it for the next hello.
 				run.outbound[id] = nil
 				changed = true
@@ -1986,6 +1995,10 @@ local function ProcessInbox()
 	if inbox.map and ClaudeWoWMap then ClaudeWoWMap.Sync(inbox.map) end
 	if inbox.achievements and ClaudeWoWAchievements then ClaudeWoWAchievements.Sync(inbox.achievements, inbox.now) end
 	if inbox.goals and ClaudeWoWOrders then ClaudeWoWOrders.SyncInbox(inbox.goals, inbox.now) end
+	if type(inbox.dm) == "table" then
+		run.bridgeDm = true
+		if ClaudeWoWDM then ClaudeWoWDM.SyncInbox(inbox.dm) end
+	end
 	if inbox.widgets and ClaudeWoWWidgets then ClaudeWoWWidgets.Sync(inbox.widgets) end
 	if ClaudeWoWTelemetry then ClaudeWoWTelemetry.SyncInbox(inbox.gs, inbox.now) end
 end
@@ -3070,6 +3083,25 @@ local function SendCancel(chat, id)
 	run.outbound[db.lastSeq] = { chat = chat.id, cwd = chat.cwd or "", flags = "cancel=" .. id, name = chat.name or "", text = "", sentAt = GetTime(), cancelOf = id }
 	NoteStaleSignals(db.lastSeq)
 	RefreshStrip()
+end
+
+Q.DM_NEXT_GAP_SECONDS = 5
+
+function ClaudeWoW.SendDmNext(charKey)
+	if not db or db.settings.mode ~= "pixel" then return "reload" end
+	if not run.bridgeDm then return "unsupported" end
+	if type(charKey) ~= "string" or charKey == "" then return "nochar" end
+	local now = GetTime()
+	for _, rec in pairs(run.outbound) do
+		if rec.dm and not rec.acked then return "busy" end
+	end
+	if run.dmSentAt and now - run.dmSentAt < Q.DM_NEXT_GAP_SECONDS then return "busy" end
+	run.dmSentAt = now
+	db.lastSeq = db.lastSeq + 1
+	run.outbound[db.lastSeq] = { chat = "", cwd = "", flags = "kind=dm", name = charKey, text = "next", sentAt = now, dm = true }
+	NoteStaleSignals(db.lastSeq)
+	RefreshStrip()
+	return "sent"
 end
 
 local function ForgetOnBridge(c)
