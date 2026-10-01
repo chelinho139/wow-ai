@@ -196,6 +196,43 @@ test('the game context describes the character and rides on the hello, then only
   assert.ok(vm.evaluate('ClaudeWoWDB.chats[2].history[#ClaudeWoWDB.chats[2].history].text').includes('Game context is ON'));
 });
 
+const talentsLine = vm => vm.evaluate('ClaudeWoW.GameContext()').split('\n').find(l => l.startsWith('Talents:'));
+
+test('the talents line reads the Forever trait trees, with no old talent-tab functions in the client', () => {
+  const vm = newVM();
+  login(vm);
+  assert.equal(vm.evaluate('GetNumTalentTabs'), null, 'the stub client has no GetNumTalentTabs, like Forever');
+  assert.equal(vm.evaluate('GetTalentTabInfo'), null);
+  assert.equal(talentsLine(vm), 'Talents: Beast Mastery 10 / Marksmanship 5 / Survival 0');
+  vm.run('STUB.talentGroups[2].spent = 7; STUB.talentGroups[3].displayName = "Trapping"');
+  assert.equal(talentsLine(vm), 'Talents: Beast Mastery 10 / Marksmanship 7 / Trapping 0', 'names and points come from the client');
+  vm.run('C_SpecializationInfo.GetCombatConfigIDForSpecGroup = function() return nil end');
+  assert.equal(talentsLine(vm), 'Talents: Beast Mastery 10 / Marksmanship 7 / Trapping 0', 'the active config id is the fallback');
+  vm.run('C_ClassTalents.GetActiveConfigID = function() return nil end');
+  assert.equal(talentsLine(vm), undefined, 'no active config, no line');
+});
+
+test('the talents line falls back to the old talent-tab functions when there are no trait trees', () => {
+  const vm = newVM();
+  login(vm);
+  vm.run('C_Traits = nil; function GetNumTalentTabs() return 2 end; function GetTalentTabInfo(i) local t = { { "Combat", 3 }, { "Subtlety", 1 } }; return t[i][1], "icon", t[i][2] end');
+  assert.equal(talentsLine(vm), 'Talents: Combat 3 / Subtlety 1');
+});
+
+test('with no talent API at all, or one that errors, there is no talents line and the context still builds', () => {
+  const vm = newVM();
+  login(vm);
+  vm.run('C_Traits.GetGroupCurrencyInfo = function() error("boom") end');
+  let ctx = vm.evaluate('ClaudeWoW.GameContext()');
+  assert.ok(ctx.includes('Professions: Skinning 75/75'), ctx);
+  assert.ok(!ctx.includes('Talents:'), 'an erroring trait API adds no line');
+  vm.run('C_Traits = nil; C_SpecializationInfo = nil; C_ClassTalents = nil; GetNumTalentTabs = nil; GetTalentTabInfo = nil');
+  ctx = vm.evaluate('ClaudeWoW.GameContext()');
+  assert.ok(ctx.includes('Character: Testchar'), ctx);
+  assert.ok(ctx.includes('Professions: Skinning 75/75'), ctx);
+  assert.ok(!ctx.includes('Talents:'), 'no talent API, no line');
+});
+
 test('a shift-clicked link lands in the focused input and is sent as its name plus tooltip', () => {
   const vm = newVM();
   login(vm);

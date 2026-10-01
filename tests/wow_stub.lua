@@ -644,11 +644,46 @@ C_DeathRecap = {
 }
 function UnitXP(unit) return 1234 end
 function UnitXPMax(unit) return 5000 end
-function GetNumTalentTabs() return 3 end
-function GetTalentTabInfo(i)
-	local tabs = { { "Beast Mastery", 10 }, { "Marksmanship", 5 }, { "Survival", 0 } }
-	return tabs[i][1], "Interface\\Icons\\x", tabs[i][2]
-end
+STUB.talentConfigID, STUB.talentTreeID = 7001, 301
+STUB.talentGroups = {
+	{ groupID = 11, displayName = "Beast Mastery", spent = 10 },
+	{ groupID = 12, displayName = "Marksmanship", spent = 5 },
+	{ groupID = 13, displayName = "Survival", spent = 0 },
+}
+C_SpecializationInfo = {
+	GetActiveSpecGroup = function() return 1 end,
+	GetCombatConfigIDForSpecGroup = function(groupIndex) if groupIndex == 1 then return STUB.talentConfigID end end,
+}
+C_ClassTalents = {
+	GetActiveConfigID = function() return STUB.talentConfigID end,
+}
+C_Traits = {
+	GetConfigInfo = function(configID)
+		if configID == STUB.talentConfigID then
+			return { ID = configID, type = 1, name = "", treeIDs = { STUB.talentTreeID }, usesSharedActionBars = false }
+		end
+	end,
+	GetGroupDisplayInfoByTreeID = function(treeID)
+		local out = {}
+		if treeID ~= STUB.talentTreeID then return out end
+		for i, g in ipairs(STUB.talentGroups) do
+			out[i] = { groupID = g.groupID, treeID = treeID, skillLineID = 0, orderIndex = i, displayName = g.displayName, icon = 0 }
+		end
+		return out
+	end,
+	GetGroupCurrencyInfo = function(configID, groupIDs)
+		local out = {}
+		if configID ~= STUB.talentConfigID then return out end
+		for _, id in ipairs(groupIDs) do
+			for _, g in ipairs(STUB.talentGroups) do
+				if g.groupID == id then
+					table.insert(out, { traitNodeGroupID = id, currencyInfos = { { traitCurrencyID = 1, quantity = 0, spent = g.spent } } })
+				end
+			end
+		end
+		return out
+	end,
+}
 TRADE_SKILLS, SECONDARY_SKILLS = "Professions", "Secondary Skills"
 local SKILLS = {
 	{ "Class Skills", true }, { "Bows", false, 46, 115 },
