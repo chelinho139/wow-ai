@@ -131,39 +131,47 @@ test('a frame of [message, gs rider] from the real addon and a frame of [gs, mes
 
     h.client.runLua('ClaudeWoWDB.stream = ClaudeWoWDB.stream or {}; ClaudeWoWDB.stream.follow = false');
     const slotOf = n => ((n - 1) % SLOTS) + 1;
-    const ackBefore = spentSlots(h.sb, 'ack');
-    const sigBefore = spentSlots(h.sb, 'sig');
-    const nowSec = Math.floor(Date.now() / 1000);
-    const gsSlots = new Set(Array.from({ length: 120 }, (_, k) => slotOf(nowSec - 10 + k)));
-    let messageId = h.client.lastSeq() + 1;
-    const firstTry = messageId;
-    while (gsSlots.has(slotOf(messageId)) || ackBefore.includes(slotOf(messageId)) || sigBefore.includes(slotOf(messageId))) {
-      messageId += 1;
-      assert.ok(messageId - firstTry < SLOTS, 'a slot clear of the gs seqs and of every spent signal exists');
+    const RIDER_TRIES = 5;
+    let round = null;
+    for (let attempt = 1; attempt <= RIDER_TRIES; attempt++) {
+      if (attempt > 1) await new Promise(r => setTimeout(r, 5000));
+      const ackBefore = spentSlots(h.sb, 'ack');
+      const sigBefore = spentSlots(h.sb, 'sig');
+      const nowSec = Math.floor(Date.now() / 1000);
+      const gsSlots = new Set(Array.from({ length: 120 }, (_, k) => slotOf(nowSec - 10 + k)));
+      let messageId = h.client.lastSeq() + 1;
+      const firstTry = messageId;
+      while (gsSlots.has(slotOf(messageId)) || ackBefore.includes(slotOf(messageId)) || sigBefore.includes(slotOf(messageId))) {
+        messageId += 1;
+        assert.ok(messageId - firstTry < SLOTS, 'a slot clear of the gs seqs and of every spent signal exists');
+      }
+      h.client.runLua(`ClaudeWoWDB.lastSeq = ${messageId - 1}`);
+      h.client.runLua('STUB.money = STUB.money + 77');
+      const money = Number(h.client.luaValue('STUB.money'));
+      const mark = h.bridge.output.length;
+      const ridden = await h.client.say(`message with a rider ${attempt}`);
+      assert.match(ridden.text, /message with a rider/);
+      assert.equal(ridden.id, messageId);
+      await h.bridge.waitForLine(new RegExp(`telemetry: gs #\\d+@${session} for ${CHARACTER}: money`), { from: mark });
+      const after = h.bridge.output.slice(mark).split('\n');
+      const frameAt = after.findIndex(l => new RegExp(`strip #${ridden.id % 65536} \\(screenshot `).test(l));
+      assert.ok(frameAt >= 0, 'the message went out on a screenshot frame');
+      const nextFrame = after.findIndex((l, i) => i > frameAt && /strip #\d+ \(screenshot /.test(l));
+      const frameLines = after.slice(frameAt, nextFrame < 0 ? undefined : nextFrame);
+      const gsLine = frameLines.find(l => /telemetry: gs #\d+@/.test(l));
+      assert.ok(gsLine, 'a gs record rode in the same frame as the message');
+      const gsSeq = Number(/telemetry: gs #(\d+)@/.exec(gsLine)[1]);
+      assert.equal(readSnap().sections.money.value.copper, money);
+      const slotA = slotOf(ridden.id);
+      const newAcks = spentSlots(h.sb, 'ack').filter(s => !ackBefore.includes(s));
+      const newSigs = spentSlots(h.sb, 'sig').filter(s => !sigBefore.includes(s));
+      assert.deepEqual(newAcks, [slotA], 'only the message spent an ack file');
+      assert.deepEqual(newSigs, [slotA], 'only the message spent a sig file');
+      const gsSlot = slotOf(gsSeq);
+      if (gsSlot !== slotA && !ackBefore.includes(gsSlot) && !sigBefore.includes(gsSlot)) { round = { gsSlot, newAcks, newSigs }; break; }
     }
-    h.client.runLua(`ClaudeWoWDB.lastSeq = ${messageId - 1}`);
-    h.client.runLua('STUB.money = STUB.money + 77');
-    const mark = h.bridge.output.length;
-    const ridden = await h.client.say('message with a rider');
-    assert.match(ridden.text, /message with a rider/);
-    await h.bridge.waitForLine(new RegExp(`telemetry: gs #\\d+@${session} for ${CHARACTER}: money`), { from: mark });
-    const after = h.bridge.output.slice(mark).split('\n');
-    const frameAt = after.findIndex(l => new RegExp(`strip #${ridden.id % 65536} \\(screenshot `).test(l));
-    assert.ok(frameAt >= 0, 'the message went out on a screenshot frame');
-    const nextFrame = after.findIndex((l, i) => i > frameAt && /strip #\d+ \(screenshot /.test(l));
-    const frameLines = after.slice(frameAt, nextFrame < 0 ? undefined : nextFrame);
-    const gsLine = frameLines.find(l => /telemetry: gs #\d+@/.test(l));
-    assert.ok(gsLine, 'a gs record rode in the same frame as the message');
-    const gsSeq = Number(/telemetry: gs #(\d+)@/.exec(gsLine)[1]);
-    assert.equal(readSnap().sections.money.value.copper, 12345 + 77);
-    const slotA = slotOf(ridden.id);
-    const newAcks = spentSlots(h.sb, 'ack').filter(s => !ackBefore.includes(s));
-    const newSigs = spentSlots(h.sb, 'sig').filter(s => !sigBefore.includes(s));
-    assert.deepEqual(newAcks, [slotA], 'only the message spent an ack file');
-    assert.deepEqual(newSigs, [slotA], 'only the message spent a sig file');
-    assert.equal(ridden.id, messageId);
-    assert.notEqual(slotOf(gsSeq), slotA, 'the message id was chosen so the gs seq has a slot of its own, which stays unspent');
-    assert.ok(!ackBefore.includes(slotOf(gsSeq)) && !sigBefore.includes(slotOf(gsSeq)), 'the gs seq slot was armed before, so staying unspent means something');
+    assert.ok(round, `within ${RIDER_TRIES} rider records one gs seq landed on a slot whose ack and sig files were still armed`);
+    assert.ok(!round.newAcks.includes(round.gsSlot) && !round.newSigs.includes(round.gsSlot), 'the gs seq spent nothing');
 
     const ackMid = spentSlots(h.sb, 'ack');
     const sigMid = spentSlots(h.sb, 'sig');
