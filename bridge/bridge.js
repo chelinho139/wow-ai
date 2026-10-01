@@ -67,6 +67,7 @@ registry.register(require('./plugins/stream'));
 registry.register(require('./plugins/live'));
 const LP = require('./liveproto');
 const T = require('./titles');
+const GOALS = require('./goals');
 
 const HERE = __dirname;
 // Config, state, transcripts, log and scratch live in the home folder (home.js:
@@ -930,7 +931,15 @@ const core = {
   get liveHome() { return liveHomeArg(); },
   get claudeDir() { return CLAUDE_DIR; },
   runAgent,
+  goals: (tool, args) => goalStore.call(tool, args),
 };
+
+const goalStore = GOALS.createGoals({
+  dir: HOME.goals,
+  context: () => state.context,
+  streamOptions: () => core.options('stream'),
+  log,
+});
 
 function liveHomeArg() {
   return HOME.source === 'CLAUDE_WOW_HOME' ? HOME.dir : '';
@@ -971,6 +980,8 @@ function stopPlugins() {
 // resuming (the coding plugin: the folder changed). The plugin's own
 // instructions (tools) go into the system prompt; its surfaces say whether the
 // run may mark the map and whether macro blocks in the reply become buttons.
+const IN_GAME_DENIED_TOOLS = LP.GOAL_WRITE_TOOLS;
+
 function runAgent(job, opts = {}) {
   const key = chatKey(job);
   const cwd = opts.cwd || DEFAULT_CWD;
@@ -988,8 +999,8 @@ function runAgent(job, opts = {}) {
   job.agent = agentId;
   const agent = A.AGENTS[agentId];
   const chosen = chatSettings(job);
-  const grantForGood = P.splitGrants(job.allow);
-  const grantOnce = P.splitGrants(job.allowOnce);
+  const grantForGood = P.splitGrants(P.withoutRules(job.allow, IN_GAME_DENIED_TOOLS));
+  const grantOnce = P.splitGrants(P.withoutRules(job.allowOnce, IN_GAME_DENIED_TOOLS));
   if (grantForGood.rules.length) {
     const added = allowRules(agentId, grantForGood.rules);
     log(`${tag} allowed for ${agentId}: ${grantForGood.rules.join(', ')}${added.length ? '' : ' (already allowed)'}`);
@@ -997,7 +1008,7 @@ function runAgent(job, opts = {}) {
   if (grantOnce.rules.length) {
     log(`${tag} allowed for this run only (${agentId}): ${grantOnce.rules.join(', ')}`);
   }
-  const acfg = A.withChatSettings(P.withRunOnlyRules(A.agentConfig(cfg, agentId), grantOnce.rules), agentId, chosen);
+  const acfg = A.withChatSettings(P.withRunDeniedRules(P.withRunOnlyRules(A.agentConfig(cfg, agentId), grantOnce.rules), IN_GAME_DENIED_TOOLS), agentId, chosen);
   const runDirs = [...grantForGood.dirs, ...grantOnce.dirs].map(d => P.resolveCwd(d, DEFAULT_CWD));
   if (runDirs.length) {
     acfg.addDirs = [...new Set([...A.addDirs(acfg), ...runDirs])];
@@ -1095,7 +1106,7 @@ function runAgent(job, opts = {}) {
   if (job.title) nameChat(job, key);
 
   const granted = P.grantsFor(acfg, cwd);
-  const parser = agent.parser({ cwd, granted, isDir: isDirectory });
+  const parser = agent.parser({ cwd, granted, isDir: isDirectory, neverOffer: IN_GAME_DENIED_TOOLS });
   job.activity = ACH.createRunLog(agentId);
   const progress = [];
   let sessionId = resume || '';
@@ -1148,7 +1159,7 @@ function runAgent(job, opts = {}) {
     if (r.session) sessionId = r.session;
     if (r.usage) usage = r.usage;
     for (const p of r.progress) pushProgress(p);
-    for (const d of r.denied) denied.add(d);
+    for (const d of P.withoutRules(r.denied, IN_GAME_DENIED_TOOLS)) denied.add(d);
     if (Array.isArray(r.deniedAgain)) for (const d of r.deniedAgain) deniedAgain.add(d);
     notes.push(...r.notes);
     if (r.done) result = r.done;

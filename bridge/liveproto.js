@@ -3,10 +3,13 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const G = require('./goals');
 
 const SERVER_NAME = 'claude-wow';
 const REPLY_TOOL = 'wow_reply';
-const FULL_REPLY_TOOL = `mcp__${SERVER_NAME}__${REPLY_TOOL}`;
+const fullToolName = tool => `mcp__${SERVER_NAME}__${tool}`;
+const FULL_REPLY_TOOL = fullToolName(REPLY_TOOL);
+const GOAL_WRITE_TOOLS = Object.freeze(G.WRITE_TOOL_NAMES.map(fullToolName));
 const SOCKET_NAME = 'live.sock';
 const TOKEN_NAME = 'live.token';
 const UNIX_PATH_MAX = 103;
@@ -267,7 +270,7 @@ function socketOwnerOnly(file) {
 }
 
 module.exports = {
-  SERVER_NAME, REPLY_TOOL, PASS_TEXT, DEV_FLAG, CHANNELS_FLAG, CHANNEL_ARG, PERMISSION_ID_RE, MAX_LINE, UNIX_PATH_MAX,
+  SERVER_NAME, REPLY_TOOL, FULL_REPLY_TOOL, GOAL_WRITE_TOOLS, fullToolName, PASS_TEXT, DEV_FLAG, CHANNELS_FLAG, CHANNEL_ARG, PERMISSION_ID_RE, MAX_LINE, UNIX_PATH_MAX,
   endpoint, tokenFile, writeToken, readToken, proof, sameProof, nonce, encode, lineReader,
   cleanMeta, channelMeta, channelContent, channelNotification, permissionVerdict, ruleForPermission, permissionPrompt,
   isVerdictJob, startCommand, restartCommand, channelFlagValues, listensToChannel, isPrintMode, sessionListens, commandLine, shellQuote, instructions, replyToolSchema, socketOwnerOnly, homeHash,

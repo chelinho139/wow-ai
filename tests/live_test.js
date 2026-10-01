@@ -175,7 +175,7 @@ test('channel server: initialize declares the channel and permission capabilitie
   assert.equal(pickProtocol('2024-11-05'), '2024-11-05');
   ch.feed(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }) + '\n');
   const list = await until(() => out.lines.find(l => l.id === 2));
-  assert.deepEqual(list.result.tools.map(t => t.name), ['wow_reply']);
+  assert.deepEqual(list.result.tools.map(t => t.name), ['wow_reply', 'goal_set', 'goal_list', 'order_issue']);
   assert.deepEqual(list.result.tools[0].inputSchema.required, ['chat_id', 'text']);
   ch.feed(JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'resources/list' }) + '\n');
   const nope = await until(() => out.lines.find(l => l.id === 3));
@@ -215,6 +215,65 @@ test('bridge to session: a message becomes a channel notification, wow_reply goe
     assert.ok(r.calls.publish >= 1, 'a connect republishes the slot files');
     assert.deepEqual(r.live.status(), ['proj (/work/proj)']);
   } finally { r.cleanup(); }
+});
+
+test('goal tools: the live session calls goal_set, goal_list and order_issue through the bridge socket; the bridge is the only writer', async () => {
+  const G = require('../bridge/goals');
+  const home = tmpHome();
+  const ctx = { text: 'Character: Bone on Forever, level 20 Orc Rogue (Horde)\nProfessions: Skinning 187/225', at: 5 };
+  const posts = [];
+  const store = G.createGoals({ dir: path.join(home, 'goals'), context: () => ctx, streamOptions: () => ({ url: 'http://127.0.0.1:9' }), post: async (url, command) => { posts.push(command); return { ok: true, status: 200 }; } });
+  const r = await rig();
+  r.core.goals = (tool, args) => store.call(tool, args);
+  const call = async (id, name, args) => {
+    r.ch.feed(JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } }) + '\n');
+    return (await until(() => r.out.lines.find(l => l.id === id))).result;
+  };
+  try {
+    await initialize(r.ch, r.out);
+    const set = await call(20, 'goal_set', { profession: 'Skinning', rank: 225 });
+    assert.equal(set.isError, false, set.content[0].text);
+    assert.match(set.content[0].text, /Set the goal "Skinning 225"/);
+    const order = await call(21, 'order_issue', { text: 'Skin 38 more, then train', goalId: 'g_393' });
+    assert.equal(order.isError, false, order.content[0].text);
+    const refused = await call(22, 'order_issue', { text: '/cast Stealth' });
+    assert.equal(refused.isError, true);
+    assert.match(refused.content[0].text, /no slash commands/);
+    const list = JSON.parse((await call(23, 'goal_list', {})).content[0].text);
+    assert.deepEqual(list.goals.map(g => [g.id, g.pct]), [['g_393', 83]]);
+    assert.equal(list.order.text, 'Skin 38 more, then train');
+    assert.deepEqual(posts.at(-1).orders.order, { text: 'Skin 38 more, then train', goal: 'Skinning 225', pct: 83 });
+    const saved = JSON.parse(fs.readFileSync(path.join(home, 'goals', 'Bone-Forever', 'goals.json'), 'utf8'));
+    assert.equal(saved.rev, 2);
+    delete r.core.goals;
+    const none = await call(24, 'goal_list', {});
+    assert.equal(none.isError, true);
+    assert.match(none.content[0].text, /no goal store/);
+  } finally { r.cleanup(); fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('goal tools: a connected session that is not listening on the channel is refused by the bridge', async () => {
+  const r = await rig({ commandLine: () => DEAF });
+  const calls = [];
+  r.core.goals = async (tool, args) => { calls.push(tool); return { ok: true, text: 'done' }; };
+  try {
+    await initialize(r.ch, r.out);
+    r.ch.feed(JSON.stringify({ jsonrpc: '2.0', id: 30, method: 'tools/call', params: { name: 'order_issue', arguments: { text: 'skin 10' } } }) + '\n');
+    const res = (await until(() => r.out.lines.find(l => l.id === 30))).result;
+    assert.equal(res.isError, true);
+    assert.match(res.content[0].text, /only works in a session started with --dangerously-load-development-channels server:claude-wow/);
+    assert.deepEqual(calls, []);
+  } finally { r.cleanup(); }
+});
+
+test('goal tools with no bridge connected do nothing and say so', async () => {
+  const out = fakeStdout();
+  const ch = createChannel({ stdout: out, home: tmpHome(), retryMs: 1000 });
+  ch.feed(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'order_issue', arguments: { text: 'skin 10' } } }) + '\n');
+  const res = await until(() => out.lines.find(l => l.id === 1));
+  assert.equal(res.result.isError, true);
+  assert.match(res.result.content[0].text, /not connected, so order_issue did nothing/);
+  ch.stop();
 });
 
 test('the channel registers with the bridge only once Claude Code has listed its tools', async () => {
@@ -295,7 +354,7 @@ test('listening: a parent started with the channel gets the full server and conn
     assert.deepEqual(init.result.capabilities, { experimental: { 'claude/channel': {}, 'claude/channel/permission': {} }, tools: {} });
     assert.match(init.result.instructions, /wow_reply/);
     ch.feed(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }) + '\n');
-    assert.deepEqual((await until(() => out.lines.find(l => l.id === 2))).result.tools.map(t => t.name), ['wow_reply']);
+    assert.deepEqual((await until(() => out.lines.find(l => l.id === 2))).result.tools.map(t => t.name), ['wow_reply', 'goal_set', 'goal_list', 'order_issue']);
     await until(() => r.live.status().length === 1);
     assert.equal(ch.listening, true);
   } finally { ch.stop(); r.cleanup(); }

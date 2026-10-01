@@ -308,6 +308,18 @@ function withRunOnlyRules(agentCfg, rules) {
   return { ...agentCfg, allowedTools: [...new Set([...current, ...extra])] };
 }
 
+function withRunDeniedRules(agentCfg, rules) {
+  const extra = Array.isArray(rules) ? rules.filter(Boolean) : [];
+  if (!extra.length) return agentCfg;
+  const current = Array.isArray(agentCfg.deniedTools) ? agentCfg.deniedTools : [];
+  return { ...agentCfg, deniedTools: [...new Set([...current, ...extra])] };
+}
+
+function withoutRules(rules, banned) {
+  const blocked = new Set(Array.isArray(banned) ? banned : []);
+  return (Array.isArray(rules) ? rules : []).filter(r => !blocked.has(String(r)));
+}
+
 // ---------------------------------------------------------------------------
 // System prompt (stable) and message prompt (per message)
 // ---------------------------------------------------------------------------
@@ -1150,7 +1162,7 @@ module.exports = {
   alreadyHandled, markHandled, pruneStale, MONTH_MS,
   noteUsage, usageFields, tokensLabel,
   resolveCwd, sameFolder, baseName,
-  parseFlags, PERMISSION_MODES, permissionModeName, ADD_DIRS_MAX, jobsFromStrip, parseOutbox, withRunOnlyRules, systemPrompt, messagePrompt, visionHint, splitSummary,
+  parseFlags, PERMISSION_MODES, permissionModeName, ADD_DIRS_MAX, jobsFromStrip, parseOutbox, withRunOnlyRules, withRunDeniedRules, withoutRules, systemPrompt, messagePrompt, visionHint, splitSummary,
   ruleFor, describeToolUse,
   folderRule, ruleFolder, splitGrants, insideFolder, nearestFolder, denialPath, classifyDenial, grantsFor, deniedAgain, denialNotes,
   luaStr, luaTable, luaSession, SILENT_WAV, TRANSPORTS, DEFAULT_TRANSPORT, transportName, chooseTransport, FALLBACK_REASONS, transportFallback, transportNote, DEFAULT_LEVELS, screenshotLevels, STRIP_CODECS, DEFAULT_STRIP_CODEC, stripCodec, denseLevels,

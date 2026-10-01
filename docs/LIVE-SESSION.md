@@ -154,6 +154,18 @@ session -> wow_reply tool -> channel.js -> socket -> bridge -> slot files -> add
 - Only the local bridge can talk to the channel server. The socket is created with mode `0600`, and the channel server refuses a socket that other users can reach. The bridge writes a fresh random token to `<CLAUDE_WOW_HOME>/live.token` (mode `0600`) on every start. Both sides prove they hold it (HMAC over a nonce) before any message is accepted; the channel server drops every frame from a peer that has not.
 - A chat attached with `/claude -r` goes only to that session. A chat pinned with `/claude config plugin live` sticks to the session it first talked to while that session stays connected; otherwise it goes to the most recently connected session.
 
+## Goals and orders (Phase 0)
+
+A listening session also gets three goal tools from the channel server: `goal_set`, `goal_list` and `order_issue`. The channel server does not touch any file. It forwards each call over the same socket, and the bridge (`bridge/goals.js`) is the only writer.
+
+- **Store:** `<CLAUDE_WOW_HOME>/goals/<Name-Realm>/goals.json`, one file per character, named from the `Character:` line of the last game context (`Bone-ClassicBetaPvP2`). It is written to a temporary file and renamed. A file the bridge cannot read or parse is never overwritten; the tool says so.
+- **Goals:** one type, `profession`, with a target rank. At most 8. The profession must be in the context's `Professions:` line. Names map to skill IDs with the table that mirrors `PROFESSION_SKILL_IDS` in `ClaudeWoW.lua` (English names only; a localized name the table does not know is refused). Progress is the reported rank over the target, read from the latest context on every call, never typed in.
+- **Orders:** one current order and the last 20. The text is at most 90 characters of plain words and numbers. A capitalized word must be the character's name, a profession the game reported, or a word from a short list of plain words (`Skin`, `Then`, `Train` and so on). Zone, NPC and item names are refused until the game-data tokens exist. `wowmacro`, slash commands and `| { } < >` are refused too.
+- **Overlay:** every change POSTs `{"action":"orders","orders":{...}}` to `plugins.stream.url` `/control` (3 s timeout): the current order (text, goal title, goal percent or `null`), up to 3 goals with a known percent, and `asOf` (the context time, epoch ms). `plugins.stream.enabled: false` (sandboxes and e2e runs) sends nothing. A stream service that is down does not undo the write.
+- **In-game runs never get them.** Every agent run the bridge starts from the game passes `--disallowedTools mcp__claude-wow__goal_set mcp__claude-wow__order_issue`. A Need or Greed click cannot grant them, `config.json` never keeps them, and the roll never offers them. The channel server also lists no tools in a `-p` run, and the bridge refuses a goal call from any session that is not listening.
+
+The in-game Orders card is the next step; until then the order shows on the stream overlay only.
+
 ## Configuration
 
 | Key | Default | Meaning |

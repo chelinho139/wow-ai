@@ -272,9 +272,25 @@ function createLive(overrides = {}) {
     core.reply(p.job, LP.permissionPrompt(msg, s.name), [rule]);
   }
 
+  async function onGoalCall(s, msg) {
+    const answer = r => sendTo(s, { type: 'goal_result', call: msg.call, ok: !!(r && r.ok), text: String((r && r.text) || '') });
+    if (!core || typeof core.goals !== 'function') { answer({ ok: false, text: 'This bridge has no goal store.' }); return; }
+    const tool = String(msg.tool || '');
+    if (!s.listening) {
+      log(`${tool} from "${s.name}" refused: the session is not listening on the channel`);
+      answer({ ok: false, text: `${tool} only works in a session started with ${LP.DEV_FLAG} ${LP.CHANNEL_ARG}, never in a -p run.` });
+      return;
+    }
+    let result;
+    try { result = await core.goals(tool, msg.args); } catch (e) { result = { ok: false, text: `${tool} failed: ${e && e.message ? e.message : e}` }; }
+    log(`${tool} from "${s.name}": ${result && result.ok ? 'ok' : 'refused'}`);
+    answer(result);
+  }
+
   function onVerified(s, msg) {
     if (msg.type === 'reply') onReply(s, msg);
     else if (msg.type === 'permission_request') onPermissionRequest(s, msg);
+    else if (msg.type === 'goal_call') onGoalCall(s, msg);
   }
 
   async function detectListening(s) {
