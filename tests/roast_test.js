@@ -270,6 +270,8 @@ test('roast overlay: a run of plain words that is a name in the synced data is r
   const data = fixtureData();
   assert.deepEqual(roast.checkLine(game, outcome('Hogger sent you down the low road.'), data), { text: '', refused: 'game names not in the recap: low road (map)', phrasesNote: '' });
   assert.deepEqual(roast.checkLine(game, outcome('Hogger has quick hands.'), data).refused, 'game names not in the recap: quick hands (spell taught by an item)', 'a spell-book item name gives its spell as a phrase');
+  assert.equal(roast.checkLine(game, outcome('Hogger has quick feet.'), data).refused, 'game names not in the recap: quick feet (spell taught by an item)', 'a rune or tablet names its spell too');
+  assert.equal(roast.checkLine(game, outcome('Hogger made you see the stars.'), data).text, 'Hogger made you see the stars.', 'a rune or tablet remainder that starts with "the" is ordinary English');
   assert.equal(roast.checkLine(game, outcome('Not your lucky day, Hogger won.'), data).text, 'Not your lucky day, Hogger won.', 'item names are not phrases: "Lucky Day" is an item in the fixture data');
   assert.equal(roast.checkLine(game, outcome('That was a test run.'), data).text, 'That was a test run.', 'a junk row such as an area named "Test Run" is not indexed');
   assert.equal(roast.checkLine(game, outcome('Hogger sent you down the low road.'), null).text, 'Hogger sent you down the low road.');
@@ -281,7 +283,8 @@ test('roast overlay: a run of plain words that is a name in the synced data is r
     const job = { id: 15, kind: 'roast', text: game };
     roast.handle(job, core);
     await roast.finished(job, outcome('Hogger sends his regards.'), core);
-    assert.ok(logs.some(l => /#15 roast: No game data is synced for this build yet \(claude-wow data sync\).* Multi-word game names were checked only against the short built-in list\./.test(l)), logs.join('\n'));
+    assert.ok(logs.some(l => /#15 roast: No game data is synced for this build yet \(claude-wow data sync\)\. Multi-word game names were checked only against the short built-in list\.$/.test(l)), logs.join('\n'));
+    assert.ok(!logs.some(l => /try again|reference token/.test(l)), 'a log note carries no instructions meant for a refused text');
     core.gameData = () => data;
     const again = { id: 16, kind: 'roast', text: game };
     roast.handle(again, core);
@@ -302,6 +305,21 @@ test('roast phrases: runs stop at sentence and clause marks but not at a colon o
   assert.equal(check('You got old, town is that way.'), 'You got old, town is that way.');
   assert.equal(check('Next stop: old - town.'), '', 'a dash does not split a name');
   assert.equal(check('Power word: fail.'), '', 'a colon does not split a name');
+  assert.equal(check('Go to Old,Town now.'), '', 'a mark with no space after it does not end the clause');
+  assert.equal(check('You needed Mark,of,the,Wild.'), '');
+  assert.equal(check('Go to old.town now.'), '');
+});
+
+const REMOVED_PHRASES = require('./fixtures/removed-game-phrases.json');
+
+test('phrases removed from the built-in list stay refused by the word check', () => {
+  const G = require('../bridge/goals');
+  const plain = w => roast.ROAST_WORDS.has(w) || G.ORDER_WORDS.has(w);
+  assert.ok(REMOVED_PHRASES.length >= 80);
+  const reopened = REMOVED_PHRASES.filter(p => p.split(' ').every(plain));
+  assert.deepEqual(reopened, [], 'a phrase made only of plain words must go back into bridge/game-phrases.json');
+  const recap = 'Death recap: someone just died somewhere.';
+  for (const p of REMOVED_PHRASES) assert.equal(roast.checkLine(recap, { status: 'done', text: 'x', summary: `You met ${p}.` }).text, '', p);
 });
 
 test('built-in phrase list: every entry is already normalized and made only of words the word check lets through', () => {
@@ -339,7 +357,10 @@ test('real synced data (opt-in, CLAUDE_WOW_HOME with data): ordinary and idiom r
   const check = summary => roast.checkLine(game, { status: 'done', text: 'Roast.', summary }, data);
   const dropped = [...ORDINARY_ROASTS, ...IDIOM_ROASTS].filter(line => check(line).text !== line).map(line => `${line} -> ${check(line).refused}`);
   assert.deepEqual(dropped, [], dropped.join('\n'));
-  for (const line of ['Next time, go to old town.', 'You needed the mark of the wild.', 'A gift of the wild would help.', 'What a gold mine of a clip.']) assert.equal(check(line).text, '', line);
+  for (const line of ['Next time, go to old town.', 'You needed the mark of the wild.', 'A gift of the wild would help.', 'What a gold mine of a clip.',
+    'Should have used chain heal.', 'No victory rush for you.', 'Try water walking next time.', 'That was a raging blow.', 'No healing rain could save you.', 'Far sight would have helped.']) {
+    assert.equal(check(line).text, '', line);
+  }
   assert.equal(check('Hogger sends his regards.').phrasesNote, '', 'the real data indexed cleanly');
 });
 

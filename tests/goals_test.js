@@ -405,7 +405,8 @@ test('order_issue says when the data phrase check was skipped for lack of synced
   try {
     const res = await mismatch.store.call('order_issue', { text: 'take the low road to 150' });
     assert.equal(res.ok, true, res.text);
-    assert.match(res.text, /The synced game data is build 1\.60\.1\.200, which is not in the client's build family \(client 1\.59\.0\.1\)\..* Multi-word game names were checked only against the short built-in list\./, 'the note names the real reason');
+    assert.match(res.text, /The synced game data is build 1\.60\.1\.200, which is not in the client's build family \(client 1\.59\.0\.1\)\. Multi-word game names were checked only against the short built-in list\./, 'the note names the real reason');
+    assert.doesNotMatch(res.text, /try again|reference token/, 'a saved order gets no retry or token advice');
   } finally { mismatch.cleanup(); }
   const synced = rig({ gameData: openFixtureData });
   try {

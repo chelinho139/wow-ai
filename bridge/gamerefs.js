@@ -8,11 +8,21 @@ const MAP_ARGS = /^\s*(\d{1,9})\s*,\s*(\d{1,3}(?:\.\d{1,2})?)\s*,\s*(\d{1,3}(?:\
 const SAFE_NAME = /^[A-Za-z0-9 ,.'\-:!?%]+$/;
 const PHRASE_MIN_WORDS = 2;
 const PHRASE_MAX_WORDS = 4;
-const PHRASE_SOURCES = Object.freeze({ zones: 'area', uimaps: 'map', flightpaths: 'flight path', skilllines: 'skill' });
+const PHRASE_SOURCES = Object.freeze({ uimaps: 'map', skilllines: 'skill', zones: 'area', flightpaths: 'flight path' });
 const PHRASE_TOKEN_FORMS = Object.freeze({ map: '{map:ID,x,y}', skill: '{skill:ID}' });
 const SPELL_ITEM_SOURCE = 'spell taught by an item';
 const BUILT_IN_SOURCE = 'built-in list';
+const SOURCE_NOUNS = Object.freeze({
+  map: 'a map name in the game data',
+  skill: 'a skill name in the game data',
+  area: 'an area name in the game data',
+  'flight path': 'a flight path name in the game data',
+  [SPELL_ITEM_SOURCE]: 'the spell or item a recipe or spell book teaches',
+  [BUILT_IN_SOURCE]: 'a well-known ability, NPC or place name from the built-in list',
+});
 const SPELL_ITEM_PREFIX = /^(?:(?:Book|Tome|Codex|Grimoire|Libram|Manual)(?: of|:)|(?:Recipe|Formula|Pattern|Plans|Schematic):)\s+(.+)$/;
+const RUNE_ITEM_PREFIX = /^(?:Tablet|Rune) of\s+(.+)$/;
+const STOP_WORDS = Object.freeze(new Set(['a', 'an', 'the', 'of', 'and', 'or', 'in', 'on', 'at', 'to', 'for', 'with', 'by', 'from', 'it', 'its', 'is', 'be']));
 const JUNK_NAME = /\b(?:test|not used|no longer used|deprecated|delete me|unused)\b/i;
 const phraseIndexes = new Map();
 const GLUE = /[\p{L}\p{N}{}]/u;
@@ -115,6 +125,12 @@ function createExpander(store) {
   }
 
   return { expand };
+}
+
+function storeProblemShort(reason, store) {
+  if (reason === REASON.noData) return 'No game data is synced for this build yet (claude-wow data sync).';
+  if (reason === REASON.buildMismatch) return `The synced game data is build ${store.build}, which is not in the client's build family (client ${store.clientBuild}).`;
+  return `The game has not reported its client build, so the synced data (build ${store.build}) cannot be checked against it.`;
 }
 
 function storeProblemText(reason, store) {
@@ -225,28 +241,35 @@ function buildPhraseIndex(store) {
     for (const row of store.rows(entity)) add(row.name, source);
   }
   for (const row of store.rows('items')) {
-    const m = SPELL_ITEM_PREFIX.exec(typeof row.name === 'string' ? row.name : '');
-    if (m) add(m[1], SPELL_ITEM_SOURCE);
+    const name = typeof row.name === 'string' ? row.name : '';
+    const book = SPELL_ITEM_PREFIX.exec(name);
+    if (book) { add(book[1], SPELL_ITEM_SOURCE); continue; }
+    const rune = RUNE_ITEM_PREFIX.exec(name);
+    if (rune && !ordinaryRemainder(rune[1])) add(rune[1], SPELL_ITEM_SOURCE);
   }
   return index;
 }
 
+function ordinaryRemainder(text) {
+  const words = phraseWords(text);
+  return words[0] === 'the' || words.every(w => STOP_WORDS.has(w));
+}
+
 function dataPhrases(store) {
   const problem = storeProblem(store);
-  if (problem) return { index: null, note: storeProblemText(problem, store) };
+  if (problem) return { index: null, note: storeProblemShort(problem, store) };
   const key = indexKey(store);
   if (phraseIndexes.has(key)) return { index: phraseIndexes.get(key), note: '' };
   const missing = [...Object.keys(PHRASE_SOURCES), 'items'].filter(entity => !store.has(entity));
+  if (missing.length) return { index: null, note: `The synced game data is missing or has a damaged ${missing.join(', ')} table (claude-wow data sync --force).` };
   const index = buildPhraseIndex(store);
-  const damaged = [...new Set([...missing, ...store.takeMissed().map(m => m.entity)])];
-  if (damaged.length) return { index: null, note: `The synced game data is missing or has a damaged ${damaged.join(', ')} table (claude-wow data sync --force).` };
   phraseIndexes.clear();
   phraseIndexes.set(key, index);
   return { index, note: '' };
 }
 
 function clauses(text) {
-  return String(text).split(/[.!?;,]/);
+  return String(text).split(/[.!?;,](?=\s|$)/);
 }
 
 function refusedPhrases(text, tokens, known, index) {
@@ -303,8 +326,7 @@ function checkText(raw, { store = null, tokens: allowTokens = true, names = [], 
 
 function phraseText(p) {
   const token = PHRASE_TOKEN_FORMS[p.source] ? `; use ${PHRASE_TOKEN_FORMS[p.source]} for it` : '';
-  const article = /^[aeiou]/.test(p.source) ? 'an' : 'a';
-  const what = p.source === BUILT_IN_SOURCE ? 'a well-known ability, NPC or place name from the built-in list' : `${article} ${p.source} name in the game data`;
+  const what = SOURCE_NOUNS[p.source];
   return `"${p.run}" (${what}${token})`;
 }
 

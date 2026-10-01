@@ -8,10 +8,10 @@
   "fetchedAt": "2026-09-30T12:00:00.000Z",
   "tableHash": "fixture-1",
   "entities": {
-    "items": { "file": "items.jsonl", "table": "ItemSparse", "rows": 8 },
+    "items": { "file": "items.jsonl", "table": "ItemSparse", "rows": 10 },
     "skilllines": { "file": "skilllines.jsonl", "table": "SkillLine", "rows": 2 },
     "uimaps": { "file": "uimaps.jsonl", "table": "UiMap", "rows": 4 },
-    "zones": { "file": "zones.jsonl", "table": "AreaTable", "rows": 2 },
+    "zones": { "file": "zones.jsonl", "table": "AreaTable", "rows": 3 },
     "flightpaths": { "file": "flightpaths.jsonl", "table": "TaxiNodes", "rows": 1 }
   }
 }
