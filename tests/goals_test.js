@@ -476,7 +476,7 @@ test('in-game ask runs: goal write tools are denied, a Need roll can never grant
     assert.match(out, /\[ask\]/, out);
     const argv = JSON.parse(fs.readFileSync(argvFile, 'utf8'));
     const homes = [...new Set([home, fs.realpathSync(home)])];
-    const guards = homes.flatMap(h => [`Read(/${h}/live.token)`, `Edit(/${h}/goals/**)`]);
+    const guards = homes.flatMap(h => [P.absolutePathRule('Read', path.join(h, 'live.token')), P.absolutePathRule('Edit', path.join(h, 'goals', '**'))]);
     assert.deepEqual(argList(argv, '--disallowedTools'), [...LP.GOAL_WRITE_TOOLS, ...guards], 'the token and the goal store are off limits by their real path too');
     assert.ok(guards.every(g => /^(Read|Edit)\(\/\/[^/]/.test(g)), 'absolute paths take the // prefix');
     const allowed = argList(argv, '--allowedTools');
