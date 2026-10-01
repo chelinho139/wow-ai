@@ -305,9 +305,9 @@ local function AddChat(name, cwd)
 	local c = {
 		id = NewId(),
 		name = name or ("Chat " .. (#db.chats + 1)),
-		cwd = cwd or (current and current.cwd) or DEFAULT_CWD,
+		cwd = cwd or DEFAULT_CWD,
 		agent = (current and current.agent) or "",
-		plugin = (current and current.plugin) or "", -- "" = the bridge's default plugin
+		plugin = "",
 		history = {},
 		unread = 0,
 		created = time(),
@@ -2939,6 +2939,7 @@ function ClaudeWoW.Send(text, allow, opts)
 		return
 	end
 	if text == "" then return end
+	text = Cli.ProjectTag(c, text)
 	if not ClaudeWoW.IsConnected() then
 		if ui.input then ui.input:SetText(text) end
 		run.sendOnConnect = { chat = c.id, text = text, allow = allow, opts = opts }
@@ -3268,6 +3269,125 @@ function ClaudeWoW.NewChat(name)
 	ClaudeWoW.SwitchChat(c.id)
 	Cli.Show(c)
 	return c
+end
+
+Cli.PROJECTS_MAX = 20
+Cli.NO_PROJECT = "No project"
+
+function Cli.ProjectOf(c)
+	if not c then return "" end
+	if c.cwd and c.cwd ~= "" then return c.cwd end
+	if Cli.ChatPlugin(c) == "claude-code" then return run.bridgeCwd or "" end
+	return ""
+end
+
+function Cli.KnownProjects()
+	local out, seen = {}, {}
+	local function Add(p)
+		if type(p) == "string" and p ~= "" and not seen[p] and #out < Cli.PROJECTS_MAX then
+			seen[p] = true
+			table.insert(out, p)
+		end
+	end
+	for _, p in ipairs(db.settings.projects or {}) do Add(p) end
+	for _, c in ipairs(db.chats) do Add(Cli.ProjectOf(c)) end
+	Add(run.bridgeCwd)
+	return out
+end
+
+function Cli.RememberProject(path)
+	local list = { path }
+	for _, p in ipairs(db.settings.projects or {}) do
+		if p ~= path and #list < Cli.PROJECTS_MAX then table.insert(list, p) end
+	end
+	db.settings.projects = list
+end
+
+function Cli.FindProject(name)
+	name = Trim(tostring(name or ""))
+	if name == "" then return nil end
+	local lower = name:lower()
+	for _, p in ipairs(Cli.KnownProjects()) do
+		if p == name or FolderName(p):lower() == lower then return p end
+	end
+	return nil
+end
+
+function Cli.ProjectNames()
+	local names = {}
+	for _, p in ipairs(Cli.KnownProjects()) do table.insert(names, FolderName(p)) end
+	return #names > 0 and table.concat(names, ", ") or "none yet"
+end
+
+function Cli.IsNoProject(value)
+	value = Trim(tostring(value or "")):lower()
+	return value == "" or value == "none" or value == "-" or value == "default"
+end
+
+function Cli.ResolveProject(value)
+	value = Trim(tostring(value or ""))
+	if Cli.IsNoProject(value) then return "" end
+	return Cli.FindProject(value) or (value:find("[\\/~]") and value) or nil
+end
+
+function Cli.SetProject(c, value)
+	local path = Cli.ResolveProject(value)
+	if not path then return nil, "Unknown project \"" .. tostring(value) .. "\". Known: " .. Cli.ProjectNames() .. ". Or give a folder path." end
+	c.cwd = path
+	if c.plugin ~= "" and c.plugin ~= LIVE_PLUGIN then c.plugin = "" end
+	if path ~= "" then Cli.RememberProject(path) end
+	return path == "" and Cli.NO_PROJECT or FolderName(path)
+end
+
+function Cli.ProjectTag(c, text)
+	for tag in text:gmatch("#([%w%._%-]+)") do
+		local path = Cli.FindProject(tag)
+		if path then
+			if Cli.ProjectOf(c) ~= path then
+				Cli.SetProject(c, path)
+				Cli.Out(c, "project: " .. FolderName(path))
+			end
+			local escaped = ("#" .. tag):gsub("%p", "%%%0")
+			return (text:gsub(escaped, tag, 1))
+		end
+	end
+	return text
+end
+
+function Cli.ProjectLabel(c)
+	local path = Cli.ProjectOf(c)
+	return path == "" and Cli.NO_PROJECT or FolderName(path)
+end
+
+function Cli.PickProject(c, value)
+	local note, err = Cli.SetProject(c, value)
+	Cli.Out(c, err or ("project: " .. note))
+	ClaudeWoW.Render()
+end
+
+function Cli.ProjectMenu(anchor)
+	local c = ActiveChat()
+	if not c then return end
+	if type(MenuUtil) == "table" and type(MenuUtil.CreateContextMenu) == "function" then
+		local shown = pcall(MenuUtil.CreateContextMenu, anchor, function(_, root)
+			root:CreateTitle("Project")
+			root:CreateButton(Cli.NO_PROJECT, function() Cli.PickProject(c, "none") end)
+			for _, p in ipairs(Cli.KnownProjects()) do
+				root:CreateButton(FolderName(p), function() Cli.PickProject(c, p) end)
+			end
+			root:CreateDivider()
+			root:CreateButton("Other folder...", function() ClaudeWoW.FolderPrompt(c.id) end)
+		end)
+		if shown then return end
+	end
+	ClaudeWoW.FolderPrompt(c.id)
+end
+
+function Cli.UpdateProjectButton()
+	local b = ui.projectButton
+	if not b then return end
+	b.text:SetText("Project: |cffffffff" .. Display(Cli.ProjectLabel(ActiveChat())) .. "|r")
+	b:SetWidth(math.max(60, (Try(b.text.GetStringWidth, b.text) or 100) + 8))
 end
 
 -- Folder this chat's agent works in. Empty (or "-" / "default") = the bridge's
@@ -3936,6 +4056,7 @@ end
 
 function ClaudeWoW.Render()
 	local c = ActiveChat()
+	Cli.UpdateProjectButton()
 	if ui.content and c then
 		local width = ui.scroll:GetWidth()
 		if not width or width < 80 then width = 400 end
@@ -4420,7 +4541,7 @@ Q.NAV_TOP = -24
 Q.NAV_H = 34
 Q.LIST_ROW_H = 20
 Q.LIST_HEADER_H = 22
-Q.NO_FOLDER = "No folder"
+Q.NO_FOLDER = "Chats"
 Q.QUEST_ART = {
 	listBg = "QuestLog-main-background",
 	header = "common-button-list-collapseExpand",
@@ -4595,7 +4716,21 @@ function Q.AtlasExists(name)
 	return C_Texture and C_Texture.GetAtlasExists and C_Texture.GetAtlasExists(name) and true or false
 end
 
-Q.CLASSIC_ERA_ART = { parchment = true, gear = true, reply = true }
+Q.CLASSIC_ERA_ART = { parchment = true, reply = true }
+Q.CLASSIC_ERA_GEAR = "Interface\\Icons\\INV_Misc_Gear_01"
+Q.CLASSIC_PARCHMENT = "Interface\\QuestFrame\\UI-QuestGreeting-TopLeft"
+Q.CLASSIC_PARCHMENT_COORDS = { 32 / 256, 248 / 256, 92 / 256, 248 / 256 }
+
+function Q.ClassicParchment(tex)
+	if not Q.IsClassicEra() then return false end
+	local ok = pcall(tex.SetTexture, tex, Q.CLASSIC_PARCHMENT)
+	if not ok then return false end
+	local c = Q.CLASSIC_PARCHMENT_COORDS
+	tex:SetTexCoord(c[1], c[2], c[3], c[4])
+	ui.art = ui.art or {}
+	ui.art.parchment = Q.CLASSIC_PARCHMENT
+	return true
+end
 
 function Q.IsClassicEra()
 	local _, _, _, interface = Try(GetBuildInfo)
@@ -4620,7 +4755,7 @@ function Q.FontObject(name, fallback)
 end
 
 function Q.FolderKey(c)
-	local name = FolderName(ChatFolder(c))
+	local name = FolderName(Cli.ProjectOf(c))
 	return name ~= "" and name or Q.NO_FOLDER
 end
 
@@ -4906,7 +5041,7 @@ function ClaudeWoW.RenderQuestList()
 	local filter = ui.chatFilter or ""
 	local collapsed = db.settings.collapsedFolders or {}
 	local groups, order = {}, {}
-	for _, c in ipairs(db.chats) do
+	for _, c in ipairs(Q.NewestFirst(db.chats)) do
 		local key = Q.FolderKey(c)
 		if not groups[key] then
 			groups[key] = {}
@@ -4914,11 +5049,18 @@ function ClaudeWoW.RenderQuestList()
 		end
 		table.insert(groups[key], c)
 	end
+	for i, key in ipairs(order) do
+		if key == Q.NO_FOLDER and i > 1 then
+			table.remove(order, i)
+			table.insert(order, 1, key)
+			break
+		end
+	end
 	local width = Try(q.scroll.GetWidth, q.scroll) or (Q.LIST_W - 32)
 	if width < 80 then width = Q.LIST_W - 32 end
 	q.content:SetWidth(width)
 	local y, nh, nr, matched, index = 0, 0, 0, 0, 0
-	local last
+	local last, activeTop, activeBottom
 	for _, key in ipairs(order) do
 		local matches = {}
 		for _, c in ipairs(groups[key]) do
@@ -4950,6 +5092,7 @@ function ClaudeWoW.RenderQuestList()
 					r:ClearAllPoints()
 					r:SetPoint("TOPLEFT", q.content, "TOPLEFT", 0, -y)
 					r:Show()
+					if r.active then activeTop, activeBottom = y, y + height end
 					y = y + height
 					last = "row"
 				end
@@ -4962,7 +5105,39 @@ function ClaudeWoW.RenderQuestList()
 	for i = nr + 1, #q.rows do q.rows[i]:Hide() end
 	q.empty:SetShown(filter ~= "" and matched == 0)
 	q.content:SetHeight(math.max(y + Q.PAD_FIRST, 1))
+	if activeTop and q.shownActive ~= db.activeChat then
+		q.shownActive = db.activeChat
+		Q.RevealRow(q, activeTop, activeBottom)
+	end
 	ui.chatCount:SetText("Chats: |cffffffff" .. #db.chats .. "|r")
+end
+
+function Q.NewestFirst(chats)
+	local sorted, rank = {}, {}
+	for i, c in ipairs(chats) do
+		local last = c.history and c.history[#c.history]
+		rank[c] = { t = tonumber(last and last.t) or tonumber(c.created) or 0, i = i }
+		table.insert(sorted, c)
+	end
+	table.sort(sorted, function(a, b)
+		if rank[a].t ~= rank[b].t then return rank[a].t > rank[b].t end
+		return rank[a].i > rank[b].i
+	end)
+	return sorted
+end
+
+function Q.RevealRow(q, top, bottom)
+	local view = Try(q.scroll.GetHeight, q.scroll) or 0
+	if view <= 0 then return end
+	pcall(q.scroll.UpdateScrollChildRect, q.scroll)
+	local current = Try(q.scroll.GetVerticalScroll, q.scroll) or 0
+	local target = current
+	if top < current then
+		target = math.max(0, top - Q.LIST_HEADER_H - Q.PAD_FIRST - Q.PAD_ROW_AFTER_HEADER)
+	elseif bottom > current + view then
+		target = bottom - view
+	end
+	if target ~= current then pcall(q.scroll.SetVerticalScroll, q.scroll, target) end
 end
 
 function Q.ListSettingsMenu(anchor)
@@ -5034,7 +5209,14 @@ function Q.BuildQuestFrames(f)
 	gear:SetPoint("TOPRIGHT", list, "TOPRIGHT", -4, -10)
 	local gearIcon = gear:CreateTexture(nil, "ARTWORK")
 	gearIcon:SetAllPoints()
-	if not Q.SetArt(gearIcon, "gear") then gearIcon:SetTexture("Interface\\Buttons\\UI-OptionsButton") end
+	if not Q.SetArt(gearIcon, "gear") then
+		if Q.IsClassicEra() then
+			gearIcon:SetTexture(Q.CLASSIC_ERA_GEAR)
+			gearIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+		else
+			gearIcon:SetTexture("Interface\\Buttons\\UI-OptionsButton")
+		end
+	end
 	local gearHl = gear:CreateTexture(nil, "HIGHLIGHT")
 	gearHl:SetAllPoints()
 	if Q.SetArt(gearHl, "gear") then
@@ -5121,7 +5303,7 @@ function Q.BuildQuestFrames(f)
 	local paper = parchment:CreateTexture(nil, "BACKGROUND", nil, 1)
 	paper:SetPoint("TOPLEFT", parchment, "TOPLEFT", 3, -3)
 	paper:SetPoint("BOTTOMRIGHT", parchment, "BOTTOMRIGHT", -3, 3)
-	if not Q.SetArt(paper, "parchment") then paper:SetColorTexture(0.80, 0.70, 0.52, 1) end
+	if not Q.SetArt(paper, "parchment") and not Q.ClassicParchment(paper) then paper:SetColorTexture(0.80, 0.70, 0.52, 1) end
 	ui.parchment = parchment
 	ui.transcriptPanel = parchment
 
@@ -5520,6 +5702,26 @@ local function BuildUI()
 	inputBg:SetScript("OnMouseDown", function() input:SetFocus() end)
 	ui.input = input
 
+	local projectButton = CreateFrame("Button", "ClaudeWoWProjectButton", inputBg)
+	projectButton:SetSize(120, 16)
+	projectButton:SetPoint("BOTTOMRIGHT", inputBg, "BOTTOMRIGHT", -6, 4)
+	projectButton:SetFrameLevel((Try(inputBg.GetFrameLevel, inputBg) or 1) + 5)
+	projectButton.text = projectButton:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	projectButton.text:SetPoint("RIGHT", projectButton, "RIGHT", -2, 0)
+	projectButton.text:SetJustifyH("RIGHT")
+	local projectHl = projectButton:CreateTexture(nil, "HIGHLIGHT")
+	projectHl:SetAllPoints()
+	projectHl:SetColorTexture(1, 1, 1, 0.08)
+	projectButton:SetScript("OnClick", function(self) Cli.ProjectMenu(self) end)
+	projectButton:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_TOP")
+		GameTooltip:SetText("Project")
+		GameTooltip:AddLine("The repo this chat works in. No project = a general chat. You can also type #name in a message or use /claude --project <name>.", 0.8, 0.8, 0.8, true)
+		GameTooltip:Show()
+	end)
+	projectButton:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	ui.projectButton = projectButton
+
 	-- Send sits to the right of the input box, vertically centred on it.
 	local send = MakeButton(f, "Send", SEND_W, ClaudeWoW.SendFromInput)
 	send:SetHeight(30)
@@ -5754,6 +5956,7 @@ HELP = table.concat({
 	"/claude -n <name> [text]           name the new chat (--name); with -c it renames the current one",
 	"/claude --model <model> [text]     the model for the chat (opus, sonnet, a full model name)",
 	"/claude --effort <level> [text]    low, medium, high, xhigh or max",
+	"/claude --project <name|path|none> [text]    attach this chat to a repo (or #name in a message); none = a general chat",
 	"/claude --permission-mode <mode>   acceptEdits, auto, plan, manual, dontAsk or bypassPermissions",
 	"/claude --add-dir <path> [text]    one more folder the agent may use (repeat the flag for more)",
 	"/claude --agent <name> [text]      which CLI runs the chat: claude, codex, grok, agy or hermes",
@@ -6158,9 +6361,9 @@ Cli.CLI_FLAGS = {
 	["-n"] = "name", ["--name"] = "name",
 	["-h"] = "help", ["--help"] = "help",
 	["--model"] = "model", ["--effort"] = "effort", ["--permission-mode"] = "permissionMode",
-	["--add-dir"] = "addDir", ["--agent"] = "agent",
+	["--add-dir"] = "addDir", ["--agent"] = "agent", ["--project"] = "project",
 }
-Cli.CLI_VALUE = { name = "required", model = "required", effort = "required", permissionMode = "required", addDir = "required", agent = "required", resume = "optional" }
+Cli.CLI_VALUE = { name = "required", model = "required", effort = "required", permissionMode = "required", addDir = "required", agent = "required", project = "required", resume = "optional" }
 Cli.EFFORTS = { "low", "medium", "high", "xhigh", "max", "minimal" }
 Cli.PERMISSION_MODES = { "acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan" }
 Cli.ADD_DIRS_MAX = 8
@@ -6253,7 +6456,7 @@ function Cli.Canonical(list, v)
 end
 
 function Cli.HasSetters(o)
-	for _, key in ipairs({ "name", "model", "effort", "permissionMode", "agent" }) do
+	for _, key in ipairs({ "name", "model", "effort", "permissionMode", "agent", "project" }) do
 		if type(o[key]) == "string" then return true end
 	end
 	return #o.addDir > 0
@@ -6274,6 +6477,9 @@ function Cli.CheckFlags(o)
 		table.insert(errors, "Unknown agent \"" .. o.agent .. "\". The bridge knows: " .. AgentList() .. ".")
 	end
 	if #o.addDir > Cli.ADD_DIRS_MAX then table.insert(errors, "At most " .. Cli.ADD_DIRS_MAX .. " --add-dir folders.") end
+	if type(o.project) == "string" and not Cli.ResolveProject(o.project) then
+		table.insert(errors, "Unknown project \"" .. o.project .. "\". Known: " .. Cli.ProjectNames() .. ". Or give a folder path.")
+	end
 	return errors
 end
 
@@ -6285,6 +6491,11 @@ end
 function Cli.ApplyChatFlags(c, o)
 	local notes = {}
 	if o.agent ~= nil then ClaudeWoW.SetAgent(o.agent == true and "" or o.agent, c) end
+	if type(o.project) == "string" then
+		table.insert(notes, "project: " .. (Cli.SetProject(c, o.project) or Cli.ProjectLabel(c)))
+	elseif o.project == true then
+		table.insert(notes, "project: " .. Cli.ProjectLabel(c) .. " (known: " .. Cli.ProjectNames() .. ")")
+	end
 	local function Setting(key, label, canonical)
 		if o[key] == nil then return end
 		if o[key] ~= true then

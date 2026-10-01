@@ -343,11 +343,56 @@ test('on Classic Era the window keeps only the atlases that client draws, and pl
   open(vm);
   vm.run('ClaudeWoW.Render()');
   assert.equal(vm.evaluate('ClaudeWoW.UI.art.parchment'), 'QuestBG-Parchment');
-  assert.equal(vm.evaluate('ClaudeWoW.UI.art.gear'), 'questlog-icon-setting');
+  assert.equal(vm.evaluate('ClaudeWoW.UI.art.gear'), 'false', 'the quest-log gear atlas has no image on Era');
+  assert.equal(vm.evaluate('ClaudeWoWChatSettings.textures[1] and ClaudeWoWChatSettings.textures[1].texture'), 'Interface\\Icons\\INV_Misc_Gear_01');
   assert.equal(vm.evaluate('ClaudeWoW.UI.art.filigree'), null, 'no frame edge, so no filigree on top of it');
   for (const key of ['listBg', 'frame', 'header', 'poi', 'rowGlow']) {
     assert.equal(vm.evaluate(`ClaudeWoW.UI.art.${key}`), 'false', `${key} is not drawn on Era`);
   }
+});
+
+test('on Classic Era, where the quest parchment atlas is missing, the transcript uses the Vanilla quest panel parchment', () => {
+  const vm = newVM({ before: NATIVE_TEMPLATES + `
+    function GetBuildInfo() return "1.15.9", "70003", "Sep 1 2026", 11509 end
+    local realExists = C_Texture.GetAtlasExists
+    C_Texture.GetAtlasExists = function(name) if name == "QuestBG-Parchment" then return false end return realExists(name) end` });
+  open(vm);
+  vm.run('ClaudeWoW.Render()');
+  assert.equal(vm.evaluate('ClaudeWoW.UI.art.parchment'), 'Interface\\QuestFrame\\UI-QuestGreeting-TopLeft');
+});
+
+test('general chats sit under Chats at the top, project chats under their project, and the dropdown under the input switches the project', () => {
+  const vm = nativeVM();
+  vm.run('ClaudeWoW.NewChat("Best rogue race"); ClaudeWoWDB.chats[#ClaudeWoWDB.chats].created = 1')
+  vm.run('ClaudeWoW.Render()');
+  assert.equal(shownHeaders(vm).split('|')[0], 'Chats', 'general chats come first, even when a project chat is newer');
+  assert.ok(shownHeaders(vm).split('|').includes('every') && shownHeaders(vm).split('|').includes('wow-ai'));
+  assert.match(vm.evaluate('ClaudeWoWProjectButton.text:GetText()'), /Project: \|cffffffffNo project/);
+  vm.run('ClaudeWoWProjectButton.scripts.OnClick(ClaudeWoWProjectButton)');
+  const items = vm.evaluate('(function() local t = {} for _, it in ipairs(STUB.menu.items) do table.insert(t, it.text) end return table.concat(t, "|") end)()');
+  assert.match(items, /^Project\|No project\|/);
+  assert.ok(items.includes('wow-ai') && items.includes('Other folder...'));
+  vm.run('STUB.Pick("wow-ai")');
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[#ClaudeWoWDB.chats].cwd'), '~/wow-ai');
+  assert.match(vm.evaluate('ClaudeWoWProjectButton.text:GetText()'), /wow-ai/);
+  vm.run('ClaudeWoWProjectButton.scripts.OnClick(ClaudeWoWProjectButton); STUB.Pick("No project")');
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[#ClaudeWoWDB.chats].cwd'), '');
+});
+
+test('the chat list shows the newest chat first and scrolls to the active chat only when it changes', () => {
+  const vm = nativeVM();
+  vm.run('for i = 1, 20 do ClaudeWoW.NewChat() end');
+  vm.run('ClaudeWoW.UI.questList.scroll.height = 200; ClaudeWoW.Render()');
+  const scroll = () => vm.num('ClaudeWoW.UI.questList.scroll:GetVerticalScroll()');
+  const firstRow = () => vm.evaluate('(function() local best for _, r in ipairs(ClaudeWoW.UI.questList.rows) do if r.shown and (not best or r.y > best.y) then best = r end end return best and best.chatId end)()');
+  assert.equal(firstRow(), vm.evaluate('ClaudeWoWDB.chats[#ClaudeWoWDB.chats].id'), 'the newest chat is the top row');
+  assert.equal(scroll(), 0, 'the new chat is already in view at the top');
+  vm.run('ClaudeWoW.SwitchChat(ClaudeWoWDB.chats[1].id)');
+  assert.ok(scroll() > 0, 'the oldest chat, at the bottom, is scrolled into view');
+  vm.run('ClaudeWoW.UI.questList.scroll:SetVerticalScroll(0); ClaudeWoW.Render()');
+  assert.equal(scroll(), 0, 'a render with the same active chat keeps the player\'s scroll');
+  vm.run('ClaudeWoW.UI.questList.scroll:SetVerticalScroll(500); ClaudeWoW.SwitchChat(ClaudeWoWDB.chats[#ClaudeWoWDB.chats].id)');
+  assert.equal(scroll(), 0, 'switching to the newest chat scrolls back to the top');
 });
 
 test('the window is built from Blizzard frame templates where the client has them: portrait, title bar, close button, parchment and a quest-log chat list', () => {

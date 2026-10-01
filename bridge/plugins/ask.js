@@ -37,6 +37,7 @@ const plugin = {
   label: 'Ask',
   tools: TOOLS,
   surfaces: ['map', 'macro', 'ui'],
+  voice: 'player',
   scratchFolder,
   banner: options => `runs the chat's agent in ${scratchFolder(options)} (plugins.ask.cwd), no project`,
   handle(job, core) {

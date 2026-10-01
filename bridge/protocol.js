@@ -388,6 +388,14 @@ const REPLY_FORMAT = [
   'If the whole answer fits in the summary, let the reply be just that one line and the summary. Length is a cost to them, not a sign of effort.',
 ];
 
+const PLAYER_VOICE_FORMAT = [
+  'The player is talking to you from inside World of Warcraft, usually mid-game. Your reply shows as a whisper in their game chat. Markdown is not rendered.',
+  '',
+  'Answer like another player whispering back: one line, as few words as possible. all lowercase. no punctuation at all: no periods, commas, colons, quotes, question marks or exclamation marks. Never restate or mention the question. Never say the same thing twice. No summary line, no TL;DR, no greeting, no sign-off, no offer of more help.',
+  'Casual player chat is wanted where it fits: lol, kek, lmao, idk, bro, hmm, wdyt, fyi, imo, ngl, tbh, np, ty, gl. Do not force one into every reply.',
+  'Numbers stay digits. If you need something from the player, ask it in the same line.',
+  'A macro or a map mark keeps the exact format given below and may follow the line.',
+];
 
 // How the agent draws on the world map (see "Map layers" below and docs/MAP.md).
 // Sent with the game context, since marks only make sense in a game chat.
@@ -430,7 +438,7 @@ const WHERE_HINT = [
 // message. Byte-identical from one run of a chat to the next, which is what
 // lets it be recorded once (Claude Code) and cached (every agent).
 function systemPrompt(ctx, primer, opts) {
-  const lines = [...REPLY_FORMAT];
+  const lines = [...(opts && opts.voice === 'player' ? PLAYER_VOICE_FORMAT : REPLY_FORMAT)];
   const game = !!String(ctx || '').trim();
   const tools = opts && String(opts.tools || '').trim();
   if (tools) lines.push('', tools);

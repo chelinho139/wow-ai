@@ -2032,7 +2032,7 @@ test('taint: /r to an agent taints only the last-tell list; /cast and /gquit typ
   assert.equal(replacedFunctions(vm), '');
 });
 
-test('plugins: a fresh install follows the bridge\'s default and sends no flag; chats from before plugins stay bound to claude-code; a new chat inherits; a restore brings the binding', () => {
+test('plugins: a fresh install follows the bridge\'s default and sends no flag; chats from before plugins stay bound to claude-code; a new chat starts with no project; a restore brings the binding', () => {
   // Fresh saved data: chat 1 is bound to nothing, so a message carries no plugin flag
   // and the bridge routes it to its default (ask).
   const vm = newVM();
@@ -2047,7 +2047,6 @@ test('plugins: a fresh install follows the bridge\'s default and sends no flag; 
   const rec = stripRecords(vm).find(r => r.text === 'what drops the sword');
   assert.equal(rec.flags, 't');
   assert.equal(vm.evaluate('ClaudeWoWDB.outbox.plugin'), null);
-  // A new chat inherits the binding of the chat it was made from, like the folder and the agent.
   vm.run('ClaudeWoW.NewChat("Second")');
   assert.equal(vm.evaluate('ClaudeWoWDB.chats[2].plugin'), '');
   // A restored chat comes back with the plugin the bridge's transcript names.
@@ -2074,7 +2073,8 @@ test('plugins: a fresh install follows the bridge\'s default and sends no flag; 
   old.run('ClaudeWoW.Resend()');
   assert.equal(stripRecords(old).find(r => r.text === 'fix the build').flags, 'plugin=claude-code', 'a resend keeps the binding');
   old.run('ClaudeWoW.NewChat("More code")');
-  assert.equal(old.evaluate('ClaudeWoWDB.chats[2].plugin'), 'claude-code', 'inherited');
+  assert.equal(old.evaluate('ClaudeWoWDB.chats[2].plugin'), '', 'a new chat starts with no project, not the binding of the chat it was made from');
+  assert.equal(old.evaluate('ClaudeWoWDB.chats[2].cwd'), '');
   // A chat unbound later stays unbound after a reload: the migration does not run again.
   old.run('ClaudeWoWDB.chats[2].plugin = ""; STUB.FireEvent("ADDON_LOADED", "ClaudeWoW")');
   assert.equal(old.evaluate('ClaudeWoWDB.chats[2].plugin'), '');
@@ -2814,4 +2814,46 @@ test('a new chat asks the bridge for a title with its first message and takes th
   nextSlot(vm, `{ now = time(), cwd = "", replies = { { chat = "${second}", id = ${id2}, status = "done", text = "ok", agent = "claude", title = "Leveling Zones" } } }`);
   vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
   assert.equal(vm.evaluate('ClaudeWoWDB.chats[#ClaudeWoWDB.chats].name'), 'Mine', 'a name the player chose is kept');
+});
+
+function connectIn(vm, cwd) {
+  vm.run('STUB.RunTimers()');
+  nextSlot(vm, `{ now = time(), cwd = "${cwd}", replies = {} }`);
+  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+  assert.equal(vm.evaluate('ClaudeWoW.IsConnected()'), 'true');
+}
+
+test('projects: a chat has none by default; --project, #name and none attach and detach one, and the wire carries the folder', () => {
+  const vm = newVM();
+  login(vm);
+  connectIn(vm, '/Users/me/every');
+  vm.run('ClaudeWoW.Send("best rogue race")');
+  let rec = stripRecords(vm).find(r => r.text === 'best rogue race');
+  assert.ok(!/plugin=claude-code/.test(rec.flags || ''), 'a general chat is not a coding session');
+  assert.ok(!rec.cwd, 'and sends no folder');
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[1].cwd'), '');
+
+  vm.run('SlashCmdList.CLAUDE("--project every fix the build")');
+  rec = stripRecords(vm).find(r => r.text === 'fix the build');
+  assert.equal(rec.cwd, '/Users/me/every', 'a known project by its name');
+  assert.match(rec.flags, /plugin=claude-code/);
+  assert.equal(vm.evaluate('ClaudeWoWDB.settings.projects[1]'), '/Users/me/every', 'remembered for the dropdown');
+
+  vm.run('SlashCmdList.CLAUDE("--project nope hi")');
+  assert.match(vm.evaluate('ClaudeWoWDB.chats[#ClaudeWoWDB.chats].history[#ClaudeWoWDB.chats[#ClaudeWoWDB.chats].history].text'), /Unknown project "nope"\. Known: every/);
+
+  vm.run('ClaudeWoW.NewChat()');
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[#ClaudeWoWDB.chats].cwd'), '', 'a new chat from a project chat has no project');
+  vm.run('ClaudeWoW.Send("check the #every build")');
+  rec = stripRecords(vm).find(r => r.text === 'check the every build');
+  assert.ok(rec, 'the tag is sent as the plain name');
+  assert.equal(rec.cwd, '/Users/me/every', '#name attaches the project before the message goes out');
+
+  vm.run('ClaudeWoW.NewChat()');
+  vm.run('ClaudeWoW.Send("price #42 and #fun")');
+  rec = stripRecords(vm).find(r => r.text === 'price #42 and #fun');
+  assert.ok(rec && !rec.cwd, 'a tag that names no project is left alone');
+
+  vm.run('SlashCmdList.CLAUDE("-c --project none")');
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[#ClaudeWoWDB.chats].cwd'), '');
 });
