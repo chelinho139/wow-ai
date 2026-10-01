@@ -207,6 +207,7 @@ On the screenshot transport (`capture.mode: "screenshot"`) the game already take
 - The roast listens for deaths and hits only while it is on: `on` registers `PLAYER_DEAD` and the player's `UNIT_COMBAT`, `off` unregisters them.
 - The chat is bound to the bridge's `roast` plugin and runs in the same scratch folder as `ask` (`plugins.roast.cwd` to change it). Type in that chat to talk back.
 - `/claude config roast` shows the state, the cooldown, and why the last death was not roasted.
+- Streaming: each roast is also sent to the stream overlay (`plugins.stream.url`, `/control`, action `roast`) with the TL;DR line and, when the death recap names them, the killer, the ability, the overkill and the zone. `plugins.stream.enabled: false` turns it off with the rest of stream control.
 
 ### Transports
 

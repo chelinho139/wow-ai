@@ -212,6 +212,20 @@ test('roast: the recap comes from the game\'s death recap: attackers, abilities,
   assert.ok(!recap.includes('999'), 'the death recap wins over the UNIT_COMBAT hits');
 });
 
+test('roast: the recorded recap fixtures the bridge tests read are exactly what Roast.lua builds today', () => {
+  const fixtures = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'roast', 'recaps.json'), 'utf8'));
+  for (const [name, f] of Object.entries(fixtures)) {
+    const vm = ready();
+    if (f.target) vm.run(`STUB.names.target = ${JSON.stringify(f.target.name)}; STUB.levels.target = ${f.target.level}`);
+    if (f.deathRecap.length) deathRecap(vm, f.deathRecap, f.maxHealth);
+    for (const h of f.unitCombat) {
+      vm.run(`ClaudeWoWRoast.Record(ClaudeWoWRoast.HitFromUnitCombat(STUB.now - ${h.ago}, "player", "WOUND", ${JSON.stringify(h.flag)}, ${h.amount}, ${h.school}))`);
+    }
+    const recap = vm.evaluate('ClaudeWoWRoast.BuildRecap(STUB.now, ClaudeWoWRoast.ReadRecap(STUB.now))');
+    assert.equal(recap, f.recap, `fixture ${name} drifted from Roast.lua`);
+  }
+});
+
 test('roast: the same death recap is never sent twice, and hidden or secret fields read as unknown', () => {
   const vm = ready();
   hoggerRecap(vm, 600);

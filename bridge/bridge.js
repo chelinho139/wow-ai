@@ -1305,6 +1305,19 @@ function nameChat(job, key) {
   });
 }
 
+function tellPluginFinished(plugin, job, outcome) {
+  if (!plugin || typeof plugin.finished !== 'function') return;
+  if (exitWhenIdle) {
+    log(`${tagOf(job)} ${plugin.id}: finished hook skipped, this bridge exits when idle (--inject or --once)`);
+    return;
+  }
+  const failed = e => log(`${tagOf(job)} ${plugin.id}: finished hook failed (${e && e.message ? e.message : e})`);
+  try {
+    const pending = plugin.finished(job, outcome, core);
+    if (pending && typeof pending.then === 'function') pending.then(null, failed);
+  } catch (e) { failed(e); }
+}
+
 function finish(job, status, text, session, denied) {
   if (job.finished) return; // spawn failures fire both 'error' and 'close'
   const named = titles.get(chatKey(job));
@@ -1341,6 +1354,7 @@ function finish(job, status, text, session, denied) {
   const usage = P.usageFields(job.usage);
   publish(chatKey(job), { chat: job.chat, id: job.id, status, text, summary, cwd: job.cwd, session, denied, macros, agent: job.agent || '', plugin: job.plugin || '', lateOk: status === 'error' && !!job.lateOk, ...usage }, true);
   signal('sig', job.id, true);
+  tellPluginFinished(plugin, job, { status, text, summary });
   const growth = usage.turns ? `, turn ${usage.turns}${usage.ctx ? ', ctx ' + P.tokensLabel(usage.ctx) + (usage.window ? ' of ' + P.tokensLabel(usage.window) : '') : ''}${usage.cost !== undefined ? ', ~$' + usage.cost.toFixed(2) + ' API so far' : ''}` : '';
   log(`#${job.id}${job.session ? '@' + job.session : ''} ${status} (${text.length} chars${summary ? ', summary ' + summary.length : ', no summary'}${growth})`);
   drainQueue();
