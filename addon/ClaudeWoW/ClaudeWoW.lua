@@ -718,7 +718,13 @@ local function TellPlayer(msg)
 	if ui.frame then ClaudeWoW.Render() end
 end
 
-ClaudeWoW.ChatLog = { MISSES_BEFORE_PAUSE = 2, RETRY_SECONDS = 8, FIRST_PAUSE_SECONDS = 600, MAX_PAUSE_SECONDS = 3600 }
+ClaudeWoW.ChatLog = { MISSES_BEFORE_PAUSE = 2, RETRY_SECONDS = 8, SLOW_RETRY_SECONDS = 15, FIRST_PAUSE_SECONDS = 600, MAX_PAUSE_SECONDS = 3600 }
+
+function ClaudeWoW.ChatLog.RetrySeconds()
+	local L = ClaudeWoW.ChatLog
+	if Presence.Channel() and not run.signalUnreliable then return L.RETRY_SECONDS end
+	return L.SLOW_RETRY_SECONDS
+end
 
 function ClaudeWoW.ChatLog.Paused()
 	local pause = run.chatlogPause
@@ -1767,7 +1773,7 @@ local function Tick()
 			if rec.forget then db.forget[rec.forget] = nil end
 			run.outbound[id] = nil
 			changed = true
-		elseif rec.shot == "log" and now - (rec.loggedAt or rec.sentAt) >= ClaudeWoW.ChatLog.RETRY_SECONDS then
+		elseif rec.shot == "log" and now - (rec.loggedAt or rec.sentAt) >= ClaudeWoW.ChatLog.RetrySeconds() then
 			rec.tries = (rec.tries or 1) + 1
 			rec.sentAt = now
 			rec.shot = nil

@@ -352,6 +352,18 @@ test('chat log transport: a hello the bridge never acknowledges is retried by sc
   assert.equal(vm.num('STUB.screenshots'), 1, 'the hello went out again by screenshot');
 });
 
+test('chat log transport: without the sound channel the ack comes from a slot poll, so the screenshot retry waits 15 s', () => {
+  const vm = loggedIn();
+  vm.run('ClaudeWoWDB.settings.signal = false');
+  vm.run('ClaudeWoW.NewChat("Slow"); ClaudeWoW.Send("no sound channel")');
+  vm.run('STUB.now = STUB.now + 9; STUB.Tick()');
+  shotFrames(vm, 2);
+  assert.equal(vm.num('STUB.screenshots'), 0, 'not at 8 s');
+  vm.run('STUB.now = STUB.now + 7; STUB.Tick()');
+  shotFrames(vm, 2);
+  assert.equal(vm.num('STUB.screenshots'), 1, 'at 15 s');
+});
+
 test('chat log transport: an ack on the first try keeps the chat log on after one late ack', () => {
   const vm = loggedIn();
   vm.run('ClaudeWoW.NewChat("One"); ClaudeWoW.Send("late")');
