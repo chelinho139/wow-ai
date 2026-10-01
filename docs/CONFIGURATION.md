@@ -115,6 +115,7 @@ These sizes are baked into the files `install-slots.js` creates, and the addon h
 | `claude-wow service install\|uninstall\|start\|stop\|restart\|status\|logs [-n N] [-f]` | The bridge as a per-user background service that starts at login and comes back after a crash: a LaunchAgent on macOS, a systemd `--user` unit on Linux, a Startup-folder launcher on Windows. `status` exits 0 when running, 3 when not. See [INSTALL.md](INSTALL.md#running-the-bridge). |
 | `claude-wow bridge [...]` | `bridge.js` alone, in this process, with the flags below and no restarts. This is how the supervisor runs the bridge from the compiled binary, which has no node to hand a script path to (`bridge/runtime.js`); it works from a checkout too. |
 | `claude-wow install-slots` | `install-slots.js` alone (setup runs it for you); from the binary, how setup runs it. |
+| `claude-wow data sync [--build <a.b.c.d>] [--force]` | Fetches the Forever client tables from wago.tools (product `wow_cn_beta`, the newest build it lists unless `--build` names one) into `data/forever/<build>/` in the home folder. Nothing runs it on its own yet, and it never starts from game text. A build that is already current is skipped unless `--force`. Exit codes: `0` done, `1` failed (the previous build stays current), `2` usage, `3` another sync holds the lock. See [Game data](#game-data). |
 | `claude-wow --version` | The version and the runtime: `claude-wow 0.4.0 (node 24.21.0)`, `(bun 1.4.2)` or `(claude-wow binary (bun 1.4.2))`. |
 
 Environment: `CLAUDE_WOW_SERVICE=1` is set by the service definitions and tells the supervisor to write its output to the service log and a pid file instead of a terminal; `CLAUDE_WOW_HOME` (below) is passed through to the service when set.
@@ -133,7 +134,7 @@ Exit codes: `0` normal, `1` the injected or one-shot job failed, `2` config miss
 
 | Variable | Meaning |
 |---|---|
-| `CLAUDE_WOW_HOME` | Where `config.json`, `state.json`, `transcripts.json`, `bridge.log`, `tmp/`, `mapjobs/` and `uijobs/` live. Default `~/.claude-wow`; see [Where the bridge keeps its files](#where-the-bridge-keeps-its-files). |
+| `CLAUDE_WOW_HOME` | Where `config.json`, `state.json`, `transcripts.json`, `bridge.log`, `tmp/`, `mapjobs/`, `uijobs/` and `data/` live. Default `~/.claude-wow`; see [Where the bridge keeps its files](#where-the-bridge-keeps-its-files). |
 | `CLAUDE_WOW_PROJECT` | Default working folder, below `--project` and above the start folder in precedence. The old name `WOW_AI_PROJECT` is still read. |
 | `CLAUDE_WOW_MAC_BACKEND` | macOS pixel capture: `native`, `screencapture` or `auto` (`capture_mac.py --backend`). The old name `WOWAI_MAC_BACKEND` is still read. |
 | `CLAUDECODE` | Removed from Claude's environment so a bridge started from inside a Claude Code session can still launch `claude -p`. |
@@ -174,6 +175,29 @@ The bridge's banner prints the folder it chose (`home :`). The one-line installe
 | `~/.claude-wow/mapjobs/` | One map command file per running job (`CLAUDE_WOW_MAP_FILE`), read and deleted when the job ends. Map layers themselves live in `state.json` (`map`). |
 | `~/.claude-wow/bridge.log` | Every line the bridge logs, with timestamps. Rotated by the supervisor at 5 MB (`bridge.log.1` … `.5` kept), so it never grows without bound. Under the background service the bridge's full output (banner, log lines, crashes) also goes to the service log: `~/Library/Logs/claude-wow/bridge.log` on macOS, `$XDG_STATE_HOME/claude-wow/bridge.log` (default `~/.local/state/claude-wow`) on Linux, `%LocalAppData%\claude-wow\logs\bridge.log` on Windows, rotated the same way; `claude-wow service logs` shows whichever applies. |
 | `~/.claude-wow/tmp/` | Prompt files for agents that read the prompt from disk (Grok). Each is deleted when its run ends. |
+| `~/.claude-wow/data/forever/` | Game data from `claude-wow data sync`: one folder per client build, a `current` file naming the build in use, and `.sync.lock` while a sync runs. See [Game data](#game-data). |
+
+## Game data
+
+`claude-wow data sync` caches Blizzard client tables (DB2) for Forever from wago.tools on this machine. The data is never committed to this repository or shipped with a release.
+
+- **Source:** `https://wago.tools/api/builds` lists the builds; each table comes from `https://wago.tools/db2/<Table>/csv?build=<build>`. A table is accepted only when wago.tools names the file `<Table>.<build>.csv`.
+- **Layout:** `data/forever/<build>/` holds one JSON Lines file per entity and a `manifest.json`. A sync writes `<build>.tmp`, renames it into place, then replaces the `current` file. A failed sync deletes its `.tmp` folder and leaves the previous build current.
+
+| File | Table | Fields |
+|---|---|---|
+| `items.jsonl` | `ItemSparse` | `id`, `name`, `quality`, `itemLevel`, `requiredLevel`, `inventoryType`, `sellPrice`, `buyPrice`, `startQuestID` |
+| `quests.jsonl` | `QuestV2` | `id` only. The client tables carry no quest titles or text. |
+| `zones.jsonl` | `AreaTable` | `id`, `name`, `continentID`, `parentAreaID` |
+| `flightpaths.jsonl` | `TaxiNodes` | `id`, `name`, `continentID`, `flags` (raw), `world` (`x`, `y`, `z`), `map`, `maps`, `zoneAmbiguous` |
+| `uimaps.jsonl` | `UiMap` | `id`, `name`, `parentUiMapID`, `type`, `system` |
+| `uimapassignments.jsonl` | `UiMapAssignment` | `id`, `uiMapID`, `mapID`, `areaID`, `orderIndex`, `uiMin`, `uiMax`, `region` |
+| `skilllineabilities.jsonl` | `SkillLineAbility` | `id`, `skillLine`, `spell`, `minSkillRank`, `trivialLow`, `trivialHigh`, `acquireMethod`, `supercedesSpell` |
+| `spellreagents.jsonl` | `SpellReagents` | `id`, `spellID`, `reagents` (`itemID`, `count`) |
+
+- **Checks:** IDs are positive integers, numbers are finite, names are 1 to 120 characters with no control characters and no `|` (spaces at the ends are trimmed). A row that fails is dropped and counted by reason in the manifest (`tables.<Table>.droppedBy`). A table with a missing column, or with no valid row, fails the whole sync.
+- **Map positions:** `maps` lists the flight path's position, in percent, on every world map (`UiMap` system 0 first) whose `UiMapAssignment` rectangle holds it. `map` is the single zone that holds it. When two zone rectangles overlap there (`zoneAmbiguous: true`), `map` is the continent instead, because the rectangles alone cannot say which zone is right.
+- **Builds:** a build string must match `^\d+\.\d+\.\d+\.\d+$` before it is used in a path or a URL. The manifest records `buildFamily` (`1.60.1`), a SHA-256 per table and a combined `tableHash`. A client build in the same family as the data counts as compatible; when the next sync is in the same family, `previous.changedTables` names the tables whose hash changed.
 
 ## `setup.js` flags
 

@@ -1,0 +1,5 @@
+ID,ZoneName,AreaName_lang,ContinentID,ParentAreaID,AreaBit
+7001,FixtureVale,"Fixture Vale",7,0,1
+7002,FixtureTown,"Quote ""Inn""",7,7001,2
+7003,LineBreak,"Line
+Break",7,7001,3

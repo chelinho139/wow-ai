@@ -1,0 +1,5 @@
+ID,Description_lang,Display_lang,OverallQualityID,ItemLevel,RequiredLevel,InventoryType,SellPrice,BuyPrice,StartQuestID
+501,"","Fixture Blade",2,15,10,13,120,600,0
+502,"A note, with a comma","Fixture Letter",1,1,0,0,0,0,101
+503,"",,1,1,0,0,0,0,0
+504,"","Fixture Half",1,1.5,0,0,0,0,0
