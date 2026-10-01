@@ -2063,8 +2063,9 @@ local LINK_BYTES_MAX = 900 -- bytes kept per link
 -- Call a game API that may not exist or may throw, and get its returns or nothing.
 local function Try(fn, ...)
 	if type(fn) ~= "function" then return nil end
-	local ok, a, b, c, d, e, f, g = pcall(fn, ...)
-	if ok then return a, b, c, d, e, f, g end
+	return (function(ok, ...)
+		if ok then return ... end
+	end)(pcall(fn, ...))
 end
 
 local function Money(copper)
