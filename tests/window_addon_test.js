@@ -361,6 +361,24 @@ test('on Classic Era, where the quest parchment atlas is missing, the transcript
   assert.equal(vm.evaluate('ClaudeWoW.UI.art.parchment'), 'Interface\\QuestFrame\\UI-QuestGreeting-TopLeft');
 });
 
+test('general chats sit under Chats at the top, project chats under their project, and the dropdown under the input switches the project', () => {
+  const vm = nativeVM();
+  vm.run('ClaudeWoW.NewChat("Best rogue race"); ClaudeWoWDB.chats[#ClaudeWoWDB.chats].created = 1')
+  vm.run('ClaudeWoW.Render()');
+  assert.equal(shownHeaders(vm).split('|')[0], 'Chats', 'general chats come first, even when a project chat is newer');
+  assert.ok(shownHeaders(vm).split('|').includes('every') && shownHeaders(vm).split('|').includes('wow-ai'));
+  assert.match(vm.evaluate('ClaudeWoWProjectButton.text:GetText()'), /Project: \|cffffffffNo project/);
+  vm.run('ClaudeWoWProjectButton.scripts.OnClick(ClaudeWoWProjectButton)');
+  const items = vm.evaluate('(function() local t = {} for _, it in ipairs(STUB.menu.items) do table.insert(t, it.text) end return table.concat(t, "|") end)()');
+  assert.match(items, /^Project\|No project\|/);
+  assert.ok(items.includes('wow-ai') && items.includes('Other folder...'));
+  vm.run('STUB.Pick("wow-ai")');
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[#ClaudeWoWDB.chats].cwd'), '~/wow-ai');
+  assert.match(vm.evaluate('ClaudeWoWProjectButton.text:GetText()'), /wow-ai/);
+  vm.run('ClaudeWoWProjectButton.scripts.OnClick(ClaudeWoWProjectButton); STUB.Pick("No project")');
+  assert.equal(vm.evaluate('ClaudeWoWDB.chats[#ClaudeWoWDB.chats].cwd'), '');
+});
+
 test('the chat list shows the newest chat first and scrolls to the active chat only when it changes', () => {
   const vm = nativeVM();
   vm.run('for i = 1, 20 do ClaudeWoW.NewChat() end');
