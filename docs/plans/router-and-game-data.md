@@ -14,7 +14,7 @@ Status: draft, revision 3 (2026-09-30). Step 2 is built for wago.tools only (§4
 - No stored NPC data. Sightings is removed by PR #23 (`chore/remove-sightings`), which is a prerequisite and not part of this plan.
 - No transport, map, macro or widget protocol changes.
 - No hosted service. Data is fetched and cached on the user's machine.
-- v1 is **Forever only**. The addon declares `## Interface: 16001` only, so other clients do not load it and never send a `Game:` line. Other flavors wait until the addon supports them.
+- v1 data is **Forever only**. The addon also loads in Classic Era (`## Interface: 11509, 16001`), whose `Game:` line names client 1.15.x. That build is outside the 1.60.1 family, so the wowdata answers are labeled build-mismatch and reference tokens are refused there. A `classic_era` data flavor is a later step.
 
 ## 2. Order of work
 

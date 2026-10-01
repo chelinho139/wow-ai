@@ -1852,8 +1852,15 @@ end
 function ClaudeWoW.TabTalentTrees()
 	local trees = {}
 	local tabs = Try(GetNumTalentTabs)
+	local specInfo = C_SpecializationInfo and C_SpecializationInfo.GetSpecializationInfo
 	for i = 1, (type(tabs) == "number" and tabs or 0) do
-		local tname, _, points = Try(GetTalentTabInfo, i)
+		local tname, points
+		if specInfo then
+			local _, specName, _, _, _, _, spent = Try(specInfo, i)
+			tname, points = specName, spent
+		else
+			tname, _, points = Try(GetTalentTabInfo, i)
+		end
 		if type(tname) == "string" and type(points) == "number" then
 			table.insert(trees, { name = tname, points = points })
 		end
@@ -1873,7 +1880,8 @@ function ClaudeWoW.GameContext()
 	local version, build, _, toc = Try(GetBuildInfo)
 	toc = tonumber(toc)
 	local game = "World of Warcraft"
-	if toc and toc >= 16000 and toc < 20000 then game = "World of Warcraft: Forever" end
+	if toc and toc >= 16000 and toc < 20000 then game = "World of Warcraft: Forever"
+	elseif toc and toc >= 11500 and toc < 11600 then game = "World of Warcraft Classic" end
 	local client = ""
 	if version then
 		client = " (client " .. tostring(version) .. (build and ("." .. tostring(build)) or "") .. (toc and (", interface " .. toc) or "") .. ")"

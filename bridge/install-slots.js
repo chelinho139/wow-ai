@@ -8,6 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const G = require('./gamefs');
 const SIG = require('./signals');
+const P = require('./protocol');
 
 const HOME = require('./home').resolve();
 const cfg = JSON.parse(fs.readFileSync(HOME.config, 'utf8'));
@@ -15,7 +16,7 @@ const addons = cfg.addonDir;
 const N = cfg.slots || 200;
 const ACT = cfg.actMax || SIG.DEFAULT_ACT_MAX;
 const PRESENCE = cfg.presenceMax || SIG.DEFAULT_PRESENCE_MAX;
-const iface = cfg.tocInterface || '16001';
+const iface = cfg.tocInterface || P.TOC_INTERFACE;
 
 if (!fs.existsSync(path.join(addons, 'ClaudeWoW', 'ClaudeWoW.toc'))) {
   console.error('ClaudeWoW addon not found under ' + addons);
@@ -65,7 +66,7 @@ for (const gone of ['absent.wav', 'empty.wav']) {
   if (fs.existsSync(path.join(addons, 'ClaudeWoW', 'ctl', gone)) && G.remove(path.join(addons, 'ClaudeWoW', 'ctl', gone))) cleaned++;
 }
 cleaned += SIG.clearProbes(addons);
-ensure(path.join(addons, 'ClaudeWoW', 'ctl', 'valid.wav'), require('./protocol').SILENT_WAV);
+ensure(path.join(addons, 'ClaudeWoW', 'ctl', 'valid.wav'), P.SILENT_WAV);
 
 const perms = G.repair(addons);
 if (perms.fixed) console.log(`permissions: ${perms.fixed} of ${perms.checked} file(s) and folder(s) under the ClaudeWoW addon folders set to 0777 to match the game install (Battle.net error 2113)`);

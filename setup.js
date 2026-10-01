@@ -186,6 +186,10 @@ function upgradeConfig(cfg, example) {
     cfg.savedVariablesFile = cfg.savedVariablesFile.replace(P.OLD_SAVED_FILE, P.ADDON + '.lua');
     notes.push('savedVariablesFile');
   }
+  if (P.OLD_TOC_INTERFACES.includes(String(cfg.tocInterface || '').trim())) {
+    cfg.tocInterface = P.TOC_INTERFACE;
+    notes.push('tocInterface');
+  }
   if (!cfg.agents) {
     const claude = { ...example.agents.claude };
     if (cfg.claudePath) claude.path = cfg.claudePath;
@@ -200,6 +204,28 @@ function upgradeConfig(cfg, example) {
   return notes;
 }
 
+function processNameFor(client) {
+  const exe = listDir(client).find(f => /^Wow.*\.exe$/i.test(f) || /\.app$/i.test(f));
+  if (!exe) return '';
+  if (process.platform === 'darwin' && exe.toLowerCase().endsWith('.app')) {
+    const macosDir = path.join(client, exe, 'Contents', 'MacOS');
+    try {
+      const bins = listDir(macosDir).filter(f => fs.statSync(path.join(macosDir, f)).isFile());
+      if (bins.length) return bins[0];
+    } catch {}
+  }
+  return exe.replace(/\.exe$/i, '');
+}
+
+function pointAtClient(cfg, client, account) {
+  cfg.addonDir = path.join(client, 'Interface', 'AddOns');
+  cfg.inboxFile = path.join(cfg.addonDir, P.ADDON, 'Inbox.lua');
+  cfg.savedVariablesFile = path.join(client, 'WTF', 'Account', account, 'SavedVariables', P.ADDON + '.lua');
+  const processName = processNameFor(client);
+  if (processName) cfg.capture = { ...(cfg.capture || {}), processName };
+  return cfg;
+}
+
 function writeConfig(client, account) {
   const example = JSON.parse(fs.readFileSync(EXAMPLE, 'utf8'));
   if (fs.existsSync(CONFIG)) {
@@ -211,6 +237,10 @@ function writeConfig(client, account) {
       const want = resolveProject(args.project);
       if (cfg.defaultCwd !== want) { cfg.defaultCwd = want; notes.push('defaultCwd'); }
     }
+    if (args.wow && cfg.addonDir !== path.join(client, 'Interface', 'AddOns')) {
+      pointAtClient(cfg, client, account);
+      notes.push('client');
+    }
     if (notes.length) {
       fs.writeFileSync(CONFIG, JSON.stringify(cfg, null, 2) + '\n');
       console.log(`config   : ${CONFIG} updated (${notes.join(', ')}); everything else kept`);
@@ -220,23 +250,8 @@ function writeConfig(client, account) {
     return cfg;
   }
   const cfg = example;
-  cfg.addonDir = path.join(client, 'Interface', 'AddOns');
-  cfg.inboxFile = path.join(cfg.addonDir, P.ADDON, 'Inbox.lua');
-  cfg.savedVariablesFile = path.join(client, 'WTF', 'Account', account, 'SavedVariables', P.ADDON + '.lua');
+  pointAtClient(cfg, client, account);
   cfg.defaultCwd = args.project ? resolveProject(args.project) : process.cwd();
-  const exe = listDir(client).find(f => /^Wow.*\.exe$/i.test(f) || /\.app$/i.test(f));
-  if (exe) {
-    let processName = exe.replace(/\.exe$/i, '');
-    // macOS: the process name is the executable inside the .app bundle, not the bundle name.
-    if (process.platform === 'darwin' && exe.toLowerCase().endsWith('.app')) {
-      const macosDir = path.join(client, exe, 'Contents', 'MacOS');
-      try {
-        const bins = listDir(macosDir).filter(f => fs.statSync(path.join(macosDir, f)).isFile());
-        if (bins.length) processName = bins[0];
-      } catch {}
-    }
-    cfg.capture.processName = processName;
-  }
   fs.mkdirSync(path.dirname(CONFIG), { recursive: true }); // the home folder, on a fresh install
   fs.writeFileSync(CONFIG, JSON.stringify(cfg, null, 2) + '\n');
   console.log(`config   : wrote ${CONFIG}`);
@@ -387,4 +402,4 @@ Done. Next:
 // Run as a script this is the installer; required (tests/setup_test.js) it only
 // lends out the pieces, the migration above all.
 if (require.main === module) main();
-module.exports = { migrateOldInstall, migrateSavedData, copyAddon, upgradeConfig, isClient, parseArgs, transportReport, main };
+module.exports = { migrateOldInstall, migrateSavedData, copyAddon, upgradeConfig, pointAtClient, isClient, parseArgs, transportReport, main };

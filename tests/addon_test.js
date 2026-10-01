@@ -281,6 +281,34 @@ test('the talents line falls back to the old talent-tab functions when there are
   assert.equal(talentsLine(vm), 'Talents: Combat 3 / Subtlety 1');
 });
 
+test('on Classic Era the talents line reads names and points from GetSpecializationInfo, not the reordered GetTalentTabInfo shim', () => {
+  const vm = newVM();
+  login(vm);
+  vm.run(`
+    C_SpecializationInfo.GetCombatConfigIDForSpecGroup = nil
+    function GetNumTalentTabs() return 3 end
+    local tabs = { { 161, "Assassination", 0 }, { 182, "Combat", 14 }, { 183, "Subtlety", 5 } }
+    C_SpecializationInfo.GetSpecializationInfo = function(i)
+      local t = tabs[i]
+      return t[1], t[2], "description", 132292, nil, nil, t[3], "background", 0, true
+    end
+    function GetTalentTabInfo(i)
+      local t = tabs[i]
+      return t[1], t[2], "description", 132292, t[3], "background", 0, true
+    end
+  `);
+  assert.equal(talentsLine(vm), 'Talents: Assassination 0 / Combat 14 / Subtlety 5');
+});
+
+test('the Game line names Classic Era by its interface number', () => {
+  const vm = newVM();
+  login(vm);
+  vm.run('function GetBuildInfo() return "1.15.9", "70003", "Sep 1 2026", 11509 end');
+  assert.equal(vm.evaluate('ClaudeWoW.GameContext()').split('\n')[0], 'Game: World of Warcraft Classic (client 1.15.9.70003, interface 11509)');
+  vm.run('function GetBuildInfo() return "12.1.0", "69933", "Sep 1 2026", 120100 end');
+  assert.equal(vm.evaluate('ClaudeWoW.GameContext()').split('\n')[0], 'Game: World of Warcraft (client 12.1.0.69933, interface 120100)');
+});
+
 test('with no talent API at all, or one that errors, there is no talents line and the context still builds', () => {
   const vm = newVM();
   login(vm);
