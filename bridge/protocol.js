@@ -950,6 +950,10 @@ function parseMapFile(src) {
   return { cmds, errors };
 }
 
+function mapInSlots({ now, shareUntil, held, urgent, size, progressMax }) {
+  return (now < shareUntil || held === true) && (urgent || size <= progressMax);
+}
+
 function luaMap(map) {
   const lines = ['\tmap = {', `\t\tepoch = ${luaStr(map.epoch)},`, `\t\tversion = ${Number(map.version) || 0},`, '\t\tlayers = {'];
   for (const [name, l] of Object.entries(map.layers || {})) {
@@ -1187,7 +1191,7 @@ module.exports = {
   ruleFor, describeToolUse,
   folderRule, ruleFolder, splitGrants, insideFolder, nearestFolder, denialPath, classifyDenial, grantsFor, deniedAgain, denialNotes,
   luaStr, luaTable, luaSession, SILENT_WAV, TRANSPORTS, DEFAULT_TRANSPORT, transportName, chooseTransport, FALLBACK_REASONS, transportFallback, transportNote, DEFAULT_LEVELS, screenshotLevels, STRIP_CODECS, DEFAULT_STRIP_CODEC, stripCodec, denseLevels,
-  MAP_LIMITS, validateMapCommand, newMap, applyMapCommands, extractMapBlocks, parseMapFile, luaMap,
+  MAP_LIMITS, validateMapCommand, newMap, applyMapCommands, extractMapBlocks, parseMapFile, luaMap, mapInSlots,
   MACRO_LIMITS, extractMacros, stripMacroBlocks, luaMacros,
   WIDGET_LIMITS, WIDGET_DENIED_NAMES, WIDGET_RESTRICTED_EVENTS, deniedWidgetCalls, validateWidgetCommand, newWidgetSet, applyWidgetCommands,
   extractWidgetBlocks, parseWidgetFile, luaWidgets, widgetRevision,

@@ -75,6 +75,8 @@ const T = require('./titles');
 const GOALS = require('./goals');
 const TL = require('./telemetry');
 const VOTES = require('./votes');
+const OB = require('./observed');
+const OT = require('./observedtools');
 
 const HERE = __dirname;
 // Config, state, transcripts, log and scratch live in the home folder (home.js:
@@ -256,10 +258,12 @@ for (const [k, v] of Object.entries(state.handled)) {
 }
 
 const TELEMETRY_ON = TL.telemetryEnabled(cfg.telemetry);
+const observed = OB.createObserved({ dir: HOME.goals, log });
 const telemetry = TL.createTelemetry({
   dir: HOME.goals,
   log,
   watch: () => TL.watchFrom(cfg.telemetry),
+  observed,
 });
 
 // Bridge-side transcripts. The beta client sometimes wipes addon saved data; since
@@ -453,6 +457,24 @@ function mapLuaSize() {
   return mapLuaCache.text.length;
 }
 
+function applyToolMap(cmds) {
+  const { changed, notes } = P.applyMapCommands(state.map, cmds);
+  if (changed) {
+    state.mapHeldForGame = true;
+    saveState();
+    log(`map: ${notes.join('; ')} (version ${state.map.version}), kept in the slot files until the game sends its next record`);
+    publishNow(true, { refresh: true });
+  }
+  return { changed, notes };
+}
+
+function releaseHeldMap() {
+  if (!state.mapHeldForGame) return;
+  state.mapHeldForGame = false;
+  mapShareUntil = Date.now() + MAP_SHARE_MS;
+  saveState();
+}
+
 function mapFileFor(job) {
   return path.join(MAP_DIR, `${String(job.chat || 'default').replace(/[^\w-]/g, '_')}-${job.id}.jsonl`);
 }
@@ -512,7 +534,7 @@ function takeWidgetCommands(job, text) {
 
 // Slot file / Inbox.lua body: see protocol.luaTable.
 function slotFile(globalName, records, urgent = true) {
-  const map = Date.now() < mapShareUntil && (urgent || mapLuaSize() <= MAP_PROGRESS_MAX) ? state.map : null;
+  const map = P.mapInSlots({ now: Date.now(), shareUntil: mapShareUntil, held: state.mapHeldForGame, urgent, size: mapLuaSize(), progressMax: MAP_PROGRESS_MAX }) ? state.map : null;
   const widgets = Date.now() < widgetShareUntil && (urgent || widgetSourceBytes() <= WIDGET_PROGRESS_MAX) ? state.widgets : null;
   const transportNote = TRANSPORT_SOURCE === 'fallback' ? P.transportNote(state.transportFallback) : '';
   const achievementsLua = ACHIEVEMENTS_ON ? ACH.luaAchievements(state) : '';
@@ -864,6 +886,7 @@ function submit(job) {
     saveState();
     signal('ack', job.id, true);
     maybeOfferRestore(job);
+    releaseHeldMap();
     // Even an empty set: a client holding layers from a reset bridge must drop them.
     mapShareUntil = Date.now() + MAP_SHARE_MS;
     widgetShareUntil = Date.now() + WIDGET_SHARE_MS;
@@ -871,6 +894,7 @@ function submit(job) {
     log(`hello from session ${job.session}${pendingRestore ? ' (restore offered)' : ''}`);
     return;
   }
+  releaseHeldMap();
   const key = chatKey(job);
   const cur = running.get(key);
   if (cur && cur.job.id === job.id) return;
@@ -984,7 +1008,7 @@ const core = {
   get liveHome() { return liveHomeArg(); },
   get claudeDir() { return CLAUDE_DIR; },
   runAgent,
-  goals: (tool, args) => goalStore.call(tool, args),
+  goals: (tool, args) => (OT.TOOL_NAMES.includes(tool) ? observedTools.call(tool, args) : goalStore.call(tool, args)),
   gameData: () => GR.openFor(HOME.data, (state.context && state.context.text) || ''),
   agentPids: () => [...running.values()].map(r => r.child).concat(T.titleChildren()).filter(Boolean).map(c => c.pid),
 };
@@ -1002,6 +1026,16 @@ const goalStore = GOALS.createBridgeGoals({
   onChange: () => publishNow(true, { refresh: true }),
   equipped: TL.equippedReader(telemetry, TELEMETRY_ON),
   votes: voteBox,
+  log,
+});
+
+const observedTools = OT.createObservedTools({
+  observed,
+  context: () => state.context,
+  gameData: contextText => {
+    try { return GR.openFor(HOME.data, contextText || ''); } catch (e) { log(`observed tools: cannot open the synced game data (${e.message})`); return null; }
+  },
+  applyMap: applyToolMap,
   log,
 });
 

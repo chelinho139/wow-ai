@@ -19,3 +19,4 @@ Orders.lua
 Widgets.lua
 Window.lua
 Telemetry.lua
+Observed.lua

@@ -19,6 +19,7 @@ import addonOrders from '../addon/ClaudeWoW/Orders.lua' with { type: 'file' };
 import addonWidgets from '../addon/ClaudeWoW/Widgets.lua' with { type: 'file' };
 import addonWindow from '../addon/ClaudeWoW/Window.lua' with { type: 'file' };
 import addonTelemetry from '../addon/ClaudeWoW/Telemetry.lua' with { type: 'file' };
+import addonObserved from '../addon/ClaudeWoW/Observed.lua' with { type: 'file' };
 import addonBindings from '../addon/ClaudeWoW/Bindings.xml' with { type: 'file' };
 import addonPortrait from '../addon/ClaudeWoW/Portrait.tga' with { type: 'file' };
 import capturePs1 from '../bridge/capture.ps1' with { type: 'file' };
@@ -42,6 +43,7 @@ require('../bridge/assets').embed({
   'addon/ClaudeWoW/Widgets.lua': addonWidgets,
   'addon/ClaudeWoW/Window.lua': addonWindow,
   'addon/ClaudeWoW/Telemetry.lua': addonTelemetry,
+  'addon/ClaudeWoW/Observed.lua': addonObserved,
   'addon/ClaudeWoW/Bindings.xml': addonBindings,
   'addon/ClaudeWoW/Portrait.tga': addonPortrait,
   'bridge/capture.ps1': capturePs1,

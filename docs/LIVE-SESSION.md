@@ -191,6 +191,16 @@ The current order also shows in the game, on a card under the quest tracker (`ad
 - **Look:** the objective tracker's module header (`ObjectiveTrackerModuleHeaderTemplate`), its progress bars (`ObjectiveTrackerProgressBarTemplate`), `ObjectiveTrackerHeaderFont` and `ObjectiveTrackerLineFont`. Each is checked with `C_XMLUtil.GetTemplateInfo` or `C_Texture.GetAtlasExists` and has a plain fallback. The card anchors under the tracker's background and moves when the tracker hides.
 - **Player control:** `/claude orders on|off` (or `/claude config orders`) and **Show the Orders card** in the chat list's gear menu. The header's button collapses it. Both settings are booleans in `ClaudeWoWDB.settings`. The card sends nothing and runs nothing.
 
+## Observed data and routes (Phase 2)
+
+The same channel server lists three more tools, forwarded the same way: `farm_spot_lookup`, `market_price` and `route_draw`. The bridge answers them (`bridge/observedtools.js`); only `route_draw` writes.
+
+- **Data:** only what the game reported to this bridge, in `goals/<Name-Realm>/observed.jsonl` ([ARCHITECTURE.md](ARCHITECTURE.md#game-state-records-kindgs)): vendor windows and auction search results the player opened, and loot windows. A line whose `trust` is not `observed` is skipped, so a web or hand-written price or rate never backs a number. Item and map names come from the synced Forever data through the same token expander `order_issue` uses; an item ID or map ID the data does not have, or no synced data for the client's build family, refuses the call. NPC and object sources come back as IDs (`{npc:ID}`) with `name: null`: no verified name source exists yet.
+- **`farm_spot_lookup {itemID}`:** for each loot source (NPC, gathering object, or fishing in a zone, and the spell cast just before the window when there was one), the drop rate `k/n` over the loot windows of that source, the mean quantity, `n`, `asOf` and up to 3 maps with the mean observed spot (`trust: "observed"`). Sources are never added together. A source with fewer than 10 loot windows shows only its `n`. A kill whose corpse was never opened is not a sample, so a rate is per loot window, not per kill (the client has no kill source).
+- **`market_price {itemID}`:** the auction prices from searches the player ran (latest, low, high, `n`, `asOf`, copper per item) and the vendors seen selling it (price, stack, `n`, `asOf`). The bridge and the addon never search the auction house.
+- **`route_draw {points, loop?, clear?}`:** 1 to 40 `{map:ID,x,y}` tokens, checked against the synced uimaps; one bad point refuses the whole route. The bridge draws one ordered layer, `claude-route`, titled "<map name> route, model estimate", each stop labeled "Stop N of M, model estimate": the x and y are the model's and are never shown as fact. The bridge applies the route itself, republishes the slot files and keeps the map in them until the game sends its next message or hello ([MAP.md](MAP.md)); no slot is loaded for it. Advice only: a pin moves nothing.
+- **In-game runs:** `route_draw` is in the same `--disallowedTools` list as `goal_set` and `order_issue`, so a Need roll can never grant it. The two lookups are not offered to in-game runs (the channel server lists no tools in a `-p` run).
+
 ## Configuration
 
 | Key | Default | Meaning |
