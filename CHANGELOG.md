@@ -4,6 +4,10 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+### Added
+
+- Goals and orders, Phase 0 (`bridge/goals.js`). A live Claude Code session gets `goal_set`, `goal_list` and `order_issue` from the channel server; each call goes over the bridge socket, and the bridge alone writes `<CLAUDE_WOW_HOME>/goals/<Name-Realm>/goals.json` (atomic rename). One goal type: a profession rank, at most 8, progress read from the game context. One current order plus the last 20. The order text is an allowlist: NFKC-normalized, only `A-Z a-z 0-9`, space and `, . ' - : ! ? %`, and every word (any case) must be a number, the character, a reported profession or a plain word from `bridge/order-words.json`, so no zone, NPC, item or quest name, slash command or macro gets through. An order needs a game context confirmed in the last 15 minutes. Each change is pushed to the stream overlay as `{"action":"orders",...}` on `plugins.stream.url`, with `asOf` from the context (never the current time). In-game Claude runs get `--disallowedTools` for the two write tools, `Read` of `live.token` and `Edit` of `goals/`; a Need roll can never grant, keep or offer the goal tools. The bridge refuses a goal call whose channel pid is not a child of its Claude Code pid or runs under an agent run. Shell access granted to an in-game run can still reach both files. See docs/LIVE-SESSION.md.
+
 ### Removed
 
 - NPC sightings. The addon no longer records NPC or flight-master spots (`ClaudeWoWNpcDB`) or adds an "NPCs seen on this map" line to the situation block, and the agent no longer gets `CLAUDE_WOW_SAVED_VARIABLES`. The saved table drops out of the SavedVariables file at the next logout.

@@ -4,6 +4,7 @@
 const net = require('net');
 const path = require('path');
 const LP = require('./liveproto');
+const G = require('./goals');
 
 const PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const REPLY_TIMEOUT_MS = 15000;
@@ -105,7 +106,7 @@ function createChannel(opts) {
       notify(LP.channelNotification(msg.content, msg.meta));
     } else if (msg.type === 'permission' && LP.PERMISSION_ID_RE.test(String(msg.request_id || ''))) {
       notify(LP.permissionVerdict(msg.request_id, msg.behavior === 'allow'));
-    } else if (msg.type === 'reply_result' && calls.has(msg.call)) {
+    } else if ((msg.type === 'reply_result' || msg.type === 'goal_result') && calls.has(msg.call)) {
       const c = calls.get(msg.call);
       calls.delete(msg.call);
       clearTimeout(c.timer);
@@ -143,21 +144,34 @@ function createChannel(opts) {
     });
   }
 
+  function askBridge(msg, texts) {
+    const call = nextCall++;
+    return new Promise(resolve => {
+      const timer = setTimeout(() => { calls.delete(call); resolve({ ok: false, text: texts.timeout }); }, replyTimeoutMs);
+      if (timer.unref) timer.unref();
+      calls.set(call, { resolve, timer });
+      if (!toBridge({ ...msg, call })) {
+        clearTimeout(timer);
+        calls.delete(call);
+        resolve({ ok: false, text: texts.offline });
+      }
+    });
+  }
+
   function reply(args) {
     const chatId = String((args && args.chat_id) || '').trim();
     const text = String((args && args.text) || '').trim();
     if (!chatId || !text) return Promise.resolve({ ok: false, text: 'wow_reply needs chat_id and text.' });
-    const call = nextCall++;
-    return new Promise(resolve => {
-      const timer = setTimeout(() => { calls.delete(call); resolve({ ok: false, text: 'The claude-wow bridge did not confirm the reply in time.' }); }, replyTimeoutMs);
-      if (timer.unref) timer.unref();
-      calls.set(call, { resolve, timer });
-      const sent = toBridge({ type: 'reply', call, chat_id: chatId, message_id: String((args && args.message_id) || ''), text });
-      if (!sent) {
-        clearTimeout(timer);
-        calls.delete(call);
-        resolve({ ok: false, text: 'The claude-wow bridge is not connected, so the reply was not delivered. Is the bridge running?' });
-      }
+    return askBridge({ type: 'reply', chat_id: chatId, message_id: String((args && args.message_id) || ''), text }, {
+      timeout: 'The claude-wow bridge did not confirm the reply in time.',
+      offline: 'The claude-wow bridge is not connected, so the reply was not delivered. Is the bridge running?',
+    });
+  }
+
+  function goalCall(tool, args) {
+    return askBridge({ type: 'goal_call', tool, args: args && typeof args === 'object' ? args : {} }, {
+      timeout: `The claude-wow bridge did not answer ${tool} in time.`,
+      offline: `The claude-wow bridge is not connected, so ${tool} did nothing. Is the bridge running?`,
     });
   }
 
@@ -179,12 +193,13 @@ function createChannel(opts) {
       if (!(await listeningKnown)) return { tools: [] };
       toolsListed = true;
       setImmediate(maybeReady);
-      return { tools: [LP.replyToolSchema()] };
+      return { tools: [LP.replyToolSchema(), ...G.toolSchemas()] };
     }
     if (method === 'tools/call') {
       const tool = params && params.name;
-      if (tool !== LP.REPLY_TOOL || !(await listeningKnown)) return { content: [{ type: 'text', text: `Unknown tool: ${tool}` }], isError: true };
-      const r = await reply(params.arguments || {});
+      const known = tool === LP.REPLY_TOOL || G.TOOL_NAMES.includes(tool);
+      if (!known || !(await listeningKnown)) return { content: [{ type: 'text', text: `Unknown tool: ${tool}` }], isError: true };
+      const r = tool === LP.REPLY_TOOL ? await reply(params.arguments || {}) : await goalCall(tool, params.arguments);
       return { content: [{ type: 'text', text: r.text || (r.ok ? 'sent' : 'not sent') }], isError: !r.ok };
     }
     const err = new Error(`Method not found: ${method}`);
