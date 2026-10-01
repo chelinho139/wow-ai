@@ -72,6 +72,7 @@ const LP = require('./liveproto');
 const T = require('./titles');
 const GOALS = require('./goals');
 const TL = require('./telemetry');
+const VOTES = require('./votes');
 
 const HERE = __dirname;
 // Config, state, transcripts, log and scratch live in the home folder (home.js:
@@ -407,6 +408,7 @@ function shutdown(sig) {
   if (shuttingDown) return;
   shuttingDown = true;
   stopPlugins();
+  try { voteBox.stop(); } catch {}
   const kids = [...running.values()].map(r => r.child).concat(T.titleChildren()).filter(Boolean);
   if (captureChild) kids.push(captureChild);
   const n = kids.filter(PR.alive).length;
@@ -981,11 +983,24 @@ const core = {
   agentPids: () => [...running.values()].map(r => r.child).concat(T.titleChildren()).filter(Boolean).map(c => c.pid),
 };
 
+const voteBox = VOTES.createVotes({
+  config: () => cfg.votes,
+  streamOptions: () => core.options('stream'),
+  log,
+});
+
+function equippedItems(characterKey) {
+  const section = telemetry.snapshot(characterKey).sections.equip;
+  return section ? section.value.slots : null;
+}
+
 const goalStore = GOALS.createBridgeGoals({
   home: HOME,
   context: () => state.context,
   streamOptions: () => core.options('stream'),
   onChange: () => publishNow(true, { refresh: true }),
+  equipped: equippedItems,
+  votes: voteBox,
   log,
 });
 

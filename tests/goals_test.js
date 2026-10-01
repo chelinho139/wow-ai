@@ -200,7 +200,7 @@ test('goal_set refuses what it cannot track: an unreported profession, a bad ran
     await refuse({ profession: 'Skinning', rank: 0 }, /rank must be a whole number/);
     await refuse({ profession: 'Skinning', rank: 12.5 }, /rank must be a whole number/);
     await refuse({ profession: 'Skinning', rank: G.TARGET_RANK_LIMIT + 1 }, /rank must be a whole number/);
-    await refuse({ type: 'gold', profession: 'Skinning', rank: 5 }, /Only "profession" goals/);
+    await refuse({ type: 'gold', profession: 'Skinning', rank: 5 }, /Goal types: "profession", "gearset"/);
     await refuse({ rank: 5 }, /needs profession/);
     assert.equal(fs.existsSync(r.file), false, 'nothing was written');
     assert.equal(r.posts.length, 0, 'nothing was pushed');
@@ -607,14 +607,14 @@ test('display push: stream off never posts, and a stream service that is down do
   } finally { down.cleanup(); }
 });
 
-test('MCP tool schemas: goal_set, goal_list and order_issue; only the two writers are denied to in-game runs', () => {
-  assert.deepEqual(G.toolSchemas().map(t => t.name), ['goal_set', 'goal_list', 'order_issue']);
+test('MCP tool schemas: goal_set, goal_list, order_issue and the two vote tools; every writer is denied to in-game runs', () => {
+  assert.deepEqual(G.toolSchemas().map(t => t.name), ['goal_set', 'goal_list', 'order_issue', 'goal_vote_open', 'goal_vote_close']);
   assert.equal(G.toolSchemas()[2].inputSchema.properties.text.maxLength, GR.TOKEN_TEXT_MAX, 'raw text may carry tokens; the 90-character cap applies after expansion');
   assert.match(G.toolSchemas()[2].description, /\{item:ID\}, \{skill:ID\} or \{map:ID,x,y\}/);
   assert.match(G.toolSchemas()[2].description, /never from memory or Classic/);
-  assert.deepEqual(LP.GOAL_WRITE_TOOLS, ['mcp__claude-wow__goal_set', 'mcp__claude-wow__order_issue']);
+  assert.deepEqual(LP.GOAL_WRITE_TOOLS, ['mcp__claude-wow__goal_set', 'mcp__claude-wow__order_issue', 'mcp__claude-wow__goal_vote_open', 'mcp__claude-wow__goal_vote_close']);
   const acfg = P.withRunDeniedRules({ allowedTools: ['WebSearch'], deniedTools: ['Bash(rm:*)'] }, LP.GOAL_WRITE_TOOLS);
-  assert.deepEqual(acfg.deniedTools, ['Bash(rm:*)', 'mcp__claude-wow__goal_set', 'mcp__claude-wow__order_issue']);
+  assert.deepEqual(acfg.deniedTools, ['Bash(rm:*)', ...LP.GOAL_WRITE_TOOLS]);
   assert.deepEqual(P.withoutRules(['WebSearch', 'mcp__claude-wow__order_issue'], LP.GOAL_WRITE_TOOLS), ['WebSearch']);
   assert.equal(P.absolutePathRule('Read', '/Users/me/.claude-wow/live.token'), 'Read(//Users/me/.claude-wow/live.token)');
   assert.equal(P.absolutePathRule('Edit', 'C:\\Users\\me\\.claude-wow\\goals\\**'), 'Edit(//c/Users/me/.claude-wow/goals/**)');
