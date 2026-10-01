@@ -20,6 +20,15 @@
     "unitCombat": [],
     "recap": "Death recap: a level 23 Night Elf Hunter just died in Duskwood - Darkshire.\nLast hits from the game's death recap, oldest first:\n-2.0s something unseen: Backstab 20\n-0.0s the environment: Falling 180, overkill 60 <- killing blow\nDamage taken: 200 from 2 sources. Killing blow: the environment's Falling. Max health: 180."
   },
+  "environmentNoType": {
+    "target": null,
+    "maxHealth": 180,
+    "deathRecap": [
+      { "timestamp": 700, "event": "ENVIRONMENTAL_DAMAGE", "amount": 180, "overkill": 40 }
+    ],
+    "unitCombat": [],
+    "recap": "Death recap: a level 23 Night Elf Hunter just died in Duskwood - Darkshire.\nLast hits from the game's death recap, oldest first:\n-0.0s the environment: The environment 180, overkill 40 <- killing blow\nDamage taken: 180 from 1 source. Killing blow: the environment's The environment. Max health: 180."
+  },
   "unitCombatOnly": {
     "target": null,
     "maxHealth": 0,

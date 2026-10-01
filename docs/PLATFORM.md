@@ -31,7 +31,8 @@ handle(msg, core)  what to actually do; `core` lends it the agent runner, the
 finished(msg, outcome, core)
                    optional; called once after the reply is published, with
                    { status, text, summary } (the roast plugin tells the stream
-                   overlay); a throw or a rejected promise is only logged
+                   overlay); a throw or a rejected promise is only logged; a
+                   bridge run with --inject or --once skips it
 ```
 
 A chat is bound to a plugin the way it is bound to an agent today (a `plugin=`

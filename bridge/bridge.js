@@ -1307,6 +1307,10 @@ function nameChat(job, key) {
 
 function tellPluginFinished(plugin, job, outcome) {
   if (!plugin || typeof plugin.finished !== 'function') return;
+  if (exitWhenIdle) {
+    log(`${tagOf(job)} ${plugin.id}: finished hook skipped, this bridge exits when idle (--inject or --once)`);
+    return;
+  }
   const failed = e => log(`${tagOf(job)} ${plugin.id}: finished hook failed (${e && e.message ? e.message : e})`);
   try {
     const pending = plugin.finished(job, outcome, core);
