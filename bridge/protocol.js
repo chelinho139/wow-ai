@@ -806,6 +806,7 @@ function luaTable(globalName, records, opts = {}) {
   lines.push('\t},');
   if (opts.map) lines.push(luaMap(opts.map));
   if (opts.achievementsLua) lines.push(opts.achievementsLua);
+  if (opts.goalsLua) lines.push(opts.goalsLua);
   if (opts.widgets) lines.push(luaWidgets(opts.widgets));
   const restore = opts.restore;
   if (restore) {

@@ -35,6 +35,7 @@ const FILES = [
   'addon/ClaudeWoW/Voice.lua',
   'addon/ClaudeWoW/LootRoll.lua',
   'addon/ClaudeWoW/Achievements.lua',
+  'addon/ClaudeWoW/Orders.lua',
   'addon/ClaudeWoW/Widgets.lua',
   'addon/ClaudeWoW/Window.lua',
   'addon/ClaudeWoW/Bindings.xml',

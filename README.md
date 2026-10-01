@@ -169,6 +169,7 @@ Settings, with `/claude config <key> [value]`:
 | `vision [on\|off]` | send a picture of your screen with each message, so the agent sees what you see: "what is this item?", "why is this boss killing me?", "read this quest" (off by default; needs the screenshot transport) |
 | `roast [on\|off]` | when you die, the agent gets a recap of what killed you and writes a short roast in the **Death roasts** chat (off by default; at most one every 2 minutes). See [Death roast](#death-roast) |
 | `achievements [on\|off\|test]` | list the achievements your agents earned; `on`/`off` turns the toasts on or off, `test` shows a sample (see [Achievement toasts](#achievement-toasts)) |
+| `orders [on\|off]` | the Orders card under the quest tracker: the current order from a live Claude Code session and up to 3 goal bars (on by default; also `/claude orders` and the chat list's gear menu). It hides when there is no order |
 | `echo summary\|full\|short\|off\|<chars>` | how much of each reply to print into the game chat. `summary` (the default) prints only the agent's closing TL;DR lines, the full reply is in the window behind `[open]`; `full` prints up to 4000 chars, `short` one preview line |
 | `voice ...`, `map ...`, `macro undo`, `roll on\|off` | see [Voice lines](#voice-lines), [Map](#map-routes-and-gathering-nodes), [Macros](#macros-ready-to-use) and [Need, Greed or Pass](#need-greed-or-pass) |
 | `longchat on` | let the game chat box take 4000 characters, for long `/claude` messages |

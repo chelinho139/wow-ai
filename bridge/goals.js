@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const ST = require('./plugins/stream');
 const GR = require('./gamerefs');
-const GD = require('./gamedata');
+const { luaStr } = require('./protocol');
 
 const STORE_VERSION = 1;
 const GOALS_FILE = 'goals.json';
@@ -13,6 +13,8 @@ const ORDER_HISTORY_MAX = 20;
 const ORDER_TEXT_MAX = 90;
 const GOAL_TITLE_MAX = 60;
 const OVERLAY_GOALS_MAX = 3;
+const SLOT_GOALS_MAX = 3;
+const SLOT_LUA_MAX_BYTES = 640;
 const TARGET_RANK_LIMIT = 999;
 const PROFESSION_TYPE = 'profession';
 const OVERLAY_ACTION = 'orders';
@@ -311,6 +313,69 @@ function overlayCommand(doc, snap) {
   return { action: OVERLAY_ACTION, orders: overlayPayload(doc, snap) };
 }
 
+const ORDER_ID_RE = /^o_\d{1,9}$/;
+
+function slotPct(pct) {
+  return pct === null || pct === undefined ? null : Math.max(0, Math.min(100, Math.floor(Number(pct) || 0)));
+}
+
+function slotTitle(goal, names) {
+  const checked = validateOrderText(goal && goal.title, names);
+  return checked.ok && checked.text.length <= GOAL_TITLE_MAX ? checked.text : null;
+}
+
+function storedRefNames(current) {
+  return (Array.isArray(current.refs) ? current.refs : []).map(ref => ref && ref.name).filter(name => typeof name === 'string' && name);
+}
+
+function slotOrder(doc, snap, names, orderGoal) {
+  const current = doc.orders.current;
+  if (!current) return { order: null };
+  const checked = validateOrderText(current.text, names.concat(storedRefNames(current)));
+  if (!checked.ok) return { order: null, withheld: `order ${current.id} is not shown: ${checked.text}` };
+  return { order: {
+    id: ORDER_ID_RE.test(String(current.id)) ? String(current.id) : `o_${doc.rev}`,
+    text: checked.text,
+    pct: orderGoal ? slotPct(progressOf(orderGoal, snap).pct) : null,
+  } };
+}
+
+function slotPayload(doc, snap) {
+  const names = knownNames(snap);
+  const current = doc.orders.current;
+  const orderGoal = current && current.goalId ? doc.goals.find(g => g.id === current.goalId) || null : null;
+  const { order, withheld } = slotOrder(doc, snap, names, orderGoal);
+  const shownWithOrder = order ? orderGoal : null;
+  const goals = doc.goals
+    .filter(g => g !== shownWithOrder)
+    .map(g => ({ title: slotTitle(g, names), pct: slotPct(progressOf(g, snap).pct) }))
+    .filter(g => g.title && g.pct !== null)
+    .slice(0, SLOT_GOALS_MAX);
+  return { rev: Math.max(0, Math.floor(Number(doc.rev) || 0)), char: snap.character ? snap.character.key : '', order, goals, ...(withheld ? { withheld } : {}) };
+}
+
+function luaSlotOrder(order) {
+  if (!order) return '';
+  const pct = order.pct === null ? '' : `, pct = ${order.pct}`;
+  return `order = { id = ${luaStr(order.id)}, text = ${luaStr(order.text)}${pct} }, `;
+}
+
+function luaGoals(payload) {
+  const order = luaSlotOrder(payload.order);
+  const goals = payload.goals.slice(0, SLOT_GOALS_MAX);
+  const render = () => `\tgoals = { rev = ${payload.rev}, char = ${luaStr(payload.char || '')}, ${order}goals = { ${goals.map(g => `{ title = ${luaStr(g.title)}, pct = ${g.pct} }`).join(', ')} } },`;
+  let lua = render();
+  while (Buffer.byteLength(lua, 'utf8') > SLOT_LUA_MAX_BYTES && goals.length) {
+    goals.pop();
+    lua = render();
+  }
+  return Buffer.byteLength(lua, 'utf8') <= SLOT_LUA_MAX_BYTES ? lua : '';
+}
+
+function fileStamp(stat) {
+  return [stat.mtimeMs, stat.ctimeMs, stat.size, stat.ino].join(':');
+}
+
 function storeFile(root, characterKey) {
   return path.join(root, characterKey, GOALS_FILE);
 }
@@ -323,6 +388,50 @@ function createGoals(opts) {
   const now = opts.now || Date.now;
   const log = opts.log || (() => {});
   const gameData = opts.gameData || (() => null);
+  const onChange = opts.onChange || (() => {});
+  let cached = { file: '', stamp: '', doc: null };
+  let lastSlotProblem = '';
+
+  function slotProblem(text) {
+    if (text !== lastSlotProblem) log(`goals: the slot files hide the Orders card (${text})`);
+    lastSlotProblem = text;
+  }
+
+  function storedDoc(file, key) {
+    let stat;
+    try { stat = fs.statSync(file); } catch (e) {
+      if (e.code === 'ENOENT') return emptyStore(key);
+      throw new Error(`cannot read ${file}: ${e.message}`);
+    }
+    const stamp = fileStamp(stat);
+    if (cached.file === file && cached.stamp === stamp) return cached.doc;
+    const doc = readStore(file, key);
+    cached = { file, stamp, doc };
+    return doc;
+  }
+
+  function hiddenCard(key, why) {
+    slotProblem(why);
+    return luaGoals({ rev: 0, char: key, order: null, goals: [] });
+  }
+
+  function slotLua() {
+    const snap = snapshotOf(context());
+    if (!snap.character) return '';
+    const key = snap.character.key;
+    let lua;
+    let payload;
+    try {
+      payload = slotPayload(storedDoc(storeFile(root, key), key), snap);
+      lua = luaGoals(payload);
+    } catch (e) {
+      return hiddenCard(key, e.message);
+    }
+    if (!lua) return hiddenCard(key, `the field is over ${SLOT_LUA_MAX_BYTES} bytes`);
+    if (payload.withheld) slotProblem(payload.withheld);
+    else lastSlotProblem = '';
+    return lua;
+  }
 
   async function push(doc, snap) {
     const options = streamOptions() || {};
@@ -352,11 +461,13 @@ function createGoals(opts) {
     if (!change.ok) return change;
     doc.rev += 1;
     try { writeStore(file, doc); } catch (e) { return fail(`Could not save ${file}: ${e.message}`); }
+    cached = { file: '', stamp: '', doc: null };
     log(`goals: ${tool} for ${snap.character.key}, rev ${doc.rev}`);
+    onChange();
     return done(`${change.text} ${await push(doc, snap)}`);
   }
 
-  return { call, file: key => storeFile(root, key) };
+  return { call, slotLua, file: key => storeFile(root, key) };
 }
 
 function openGameData(dataDir, contextText, log) {
@@ -368,11 +479,12 @@ function openGameData(dataDir, contextText, log) {
   }
 }
 
-function createBridgeGoals({ home, context, streamOptions, log = () => {} }) {
+function createBridgeGoals({ home, context, streamOptions, onChange, log = () => {} }) {
   const goals = createGoals({
     dir: home.goals,
     context,
     streamOptions,
+    onChange,
     gameData: contextText => openGameData(home.data, contextText, log),
     log,
   });
@@ -416,7 +528,8 @@ function toolSchemas() {
 
 module.exports = {
   STORE_VERSION, GOALS_FILE, ACTIVE_GOALS_MAX, ORDER_HISTORY_MAX, ORDER_TEXT_MAX, GOAL_TITLE_MAX, OVERLAY_GOALS_MAX, TARGET_RANK_LIMIT,
+  SLOT_GOALS_MAX, SLOT_LUA_MAX_BYTES,
   TOOL, TOOL_NAMES, WRITE_TOOL_NAMES, PROFESSION_SKILL_IDS, ORDER_WORDS, CONTEXT_STALE_MS, ADDON_CONTEXT_MAX_BYTES,
   parseProfessions, characterOf, snapshotOf, skillIdForName, validateOrderText, orderWords,
-  readStore, writeStore, overlayPayload, overlayCommand, listView, storeFile, createGoals, createBridgeGoals, toolSchemas,
+  readStore, writeStore, overlayPayload, overlayCommand, slotPayload, luaGoals, listView, storeFile, createGoals, createBridgeGoals, toolSchemas,
 };

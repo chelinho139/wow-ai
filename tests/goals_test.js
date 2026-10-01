@@ -725,3 +725,235 @@ test('in-game ask runs: goal write tools are denied, a Need roll can never grant
     assert.doesNotMatch(lua, /goal_set|order_issue/, 'neither the roll nor the reply offers a goal write tool');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+function luaUnescape(s) {
+  return s.replace(/\\(\d{1,3}|.)/g, (_, e) => /^\d/.test(e) ? String.fromCharCode(Number(e)) : e === 'n' ? '\n' : e);
+}
+
+function luaValue(node) {
+  if (node.type === 'TableConstructorExpression') {
+    const out = {};
+    const arr = [];
+    for (const f of node.fields) {
+      if (f.type === 'TableKeyString') out[f.key.name] = luaValue(f.value);
+      else arr.push(luaValue(f.value));
+    }
+    return arr.length ? arr : out;
+  }
+  if (node.type === 'StringLiteral') return luaUnescape(node.raw.slice(1, -1));
+  if (node.type === 'NumericLiteral') return node.value;
+  if (node.type === 'BooleanLiteral') return node.value;
+  return null;
+}
+
+function slotData(src, globalName = 'ClaudeWoW_SlotData') {
+  const ast = require('luaparse').parse(src, { luaVersion: '5.1' });
+  const assign = ast.body.find(n => n.type === 'AssignmentStatement' && n.variables[0].name === globalName);
+  assert.ok(assign, `${globalName} assignment present`);
+  return luaValue(assign.init[0]);
+}
+
+function slotGoals(store) {
+  const goalsLua = store.slotLua();
+  return slotData(P.luaTable('ClaudeWoW_SlotData', [], { goalsLua, now: NOW })).goals;
+}
+
+function writeDoc(r, doc) {
+  fs.mkdirSync(path.dirname(r.file), { recursive: true });
+  fs.writeFileSync(r.file, JSON.stringify({ v: G.STORE_VERSION, rev: 9, character: BONE_KEY, goals: [], orders: { current: null, history: [] }, ...doc }));
+}
+
+test('slot field: the Orders card data rides in the slot table as goals = { rev, order, goals }, read back as Lua', async () => {
+  const r = rig();
+  try {
+    await r.store.call('goal_set', { profession: 'Leatherworking', rank: 150 });
+    await r.store.call('goal_set', { profession: 'Skinning', rank: 225 });
+    await r.store.call('goal_set', { profession: 'Cooking', rank: 75 });
+    await r.store.call('goal_set', { profession: 'First Aid', rank: 150 });
+    await r.store.call('order_issue', { text: 'Craft until Leatherworking hits 125', goalId: 'g_165' });
+    assert.deepEqual(slotGoals(r.store), {
+      rev: 5,
+      char: BONE_KEY,
+      order: { id: 'o_5', text: 'Craft until Leatherworking hits 125', pct: 71 },
+      goals: [{ title: 'Skinning 225', pct: 83 }, { title: 'Cooking 75', pct: 14 }, { title: 'First Aid 150', pct: 64 }],
+    });
+    await r.store.call('order_issue', { text: 'fish 10' });
+    const loose = slotGoals(r.store);
+    assert.equal(loose.rev, 6);
+    assert.deepEqual(loose.order, { id: 'o_6', text: 'fish 10' }, 'an order without a goal has no pct');
+    assert.equal(loose.goals.length, G.SLOT_GOALS_MAX);
+    r.setContext(BONE_CONTEXT.replace('Skinning 187/225', 'Skinning 200/225'));
+    assert.equal(slotGoals(r.store).goals[1].pct, 88, 'progress follows the latest context without a store write');
+  } finally { r.cleanup(); }
+});
+
+test('slot field: a cleared order sends the field without an order, so the card hides; no character sends no field', async () => {
+  const r = rig();
+  try {
+    await r.store.call('order_issue', { text: 'skin 10' });
+    assert.equal(slotGoals(r.store).order.text, 'skin 10');
+    await r.store.call('order_issue', { clear: true });
+    const cleared = slotGoals(r.store);
+    assert.equal(cleared.rev, 2);
+    assert.equal(cleared.order, undefined);
+  } finally { r.cleanup(); }
+  const nobody = rig({ ctx: '' });
+  try {
+    assert.equal(nobody.store.slotLua(), '');
+  } finally { nobody.cleanup(); }
+});
+
+test('slot field: only text that passes the order validator reaches the game, whatever the store file says', () => {
+  const r = rig();
+  try {
+    writeDoc(r, {
+      goals: [
+        { id: 'g_393', title: 'Skinning 225', target: { skillID: 393, rank: 225 } },
+        { id: 'g_165', title: 'Silverpine Leatherworking', target: { skillID: 165, rank: 150 } },
+        { id: 'g_185', title: 'Cooking |cffff0000 75', target: { skillID: 185, rank: 75 } },
+      ],
+      orders: { current: { id: 'o_9', text: 'Skin in Silverpine Forest', goalId: 'g_393' }, history: [] },
+    });
+    const field = slotGoals(r.store);
+    assert.equal(field.order, undefined, 'an order naming a zone is never sent');
+    assert.deepEqual(field.goals, [{ title: 'Skinning 225', pct: 83 }], 'goal titles go through the same validator');
+    writeDoc(r, { orders: { current: { id: 'nine', text: 'Skin 10 more' }, history: [] } });
+    assert.deepEqual(slotGoals(r.store).order, { id: 'o_9', text: 'Skin 10 more' }, 'an unknown id falls back, the text stays checked');
+  } finally { r.cleanup(); }
+});
+
+test('slot field: a token order shows the expanded names its stored refs allow, with no game data opened; a tampered order stays off and is logged once', async () => {
+  const logs = [];
+  const dir = tmpDir('slotrefs');
+  try {
+    const context = () => ({ text: BONE_CONTEXT, at: CONTEXT_AT });
+    const issuer = G.createGoals({ dir, context, streamOptions: () => ({ ...ST.INERT_OPTIONS }), now: () => NOW, gameData: openFixtureData });
+    let opened = 0;
+    const store = G.createGoals({ dir, context, streamOptions: () => ({ ...ST.INERT_OPTIONS }), now: () => NOW, gameData: () => { opened += 1; return null; }, log: m => logs.push(m) });
+    const file = path.join(dir, BONE_KEY, G.GOALS_FILE);
+    const edit = change => {
+      const doc = JSON.parse(fs.readFileSync(file, 'utf8'));
+      change(doc.orders.current);
+      fs.writeFileSync(file, JSON.stringify(doc));
+      const later = new Date(Date.now() + 1000 * (edit.n = (edit.n || 0) + 1));
+      fs.utimesSync(file, later, later);
+    };
+    assert.equal((await issuer.call('order_issue', { text: 'Buy 2 {item:501}, then train {skill:40} at {map:9003,27.5,25}' })).ok, true);
+    const want = 'Buy 2 Fixture Blade, then train Fixture Craft at Fixture Town';
+    assert.deepEqual(slotGoals(store).order, { id: 'o_1', text: want });
+    assert.equal(opened, 0, 'publishing never opens the game data');
+    edit(c => { delete c.refs; });
+    assert.equal(slotGoals(store).order, undefined, 'without its refs the expanded names are refused');
+    assert.equal(slotGoals(store).order, undefined);
+    assert.equal(logs.filter(l => /hide the Orders card \(order o_1 is not shown: .*fixture/.test(l)).length, 1, logs.join('\n'));
+    edit(c => { c.refs = [{ kind: 'item', id: 501, name: 'Fixture Blade' }]; c.text = 'Buy 2 Fixture Blade in Silverpine'; });
+    assert.equal(slotGoals(store).order, undefined, 'a name outside the refs is refused');
+    assert.equal((await issuer.call('order_issue', { text: 'take the {map:9004,10,10} to 150' })).ok, true);
+    assert.deepEqual(slotGoals(store).order, { id: 'o_2', text: 'take the Low Road to 150' }, 'a name made of plain words shows too');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('slot field: the Lua stays under the byte cap, dropping goals from the end before anything else', () => {
+  const longest = 'x'.repeat(G.ORDER_TEXT_MAX);
+  const fits = G.luaGoals({ rev: 1, char: 'Bonebonebonebone-ClassicBetaPvP2Realm', order: { id: 'o_1', text: longest, pct: 100 }, goals: [1, 2, 3].map(i => ({ title: `${'y'.repeat(G.GOAL_TITLE_MAX - 2)} ${i}`, pct: 100 })) });
+  assert.ok(Buffer.byteLength(fits) <= G.SLOT_LUA_MAX_BYTES, `${Buffer.byteLength(fits)} bytes`);
+  assert.equal((fits.match(/title =/g) || []).length, 3, 'the longest real content keeps all three goals');
+  const oversized = G.luaGoals({ rev: 1, order: { id: 'o_1', text: longest, pct: 5 }, goals: [1, 2, 3].map(i => ({ title: `${'z'.repeat(250)}${i}`, pct: 1 })) });
+  assert.ok(oversized.length > 0, 'the order still goes');
+  assert.ok(Buffer.byteLength(oversized) <= G.SLOT_LUA_MAX_BYTES, `${Buffer.byteLength(oversized)} bytes`);
+  assert.ok((oversized.match(/title =/g) || []).length < 3, 'goals were dropped to fit');
+  assert.match(oversized, /z{250}1/, 'the first goal is kept longest');
+  assert.equal(G.luaGoals({ rev: 1, order: { id: 'o_1', text: 'q'.repeat(G.SLOT_LUA_MAX_BYTES), pct: 5 }, goals: [] }), '', 'a field that cannot fit is not sent at all');
+});
+
+test('slot field: a store edited on disk is read again; one that cannot be read sends the empty field (the card hides) and is logged once', () => {
+  const logs = [];
+  const dir = tmpDir('slotlog');
+  try {
+    const store = G.createGoals({ dir, context: () => ({ text: BONE_CONTEXT, at: CONTEXT_AT }), streamOptions: () => ({ ...ST.INERT_OPTIONS }), now: () => NOW, log: m => logs.push(m) });
+    const file = path.join(dir, BONE_KEY, G.GOALS_FILE);
+    assert.match(store.slotLua(), /rev = 0, char = "Bone-ClassicBetaPvP2", goals = \{ {2}\}/, 'no store yet: an empty field, so a stale card hides');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ v: 1, rev: 3, goals: [], orders: { current: { id: 'o_3', text: 'Rest' } } }));
+    assert.match(store.slotLua(), /text = "Rest"/);
+    fs.writeFileSync(file, JSON.stringify({ v: 1, rev: 4, goals: [], orders: { current: { id: 'o_4', text: 'Fish' } } }));
+    fs.utimesSync(file, new Date(), new Date(Date.now() + 5000));
+    assert.match(store.slotLua(), /text = "Fish"/, 'a newer file on disk is read again');
+    fs.writeFileSync(file, '{ broken');
+    fs.utimesSync(file, new Date(), new Date(Date.now() + 10000));
+    assert.deepEqual(slotGoals(store), { rev: 0, char: BONE_KEY, goals: {} }, 'an unreadable store hides the card');
+    assert.deepEqual(slotGoals(store), { rev: 0, char: BONE_KEY, goals: {} });
+    assert.equal(logs.filter(l => /hide the Orders card/.test(l)).length, 1, logs.join('\n'));
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('slot field: a second store written within the same mtime tick is still read again', () => {
+  const dir = tmpDir('slotmtime');
+  try {
+    const store = G.createGoals({ dir, context: () => ({ text: BONE_CONTEXT, at: CONTEXT_AT }), streamOptions: () => ({ ...ST.INERT_OPTIONS }), now: () => NOW });
+    const file = path.join(dir, BONE_KEY, G.GOALS_FILE);
+    const tick = new Date(1790000000000);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ v: 1, rev: 3, goals: [], orders: { current: { id: 'o_3', text: 'Rest' } } }));
+    fs.utimesSync(file, tick, tick);
+    assert.equal(slotGoals(store).order.text, 'Rest');
+    fs.writeFileSync(file, JSON.stringify({ v: 1, rev: 4, goals: [], orders: { current: { id: 'o_4', text: 'Fish 10 more' } } }));
+    fs.utimesSync(file, tick, tick);
+    assert.equal(fs.statSync(file).mtimeMs, tick.getTime(), 'both writes carry the same mtime');
+    assert.equal(slotGoals(store).order.text, 'Fish 10 more');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('slot field: every goal write republishes the slot files at once; a read or a refusal does not', async () => {
+  const dir = tmpDir('onchange');
+  let published = 0;
+  try {
+    const store = G.createGoals({ dir, context: () => ({ text: BONE_CONTEXT, at: CONTEXT_AT }), streamOptions: () => ({ ...ST.INERT_OPTIONS }), now: () => NOW, onChange: () => { published += 1; } });
+    await store.call('goal_set', { profession: 'Skinning', rank: 225 });
+    await store.call('goal_list', {});
+    await store.call('order_issue', { text: 'Go to Silverpine' });
+    assert.equal(published, 1);
+    await store.call('order_issue', { text: 'skin 10' });
+    assert.equal(published, 2);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('slot field: the bridge republishes a goal write as urgent, the mode that keeps a large map and widget set in the slot files', async () => {
+  const src = fs.readFileSync(BRIDGE, 'utf8');
+  const wiring = /GOALS\.createBridgeGoals\(\{[\s\S]*?onChange: \(\) => publishNow\((\w+), \{ refresh: true \}\)/.exec(src);
+  assert.ok(wiring, 'the goal store is wired to publishNow');
+  assert.equal(wiring[1], 'true', 'a non-urgent publish drops a map over the progress size from every slot file');
+  assert.match(src, /const map = Date\.now\(\) < mapShareUntil && \(urgent \|\| mapLuaSize\(\) <= MAP_PROGRESS_MAX\)/, 'urgent is what keeps a large map');
+  const dir = tmpDir('bridgegoals');
+  try {
+    let published = 0;
+    const store = G.createBridgeGoals({ home: { goals: path.join(dir, 'goals'), data: WOWDATA }, context: () => ({ text: BONE_CONTEXT, at: CONTEXT_AT }), streamOptions: () => ({ ...ST.INERT_OPTIONS }), onChange: () => { published += 1; } });
+    const res = await store.call('goal_set', { profession: 'Skinning', rank: 225 });
+    assert.equal(res.ok, true, res.text);
+    assert.equal(published, 1, 'createBridgeGoals passes onChange through');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('slot field: urgent publish keeps large widgets too', () => {
+  const src = fs.readFileSync(BRIDGE, 'utf8');
+  assert.match(src, /const widgets = Date\.now\(\) < widgetShareUntil && \(urgent \|\| widgetSourceBytes\(\) <= WIDGET_PROGRESS_MAX\)/, 'and large widgets');
+});
+
+test('slot field through the real bridge: the slot files carry the current order next to the other fields', { timeout: 60000 }, () => {
+  const dir = tmpDir('slotbridge');
+  try {
+    const { home, addons, saved } = fakeInstall(dir);
+    const file = path.join(home, 'goals', BONE_KEY, G.GOALS_FILE);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ v: 1, rev: 12, character: BONE_KEY, goals: [{ id: 'g_393', title: 'Skinning 225', target: { skillID: 393, rank: 225 } }], orders: { current: { id: 'o_12', text: 'Skin 30 more', goalId: 'g_393' }, history: [] } }));
+    writeOutbox(saved, 7, BONE_CONTEXT);
+    const r = spawnSync(process.execPath, [BRIDGE, '--once'], { encoding: 'utf8', env: { ...process.env, CLAUDE_WOW_HOME: home }, timeout: 60000 });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    const files = [['ClaudeWoW_S001', 'ClaudeWoW_SlotData'], ['ClaudeWoW', 'ClaudeWoW_Inbox']];
+    for (const [folder, globalName] of files) {
+      const data = slotData(fs.readFileSync(path.join(addons, folder, 'Inbox.lua'), 'utf8'), globalName);
+      assert.deepEqual(data.goals, { rev: 12, char: BONE_KEY, order: { id: 'o_12', text: 'Skin 30 more', pct: 83 }, goals: {} });
+      assert.ok(Array.isArray(data.replies), 'the replies are still there');
+    }
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
