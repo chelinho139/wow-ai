@@ -1,0 +1,33 @@
+{
+  "gameRecap": {
+    "target": { "name": "Hogger", "level": 11 },
+    "maxHealth": 180,
+    "deathRecap": [
+      { "timestamp": 510.2, "event": "SPELL_DAMAGE", "spellName": "Rending Claw", "sourceName": "Hogger", "amount": 61, "overkill": 23, "absorbed": 4 },
+      { "timestamp": 507.5, "event": "SWING_DAMAGE", "sourceName": "Hogger", "amount": 38 },
+      { "timestamp": 506.0, "event": "SPELL_PERIODIC_DAMAGE", "spellName": "Rend", "sourceName": "Riverpaw Brute", "amount": 7 }
+    ],
+    "unitCombat": [],
+    "recap": "Death recap: a level 23 Night Elf Hunter just died in Duskwood - Darkshire.\nLast hits from the game's death recap, oldest first:\n-4.2s Riverpaw Brute: Rend 7 (tick)\n-2.7s Hogger (level 11): Melee 38\n-0.0s Hogger (level 11): Rending Claw 61, overkill 23, absorbed 4 <- killing blow\nDamage taken: 106 from 2 sources. Killing blow: Hogger's Rending Claw. Max health: 180."
+  },
+  "environmentRecap": {
+    "target": null,
+    "maxHealth": 180,
+    "deathRecap": [
+      { "timestamp": 700, "event": "ENVIRONMENTAL_DAMAGE", "environmentalType": "FALLING", "amount": 180, "overkill": 60 },
+      { "timestamp": 698, "event": "SPELL_DAMAGE", "spellName": "Backstab", "sourceName": "Defias Pathstalker", "hideCaster": true, "amount": 20 }
+    ],
+    "unitCombat": [],
+    "recap": "Death recap: a level 23 Night Elf Hunter just died in Duskwood - Darkshire.\nLast hits from the game's death recap, oldest first:\n-2.0s something unseen: Backstab 20\n-0.0s the environment: Falling 180, overkill 60 <- killing blow\nDamage taken: 200 from 2 sources. Killing blow: the environment's Falling. Max health: 180."
+  },
+  "unitCombatOnly": {
+    "target": null,
+    "maxHealth": 0,
+    "deathRecap": [],
+    "unitCombat": [
+      { "ago": 2, "flag": "CRITICAL", "amount": 38, "school": 4 },
+      { "ago": 0.2, "flag": "", "amount": 52, "school": 1 }
+    ],
+    "recap": "Death recap: a level 23 Night Elf Hunter just died in Duskwood - Darkshire.\nHits taken in the last 10 s, oldest first (the game does not say who dealt them):\n-2.0s Fire 38 crit\n-0.2s Physical 52 <- last hit\nDamage taken: 90. Last hit: Physical 52.\nAt death you had no target."
+  }
+}

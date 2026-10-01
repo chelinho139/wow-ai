@@ -28,6 +28,10 @@ surfaces           which of the core's surfaces its replies may use: "map", "mac
                    (the window, the echo and the tab are how every reply reaches the player)
 handle(msg, core)  what to actually do; `core` lends it the agent runner, the
                    bridge's folder and the chat's session
+finished(msg, outcome, core)
+                   optional; called once after the reply is published, with
+                   { status, text, summary } (the roast plugin tells the stream
+                   overlay); a throw or a rejected promise is only logged
 ```
 
 A chat is bound to a plugin the way it is bound to an agent today (a `plugin=`
