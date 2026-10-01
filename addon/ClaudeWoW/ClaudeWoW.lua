@@ -158,8 +158,7 @@ end
 -- The folder a chat works in: its own, or the bridge's default (the folder the
 -- bridge was started from), which the bridge reports in every slot file.
 local function ChatFolder(c)
-	if c and c.cwd ~= "" then return c.cwd end
-	return run.bridgeCwd or ""
+	return Cli.ProjectOf(c)
 end
 
 -- Agents are named by id as the bridge knows them ("claude", "codex", "grok");
