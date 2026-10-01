@@ -887,6 +887,23 @@ test('slot field: a store edited on disk is read again; one that cannot be read 
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('slot field: a second store written within the same mtime tick is still read again', () => {
+  const dir = tmpDir('slotmtime');
+  try {
+    const store = G.createGoals({ dir, context: () => ({ text: BONE_CONTEXT, at: CONTEXT_AT }), streamOptions: () => ({ ...ST.INERT_OPTIONS }), now: () => NOW });
+    const file = path.join(dir, BONE_KEY, G.GOALS_FILE);
+    const tick = new Date(1790000000000);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ v: 1, rev: 3, goals: [], orders: { current: { id: 'o_3', text: 'Rest' } } }));
+    fs.utimesSync(file, tick, tick);
+    assert.equal(slotGoals(store).order.text, 'Rest');
+    fs.writeFileSync(file, JSON.stringify({ v: 1, rev: 4, goals: [], orders: { current: { id: 'o_4', text: 'Fish 10 more' } } }));
+    fs.utimesSync(file, tick, tick);
+    assert.equal(fs.statSync(file).mtimeMs, tick.getTime(), 'both writes carry the same mtime');
+    assert.equal(slotGoals(store).order.text, 'Fish 10 more');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('slot field: every goal write republishes the slot files at once; a read or a refusal does not', async () => {
   const dir = tmpDir('onchange');
   let published = 0;

@@ -372,6 +372,10 @@ function luaGoals(payload) {
   return Buffer.byteLength(lua, 'utf8') <= SLOT_LUA_MAX_BYTES ? lua : '';
 }
 
+function fileStamp(stat) {
+  return [stat.mtimeMs, stat.ctimeMs, stat.size, stat.ino].join(':');
+}
+
 function storeFile(root, characterKey) {
   return path.join(root, characterKey, GOALS_FILE);
 }
@@ -385,7 +389,7 @@ function createGoals(opts) {
   const log = opts.log || (() => {});
   const gameData = opts.gameData || (() => null);
   const onChange = opts.onChange || (() => {});
-  let cached = { file: '', mtimeMs: -1, doc: null };
+  let cached = { file: '', stamp: '', doc: null };
   let lastSlotProblem = '';
 
   function slotProblem(text) {
@@ -399,9 +403,10 @@ function createGoals(opts) {
       if (e.code === 'ENOENT') return emptyStore(key);
       throw new Error(`cannot read ${file}: ${e.message}`);
     }
-    if (cached.file === file && cached.mtimeMs === stat.mtimeMs) return cached.doc;
+    const stamp = fileStamp(stat);
+    if (cached.file === file && cached.stamp === stamp) return cached.doc;
     const doc = readStore(file, key);
-    cached = { file, mtimeMs: stat.mtimeMs, doc };
+    cached = { file, stamp, doc };
     return doc;
   }
 
@@ -456,7 +461,7 @@ function createGoals(opts) {
     if (!change.ok) return change;
     doc.rev += 1;
     try { writeStore(file, doc); } catch (e) { return fail(`Could not save ${file}: ${e.message}`); }
-    cached = { file: '', mtimeMs: -1, doc: null };
+    cached = { file: '', stamp: '', doc: null };
     log(`goals: ${tool} for ${snap.character.key}, rev ${doc.rev}`);
     onChange();
     return done(`${change.text} ${await push(doc, snap)}`);
