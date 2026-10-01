@@ -4557,7 +4557,21 @@ function Q.AtlasExists(name)
 	return C_Texture and C_Texture.GetAtlasExists and C_Texture.GetAtlasExists(name) and true or false
 end
 
-Q.CLASSIC_ERA_ART = { parchment = true, gear = true, reply = true }
+Q.CLASSIC_ERA_ART = { parchment = true, reply = true }
+Q.CLASSIC_ERA_GEAR = "Interface\\Icons\\INV_Misc_Gear_01"
+Q.CLASSIC_PARCHMENT = "Interface\\QuestFrame\\UI-QuestGreeting-TopLeft"
+Q.CLASSIC_PARCHMENT_COORDS = { 32 / 256, 248 / 256, 92 / 256, 248 / 256 }
+
+function Q.ClassicParchment(tex)
+	if not Q.IsClassicEra() then return false end
+	local ok = pcall(tex.SetTexture, tex, Q.CLASSIC_PARCHMENT)
+	if not ok then return false end
+	local c = Q.CLASSIC_PARCHMENT_COORDS
+	tex:SetTexCoord(c[1], c[2], c[3], c[4])
+	ui.art = ui.art or {}
+	ui.art.parchment = Q.CLASSIC_PARCHMENT
+	return true
+end
 
 function Q.IsClassicEra()
 	local toc = tonumber(select(4, Try(GetBuildInfo)))
@@ -4867,7 +4881,7 @@ function ClaudeWoW.RenderQuestList()
 	local filter = ui.chatFilter or ""
 	local collapsed = db.settings.collapsedFolders or {}
 	local groups, order = {}, {}
-	for _, c in ipairs(db.chats) do
+	for _, c in ipairs(Q.NewestFirst(db.chats)) do
 		local key = Q.FolderKey(c)
 		if not groups[key] then
 			groups[key] = {}
@@ -4879,7 +4893,7 @@ function ClaudeWoW.RenderQuestList()
 	if width < 80 then width = Q.LIST_W - 32 end
 	q.content:SetWidth(width)
 	local y, nh, nr, matched, index = 0, 0, 0, 0, 0
-	local last
+	local last, activeTop, activeBottom
 	for _, key in ipairs(order) do
 		local matches = {}
 		for _, c in ipairs(groups[key]) do
@@ -4911,6 +4925,7 @@ function ClaudeWoW.RenderQuestList()
 					r:ClearAllPoints()
 					r:SetPoint("TOPLEFT", q.content, "TOPLEFT", 0, -y)
 					r:Show()
+					if r.active then activeTop, activeBottom = y, y + height end
 					y = y + height
 					last = "row"
 				end
@@ -4923,7 +4938,39 @@ function ClaudeWoW.RenderQuestList()
 	for i = nr + 1, #q.rows do q.rows[i]:Hide() end
 	q.empty:SetShown(filter ~= "" and matched == 0)
 	q.content:SetHeight(math.max(y + Q.PAD_FIRST, 1))
+	if activeTop and q.shownActive ~= db.activeChat then
+		q.shownActive = db.activeChat
+		Q.RevealRow(q, activeTop, activeBottom)
+	end
 	ui.chatCount:SetText("Chats: |cffffffff" .. #db.chats .. "|r")
+end
+
+function Q.NewestFirst(chats)
+	local sorted, rank = {}, {}
+	for i, c in ipairs(chats) do
+		local last = c.history and c.history[#c.history]
+		rank[c] = { t = tonumber(last and last.t) or tonumber(c.created) or 0, i = i }
+		table.insert(sorted, c)
+	end
+	table.sort(sorted, function(a, b)
+		if rank[a].t ~= rank[b].t then return rank[a].t > rank[b].t end
+		return rank[a].i > rank[b].i
+	end)
+	return sorted
+end
+
+function Q.RevealRow(q, top, bottom)
+	local view = Try(q.scroll.GetHeight, q.scroll) or 0
+	if view <= 0 then return end
+	pcall(q.scroll.UpdateScrollChildRect, q.scroll)
+	local current = Try(q.scroll.GetVerticalScroll, q.scroll) or 0
+	local target = current
+	if top < current then
+		target = math.max(0, top - Q.LIST_HEADER_H - Q.PAD_FIRST - Q.PAD_ROW_AFTER_HEADER)
+	elseif bottom > current + view then
+		target = bottom - view
+	end
+	if target ~= current then pcall(q.scroll.SetVerticalScroll, q.scroll, target) end
 end
 
 function Q.ListSettingsMenu(anchor)
@@ -4995,7 +5042,14 @@ function Q.BuildQuestFrames(f)
 	gear:SetPoint("TOPRIGHT", list, "TOPRIGHT", -4, -10)
 	local gearIcon = gear:CreateTexture(nil, "ARTWORK")
 	gearIcon:SetAllPoints()
-	if not Q.SetArt(gearIcon, "gear") then gearIcon:SetTexture("Interface\\Buttons\\UI-OptionsButton") end
+	if not Q.SetArt(gearIcon, "gear") then
+		if Q.IsClassicEra() then
+			gearIcon:SetTexture(Q.CLASSIC_ERA_GEAR)
+			gearIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+		else
+			gearIcon:SetTexture("Interface\\Buttons\\UI-OptionsButton")
+		end
+	end
 	local gearHl = gear:CreateTexture(nil, "HIGHLIGHT")
 	gearHl:SetAllPoints()
 	if Q.SetArt(gearHl, "gear") then
@@ -5082,7 +5136,7 @@ function Q.BuildQuestFrames(f)
 	local paper = parchment:CreateTexture(nil, "BACKGROUND", nil, 1)
 	paper:SetPoint("TOPLEFT", parchment, "TOPLEFT", 3, -3)
 	paper:SetPoint("BOTTOMRIGHT", parchment, "BOTTOMRIGHT", -3, 3)
-	if not Q.SetArt(paper, "parchment") then paper:SetColorTexture(0.80, 0.70, 0.52, 1) end
+	if not Q.SetArt(paper, "parchment") and not Q.ClassicParchment(paper) then paper:SetColorTexture(0.80, 0.70, 0.52, 1) end
 	ui.parchment = parchment
 	ui.transcriptPanel = parchment
 

@@ -1144,8 +1144,8 @@ function runAgent(job, opts = {}) {
   // The stable system prompt (the same bytes on every run of this chat) and the
   // message, which carries what changes: the situation and the vision note.
   const ctx = gameContext();
-  const system = P.systemPrompt(ctx, primer(), { tools: plugin.tools, surfaces: plugin.surfaces });
-  const systemShort = P.systemPrompt(ctx, '', { surfaces: plugin.surfaces });
+  const system = P.systemPrompt(ctx, primer(), { tools: plugin.tools, surfaces: plugin.surfaces, voice: plugin.voice });
+  const systemShort = P.systemPrompt(ctx, '', { surfaces: plugin.surfaces, voice: plugin.voice });
   const prompt = P.messagePrompt(job.text, ctx, { image });
   const promptFile = path.join(TMP_DIR, `prompt-${job.id}-${Date.now().toString(36)}.txt`);
   const input = agent.input({ prompt, system, systemShort, resume, cfg: acfg, images });
