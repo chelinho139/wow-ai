@@ -87,6 +87,7 @@ ClaudeWoW_SlotData = {
   replies = { { chat = "...", id = 12, status = "working"|"done"|"error", text = "...", cwd = "...", session = "<agent session id>", agent = "codex", denied = { "WebSearch" }, macros = { { name = "Charge", body = "#showtooltip\n/cast Charge", icon = nil, char = false, risky = false } } }, … },
   map = { epoch = "...", version = 3, layers = { … } },  -- the agent's map layers (docs/MAP.md): for a while after they change and after every hello
   widgets = { epoch = "...", version = 2, items = { { name = "dps", title = "...", rev = "<sha1>", source = "<lua>" } } },  -- live UI widgets (docs/UI-WIDGETS.md), shared like the map
+  goals = { rev = 12, char = "Bone-ClassicBetaPvP2", order = { id = "o_12", text = "Skin 30 more", pct = 83 }, goals = { { title = "Cooking 75", pct = 14 } } },  -- the Orders card (docs/LIVE-SESSION.md): no order = hide the card; at most 3 goals and 640 bytes. Left out only when the context names no character, and by bridges older than the card
   restore = { token = "...", chats = { … } },   -- only right after a saved-data reset
 }
 ```

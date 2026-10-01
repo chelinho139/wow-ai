@@ -503,7 +503,8 @@ function slotFile(globalName, records, urgent = true) {
   const achievementsLua = ACHIEVEMENTS_ON ? ACH.luaAchievements(state) : '';
   const lp = livePlugin();
   const liveInfo = lp ? { sessions: lp.status(), start: liveStartCommand() } : null;
-  return P.luaTable(globalName, records, { live: liveInfo, sessions: sessionList(), cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), plugin: DEFAULT_PLUGIN, plugins: registry.ids(), map, widgets, transport: TRANSPORT, levels: LEVELS, codec: STRIP_CODEC, transportNote, achievementsLua, presence: presenceInfo() });
+  const goalsLua = goalStore.slotLua();
+  return P.luaTable(globalName, records, { live: liveInfo, sessions: sessionList(), cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), plugin: DEFAULT_PLUGIN, plugins: registry.ids(), map, widgets, transport: TRANSPORT, levels: LEVELS, codec: STRIP_CODEC, transportNote, achievementsLua, goalsLua, presence: presenceInfo() });
 }
 
 function recentClaudeSessions() {
@@ -967,6 +968,7 @@ const goalStore = GOALS.createBridgeGoals({
   home: HOME,
   context: () => state.context,
   streamOptions: () => core.options('stream'),
+  onChange: () => publishNow(true, { refresh: true }),
   log,
 });
 

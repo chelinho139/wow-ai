@@ -15,5 +15,6 @@ Stream.lua
 Voice.lua
 LootRoll.lua
 Achievements.lua
+Orders.lua
 Widgets.lua
 Window.lua
