@@ -84,6 +84,21 @@ function markHandled(state, job, now = Date.now()) {
   (state.seen = state.seen || {})[key] = now;
 }
 
+const RECENT_ACKS_MAX = 24;
+const RECENT_ACK_MS = 10 * 60 * 1000;
+
+function noteAck(acks, job, now = Date.now()) {
+  const id = Number(job && job.id);
+  if (!Number.isInteger(id) || id <= 0) return acks;
+  const session = String((job && job.session) || '');
+  const kept = acks.filter(a => now - a.at < RECENT_ACK_MS && !(a.id === id && a.session === session));
+  return [...kept, { session, id, at: now }].slice(-RECENT_ACKS_MAX);
+}
+
+function recentAcks(acks, now = Date.now()) {
+  return acks.filter(a => now - a.at < RECENT_ACK_MS);
+}
+
 // Every saved-data reset in the game mints a new session token; forget the ones
 // not heard from in a month so state.json and transcripts.json stop growing.
 const MONTH_MS = 30 * 24 * 3600 * 1000;
@@ -785,6 +800,10 @@ function luaTable(globalName, records, opts = {}) {
   if (Array.isArray(opts.sessions)) {
     lines.splice(lines.length - 1, 0, '\tsessions = {', ...opts.sessions.map(luaSession), '\t},');
   }
+  if (Array.isArray(opts.acks)) {
+    const acks = opts.acks.filter(a => a && Number.isInteger(a.id) && a.id > 0);
+    lines.splice(lines.length - 1, 0, `\tacks = { ${acks.map(a => `{ session = ${luaStr(a.session || '')}, id = ${a.id} }`).join(', ')} },`);
+  }
   if (opts.presence && typeof opts.presence === 'object') {
     const pr = opts.presence;
     lines.splice(lines.length - 1, 0, `\tsignals = ${luaStr(pr.scheme || 'armed')},`,
@@ -1188,7 +1207,7 @@ function luaWidgets(set) {
 module.exports = {
   ADDON, OLD_ADDONS, OLD_ADDON_PATH, OLD_SAVED_FILE, TOC_INTERFACE, OLD_TOC_INTERFACES,
   fromHex, pad3, slotNumber, SIGNAL_CLEAR_AHEAD, slotsToClearAhead, PRESENCE_TEST_RESULTS, LATE_CREATE_RESULTS, chatKey, sessKey,
-  alreadyHandled, markHandled, pruneStale, MONTH_MS,
+  alreadyHandled, markHandled, pruneStale, MONTH_MS, noteAck, recentAcks, RECENT_ACKS_MAX, RECENT_ACK_MS,
   noteUsage, usageFields, tokensLabel,
   resolveCwd, sameFolder, baseName,
   parseFlags, PERMISSION_MODES, permissionModeName, ADD_DIRS_MAX, jobsFromStrip, parseOutbox, withRunOnlyRules, withRunDeniedRules, withoutRules, absolutePathRule, systemPrompt, messagePrompt, visionHint, splitSummary,

@@ -303,7 +303,7 @@ test('on Classic Era the talents line reads names and points from GetSpecializat
 test('the Game line names Classic Era by its interface number', () => {
   const vm = newVM();
   login(vm);
-  vm.run('function GetBuildInfo() return "1.15.9", "70003", "Sep 1 2026", 11509 end');
+  vm.run('function GetBuildInfo() return "1.15.9", "70003", "Sep 1 2026", 11509, "", " " end');
   assert.equal(vm.evaluate('ClaudeWoW.GameContext()').split('\n')[0], 'Game: World of Warcraft Classic (client 1.15.9.70003, interface 11509)');
   vm.run('function GetBuildInfo() return "12.1.0", "69933", "Sep 1 2026", 120100 end');
   assert.equal(vm.evaluate('ClaudeWoW.GameContext()').split('\n')[0], 'Game: World of Warcraft (client 12.1.0.69933, interface 120100)');

@@ -339,7 +339,7 @@ const shownHeaders = (vm) => vm.evaluate('(function() local t = {} for _, h in i
 const shownRows = (vm) => vm.evaluate('(function() local t = {} for _, r in ipairs(ClaudeWoW.UI.questList.rows) do if r.shown then table.insert(t, r.label:GetText()) end end return table.concat(t, "|") end)()');
 
 test('on Classic Era the window keeps only the atlases that client draws, and plain fills replace the Forever quest-log art', () => {
-  const vm = newVM({ before: NATIVE_TEMPLATES + '\nfunction GetBuildInfo() return "1.15.9", "70003", "Sep 1 2026", 11509 end' });
+  const vm = newVM({ before: NATIVE_TEMPLATES + '\nfunction GetBuildInfo() return "1.15.9", "70003", "Sep 1 2026", 11509, "", " " end' });
   open(vm);
   vm.run('ClaudeWoW.Render()');
   assert.equal(vm.evaluate('ClaudeWoW.UI.art.parchment'), 'QuestBG-Parchment');
