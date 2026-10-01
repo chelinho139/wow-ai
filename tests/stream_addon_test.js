@@ -224,6 +224,11 @@ test('stream: the track payload has the first watched quest, capped objectives a
   assert.equal(JSON.parse(vm.evaluate('ClaudeWoWStream.TrackPayload()')).chat, null, 'the stream chat itself never counts as the open chat');
 });
 
+test('the game context lists quest ids on a client with only GetQuestLogTitle (Classic Era), where the id is the 8th value', () => {
+  const vm = newVM();
+  assert.match(vm.evaluate('ClaudeWoW.GameContext()'), /\nQuest log \(id, \* = ready to turn in\): 62,33(\n|$)/);
+});
+
 test('stream: the super-tracked quest wins over the watch list when the client has C_SuperTrack and C_QuestLog', () => {
   const vm = newVM(`
     STUB.super = 0
