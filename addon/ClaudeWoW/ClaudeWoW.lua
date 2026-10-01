@@ -1810,6 +1810,62 @@ function ClaudeWoW.SkillLines()
 	return out
 end
 
+function ClaudeWoW.ActiveTraitConfigID()
+	local specGroup = Try(C_SpecializationInfo and C_SpecializationInfo.GetActiveSpecGroup)
+	if type(specGroup) ~= "number" then return nil end
+	local configID = Try(C_SpecializationInfo.GetCombatConfigIDForSpecGroup, specGroup)
+	if type(configID) == "number" then return configID end
+end
+
+function ClaudeWoW.TraitTalentTrees()
+	if not C_Traits then return {} end
+	local configID = ClaudeWoW.ActiveTraitConfigID()
+	if not configID then return {} end
+	local config = Try(C_Traits.GetConfigInfo, configID)
+	local treeID = type(config) == "table" and type(config.treeIDs) == "table" and config.treeIDs[1]
+	if type(treeID) ~= "number" then return {} end
+	local displays = Try(C_Traits.GetGroupDisplayInfoByTreeID, treeID)
+	if type(displays) ~= "table" then return {} end
+	local groupIDs = {}
+	for _, display in ipairs(displays) do
+		if type(display) == "table" and type(display.groupID) == "number" then table.insert(groupIDs, display.groupID) end
+	end
+	local currencies = Try(C_Traits.GetGroupCurrencyInfo, configID, groupIDs)
+	if type(currencies) ~= "table" then return {} end
+	local spentByGroup = {}
+	for _, group in ipairs(currencies) do
+		local first = type(group) == "table" and type(group.traitNodeGroupID) == "number" and type(group.currencyInfos) == "table" and group.currencyInfos[1]
+		if type(first) == "table" and type(first.spent) == "number" then spentByGroup[group.traitNodeGroupID] = first.spent end
+	end
+	if next(spentByGroup) == nil then return {} end
+	local trees = {}
+	for _, display in ipairs(displays) do
+		if type(display) == "table" and type(display.displayName) == "string" and display.displayName ~= "" then
+			table.insert(trees, { name = display.displayName, points = spentByGroup[display.groupID] or 0 })
+		end
+	end
+	return trees
+end
+
+function ClaudeWoW.TabTalentTrees()
+	local trees = {}
+	local tabs = Try(GetNumTalentTabs)
+	for i = 1, (type(tabs) == "number" and tabs or 0) do
+		local tname, _, points = Try(GetTalentTabInfo, i)
+		if type(tname) == "string" and type(points) == "number" then
+			table.insert(trees, { name = tname, points = points })
+		end
+	end
+	return trees
+end
+
+function ClaudeWoW.TalentTrees()
+	local trees = Try(ClaudeWoW.TraitTalentTrees)
+	if type(trees) == "table" and #trees > 0 then return trees end
+	trees = Try(ClaudeWoW.TabTalentTrees)
+	return type(trees) == "table" and trees or {}
+end
+
 function ClaudeWoW.GameContext()
 	local lines = {}
 	local version, build, _, toc = Try(GetBuildInfo)
@@ -1875,17 +1931,11 @@ function ClaudeWoW.GameContext()
 	end
 	if #progress > 0 then table.insert(lines, table.concat(progress, "; ")) end
 
-	-- Classic-style talent tabs: name, icon, points spent.
-	local tabs = Try(GetNumTalentTabs)
-	if type(tabs) == "number" and tabs > 0 then
+	local trees = ClaudeWoW.TalentTrees()
+	if #trees > 0 then
 		local parts = {}
-		for i = 1, tabs do
-			local tname, _, points = Try(GetTalentTabInfo, i)
-			if type(tname) == "string" and type(points) == "number" then
-				table.insert(parts, tname .. " " .. points)
-			end
-		end
-		if #parts > 0 then table.insert(lines, "Talents: " .. table.concat(parts, " / ")) end
+		for _, tree in ipairs(trees) do table.insert(parts, tree.name .. " " .. tree.points) end
+		table.insert(lines, "Talents: " .. table.concat(parts, " / "))
 	end
 
 	-- Skill lines under the Professions and Secondary Skills headers.
