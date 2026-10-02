@@ -119,3 +119,14 @@ test('with no synced data, ask runs go without the server and the bridge says wh
     assert.equal(h.bridge.output.match(/wowdata: no synced game data/g).length, 1);
   });
 });
+
+test('a reply keeps item tokens the synced data has and shows every other one as plain text, with a log line', async () => {
+  const beforeLaunch = async sb => {
+    await D.sync({ dataDir: path.join(sb.home, 'data'), build: BUILD, fetch: fixtureFetch });
+  };
+  await withGame({ plugin: 'ask', beforeLaunch }, async h => {
+    const r = await h.client.say('what should I buy [[reply buy {item:501} not {item:999999}]]');
+    assert.equal(r.text, 'buy {item:501} not item 999999');
+    await h.bridge.waitForLine(/reply tokens: 1 unlinked, item:999999 \(not in the forever 1\.60\.1\.200 data\)/, { from: 0 });
+  });
+});

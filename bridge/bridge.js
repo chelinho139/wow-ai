@@ -60,6 +60,7 @@ const GM = require('./goalsmcp');
 const GD = require('./gamedata');
 const DSYNC = require('./datasync');
 const GR = require('./gamerefs');
+const RT = require('./replytokens');
 
 // The plugins this bridge has (docs/PLATFORM.md). Registration order is the
 // order match() is asked in, and the first one is the default unless
@@ -1118,8 +1119,21 @@ function liveStartCommand() {
   return LP.startCommand({ repo: REPO, home: liveHomeArg() });
 }
 
+function checkedReply(job, reply) {
+  if (!/\{[A-Za-z]+:\d/.test(reply.text + reply.summary)) return reply;
+  const chat = transcripts.chats[job.chat];
+  const linked = RT.linkedIds([job.text, ...(chat ? chat.messages.filter(m => m.role === 'user').map(m => m.text) : [])]);
+  let store = null;
+  try { store = GR.openFor(HOME.data, gameContext()); } catch (e) { log(`${tagOf(job)} reply tokens: game data unreadable (${e.message})`); }
+  const text = RT.checkTokens(reply.text, { store, linked });
+  const summary = RT.checkTokens(reply.summary, { store, linked });
+  const dropped = text.dropped.length ? text.dropped : summary.dropped;
+  if (dropped.length) log(`${tagOf(job)} ${RT.dropsLine(dropped)}`);
+  return { text: text.text, summary: summary.text };
+}
+
 function lateReply(job, raw) {
-  const { text, summary } = P.splitSummary(String(raw || ''));
+  const { text, summary } = checkedReply(job, P.splitSummary(String(raw || '')));
   noteMessage(job, 'assistant', text);
   publish(`${chatKey(job)}#late`, { chat: job.chat, id: job.id, status: 'done', late: true, text, summary, cwd: job.cwd, agent: job.agent || '', plugin: job.plugin || '' }, true);
   mapShare.onReplyPublished();
@@ -1620,7 +1634,7 @@ function finish(job, status, text, session, denied) {
   let macros = [];
   const plugin = registry.get(job.plugin);
   if (status === 'done') {
-    ({ text, summary } = P.splitSummary(text));
+    ({ text, summary } = checkedReply(job, P.splitSummary(text)));
     // After the split: a macro block the agent put after "TL;DR:" must not end up
     // in the game-chat summary. Only a plugin whose replies may carry macros
     // gets the buttons.
