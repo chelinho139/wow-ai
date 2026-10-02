@@ -367,7 +367,11 @@ test('Classic Era vendor window: prices come from GetMerchantItemInfo, extended-
 
 const ERA_AUCTION = `
 STUB.ahQueries = {}
+STUB.bids = 0
+STUB.canSend = true
 function QueryAuctionItems(text) table.insert(STUB.ahQueries, text or "") end
+function CanSendAuctionQuery(kind) return kind == "list" and STUB.canSend end
+function PlaceAuctionBid() STUB.bids = STUB.bids + 1 end
 STUB.auctions = {}
 function GetNumAuctionItems(kind)
   if kind ~= "list" then return 0, 0 end
@@ -376,7 +380,7 @@ end
 function GetAuctionItemInfo(kind, i)
   local a = kind == "list" and STUB.auctions[i]
   if not a then return nil end
-  return "Auction Item", 134400, a.count, 1, true, 10, nil, 5, 1, a.buyout, 0, false, nil, "Seller", nil, 0, a.id, a.info ~= false
+  return a.name or "Test Cloth", 134400, a.count, 1, true, 10, nil, 5, 1, a.buyout, 0, false, nil, "Seller", nil, 0, a.reported or a.id, a.info ~= false
 end
 function GetAuctionItemLink(kind, i)
   local a = kind == "list" and STUB.auctions[i]
@@ -384,8 +388,20 @@ function GetAuctionItemLink(kind, i)
   return a.link or ("|cff1eff00|Hitem:" .. a.id .. ":0:0:0:0:0:" .. (a.suffix or 0) .. ":0:20|h[x]|h|r")
 end
 AuctionFrame = CreateFrame("Frame", "AuctionFrame")
+BrowseName = CreateFrame("EditBox", "BrowseName")
+BrowseName:SetText("cloth")
 function STUB.LoadAuctionUI()
-  function AuctionFrameBrowse_Search() QueryAuctionItems(STUB.searchText or "", 0, 0, 0, false, -1, false, false, nil) end
+  function DequoteString(s)
+    local inner = s:match('^"(.*)"$')
+    return inner
+  end
+  function AuctionFrameBrowse_Search()
+    local text = BrowseName:GetText()
+    local exact = false
+    local inner = DequoteString(text)
+    if inner then exact, text = true, inner end
+    QueryAuctionItems(text, 0, 0, 0, false, -1, false, exact, nil)
+  end
   STUB.FireEvent("ADDON_LOADED", "Blizzard_AuctionUI")
 end
 `;
@@ -394,9 +410,10 @@ function auctionList(rows) {
   return `{ ${rows.map(r => `{ ${Object.entries(r).map(([k, v]) => `${k} = ${typeof v === 'string' ? JSON.stringify(v) : v}`).join(', ')} }`).join(', ')} }`;
 }
 
-function eraAuctionHouse({ extra = '' } = {}) {
+function eraAuctionHouse({ extra = '', load = true } = {}) {
   const vm = ready({ extra: `${ERA_CLIENT}\n${ERA_AUCTION}\n${extra}`, gs: eraGs() });
-  vm.run('if not AuctionFrameBrowse_Search then STUB.LoadAuctionUI() end; AuctionFrame:Show()');
+  if (load) vm.run('if not AuctionFrameBrowse_Search then STUB.LoadAuctionUI() end');
+  vm.run('AuctionFrame:Show()');
   return vm;
 }
 
@@ -412,10 +429,10 @@ function results(vm, rows, total) {
 
 function eraQuotes(vm) {
   const r = nextRecord(vm);
-  return r && r.sections.ah ? r.sections.ah.value.quotes.map(q => [q.itemID, q.price, q.quantity, q.rows]) : [];
+  return r && r.sections.ah ? r.sections.ah.value.quotes.map(q => [q.itemID, q.price, q.quantity, q.rows, q.stack]) : [];
 }
 
-test('Classic Era: a search the player ran is read once, as the lowest buyout per item rounded up, with every listed item and the auction rows; the addon queries nothing', () => {
+test('Classic Era: a search the player ran is read once, as the lowest buyout per item rounded up, with every listed item, the auction rows and the winning stack; the addon queries nothing', () => {
   const vm = eraAuctionHouse();
   const reason = playerSearch(vm, [
     { id: 2589, count: 3, buyout: 100 },
@@ -425,15 +442,27 @@ test('Classic Era: a search the player ran is read once, as the lowest buyout pe
     { id: 2593, count: 1, buyout: 0 },
   ]);
   assert.equal(reason, 'read 3 items from 5 auctions');
-  assert.deepEqual(eraQuotes(vm), [[2589, 34, 9, 3], [2592, 51, 2, 1]], '100 for 3 is 33.4 per item, beats 35 for 1 and is shown as 34; 101 for 2 is 51 rounded up; a bid-only auction counts as listed but never as a price');
+  assert.deepEqual(eraQuotes(vm), [[2589, 34, 9, 3, 3], [2592, 51, 2, 1, 2]], '100 for 3 is 33.4 per item, beats 35 for 1 and is shown as 34 from a stack of 3; 101 for 2 is 51 rounded up; a bid-only auction counts as listed but never as a price');
   assert.equal(vm.evaluate('#STUB.ahQueries'), '1', 'the only query is the player\'s own search');
 });
 
-test('Classic Era: the hook on the Blizzard search is installed whether the auction UI loads after the addon or before it', () => {
+test('Classic Era: every auction hook is a secure post-hook, installed whether the auction UI loads after the addon or before it, and ADDON_LOADED is dropped once they are in', () => {
   const late = eraAuctionHouse();
+  for (const name of ['QueryAuctionItems', 'PlaceAuctionBid', 'DequoteString', 'AuctionFrameBrowse_Search']) {
+    assert.equal(late.evaluate(`STUB.secureHooks[${name}] == true`), 'true', `${name} is wrapped by hooksecurefunc, never replaced`);
+  }
   assert.equal(playerSearch(late, [{ id: 2589, count: 1, buyout: 40 }]), 'read 1 items from 1 auctions');
-  const early = eraAuctionHouse({ extra: 'function AuctionFrameBrowse_Search() QueryAuctionItems("", 0, 0, 0, false, -1, false, false, nil) end' });
+  late.run('RESULT = 0; for _, f in ipairs(STUB.frames) do if f.events.ADDON_LOADED and f.events.AUCTION_ITEM_LIST_UPDATE then RESULT = RESULT + 1 end end');
+  assert.equal(late.evaluate('RESULT'), '0', 'the observed frame stops listening for ADDON_LOADED');
+  const early = eraAuctionHouse({ extra: 'STUB.LoadAuctionUI()' });
   assert.equal(playerSearch(early, [{ id: 2589, count: 1, buyout: 40 }]), 'read 1 items from 1 auctions');
+});
+
+test('Classic Era: without the Blizzard search hooks nothing is read, and the reason says so', () => {
+  const vm = eraAuctionHouse({ load: false });
+  vm.run('QueryAuctionItems("cloth")');
+  assert.equal(results(vm, [{ id: 2589, count: 1, buyout: 40 }]), 'query hooks not installed');
+  assert.equal(vm.evaluate('ClaudeWoWObserved.Sections().ah'), null);
 });
 
 test('Classic Era: a query from another addon after the player\'s search means the list is not the player\'s, and nothing is stored', () => {
@@ -444,14 +473,79 @@ test('Classic Era: a query from another addon after the player\'s search means t
   assert.equal(vm.evaluate('ClaudeWoWObserved.Sections().ah'), null);
 });
 
-test('Classic Era: a list update with no player search behind it (a bid, a query from the bid path or another addon) stores nothing, and a refire after a read adds nothing', () => {
+test('Classic Era: a search sent while queries are throttled arms nothing, so another addon\'s result in flight is not stored', () => {
+  const vm = eraAuctionHouse();
+  vm.run('QueryAuctionItems("addon scan"); STUB.canSend = false; AuctionFrameBrowse_Search()');
+  assert.equal(vm.evaluate('ClaudeWoWObserved.debug.ah'), 'the search was throttled');
+  assert.equal(results(vm, [{ id: 2589, count: 1, buyout: 7 }]), 'no player search waiting');
+  vm.run('STUB.canSend = true');
+  assert.equal(playerSearch(vm, [{ id: 2589, count: 1, buyout: 40 }]), 'read 1 items from 1 auctions');
+  assert.deepEqual(eraQuotes(vm), [[2589, 40, 1, 1, 1]]);
+});
+
+test('Classic Era: a search call that sends no query of its own (the token page) or two queries arms nothing', () => {
+  const noQuery = eraAuctionHouse({ extra: 'function DequoteString() return nil end\nfunction AuctionFrameBrowse_Search() DequoteString(BrowseName:GetText()) end' });
+  noQuery.run('QueryAuctionItems("addon scan"); AuctionFrameBrowse_Search()');
+  assert.equal(noQuery.evaluate('ClaudeWoWObserved.debug.ah'), 'the search sent no query of its own');
+  assert.equal(results(noQuery, [{ id: 2589, count: 1, buyout: 7 }]), 'no player search waiting');
+  const twice = eraAuctionHouse({ extra: 'function DequoteString() return nil end\nfunction AuctionFrameBrowse_Search() DequoteString(BrowseName:GetText()); QueryAuctionItems("cloth"); QueryAuctionItems("addon scan") end' });
+  twice.run('AuctionFrameBrowse_Search()');
+  assert.equal(twice.evaluate('ClaudeWoWObserved.debug.ah'), 'the search sent no query of its own');
+  assert.equal(results(twice, [{ id: 2589, count: 1, buyout: 7 }]), 'no player search waiting');
+  const token = eraAuctionHouse({ extra: 'function DequoteString() return nil end\nfunction AuctionFrameBrowse_Search() end' });
+  token.run('QueryAuctionItems("addon scan"); AuctionFrameBrowse_Search()');
+  assert.equal(token.evaluate('ClaudeWoWObserved.debug.ah'), 'the search sent no query of its own', 'the token page calls neither DequoteString nor a query');
+  const stale = eraAuctionHouse({ extra: 'function DequoteString() return nil end\nfunction AuctionFrameBrowse_Search() QueryAuctionItems("cloth") end' });
+  stale.run('DequoteString("cloth")');
+  tick(stale, 1);
+  stale.run('AuctionFrameBrowse_Search()');
+  assert.equal(stale.evaluate('ClaudeWoWObserved.debug.ah'), 'the search sent no query of its own', 'a DequoteString call from an earlier frame does not vouch for this query');
+  assert.equal(results(stale, [{ id: 2589, count: 1, buyout: 7 }]), 'no player search waiting');
+});
+
+test('Classic Era: a list update with no player search behind it (a query from the bid path or another addon) stores nothing, and a refire after a read adds nothing', () => {
   const vm = eraAuctionHouse();
   vm.run('QueryAuctionItems("bid path")');
   assert.equal(results(vm, [{ id: 2589, count: 1, buyout: 9 }]), 'no player search waiting');
   assert.equal(vm.evaluate('ClaudeWoWObserved.Sections().ah'), null);
   assert.equal(playerSearch(vm, [{ id: 2589, count: 1, buyout: 40 }]), 'read 1 items from 1 auctions');
   assert.equal(results(vm, [{ id: 2589, count: 1, buyout: 12 }]), 'no player search waiting', 'the update after a bid is not a second read');
-  assert.deepEqual(eraQuotes(vm), [[2589, 40, 1, 1]]);
+  assert.deepEqual(eraQuotes(vm), [[2589, 40, 1, 1, 1]]);
+});
+
+test('Classic Era: a bid or buyout while the player\'s search still waits for its refire drops the search, so the refreshed list is not stored', () => {
+  const vm = eraAuctionHouse();
+  vm.run('AuctionFrameBrowse_Search()');
+  assert.equal(results(vm, [{ id: 2589, count: 1, buyout: 40, noLink: true }]), 'a row has no item info yet');
+  vm.run('PlaceAuctionBid("list", 1, 40)');
+  assert.equal(vm.evaluate('STUB.bids'), '1', 'the hook kept the real bid call');
+  assert.equal(vm.evaluate('ClaudeWoWObserved.debug.ah'), 'a bid or buyout was placed');
+  assert.equal(results(vm, [{ id: 2589, count: 1, buyout: 60 }]), 'no player search waiting');
+  assert.equal(vm.evaluate('ClaudeWoWObserved.Sections().ah'), null);
+});
+
+test('Classic Era: closing the auction house or reading while telemetry is off drops a waiting search', () => {
+  const closed = eraAuctionHouse();
+  closed.run('AuctionFrameBrowse_Search(); STUB.FireEvent("AUCTION_HOUSE_CLOSED")');
+  assert.equal(results(closed, [{ id: 2589, count: 1, buyout: 40 }]), 'no player search waiting');
+  const off = eraAuctionHouse();
+  off.run('AuctionFrameBrowse_Search(); SlashCmdList.CLAUDE("config telemetry off")');
+  assert.equal(results(off, [{ id: 2589, count: 1, buyout: 40 }]), 'telemetry is not collecting');
+  off.run('SlashCmdList.CLAUDE("config telemetry on")');
+  assert.equal(results(off, [{ id: 2589, count: 1, buyout: 40 }]), 'no player search waiting', 'the search was spent while off');
+  assert.equal(off.evaluate('ClaudeWoWObserved.Sections().ah'), null);
+});
+
+test('Classic Era: every row must contain the player\'s search text, exactly for a quoted search; an empty search stores nothing', () => {
+  const vm = eraAuctionHouse();
+  assert.equal(playerSearch(vm, [{ id: 2589, count: 1, buyout: 40, name: 'Test Cloth' }, { id: 4306, count: 1, buyout: 9, name: 'Other Thing' }]), 'a row does not match the search text');
+  assert.equal(vm.evaluate('ClaudeWoWObserved.Sections().ah'), null);
+  vm.run('BrowseName:SetText("\\"Test Cloth\\"")');
+  assert.equal(playerSearch(vm, [{ id: 2589, count: 1, buyout: 40, name: 'Test Cloth' }, { id: 2590, count: 1, buyout: 9, name: 'Bolt of Test Cloth' }]), 'a row does not match the search text', 'an exact search accepts only the exact name');
+  assert.equal(playerSearch(vm, [{ id: 2589, count: 1, buyout: 40, name: 'test cloth' }]), 'read 1 items from 1 auctions', 'the match ignores case');
+  vm.run('BrowseName:SetText("")');
+  assert.equal(playerSearch(vm, [{ id: 2589, count: 1, buyout: 40 }]), 'no search text to check the rows against');
+  assert.deepEqual(eraQuotes(vm), [[2589, 40, 1, 1, 1]]);
 });
 
 test('Classic Era: a result on more than one page, or a batch larger than one page, is not the market low and stores nothing', () => {
@@ -461,7 +555,7 @@ test('Classic Era: a result on more than one page, or a batch larger than one pa
   const all = Array.from({ length: 60 }, () => ({ id: 2589, count: 1, buyout: 30 }));
   assert.equal(playerSearch(vm, all, 60), 'result spans pages: 60 auctions, 60 shown');
   assert.equal(vm.evaluate('ClaudeWoWObserved.Sections().ah'), null);
-  assert.equal(playerSearch(vm, page.slice(0, 50), 50), 'read 1 items from 50 auctions', 'a full single page is complete');
+  assert.equal(playerSearch(vm, page, 50), 'read 1 items from 50 auctions', 'a full single page is complete');
 });
 
 test('Classic Era: a random-suffix row never prices the base item; links with zero, empty or missing suffix fields are told apart', () => {
@@ -474,7 +568,18 @@ test('Classic Era: a random-suffix row never prices the base item; links with ze
     { id: 15212, count: 1, buyout: 100, link: '|cff1eff00|Hitem:15212:0:0|h[x]|h|r' },
   ]);
   assert.equal(reason, 'read 2 items from 5 auctions');
-  assert.deepEqual(eraQuotes(vm), [[15210, 5000, 1, 1], [15211, 4000, 1, 1]], 'suffix rows are skipped, and a link too short to show its suffix is not trusted');
+  assert.deepEqual(eraQuotes(vm), [[15210, 5000, 1, 1, 1], [15211, 4000, 1, 1, 1]], 'suffix rows are skipped, and a link too short to show its suffix is not trusted');
+});
+
+test('Classic Era: a row whose reported item ID differs from its link, or whose count is 0, is not counted', () => {
+  const vm = eraAuctionHouse();
+  const reason = playerSearch(vm, [
+    { id: 2589, count: 1, buyout: 5, reported: 2590 },
+    { id: 2589, count: 0, buyout: 6 },
+    { id: 2589, count: 2, buyout: 80 },
+  ]);
+  assert.equal(reason, 'read 1 items from 3 auctions');
+  assert.deepEqual(eraQuotes(vm), [[2589, 40, 2, 1, 2]]);
 });
 
 test('Classic Era: a row with no link or without all its info stores nothing for the whole list until the refire', () => {
@@ -484,7 +589,14 @@ test('Classic Era: a row with no link or without all its info stores nothing for
   assert.equal(results(vm, [{ id: 2589, count: 1, buyout: 40 }, { id: 2592, count: 1, buyout: 5, info: false }]), 'a row has no item info yet');
   assert.equal(vm.evaluate('ClaudeWoWObserved.Sections().ah'), null);
   assert.equal(results(vm, [{ id: 2589, count: 1, buyout: 40 }, { id: 2592, count: 1, buyout: 5 }]), 'read 2 items from 2 auctions');
-  assert.deepEqual(eraQuotes(vm), [[2589, 40, 1, 1], [2592, 5, 1, 1]]);
+  assert.deepEqual(eraQuotes(vm), [[2589, 40, 1, 1, 1], [2592, 5, 1, 1, 1]]);
+});
+
+test('Classic Era: more priced items than the quote cap keeps the first 12 and says how many were dropped', () => {
+  const vm = eraAuctionHouse();
+  const rows = Array.from({ length: 14 }, (_, i) => ({ id: 3000 + i, count: 1, buyout: 10 + i }));
+  assert.equal(playerSearch(vm, rows), 'read 14 items from 14 auctions, 2 over the 12-quote cap dropped');
+  assert.deepEqual(eraQuotes(vm).map(q => q[0]), rows.slice(0, 12).map(r => r.id));
 });
 
 test('Classic Era: results that arrive after the auction frame closed are not read', () => {
@@ -494,7 +606,7 @@ test('Classic Era: results that arrive after the auction frame closed are not re
   assert.equal(vm.evaluate('ClaudeWoWObserved.Sections().ah'), null);
 });
 
-test('Classic Era round trip: the quote with its rows lands in observed.jsonl through the real bridge parser', () => {
+test('Classic Era round trip: the quote with its rows and stack lands in observed.jsonl through the real bridge parser', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-observed-era-ah-'));
   try {
     const vm = eraAuctionHouse();
@@ -505,7 +617,7 @@ test('Classic Era round trip: the quote with its rows lands in observed.jsonl th
     const t = TL.createTelemetry({ dir, observed });
     assert.equal(t.submit(job).status, 'applied');
     const [line] = observed.lines(CHARACTER).filter(l => l.kind === 'ah');
-    assert.deepEqual([line.itemID, line.price, line.quantity, line.rows, line.trust, line.n], [2589, 34, 5, 2, 'observed', 1]);
+    assert.deepEqual([line.itemID, line.price, line.quantity, line.rows, line.stack, line.trust, line.n], [2589, 34, 5, 2, 3, 'observed', 1]);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 

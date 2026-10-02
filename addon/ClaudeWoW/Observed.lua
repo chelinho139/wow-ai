@@ -20,12 +20,14 @@ O.SOURCE_CODES = { Creature = "n", Vehicle = "n", GameObject = "o" }
 O.FISHING_CODE = "f"
 O.AH_LIST = "list"
 O.AH_PAGE_MAX = 50
+O.AUCTION_NAME = 1
 O.AUCTION_COUNT = 3
 O.AUCTION_BUYOUT = 10
 O.AUCTION_ITEM_ID = 17
 O.AUCTION_HAS_ALL_INFO = 18
 O.LINK_SUFFIX_FIELD = 7
-O.ERA_AUCTION_API = { "QueryAuctionItems", "GetNumAuctionItems", "GetAuctionItemInfo", "GetAuctionItemLink", "hooksecurefunc" }
+O.ERA_AUCTION_API = { "QueryAuctionItems", "GetNumAuctionItems", "GetAuctionItemInfo", "GetAuctionItemLink", "CanSendAuctionQuery", "PlaceAuctionBid", "hooksecurefunc" }
+O.ERA_HOOKS = { query = "QueryAuctionItems", bid = "PlaceAuctionBid", dequote = "DequoteString", search = "AuctionFrameBrowse_Search" }
 O.PROBES = {
 	"GetMerchantNumItems",
 	"GetMerchantItemID",
@@ -42,10 +44,10 @@ O.PROBES = {
 	"UnitGUID",
 	"UnitIsDead",
 }
-O.EVENTS = { "MERCHANT_SHOW", "AUCTION_HOUSE_BROWSE_RESULTS_UPDATED", "COMMODITY_SEARCH_RESULTS_UPDATED", "AUCTION_ITEM_LIST_UPDATE", "LOOT_READY", "LOOT_OPENED", "LOOT_CLOSED" }
+O.EVENTS = { "MERCHANT_SHOW", "AUCTION_HOUSE_BROWSE_RESULTS_UPDATED", "COMMODITY_SEARCH_RESULTS_UPDATED", "AUCTION_ITEM_LIST_UPDATE", "AUCTION_HOUSE_CLOSED", "LOOT_READY", "LOOT_OPENED", "LOOT_CLOSED" }
 O.debug = { ah = nil }
 
-local state = { vendor = nil, ah = {}, loot = {}, looted = {}, lootedOrder = {}, windowAt = nil, spell = nil, gather = {}, queries = 0, playerQuery = nil, queryHooked = false, searchHooked = false }
+local state = { vendor = nil, ah = {}, loot = {}, looted = {}, lootedOrder = {}, windowAt = nil, spell = nil, gather = {}, queries = 0, before = nil, dequoting = false, playerQuery = nil, hooked = {} }
 
 local function Try(fn, ...)
 	if type(fn) ~= "function" then return nil end
@@ -150,14 +152,14 @@ function O.OnMerchant()
 	Changed()
 end
 
-local function Quote(itemID, price, quantity, rows)
+local function Quote(itemID, price, quantity, rows, stack)
 	if not (WholeNumber(itemID) and itemID > 0 and WholeNumber(price) and price > 0) then return false end
 	quantity = WholeNumber(quantity) or 0
 	local now = time()
 	for _, q in ipairs(state.ah) do
-		if q.id == itemID and q.price == price and q.quantity == quantity and q.rows == rows and now - q.at < O.AH_REPEAT_SECONDS then return false end
+		if q.id == itemID and q.price == price and q.quantity == quantity and q.rows == rows and q.stack == stack and now - q.at < O.AH_REPEAT_SECONDS then return false end
 	end
-	Push(state.ah, { id = itemID, price = price, quantity = quantity, rows = rows, at = now }, O.AH_QUOTES_MAX)
+	Push(state.ah, { id = itemID, price = price, quantity = quantity, rows = rows, stack = stack, at = now }, O.AH_QUOTES_MAX)
 	return true
 end
 
@@ -184,18 +186,53 @@ function O.OnAuctionQuery()
 	state.queries = state.queries + 1
 end
 
+function O.BeforeQuery(raw)
+	if state.dequoting then return end
+	state.before = { at = GetTime(), count = state.queries, canSend = Try(CanSendAuctionQuery, O.AH_LIST) and true or false, raw = PlainString(raw) or "" }
+end
+
 function O.OnPlayerSearch()
-	state.playerQuery = state.queries
+	local before, now = state.before, GetTime()
+	state.before = nil
+	state.playerQuery = nil
+	if not before or before.at ~= now or state.queries ~= before.count + 1 then
+		O.debug.ah = "the search sent no query of its own"
+		return
+	end
+	if not before.canSend then
+		O.debug.ah = "the search was throttled"
+		return
+	end
+	state.dequoting = true
+	local inner = PlainString(Try(DequoteString, before.raw))
+	state.dequoting = false
+	state.playerQuery = { count = state.queries, text = string.lower(inner or before.raw), exact = inner ~= nil }
+end
+
+function O.OnBid()
+	if state.playerQuery then O.debug.ah = "a bid or buyout was placed" end
+	state.playerQuery = nil
+end
+
+local function Hook(key, fn)
+	local name = O.ERA_HOOKS[key]
+	if not state.hooked[key] and type(_G[name]) == "function" then state.hooked[key] = pcall(hooksecurefunc, name, fn) end
+end
+
+function O.AuctionHooked()
+	local h = state.hooked
+	return (h.query and h.bid and h.dequote and h.search) and true or false
 end
 
 function O.HookAuctionQueries()
-	if type(hooksecurefunc) ~= "function" then return end
-	if not state.queryHooked and type(QueryAuctionItems) == "function" then
-		state.queryHooked = pcall(hooksecurefunc, "QueryAuctionItems", function() O.OnAuctionQuery() end)
+	if type(hooksecurefunc) ~= "function" then return false end
+	Hook("query", function() O.OnAuctionQuery() end)
+	Hook("bid", function() O.OnBid() end)
+	if state.hooked.query and state.hooked.bid then
+		Hook("dequote", function(raw) O.BeforeQuery(raw) end)
+		Hook("search", function() O.OnPlayerSearch() end)
 	end
-	if state.queryHooked and not state.searchHooked and type(AuctionFrameBrowse_Search) == "function" then
-		state.searchHooked = pcall(hooksecurefunc, "AuctionFrameBrowse_Search", function() O.OnPlayerSearch() end)
-	end
+	return O.AuctionHooked()
 end
 
 function O.AuctionLinkItem(link)
@@ -215,12 +252,20 @@ local function SkipList(reason, consume)
 	if consume then state.playerQuery = nil end
 end
 
-local function AuctionRows(batch)
+local function NameMatches(name, search)
+	name = string.lower(name)
+	if search.exact then return name == search.text end
+	return string.find(name, search.text, 1, true) ~= nil
+end
+
+local function AuctionRows(batch, search)
 	local items, order = {}, {}
 	for i = 1, batch do
 		local r = Returns(GetAuctionItemInfo, O.AH_LIST, i)
 		local id, plain = O.AuctionLinkItem(Try(GetAuctionItemLink, O.AH_LIST, i))
-		if not r or not r[O.AUCTION_HAS_ALL_INFO + 1] or not id then return nil end
+		local name = r and PlainString(r[O.AUCTION_NAME + 1])
+		if not r or not r[O.AUCTION_HAS_ALL_INFO + 1] or not id or not name then return nil end
+		if not NameMatches(name, search) then return false end
 		local count, buyout, reported = WholeNumber(r[O.AUCTION_COUNT + 1]), WholeNumber(r[O.AUCTION_BUYOUT + 1]), r[O.AUCTION_ITEM_ID + 1]
 		if plain and count and count > 0 and buyout and (reported == nil or reported == id) then
 			local it = items[id]
@@ -238,22 +283,32 @@ local function AuctionRows(batch)
 end
 
 function O.OnAuctionList()
-	if not (state.queryHooked and state.searchHooked) then return SkipList("query hooks not installed") end
-	if state.playerQuery ~= state.queries then return SkipList(state.playerQuery and "another query ran after the player's search" or "no player search waiting", true) end
+	if not O.AuctionHooked() then return SkipList("query hooks not installed", true) end
+	local search = state.playerQuery
+	if not search then return SkipList("no player search waiting") end
+	if search.count ~= state.queries then return SkipList("another query ran after the player's search", true) end
 	if not (AuctionFrame and Try(AuctionFrame.IsShown, AuctionFrame)) then return SkipList("auction window not shown", true) end
+	if search.text == "" then return SkipList("no search text to check the rows against", true) end
 	local batch, total = Try(GetNumAuctionItems, O.AH_LIST)
 	batch, total = WholeNumber(batch), WholeNumber(total)
 	if not (batch and total) then return SkipList("no result count", true) end
 	if total > batch or batch > O.AH_PAGE_MAX then return SkipList("result spans pages: " .. Int(total) .. " auctions, " .. Int(batch) .. " shown", true) end
-	local items, order = AuctionRows(batch)
+	local items, order = AuctionRows(batch, search)
+	if items == false then return SkipList("a row does not match the search text", true) end
 	if not items then return SkipList("a row has no item info yet") end
 	state.playerQuery = nil
-	local added = false
+	local added, kept, priced = false, 0, 0
 	for _, id in ipairs(order) do
 		local it = items[id]
-		if it.buyout and Quote(id, math.floor((it.buyout + it.count - 1) / it.count), it.quantity, it.rows) then added = true end
+		if it.buyout then
+			priced = priced + 1
+			if kept < O.AH_QUOTES_MAX then
+				kept = kept + 1
+				if Quote(id, math.floor((it.buyout + it.count - 1) / it.count), it.quantity, it.rows, it.count) then added = true end
+			end
+		end
 	end
-	O.debug.ah = "read " .. Int(#order) .. " items from " .. Int(batch) .. " auctions"
+	O.debug.ah = "read " .. Int(#order) .. " items from " .. Int(batch) .. " auctions" .. (priced > kept and (", " .. Int(priced - kept) .. " over the " .. Int(O.AH_QUOTES_MAX) .. "-quote cap dropped") or "")
 	if added then Changed() end
 end
 
@@ -374,7 +429,7 @@ end
 
 function O.Sections()
 	local ah = {}
-	for _, q in ipairs(state.ah) do ah[#ah + 1] = Int(q.id) .. "=" .. Int(q.price) .. "/" .. Int(q.quantity) .. "@" .. Int(q.at) .. (q.rows and ("/" .. Int(q.rows)) or "") end
+	for _, q in ipairs(state.ah) do ah[#ah + 1] = Int(q.id) .. "=" .. Int(q.price) .. "/" .. Int(q.quantity) .. "@" .. Int(q.at) .. (q.rows and q.stack and ("/" .. Int(q.rows) .. "/" .. Int(q.stack)) or "") end
 	return { vendor = state.vendor, ah = #ah > 0 and table.concat(ah, ",") or nil, loot = #state.loot > 0 and table.concat(state.loot, ";") or nil }
 end
 
@@ -387,6 +442,11 @@ function O.OnEvent(event, ...)
 		local unit, _, spellID = ...
 		return O.OnSpell(unit, spellID)
 	end
+	if event == "AUCTION_HOUSE_CLOSED" then
+		state.playerQuery = nil
+		return
+	end
+	if event == "AUCTION_ITEM_LIST_UPDATE" and not Active() then return SkipList("telemetry is not collecting", true) end
 	if not Active() then return end
 	if event == "MERCHANT_SHOW" then return O.OnMerchant() end
 	if event == "AUCTION_HOUSE_BROWSE_RESULTS_UPDATED" then return O.OnBrowse() end
@@ -399,7 +459,10 @@ local frame = CreateFrame("Frame")
 frame:RegisterEvent("PLAYER_LOGIN")
 frame:RegisterEvent("ADDON_LOADED")
 frame:SetScript("OnEvent", function(_, event, ...)
-	if event == "ADDON_LOADED" then return O.HookAuctionQueries() end
+	if event == "ADDON_LOADED" then
+		if O.HookAuctionQueries() then frame:UnregisterEvent("ADDON_LOADED") end
+		return
+	end
 	if event == "PLAYER_LOGIN" then
 		for _, name in ipairs(O.EVENTS) do pcall(frame.RegisterEvent, frame, name) end
 		if not (frame.RegisterUnitEvent and pcall(frame.RegisterUnitEvent, frame, "UNIT_SPELLCAST_SUCCEEDED", "player")) then

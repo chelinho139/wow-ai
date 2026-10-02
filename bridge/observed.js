@@ -78,15 +78,16 @@ function parseAh(data) {
   if (parts.length > AH_QUOTES_MAX) return null;
   const quotes = [];
   for (const part of parts) {
-    const m = /^(\d{1,9})=(\d{1,15})\/(\d{1,9})@(\d{1,12})(?:\/(\d{1,5}))?$/.exec(part);
+    const m = /^(\d{1,9})=(\d{1,15})\/(\d{1,9})@(\d{1,12})(?:\/(\d{1,5})\/(\d{1,5}))?$/.exec(part);
     if (!m) return null;
     const itemID = positive(m[1]);
     const price = positive(m[2]);
     const quantity = whole(m[3]);
     const at = positive(m[4]);
     const rows = m[5] === undefined ? undefined : positive(m[5]);
-    if (itemID === null || price === null || quantity === null || at === null || rows === null) return null;
-    quotes.push(rows === undefined ? { key: part, itemID, price, quantity, at } : { key: part, itemID, price, quantity, rows, at });
+    const stack = m[6] === undefined ? undefined : positive(m[6]);
+    if (itemID === null || price === null || quantity === null || at === null || rows === null || stack === null) return null;
+    quotes.push(rows === undefined ? { key: part, itemID, price, quantity, at } : { key: part, itemID, price, quantity, rows, stack, at });
   }
   return { quotes };
 }
@@ -147,7 +148,7 @@ function entriesOf(name, value) {
 function lineFor(name, entry) {
   const base = { v: LINE_VERSION, kind: KINDS[name], trust: TRUST, n: 1, at: entry.at * 1000, key: `${name}|${entry.key}` };
   if (name === 'vendor') return { ...base, npcID: entry.npcID, mapID: entry.mapID, items: entry.items };
-  if (name === 'ah') return { ...base, itemID: entry.itemID, price: entry.price, quantity: entry.quantity, ...(entry.rows ? { rows: entry.rows } : {}) };
+  if (name === 'ah') return { ...base, itemID: entry.itemID, price: entry.price, quantity: entry.quantity, ...(entry.rows && entry.stack ? { rows: entry.rows, stack: entry.stack } : {}) };
   return { ...base, source: entry.source, map: entry.map, items: entry.items };
 }
 
@@ -161,7 +162,7 @@ function fileStamp(file) {
 function validLine(doc) {
   if (!doc || typeof doc !== 'object' || doc.v !== LINE_VERSION || doc.trust !== TRUST) return false;
   if (!Number.isSafeInteger(doc.at) || doc.at <= 0 || doc.n !== 1) return false;
-  if (doc.kind === KINDS.ah) return Number.isSafeInteger(doc.itemID) && doc.itemID > 0 && Number.isSafeInteger(doc.price) && doc.price > 0 && (doc.rows === undefined || (Number.isSafeInteger(doc.rows) && doc.rows > 0));
+  if (doc.kind === KINDS.ah) return Number.isSafeInteger(doc.itemID) && doc.itemID > 0 && Number.isSafeInteger(doc.price) && doc.price > 0 && ((doc.rows === undefined && doc.stack === undefined) || (Number.isSafeInteger(doc.rows) && doc.rows > 0 && Number.isSafeInteger(doc.stack) && doc.stack > 0));
   if (doc.kind === KINDS.vendor) return Number.isSafeInteger(doc.npcID) && doc.npcID > 0 && Array.isArray(doc.items);
   if (doc.kind === KINDS.loot) {
     const s = doc.source;
@@ -241,7 +242,7 @@ function prices(lines, itemID) {
   const ah = last ? {
     n: quotes.length,
     asOf: last.at,
-    latest: { price: last.price, quantity: last.quantity, ...(last.rows ? { rows: last.rows } : {}) },
+    latest: { price: last.price, quantity: last.quantity, ...(last.rows ? { rows: last.rows, stack: last.stack } : {}) },
     recent: { n: recent.length, from: recent[0].at, asOf: last.at, low: Math.min(...recent.map(q => q.price)), high: Math.max(...recent.map(q => q.price)), hours: PRICE_WINDOW_MS / 3600000 },
   } : null;
   const byNpc = new Map();

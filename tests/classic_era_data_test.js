@@ -218,7 +218,7 @@ test('market_price on Classic Era gives the observed auction quote with rows, n 
   const key = G.characterOf(ERA_CONTEXT).key;
   const at = 1790000000;
   const lines = [
-    OB.lineFor('ah', { key: 'a1', at, itemID: ERA_HIDE, price: 90, quantity: 4, rows: 2 }),
+    OB.lineFor('ah', { key: 'a1', at, itemID: ERA_HIDE, price: 90, quantity: 4, rows: 2, stack: 3 }),
     OB.lineFor('ah', { key: 'a2', at, itemID: FOREVER_BLADE, price: 1500, quantity: 1 }),
     OB.lineFor('vendor', { key: 'v1', at, npcID: 3100, mapID: 9102, items: [{ itemID: ERA_HIDE, price: 60, stack: 1 }] }),
   ];
@@ -231,7 +231,7 @@ test('market_price on Classic Era gives the observed auction quote with rows, n 
     return JSON.parse(r.text);
   };
   const era = await price(ERA_CONTEXT, ERA_HIDE);
-  assert.deepEqual(era.auctionHouse.latest, { price: 90, quantity: 4, rows: 2 });
+  assert.deepEqual(era.auctionHouse.latest, { price: 90, quantity: 4, rows: 2, stack: 3 });
   assert.deepEqual([era.auctionHouse.n, era.auctionHouse.asOf, era.auctionHouse.trust], [1, at * 1000, 'observed']);
   assert.deepEqual(era.vendors.map(v => [v.price, v.stack]), [[60, 1]]);
   assert.ok(era.notes.some(n => /Classic Era\) each auction quote is one complete search result/.test(n)), era.notes.join(' | '));

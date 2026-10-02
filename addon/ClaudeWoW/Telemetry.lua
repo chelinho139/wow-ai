@@ -194,7 +194,7 @@ function T.Missing()
 				end
 				if all then found = true end
 			end
-			if not found then out[#out + 1] = type(names[1]) == "table" and names[1][1] or names[1] end
+			if not found then out[#out + 1] = names[1] end
 		end
 	end
 	return out

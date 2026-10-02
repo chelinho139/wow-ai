@@ -90,7 +90,7 @@ function farmView(store, item, lines, minSamples, asOfContext) {
 }
 
 const AUCTION_NOTES_BY_FLAVOR = Object.freeze({
-  classic_era: 'On this client (Classic Era) each auction quote is one complete search result the player ran that fit on one page: price is the lowest buyout per item, rounded up to whole copper; quantity is every item listed for it in that result, bid-only auctions included; rows is the number of those auctions.',
+  classic_era: 'On this client (Classic Era) each auction quote is one complete search result the player ran that fit on one page: price is the lowest buyout per item, rounded up to whole copper; quantity is every item listed for it in that result, bid-only auctions included; rows is the number of those auctions; stack is the size of the auction that set the price, so a price from a stack of 20 may not buy a single item.',
 });
 
 function priceView(store, item, lines, asOfContext) {
@@ -210,7 +210,7 @@ function toolSchemas() {
     },
     {
       name: TOOL.price,
-      description: 'The prices the player saw for an item: the auction house results of searches the player ran in game, and vendor windows the player opened, in copper, with n and asOf. On Classic Era an auction quote comes only from a complete search result that fit on one page, and also gives rows (the auctions behind it). Nothing here comes from the web or from memory, and the bridge never searches the auction house. An itemID the game data does not have is refused. No observation means you do not know the price.',
+      description: 'The prices the player saw for an item: the auction house results of searches the player ran in game, and vendor windows the player opened, in copper, with n and asOf. On Classic Era an auction quote comes only from a complete search result that fit on one page, and also gives rows (the auctions behind it) and stack (the size of the auction that set the price). Nothing here comes from the web or from memory, and the bridge never searches the auction house. An itemID the game data does not have is refused. No observation means you do not know the price.',
       inputSchema: {
         type: 'object',
         properties: { itemID: { type: 'integer', minimum: 1, description: 'The item ID, from the wowdata tools' } },

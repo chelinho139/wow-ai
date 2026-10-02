@@ -69,11 +69,16 @@ test('section parsers: vendor, auction quotes and loot samples on the gs wire se
   assert.deepEqual(OB.parseAh(`501=1200/3@${AT}`).quotes.map(q => [q.itemID, q.price, q.quantity, q.at]), [[501, 1200, 3, AT]]);
   assert.equal(OB.parseAh(Array.from({ length: OB.AH_QUOTES_MAX + 1 }, () => `501=1/1@${AT}`).join(',')), null);
   assert.equal(OB.parseAh(`501=1200@${AT}`), null);
-  assert.deepEqual(OB.parseAh(`501=34/4@${AT}/2`).quotes.map(q => [q.itemID, q.price, q.quantity, q.at, q.rows]), [[501, 34, 4, AT, 2]], 'an Era quote carries its auction rows');
-  assert.equal(OB.parseAh(`501=34/4@${AT}/0`), null, 'zero rows is not a quote');
-  assert.equal(OB.lineFor('ah', OB.parseAh(`501=34/4@${AT}/2`).quotes[0]).rows, 2);
+  assert.deepEqual(OB.parseAh(`501=34/4@${AT}/2/3`).quotes.map(q => [q.itemID, q.price, q.quantity, q.at, q.rows, q.stack]), [[501, 34, 4, AT, 2, 3]], 'an Era quote carries its auction rows and the winning stack size');
+  assert.equal(OB.parseAh(`501=34/4@${AT}/0/3`), null, 'zero rows is not a quote');
+  assert.equal(OB.parseAh(`501=34/4@${AT}/2/0`), null, 'a zero stack is not a quote');
+  assert.equal(OB.parseAh(`501=34/4@${AT}/2`), null, 'rows without a stack size is not a quote');
+  const eraLine = OB.lineFor('ah', OB.parseAh(`501=34/4@${AT}/2/3`).quotes[0]);
+  assert.deepEqual([eraLine.rows, eraLine.stack], [2, 3]);
   assert.equal('rows' in OB.lineFor('ah', OB.parseAh(`501=34/4@${AT}`).quotes[0]), false, 'a Forever quote has no rows field');
-  assert.equal(OB.validLine({ ...OB.lineFor('ah', OB.parseAh(`501=34/4@${AT}/2`).quotes[0]), rows: -1 }), false);
+  assert.equal(OB.validLine({ ...eraLine, rows: -1 }), false);
+  assert.equal(OB.validLine({ ...eraLine, stack: undefined }), false);
+  assert.equal(OB.validLine(eraLine), true);
   const l = OB.parseLoot([lootEntry('n', 3100, 0, AT, { 501: 2 }), lootEntry('o', 1731, 2575, AT, {}, '@@'), lootEntry('f', 9002, 0, AT, { 505: 1 }, '9002@@')].join(';'));
   assert.deepEqual(l.samples.map(s => [s.source, s.map, s.items]), [
     [{ type: 'npc', id: 3100, spell: 0 }, { id: 9002, x: 41.2, y: 47.8 }, { 501: 2 }],
