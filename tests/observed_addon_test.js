@@ -365,13 +365,148 @@ test('Classic Era vendor window: prices come from GetMerchantItemInfo, extended-
   assert.deepEqual(r.sections.vendor.value.visit.items, [{ itemID: 501, price: 600, stack: 1 }, { itemID: 505, price: 25, stack: 5 }]);
 });
 
-test('Classic Era auction prices are not collected: the Era list event is not even registered', () => {
-  const vm = ready({ extra: ERA_CLIENT, gs: eraGs() });
-  vm.run('function GetNumAuctionItems() return 1, 1 end; function GetAuctionItemInfo() return "Auction Item", 134400, 1, 1, true, 10, nil, 5, 1, 1400, 0, false, nil, "Seller", nil, 0, 501, true end');
-  vm.run('STUB.FireEvent("AUCTION_ITEM_LIST_UPDATE")');
+const ERA_AUCTION = `
+STUB.ahQueries = {}
+function QueryAuctionItems(text) table.insert(STUB.ahQueries, text or "") end
+STUB.auctions = {}
+function GetNumAuctionItems(kind)
+  if kind ~= "list" then return 0, 0 end
+  return #STUB.auctions, STUB.auctionTotal or #STUB.auctions
+end
+function GetAuctionItemInfo(kind, i)
+  local a = kind == "list" and STUB.auctions[i]
+  if not a then return nil end
+  return "Auction Item", 134400, a.count, 1, true, 10, nil, 5, 1, a.buyout, 0, false, nil, "Seller", nil, 0, a.id, a.info ~= false
+end
+function GetAuctionItemLink(kind, i)
+  local a = kind == "list" and STUB.auctions[i]
+  if not a or a.noLink then return nil end
+  return a.link or ("|cff1eff00|Hitem:" .. a.id .. ":0:0:0:0:0:" .. (a.suffix or 0) .. ":0:20|h[x]|h|r")
+end
+AuctionFrame = CreateFrame("Frame", "AuctionFrame")
+function STUB.LoadAuctionUI()
+  function AuctionFrameBrowse_Search() QueryAuctionItems(STUB.searchText or "", 0, 0, 0, false, -1, false, false, nil) end
+  STUB.FireEvent("ADDON_LOADED", "Blizzard_AuctionUI")
+end
+`;
+
+function auctionList(rows) {
+  return `{ ${rows.map(r => `{ ${Object.entries(r).map(([k, v]) => `${k} = ${typeof v === 'string' ? JSON.stringify(v) : v}`).join(', ')} }`).join(', ')} }`;
+}
+
+function eraAuctionHouse({ extra = '' } = {}) {
+  const vm = ready({ extra: `${ERA_CLIENT}\n${ERA_AUCTION}\n${extra}`, gs: eraGs() });
+  vm.run('if not AuctionFrameBrowse_Search then STUB.LoadAuctionUI() end; AuctionFrame:Show()');
+  return vm;
+}
+
+function playerSearch(vm, rows, total) {
+  vm.run('AuctionFrameBrowse_Search()');
+  return results(vm, rows, total);
+}
+
+function results(vm, rows, total) {
+  vm.run(`STUB.auctions = ${auctionList(rows)}; STUB.auctionTotal = ${total === undefined ? 'nil' : total}; STUB.FireEvent("AUCTION_ITEM_LIST_UPDATE")`);
+  return vm.evaluate('ClaudeWoWObserved.debug.ah');
+}
+
+function eraQuotes(vm) {
+  const r = nextRecord(vm);
+  return r && r.sections.ah ? r.sections.ah.value.quotes.map(q => [q.itemID, q.price, q.quantity, q.rows]) : [];
+}
+
+test('Classic Era: a search the player ran is read once, as the lowest buyout per item rounded up, with every listed item and the auction rows; the addon queries nothing', () => {
+  const vm = eraAuctionHouse();
+  const reason = playerSearch(vm, [
+    { id: 2589, count: 3, buyout: 100 },
+    { id: 2589, count: 1, buyout: 35 },
+    { id: 2589, count: 5, buyout: 0 },
+    { id: 2592, count: 2, buyout: 101 },
+    { id: 2593, count: 1, buyout: 0 },
+  ]);
+  assert.equal(reason, 'read 3 items from 5 auctions');
+  assert.deepEqual(eraQuotes(vm), [[2589, 34, 9, 3], [2592, 51, 2, 1]], '100 for 3 is 33.4 per item, beats 35 for 1 and is shown as 34; 101 for 2 is 51 rounded up; a bid-only auction counts as listed but never as a price');
+  assert.equal(vm.evaluate('#STUB.ahQueries'), '1', 'the only query is the player\'s own search');
+});
+
+test('Classic Era: the hook on the Blizzard search is installed whether the auction UI loads after the addon or before it', () => {
+  const late = eraAuctionHouse();
+  assert.equal(playerSearch(late, [{ id: 2589, count: 1, buyout: 40 }]), 'read 1 items from 1 auctions');
+  const early = eraAuctionHouse({ extra: 'function AuctionFrameBrowse_Search() QueryAuctionItems("", 0, 0, 0, false, -1, false, false, nil) end' });
+  assert.equal(playerSearch(early, [{ id: 2589, count: 1, buyout: 40 }]), 'read 1 items from 1 auctions');
+});
+
+test('Classic Era: a query from another addon after the player\'s search means the list is not the player\'s, and nothing is stored', () => {
+  const vm = eraAuctionHouse();
+  vm.run('AuctionFrameBrowse_Search(); QueryAuctionItems("addon scan")');
+  assert.equal(results(vm, [{ id: 2589, count: 1, buyout: 7 }]), 'another query ran after the player\'s search');
+  assert.equal(results(vm, [{ id: 2589, count: 1, buyout: 7 }]), 'no player search waiting', 'the player\'s search is spent');
   assert.equal(vm.evaluate('ClaudeWoWObserved.Sections().ah'), null);
-  vm.run('RESULT = false; for _, f in ipairs(STUB.frames) do if f.events.AUCTION_ITEM_LIST_UPDATE then RESULT = true end end');
-  assert.equal(vm.evaluate('RESULT'), 'false');
+});
+
+test('Classic Era: a list update with no player search behind it (a bid, a query from the bid path or another addon) stores nothing, and a refire after a read adds nothing', () => {
+  const vm = eraAuctionHouse();
+  vm.run('QueryAuctionItems("bid path")');
+  assert.equal(results(vm, [{ id: 2589, count: 1, buyout: 9 }]), 'no player search waiting');
+  assert.equal(vm.evaluate('ClaudeWoWObserved.Sections().ah'), null);
+  assert.equal(playerSearch(vm, [{ id: 2589, count: 1, buyout: 40 }]), 'read 1 items from 1 auctions');
+  assert.equal(results(vm, [{ id: 2589, count: 1, buyout: 12 }]), 'no player search waiting', 'the update after a bid is not a second read');
+  assert.deepEqual(eraQuotes(vm), [[2589, 40, 1, 1]]);
+});
+
+test('Classic Era: a result on more than one page, or a batch larger than one page, is not the market low and stores nothing', () => {
+  const vm = eraAuctionHouse();
+  const page = Array.from({ length: 50 }, () => ({ id: 2589, count: 1, buyout: 30 }));
+  assert.equal(playerSearch(vm, page, 120), 'result spans pages: 120 auctions, 50 shown');
+  const all = Array.from({ length: 60 }, () => ({ id: 2589, count: 1, buyout: 30 }));
+  assert.equal(playerSearch(vm, all, 60), 'result spans pages: 60 auctions, 60 shown');
+  assert.equal(vm.evaluate('ClaudeWoWObserved.Sections().ah'), null);
+  assert.equal(playerSearch(vm, page.slice(0, 50), 50), 'read 1 items from 50 auctions', 'a full single page is complete');
+});
+
+test('Classic Era: a random-suffix row never prices the base item; links with zero, empty or missing suffix fields are told apart', () => {
+  const vm = eraAuctionHouse();
+  const reason = playerSearch(vm, [
+    { id: 15210, count: 1, buyout: 900, suffix: 1179 },
+    { id: 15210, count: 1, buyout: 800, suffix: -15 },
+    { id: 15210, count: 1, buyout: 5000 },
+    { id: 15211, count: 1, buyout: 4000, link: '|cff1eff00|Hitem:15211::::::::20:::::|h[x]|h|r' },
+    { id: 15212, count: 1, buyout: 100, link: '|cff1eff00|Hitem:15212:0:0|h[x]|h|r' },
+  ]);
+  assert.equal(reason, 'read 2 items from 5 auctions');
+  assert.deepEqual(eraQuotes(vm), [[15210, 5000, 1, 1], [15211, 4000, 1, 1]], 'suffix rows are skipped, and a link too short to show its suffix is not trusted');
+});
+
+test('Classic Era: a row with no link or without all its info stores nothing for the whole list until the refire', () => {
+  const vm = eraAuctionHouse();
+  vm.run('AuctionFrameBrowse_Search()');
+  assert.equal(results(vm, [{ id: 2589, count: 1, buyout: 40 }, { id: 2592, count: 1, buyout: 5, noLink: true }]), 'a row has no item info yet');
+  assert.equal(results(vm, [{ id: 2589, count: 1, buyout: 40 }, { id: 2592, count: 1, buyout: 5, info: false }]), 'a row has no item info yet');
+  assert.equal(vm.evaluate('ClaudeWoWObserved.Sections().ah'), null);
+  assert.equal(results(vm, [{ id: 2589, count: 1, buyout: 40 }, { id: 2592, count: 1, buyout: 5 }]), 'read 2 items from 2 auctions');
+  assert.deepEqual(eraQuotes(vm), [[2589, 40, 1, 1], [2592, 5, 1, 1]]);
+});
+
+test('Classic Era: results that arrive after the auction frame closed are not read', () => {
+  const vm = eraAuctionHouse();
+  vm.run('AuctionFrameBrowse_Search(); AuctionFrame:Hide()');
+  assert.equal(results(vm, [{ id: 2589, count: 1, buyout: 40 }]), 'auction window not shown');
+  assert.equal(vm.evaluate('ClaudeWoWObserved.Sections().ah'), null);
+});
+
+test('Classic Era round trip: the quote with its rows lands in observed.jsonl through the real bridge parser', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-observed-era-ah-'));
+  try {
+    const vm = eraAuctionHouse();
+    playerSearch(vm, [{ id: 2589, count: 3, buyout: 100 }, { id: 2589, count: 2, buyout: 70 }]);
+    tick(vm, 125);
+    const [job] = gsOf(shoot(vm));
+    const observed = OB.createObserved({ dir });
+    const t = TL.createTelemetry({ dir, observed });
+    assert.equal(t.submit(job).status, 'applied');
+    const [line] = observed.lines(CHARACTER).filter(l => l.kind === 'ah');
+    assert.deepEqual([line.itemID, line.price, line.quantity, line.rows, line.trust, line.n], [2589, 34, 5, 2, 'observed', 1]);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('Classic Era skills: profession lines get their skill ID from the profession name table, other lines are left out', () => {
@@ -397,9 +532,11 @@ test('Classic Era factions: standing from GetFactionInfoByID, and a row for anot
   assert.deepEqual(r.sections.factions.value.factions, { [ERA_FACTION]: { reaction: 5, standing: 3200 } });
 });
 
-test('on Classic Era the capability probe names only the auction functions, which have no collector there', () => {
-  const vm = ready({ extra: ERA_CLIENT, gs: eraGs() });
-  assert.equal(vm.evaluate('table.concat(ClaudeWoWTelemetry.Missing(), ",")'), 'C_AuctionHouse.GetBrowseResults,C_AuctionHouse.GetCommoditySearchResultInfo');
+test('on Classic Era the capability probe counts the auction functions present only when the whole Era list API is there', () => {
+  const vm = ready({ extra: `${ERA_CLIENT}\n${ERA_AUCTION}`, gs: eraGs() });
+  assert.equal(vm.evaluate('table.concat(ClaudeWoWTelemetry.Missing(), ",")'), '');
+  const partial = ready({ extra: `${ERA_CLIENT}\n${ERA_AUCTION}\nGetAuctionItemLink = nil`, gs: eraGs() });
+  assert.equal(partial.evaluate('table.concat(ClaudeWoWTelemetry.Missing(), ",")'), 'C_AuctionHouse.GetBrowseResults,C_AuctionHouse.GetCommoditySearchResultInfo');
   const none = ready({ extra: `${ERA_CLIENT}\nGetMerchantItemInfo = nil\nGetFactionInfoByID = nil\nGetNumSkillLines = nil\nGetSkillLineInfo = nil`, gs: eraGs() });
   assert.equal(none.evaluate('table.concat(ClaudeWoWTelemetry.Missing(), ",")'), 'C_SkillInfo.GetNumSkillLines,C_SkillInfo.GetSkillLineInfo,C_Reputation.GetFactionDataByID,C_MerchantFrame.GetItemInfo,C_AuctionHouse.GetBrowseResults,C_AuctionHouse.GetCommoditySearchResultInfo', 'with neither API, the modern name is reported');
 });

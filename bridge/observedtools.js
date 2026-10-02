@@ -89,14 +89,14 @@ function farmView(store, item, lines, minSamples, asOfContext) {
   return out;
 }
 
-const FLAVORS_WITHOUT_AUCTION_PRICES = Object.freeze(new Set(['classic_era']));
-const NO_AUCTION_PRICES_NOTE = 'Auction house prices are not collected on this client (Classic Era) yet; only vendor prices are. Say you do not know the auction price.';
+const AUCTION_NOTES_BY_FLAVOR = Object.freeze({
+  classic_era: 'On this client (Classic Era) each auction quote is one complete search result the player ran that fit on one page: price is the lowest buyout per item, rounded up to whole copper; quantity is every item listed for it in that result, bid-only auctions included; rows is the number of those auctions.',
+});
 
 function priceView(store, item, lines, asOfContext) {
-  const auctionsCollected = !(store && FLAVORS_WITHOUT_AUCTION_PRICES.has(store.flavor));
-  const { ah: seen, vendors } = OB.prices(lines, item.id);
-  const ah = auctionsCollected ? seen : null;
-  const notes = new Set(auctionsCollected ? [] : [NO_AUCTION_PRICES_NOTE]);
+  const { ah, vendors } = OB.prices(lines, item.id);
+  const flavorNote = ah && store && AUCTION_NOTES_BY_FLAVOR[store.flavor];
+  const notes = new Set(flavorNote ? [flavorNote] : []);
   const vendorRows = vendors.map(v => {
     const placed = v.mapID ? observedPoint(store, { mapID: v.mapID, x: null, y: null, n: v.n }, notes) : null;
     return { npc: sourceView({ type: 'npc', id: v.npcID, spell: 0 }), price: v.price, stack: v.stack, unitPrice: Math.round(v.price / v.stack), n: v.n, asOf: v.asOf, trust: OB.TRUST, map: placed ? placed.map : null };
@@ -210,7 +210,7 @@ function toolSchemas() {
     },
     {
       name: TOOL.price,
-      description: 'The prices the player saw for an item: the auction house results of searches the player ran in game, and vendor windows the player opened, in copper, with n and asOf. On Classic Era auction prices are not collected yet: only vendor prices. Nothing here comes from the web or from memory, and the bridge never searches the auction house. An itemID the game data does not have is refused. No observation means you do not know the price.',
+      description: 'The prices the player saw for an item: the auction house results of searches the player ran in game, and vendor windows the player opened, in copper, with n and asOf. On Classic Era an auction quote comes only from a complete search result that fit on one page, and also gives rows (the auctions behind it). Nothing here comes from the web or from memory, and the bridge never searches the auction house. An itemID the game data does not have is refused. No observation means you do not know the price.',
       inputSchema: {
         type: 'object',
         properties: { itemID: { type: 'integer', minimum: 1, description: 'The item ID, from the wowdata tools' } },
