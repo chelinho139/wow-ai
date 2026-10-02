@@ -29,6 +29,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Fixed
 
+- Tests: the telemetry e2e "300 gs records ... spend no ack or sig file" failed now and then on macOS CI. The addon's hello (id 2) can reach the bridge after the first reply, so its ack file was sometimes spent after the test took its "before" picture, and the test blamed a gs seq. The test now waits for the hello and for the ack of every record the addon sent so far before it takes that picture. The check that no gs seq spends an ack or sig file is unchanged.
 - Classic Era: the game context now lists your quest log, so Claude can see your quests. That client has only `GetQuestLogTitle`, which returns the quest id as its 8th value, and the addon's `Try` helper passed on at most 7 values. `Try` now passes on every value.
 - A general chat no longer says "coding in <folder>". The whisper tab's first line, the window title, the chat list and the chat details named the bridge's default folder for every chat with no project. They now use the same rule as the project dropdown: a chat has a project only after `--project`, `#name` or the dropdown attaches one.
 - The window is titled **Claude**. Opening a chat counts as activity, so the chat you are in moves to the top, and sections follow their most recently active chat. The chat list shows `last at 09:09` only for today and `last on Sep 30` for older days. The Project dropdown no longer offers "Other folder..." (its popup pushed the window down); a folder path still works with `/claude --project <path>`.

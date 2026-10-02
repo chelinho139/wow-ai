@@ -89,6 +89,11 @@ test('300 gs records whose seqs overlap the message ids spend no ack or sig file
     const first = await h.client.say('before the telemetry');
     assert.match(first.text, /before the telemetry/);
     await h.bridge.waitForLine(/game context updated: Character: Testchar/);
+    await h.bridge.waitForLine(/hello from session /);
+    await h.client.waitFor(() => {
+      const spent = spentSlots(h.sb, 'ack');
+      return Array.from({ length: h.client.lastSeq() }, (_, k) => slotOfId(k + 1)).every(s => spent.includes(s));
+    }, { timeoutMs: 20000, label: 'the bridge to ack every record the addon sent before the telemetry, its hello included' });
     const session = h.client.db().session;
     const ackBefore = spentSlots(h.sb, 'ack');
     const sigBefore = spentSlots(h.sb, 'sig');
