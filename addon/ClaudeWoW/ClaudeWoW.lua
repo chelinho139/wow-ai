@@ -5892,8 +5892,8 @@ local function BuildUI()
 	input:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
 	if plainInput then
 		input:SetScript("OnCursorChanged", ScrollingEdit_OnCursorChanged)
-		input:SetScript("OnTextChanged", ScrollingEdit_OnTextChanged)
-		if type(ScrollingEdit_OnUpdate) == "function" then input:SetScript("OnUpdate", ScrollingEdit_OnUpdate) end
+		input:SetScript("OnTextChanged", function(self) ScrollingEdit_OnTextChanged(self, inScroll) end)
+		if type(ScrollingEdit_OnUpdate) == "function" then input:SetScript("OnUpdate", function(self, elapsed) ScrollingEdit_OnUpdate(self, elapsed, inScroll) end) end
 	end
 	inScroll:SetScrollChild(input)
 	inScroll:HookScript("OnSizeChanged", function(self, w, h)

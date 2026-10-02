@@ -559,6 +559,17 @@ test('the footer is a short state on the left and context and spend on the right
   assert.ok(vm.evaluate('ClaudeWoW.UI.cwd.shown') === 'false');
 });
 
+test('typing in the input hands Blizzard\'s scrolling helpers the input\'s scroll frame, never the userInput flag', () => {
+  const vm = newVM({ before: NATIVE_TEMPLATES + `
+    function ScrollingEdit_OnTextChanged(self, scrollFrame) STUB.textScroll = scrollFrame end
+    function ScrollingEdit_OnUpdate(self, elapsed, scrollFrame) STUB.updateScroll = scrollFrame end` });
+  open(vm);
+  vm.run('ClaudeWoWInput:GetScript("OnTextChanged")(ClaudeWoWInput, true)');
+  vm.run('ClaudeWoWInput:GetScript("OnUpdate")(ClaudeWoWInput, 0.1)');
+  assert.equal(vm.evaluate('STUB.textScroll == ClaudeWoWInputScroll'), 'true');
+  assert.equal(vm.evaluate('STUB.updateScroll == ClaudeWoWInputScroll'), 'true');
+});
+
 test('without the templates the window keeps its own backdrop', () => {
   const vm = newVM();
   open(vm);
