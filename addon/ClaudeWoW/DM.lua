@@ -215,11 +215,12 @@ local function BuildParts(f)
 	f:SetScript("OnDragStop", f.StopMovingOrSizing)
 	if T.debug.native.frame then DecorateNative(f) else DecoratePlain(f) end
 	f.paper = BuildParchment(f)
-	f.beatTitle = TextString(f, T.FONTS.title, INK)
-	f.body = TextString(f, T.FONTS.body, INK)
+	local page = f.parchmentArea
+	f.beatTitle = TextString(page, T.FONTS.title, INK)
+	f.body = TextString(page, T.FONTS.body, INK)
 	f.body:SetJustifyV("TOP")
 	BoundBody(f.body)
-	f.hint = TextString(f, T.FONTS.hint, INK_DIM)
+	f.hint = TextString(page, T.FONTS.hint, INK_DIM)
 	f.hint:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", HINT_X, HINT_Y)
 	f:SetScript("OnHide", function() PlayQuestSound("IG_QUEST_LIST_CLOSE") end)
 	if type(UISpecialFrames) == "table" then table.insert(UISpecialFrames, FRAME_NAME) end
