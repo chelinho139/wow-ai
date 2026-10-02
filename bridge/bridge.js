@@ -60,6 +60,7 @@ const GM = require('./goalsmcp');
 const GD = require('./gamedata');
 const DSYNC = require('./datasync');
 const GR = require('./gamerefs');
+const RT = require('./replytokens');
 
 // The plugins this bridge has (docs/PLATFORM.md). Registration order is the
 // order match() is asked in, and the first one is the default unless
@@ -1134,8 +1135,25 @@ function liveStartCommand() {
   return LP.startCommand({ repo: REPO, home: liveHomeArg() });
 }
 
+function linkedSpellsOf(job) {
+  const chat = transcripts.chats[job.chat];
+  return RT.linkedSpells([job.text, ...(chat ? chat.messages.filter(m => m.role === 'user').map(m => m.text) : [])]);
+}
+
+function checkedProgress(job, text) {
+  return /\{spell:\d/i.test(text) ? RT.checkReply(text, linkedSpellsOf(job)).text : text;
+}
+
+function checkedReply(job, reply) {
+  if (!/\{spell:\d/i.test(reply.text + reply.summary)) return reply;
+  const linked = linkedSpellsOf(job);
+  const text = RT.checkReply(reply.text, linked);
+  if (text.unverified.length) log(`${tagOf(job)} ${RT.logLine(text.unverified)}`);
+  return { ...reply, text: text.text, summary: RT.checkReply(reply.summary, linked).text };
+}
+
 function lateReply(job, raw) {
-  const { text, summary } = P.splitSummary(String(raw || ''));
+  const { text, summary } = checkedReply(job, P.splitSummary(String(raw || '')));
   noteMessage(job, 'assistant', text);
   publish(`${chatKey(job)}#late`, { chat: job.chat, id: job.id, status: 'done', late: true, text, summary, cwd: job.cwd, agent: job.agent || '', plugin: job.plugin || '' }, true);
   mapShare.onReplyPublished();
@@ -1399,7 +1417,7 @@ function runAgent(job, opts = {}) {
     progress.push(line);
     while (progress.length > 10) progress.shift();
     beat(job);
-    publish(key, { chat: job.chat, id: job.id, status: 'working', text: progress.join('\n'), cwd: job.cwd, session: sessionId, agent: agentId, plugin: plugin.id }, false);
+    publish(key, { chat: job.chat, id: job.id, status: 'working', text: checkedProgress(job, progress.join('\n')), cwd: job.cwd, session: sessionId, agent: agentId, plugin: plugin.id }, false);
   };
   const noteMcpDown = (servers) => {
     log(`${tag} MCP server(s) not connected: ${servers.map(s => `${s.name} (${s.status})`).join(', ')}`);
@@ -1647,10 +1665,11 @@ function finish(job, status, text, session, denied) {
       summary = P.stripMacroBlocks(summary);
     }
   }
-  noteMessage(job, status === 'done' ? 'assistant' : 'system', status === 'done' ? text : 'Bridge error: ' + text);
+  const shown = status === 'done' ? checkedReply(job, { text, summary }) : { text, summary };
+  noteMessage(job, status === 'done' ? 'assistant' : 'system', status === 'done' ? shown.text : 'Bridge error: ' + text);
   awardAchievements(job, status);
   const usage = P.usageFields(job.usage);
-  publish(chatKey(job), { chat: job.chat, id: job.id, status, text, summary, cwd: job.cwd, session, denied, macros, agent: job.agent || '', plugin: job.plugin || '', lateOk: status === 'error' && !!job.lateOk, ...usage }, true);
+  publish(chatKey(job), { chat: job.chat, id: job.id, status, text: shown.text, summary: shown.summary, cwd: job.cwd, session, denied, macros, agent: job.agent || '', plugin: job.plugin || '', lateOk: status === 'error' && !!job.lateOk, ...usage }, true);
   mapShare.onReplyPublished();
   signal('sig', job.id, true);
   tellPluginFinished(plugin, job, { status, text, summary });
