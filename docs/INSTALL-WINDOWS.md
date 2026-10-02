@@ -7,7 +7,7 @@ The install itself is in [INSTALL.md](INSTALL.md): one line in PowerShell, or by
 | Need | Check | Get it |
 |---|---|---|
 | Windows 10/11 on NTFS | | |
-| World of Warcraft: Forever, **windowed or borderless** | Options → Graphics → Display Mode | Exclusive fullscreen blocks screen capture, so the bridge can't see your messages |
+| World of Warcraft: Forever or World of Warcraft Classic (Classic Era), **windowed or borderless** | Options → Graphics → Display Mode | Exclusive fullscreen blocks screen capture, so the bridge can't see your messages |
 | Nothing else with the installer: it fetches the `claude-wow` binary (Windows x64), which has its runtime inside | `claude-wow --version` after installing | The by-hand route below, and the installer where there is no binary yet, run the checkout and need Node.js 22.2 or newer (`node -v`): [nodejs.org](https://nodejs.org), the LTS installer, tick "Add to PATH" (default), or `winget install OpenJS.NodeJS.LTS` |
 | Git (optional; only for a from-source install, and the installer downloads the archive without it) | `git --version` | [git-scm.com](https://git-scm.com/download/win) |
 | At least one agent CLI, logged in (they work side by side) | | |

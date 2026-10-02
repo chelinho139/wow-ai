@@ -4,7 +4,7 @@ Every route ends in the same place: the code on your machine, a `claude-wow` com
 
 Before any of them you need:
 
-- **World of Warcraft: Forever** or **World of Warcraft Classic** (Classic Era), run at least once with the account you play on (setup reads the account folder).
+- **World of Warcraft: Forever** or **World of Warcraft Classic** (Classic Era), run at least once with the account you play on (setup reads the account folder). With more than one client installed, setup picks Forever first; pass `--wow ".../_classic_era_"` to set up Classic Era.
 - **Nothing else, on route 1 or 2**: the bridge ships as one self-contained binary for macOS (arm64, x64), Linux (x64) and Windows (x64), with its runtime inside. Route 3, and route 1 where there is no binary for your machine, run the checkout and need **Node.js 22.2 or newer** (`node -v`: [nodejs.org](https://nodejs.org), `brew install node`, `winget install OpenJS.NodeJS.LTS`) or [Bun](https://bun.sh).
 - **At least one agent CLI**, installed and logged in: `claude`, `codex`, `grok`, `agy` or `hermes` (see [AGENTS.md](AGENTS.md)). One is enough; the bridge lists what it found.
 
@@ -77,14 +77,14 @@ Then **fully quit and relaunch World of Warcraft** (a `/reload` is not enough) a
 
 ## Game data
 
-Claude checks game IDs (items, zones, flight paths, skill lines) against the client tables of your own game. Fetch them once per game you play, and again after a game patch:
+Claude checks game IDs (items, quests, zones, flight paths, skill lines) against the client tables of your own game. Fetch them once per game you play, and again after a game patch:
 
 | Game | Command | Folder |
 |---|---|---|
 | World of Warcraft: Forever (`1.60.*`) | `claude-wow data sync` | `~/.claude-wow/data/forever/` |
 | World of Warcraft Classic, Classic Era (`1.15.*`) | `claude-wow data sync --flavor classic_era` | `~/.claude-wow/data/classic_era/` |
 
-The bridge reads the client build the game reports and uses only the data of that game. With no data for it, Claude gets no game data and refuses ID tokens in orders; the bridge log names the command to run. No restart is needed after a sync. Details in [CONFIGURATION.md](CONFIGURATION.md#game-data).
+The bridge reads the client build the game reports and uses only the data of that game. With no data for it, the bridge refuses ID tokens in orders, goals and campaigns, and `ask` runs go without the `wowdata` tools; the bridge log names the command to run. No restart is needed after a sync. Details in [CONFIGURATION.md](CONFIGURATION.md#game-data).
 
 ## Running the bridge
 
