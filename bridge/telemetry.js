@@ -7,7 +7,7 @@ const OB = require('./observed');
 const KIND = 'gs';
 const RECORD_VERSION = 'gs1';
 const GS_SLOT_VERSION = 1;
-const SECTION_NAMES = Object.freeze(['cap', 'level', 'zone', 'money', 'items', 'skills', 'equip', 'factions', 'life', 'recipes', ...OB.SECTIONS]);
+const SECTION_NAMES = Object.freeze(['cap', 'level', 'zone', 'money', 'items', 'skills', 'equip', 'factions', 'life', 'recipes', 'quests', ...OB.SECTIONS]);
 const RECORD_TEXT_MAX = 1500;
 const SNAPSHOT_FILE = 'snapshot.json';
 const EVENTS_FILE = 'events.jsonl';
@@ -20,6 +20,7 @@ const WATCH_FACTIONS_MAX = 10;
 const SKILLS_MAX = 40;
 const FACTIONS_MAX = 20;
 const RECIPES_MAX = 8;
+const TURNED_IN_MAX = 8;
 const CAP_NAMES_MAX = 30;
 const EQUIP_SLOT_MAX = 19;
 const WATCH_THRESHOLDS = Object.freeze([100, 75, 50, 25]);
@@ -38,6 +39,7 @@ const IMPORTANCE = Object.freeze({
   death: 3,
   recipe: 3,
   goal_complete: 3,
+  quest_turnin: 3,
 });
 const GS_CHARACTERS_MAX = 4;
 const REJECTED_KEYS_LOGGED = 20;
@@ -91,6 +93,20 @@ function slashPair(s, first, second) {
   const x = first(a);
   const y = second(b);
   return x === null || y === null ? null : [x, y];
+}
+
+function stampedIds(data, max) {
+  const parts = list(data);
+  if (parts.length > max) return null;
+  const out = [];
+  for (const part of parts) {
+    const [idText, atText, extra] = part.split('@');
+    const id = positive(idText);
+    const at = nonNegative(atText);
+    if (extra !== undefined || id === null || at === null) return null;
+    out.push({ id, at });
+  }
+  return out;
 }
 
 const SECTION_PARSERS = {
@@ -148,17 +164,12 @@ const SECTION_PARSERS = {
     return deaths === null || lastDeath === null ? null : { deaths, lastDeath };
   },
   recipes(data) {
-    const parts = list(data);
-    if (parts.length > RECIPES_MAX) return null;
-    const learned = [];
-    for (const part of parts) {
-      const [idText, atText, extra] = part.split('@');
-      const id = positive(idText);
-      const at = nonNegative(atText);
-      if (extra !== undefined || id === null || at === null) return null;
-      learned.push({ id, at });
-    }
-    return { learned };
+    const learned = stampedIds(data, RECIPES_MAX);
+    return learned ? { learned } : null;
+  },
+  quests(data) {
+    const turnedIn = stampedIds(data, TURNED_IN_MAX);
+    return turnedIn ? { turnedIn } : null;
   },
   ...OB.PARSERS,
 };
@@ -308,6 +319,10 @@ const SECTION_DIFFS = {
   recipes(prev, next) {
     const known = new Set(prev.learned.map(r => r.id));
     return next.learned.filter(r => !known.has(r.id)).map(r => event('recipe', { id: r.id, at: r.at }));
+  },
+  quests(prev, next) {
+    const seen = new Set(prev.turnedIn.map(r => `${r.id}@${r.at}`));
+    return next.turnedIn.filter(r => !seen.has(`${r.id}@${r.at}`)).map(r => event('quest_turnin', { id: r.id, at: r.at }));
   },
   cap() {
     return [];
@@ -580,8 +595,19 @@ function equippedReader(telemetry, enabled) {
   };
 }
 
+function standingReader(telemetry, enabled) {
+  return characterKey => {
+    if (!enabled) return null;
+    const sections = telemetry.snapshot(characterKey).sections;
+    return {
+      mapID: sections.zone ? sections.zone.value.mapID : null,
+      level: sections.level ? sections.level.value.level : null,
+    };
+  };
+}
+
 module.exports = {
   KIND, RECORD_VERSION, GS_SLOT_VERSION, GS_CHARACTERS_MAX, SECTION_NAMES, RECORD_TEXT_MAX, SNAPSHOT_FILE, EVENTS_FILE, EVENTS_ROTATED_FILE, EVENTS_ROTATE_BYTES,
   HANDLED_PER_SESSION, WATCH_ITEMS_MAX, WATCH_FACTIONS_MAX, WATCH_THRESHOLDS, IMPORTANCE, CHARACTER_KEY_RE,
-  parseRecord, isTelemetry, equippedReader, watchFrom, telemetryEnabled, thresholdCrossed, diffSection, appendEvents, readSnapshot, luaGsTable, createTelemetry,
+  parseRecord, isTelemetry, equippedReader, standingReader, watchFrom, telemetryEnabled, thresholdCrossed, diffSection, appendEvents, readSnapshot, luaGsTable, createTelemetry,
 };

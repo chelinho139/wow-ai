@@ -74,6 +74,7 @@ registry.register(require('./plugins/live'));
 const LP = require('./liveproto');
 const T = require('./titles');
 const GOALS = require('./goals');
+const CAMPAIGN = require('./campaign');
 const TL = require('./telemetry');
 const VOTES = require('./votes');
 const OB = require('./observed');
@@ -538,11 +539,13 @@ function slotFile(globalName, records, urgent = true) {
   const lp = livePlugin();
   const liveInfo = lp ? { sessions: lp.status(), start: liveStartCommand() } : null;
   const goalsLua = goalStore.slotLua();
+  let dmLua = '';
+  try { dmLua = campaignStore.slotLua(); } catch (e) { log(`campaign: slot field dm left out (${e && e.message ? e.message : e})`); }
   let gsLua = '';
   if (TELEMETRY_ON) {
     try { gsLua = telemetry.luaGs(); } catch (e) { log(`telemetry: slot field gs left out (${e && e.message ? e.message : e})`); }
   }
-  return P.luaTable(globalName, records, { live: liveInfo, sessions: sessionList(), cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), plugin: DEFAULT_PLUGIN, plugins: registry.ids(), map, widgets, transport: TRANSPORT, levels: LEVELS, codec: STRIP_CODEC, chatlog: chatLogSlot(), acks: P.recentAcks(acksSent), transportNote, achievementsLua, goalsLua, gsLua, presence: presenceInfo() });
+  return P.luaTable(globalName, records, { live: liveInfo, sessions: sessionList(), cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), plugin: DEFAULT_PLUGIN, plugins: registry.ids(), map, widgets, transport: TRANSPORT, levels: LEVELS, codec: STRIP_CODEC, chatlog: chatLogSlot(), acks: P.recentAcks(acksSent), transportNote, achievementsLua, goalsLua, dmLua, gsLua, presence: presenceInfo() });
 }
 
 function recentClaudeSessions() {
@@ -862,7 +865,12 @@ function allowRules(agentId, rules) {
 function submit(job) {
   if (TL.isTelemetry(job)) {
     if (!TELEMETRY_ON) return;
-    try { telemetry.submit(job); } catch (e) { log(`telemetry: gs #${job.id} not applied (${e && e.message ? e.message : e})`); }
+    let applied = null;
+    try { applied = telemetry.submit(job); } catch (e) { log(`telemetry: gs #${job.id} not applied (${e && e.message ? e.message : e})`); }
+    if (applied && applied.status === 'applied') {
+      if (CAMPAIGN.contextIsFor(state.context, job.name)) noteContextHeard();
+      try { campaignStore.onEvents(job.name, applied.events); } catch (e) { log(`campaign: beat trigger check failed (${e && e.message ? e.message : e})`); }
+    }
     return;
   }
   if (job.shot) fallbackToPixel(job.shot, job); // even for a message already handled: the report stands
@@ -872,6 +880,18 @@ function submit(job) {
     return;
   }
   clearSignalsAhead(job.id);
+  if (CAMPAIGN.isDmRecord(job)) {
+    markHandled(job);
+    saveState();
+    ackJob(job);
+    let result = { fired: false, text: 'not a known DM request; ignored' };
+    if (job.text === CAMPAIGN.MANUAL_TEXT) {
+      try { result = campaignStore.manual(job.name); } catch (e) { result = { fired: false, text: `failed (${e && e.message ? e.message : e})` }; }
+    }
+    log(`${tagOf(job)} /dm next for ${String(job.name || '-').slice(0, 64).replace(/[\x00-\x1f\x7f]/g, '?')}: ${result.text}`);
+    if (!result.fired) publishNow();
+    return;
+  }
   if (job.ctx !== undefined) setContext(job);
   else noteContextHeard();
   if (job.forget) {
@@ -1021,7 +1041,11 @@ const core = {
   get liveHome() { return liveHomeArg(); },
   get claudeDir() { return CLAUDE_DIR; },
   runAgent,
-  goals: (tool, args) => (OT.TOOL_NAMES.includes(tool) ? observedTools.call(tool, args) : goalStore.call(tool, args)),
+  goals: (tool, args) => {
+    if (OT.TOOL_NAMES.includes(tool)) return observedTools.call(tool, args);
+    if (CAMPAIGN.TOOL_NAMES.includes(tool)) return campaignStore.call(tool, args);
+    return goalStore.call(tool, args);
+  },
   gameData: () => GR.openFor(HOME.data, (state.context && state.context.text) || ''),
   agentPids: () => [...running.values()].map(r => r.child).concat(T.titleChildren()).filter(Boolean).map(c => c.pid),
 };
@@ -1049,6 +1073,15 @@ const observedTools = OT.createObservedTools({
     try { return GR.openFor(HOME.data, contextText || ''); } catch (e) { log(`observed tools: cannot open the synced game data (${e.message})`); return null; }
   },
   applyMap: applyToolMap,
+  log,
+});
+
+const campaignStore = CAMPAIGN.createBridgeCampaigns({
+  home: HOME,
+  context: () => state.context,
+  onChange: () => publishNow(true, { refresh: true }),
+  standing: TL.standingReader(telemetry, TELEMETRY_ON),
+  telemetryOn: TELEMETRY_ON,
   log,
 });
 

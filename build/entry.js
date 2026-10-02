@@ -16,6 +16,7 @@ import addonVoice from '../addon/ClaudeWoW/Voice.lua' with { type: 'file' };
 import addonLootRoll from '../addon/ClaudeWoW/LootRoll.lua' with { type: 'file' };
 import addonAchievements from '../addon/ClaudeWoW/Achievements.lua' with { type: 'file' };
 import addonOrders from '../addon/ClaudeWoW/Orders.lua' with { type: 'file' };
+import addonDM from '../addon/ClaudeWoW/DM.lua' with { type: 'file' };
 import addonWidgets from '../addon/ClaudeWoW/Widgets.lua' with { type: 'file' };
 import addonWindow from '../addon/ClaudeWoW/Window.lua' with { type: 'file' };
 import addonTelemetry from '../addon/ClaudeWoW/Telemetry.lua' with { type: 'file' };
@@ -40,6 +41,7 @@ require('../bridge/assets').embed({
   'addon/ClaudeWoW/LootRoll.lua': addonLootRoll,
   'addon/ClaudeWoW/Achievements.lua': addonAchievements,
   'addon/ClaudeWoW/Orders.lua': addonOrders,
+  'addon/ClaudeWoW/DM.lua': addonDM,
   'addon/ClaudeWoW/Widgets.lua': addonWidgets,
   'addon/ClaudeWoW/Window.lua': addonWindow,
   'addon/ClaudeWoW/Telemetry.lua': addonTelemetry,

@@ -36,6 +36,7 @@ const FILES = [
   'addon/ClaudeWoW/LootRoll.lua',
   'addon/ClaudeWoW/Achievements.lua',
   'addon/ClaudeWoW/Orders.lua',
+  'addon/ClaudeWoW/DM.lua',
   'addon/ClaudeWoW/Widgets.lua',
   'addon/ClaudeWoW/Window.lua',
   'addon/ClaudeWoW/Telemetry.lua',
