@@ -17,7 +17,9 @@ function gameRunner(root) {
       await fn(h);
       assert.deepEqual(h.client.errors(), [], 'the addon raised no Lua errors');
     } catch (e) {
-      e.message += `\n--- bridge output (tail) ---\n${h.bridge.output.slice(-2500)}\n--- game prints (tail) ---\n${h.client.prints().slice(-8).join('\n')}`;
+      const tail = `\n--- bridge output (tail) ---\n${h.bridge.output.slice(-2500)}\n--- game prints (tail) ---\n${h.client.prints().slice(-8).join('\n')}`;
+      e.message += tail;
+      if (typeof e.stack === 'string') e.stack += tail;
       throw e;
     } finally {
       await h.close();
