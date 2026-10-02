@@ -15,29 +15,34 @@ test('linkedIds reads item, spell and quest IDs only from the Linked from the ga
   assert.equal(RT.linkedIds(['[Fake] item 77 without the block']).size, 0, 'a line outside the block is not a link');
 });
 
-test('checkTokens keeps tokens the data or a link backs and turns every other one into plain text', () => {
+test('checkReply shows a spell token only when the player linked it in the chat; everything else keeps its token', () => {
   const store = forever();
   assert.equal(store.rowTrust, GD.TRUST.clientData);
   const linked = RT.linkedIds([LINKED_MESSAGE]);
-  const r = RT.checkTokens('take {item:501}, {ITEM:19019}, {spell:116} and {quest:176}; skip {item:999}, {spell:5} and {quest:9}. {npc:3} and {skill:1} stay', { store, linked });
-  assert.equal(r.text, 'take {item:501}, {ITEM:19019}, {spell:116} and {quest:176}; skip item 999, spell 5 and quest 9. {npc:3} and {skill:1} stay');
-  assert.deepEqual(r.dropped.map(d => `${d.kind}:${d.id}`), ['item:999', 'spell:5', 'quest:9']);
-  assert.match(r.dropped[0].reason, /^not in the forever 1\.60\.1\.200 data$/);
-  assert.match(r.dropped[2].reason, /has no quests table/);
+  const r = RT.checkReply('cast {spell:116} then {Spell:12294}, buy {item:501} or {item:999}, do {quest:9}, see {npc:3}', { store, linked });
+  assert.equal(r.text, 'cast {spell:116} then spell 12294 (unverified), buy {item:501} or {item:999}, do {quest:9}, see {npc:3}');
+  assert.deepEqual(r.unverified, ['spell:12294']);
+  assert.deepEqual(r.unknown, ['item:999 (not in the forever 1.60.1.200 data)', 'quest:9 (the forever 1.60.1.200 data has no quests table)']);
 });
 
-test('without data for the client, only linked tokens stay', () => {
-  const linked = RT.linkedIds([LINKED_MESSAGE]);
+test('checkReply leaves fenced code untouched and matches IDs of any length like the addon', () => {
+  const r = RT.checkReply('use {spell:5}\n```lua\nprint("{spell:5}")\n```\nand {spell:12345678901}\n```\n{spell:6}', { linked: new Set() });
+  assert.equal(r.text, 'use spell 5 (unverified)\n```lua\nprint("{spell:5}")\n```\nand spell 12345678901 (unverified)\n```\n{spell:6}');
+  assert.deepEqual(r.unverified, ['spell:5', 'spell:12345678901']);
+});
+
+test('without client data the item and quest tokens are not judged', () => {
   for (const store of [null, GD.openStore({ dataDir: DATA, clientBuild: '1.15.9.70003' }), GD.openStore({ dataDir: DATA, flavor: 'forever', clientBuild: '1.60.2.1' })]) {
-    const r = RT.checkTokens('{item:501} {item:19019}', { store, linked });
-    assert.equal(r.text, 'item 501 {item:19019}');
-    assert.equal(r.dropped[0].reason, 'no data for this client');
+    const r = RT.checkReply('{item:999} {quest:9}', { store });
+    assert.equal(r.text, '{item:999} {quest:9}');
+    assert.deepEqual(r.unknown, []);
   }
 });
 
-test('dropsLine names each dropped token with its reason and stops at ten', () => {
-  const dropped = Array.from({ length: 12 }, (_, k) => ({ kind: 'item', id: k + 1, reason: 'x' }));
-  const line = RT.dropsLine(dropped);
-  assert.match(line, /^reply tokens: 12 unlinked, item:1 \(x\), /);
-  assert.ok(line.endsWith('item:10 (x), ...'));
+test('logLines says what was rewritten and what the client will gray, and stops at ten', () => {
+  assert.deepEqual(RT.logLines({ unverified: [], unknown: [] }), []);
+  const lines = RT.logLines({ unverified: Array.from({ length: 12 }, (_, k) => `spell:${k + 1}`), unknown: ['item:9 (x)'] });
+  assert.equal(lines.length, 2);
+  assert.match(lines[0], /^reply tokens: 12 spell token\(s\) not linked in this chat, shown as plain text: spell:1, .*spell:10, \.\.\.$/);
+  assert.equal(lines[1], 'reply tokens: 1 ID(s) the client will show gray: item:9 (x)');
 });

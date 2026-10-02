@@ -1,11 +1,12 @@
 'use strict';
 const GD = require('./gamedata');
 
-const TOKEN = /\{([A-Za-z]+):(\d{1,9})\}/g;
+const TOKEN = /\{([A-Za-z]+):(\d+)\}/g;
+const FENCE = /(```[\s\S]*?(?:```|$))/;
 const LINKED_MARK = '--- Linked from the game ---';
-const LINKED_LINE = /^\[[^\]\n]*\] (item|spell|quest) (\d{1,9})\b/gm;
-const CHECKED_KINDS = new Set(['item', 'spell', 'quest']);
-const MAX_DROPS_LOGGED = 10;
+const LINKED_LINE = /^\[[^\]\n]*\] (item|spell|quest) (\d+)\b/gm;
+const DATA_TABLES = Object.freeze({ item: 'items', quest: 'quests' });
+const MAX_LOGGED = 10;
 
 function linkedIds(texts) {
   const ids = new Set();
@@ -13,53 +14,50 @@ function linkedIds(texts) {
     const s = String(text || '');
     const at = s.indexOf(LINKED_MARK);
     if (at < 0) continue;
-    for (const m of s.slice(at + LINKED_MARK.length).matchAll(LINKED_LINE)) ids.add(`${m[1]}:${Number(m[2])}`);
+    for (const m of s.slice(at + LINKED_MARK.length).matchAll(LINKED_LINE)) ids.add(`${m[1]}:${m[2]}`);
   }
   return ids;
 }
 
-function trusted(store) {
-  return !!store && store.rowTrust === GD.TRUST.clientData;
+function missingFromData(store, kind, id) {
+  if (!store || store.rowTrust !== GD.TRUST.clientData) return '';
+  const entity = DATA_TABLES[kind];
+  if (!store.has(entity)) return `the ${store.flavor} ${store.build} data has no ${entity} table`;
+  return store.byId(entity, Number(id)) ? '' : `not in the ${store.flavor} ${store.build} data`;
 }
 
-function dataCheck(store) {
-  if (!trusted(store)) return () => 'no data for this client';
-  let spells = null;
-  const spellIds = () => {
-    if (!spells) spells = new Set([...store.rows('skilllineabilities').map(r => r.spell), ...store.rows('spellreagents').map(r => r.spellID)]);
-    return spells;
-  };
-  const where = `${store.flavor} ${store.build} data`;
-  const inTable = (entity, id) => {
-    if (!store.has(entity)) return `the ${where} has no ${entity} table`;
-    return store.byId(entity, id) ? '' : `not in the ${where}`;
-  };
-  return (kind, id) => {
-    if (kind === 'item') return inTable('items', id);
-    if (kind === 'quest') return inTable('quests', id);
-    if (!store.has('skilllineabilities') && !store.has('spellreagents')) return `the ${where} has no recipe spell tables`;
-    return spellIds().has(id) ? '' : `not linked in this chat and not a recipe spell in the ${where}`;
-  };
-}
-
-function checkTokens(text, { store = null, linked = new Set() } = {}) {
-  const reasonFor = dataCheck(store);
-  const dropped = [];
-  const out = String(text || '').replace(TOKEN, (token, rawKind, rawId) => {
+function checkProse(text, { store, linked, unverified, unknown }) {
+  return text.replace(TOKEN, (token, rawKind, id) => {
     const kind = rawKind.toLowerCase();
-    const id = Number(rawId);
-    if (!CHECKED_KINDS.has(kind) || linked.has(`${kind}:${id}`)) return token;
-    const reason = reasonFor(kind, id);
-    if (!reason) return token;
-    dropped.push({ kind, id, reason });
-    return `${kind} ${id}`;
+    if (linked.has(`${kind}:${id}`)) return token;
+    if (kind === 'spell') {
+      unverified.push(`spell:${id}`);
+      return `spell ${id} (unverified)`;
+    }
+    if (DATA_TABLES[kind]) {
+      const reason = missingFromData(store, kind, id);
+      if (reason) unknown.push(`${kind}:${id} (${reason})`);
+    }
+    return token;
   });
-  return { text: out, dropped };
 }
 
-function dropsLine(dropped) {
-  const shown = dropped.slice(0, MAX_DROPS_LOGGED).map(d => `${d.kind}:${d.id} (${d.reason})`).join(', ');
-  return `reply tokens: ${dropped.length} unlinked, ${shown}${dropped.length > MAX_DROPS_LOGGED ? ', ...' : ''}`;
+function checkReply(text, { store = null, linked = new Set() } = {}) {
+  const unverified = [];
+  const unknown = [];
+  const out = String(text || '').split(FENCE).map((part, k) => (k % 2 ? part : checkProse(part, { store, linked, unverified, unknown }))).join('');
+  return { text: out, unverified, unknown };
 }
 
-module.exports = { LINKED_MARK, linkedIds, checkTokens, dropsLine };
+function listed(items) {
+  return items.slice(0, MAX_LOGGED).join(', ') + (items.length > MAX_LOGGED ? ', ...' : '');
+}
+
+function logLines({ unverified, unknown }) {
+  const lines = [];
+  if (unverified.length) lines.push(`reply tokens: ${unverified.length} spell token(s) not linked in this chat, shown as plain text: ${listed(unverified)}`);
+  if (unknown.length) lines.push(`reply tokens: ${unknown.length} ID(s) the client will show gray: ${listed(unknown)}`);
+  return lines;
+}
+
+module.exports = { LINKED_MARK, linkedIds, checkReply, logLines };

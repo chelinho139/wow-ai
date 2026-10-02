@@ -1125,11 +1125,9 @@ function checkedReply(job, reply) {
   const linked = RT.linkedIds([job.text, ...(chat ? chat.messages.filter(m => m.role === 'user').map(m => m.text) : [])]);
   let store = null;
   try { store = GR.openFor(HOME.data, gameContext()); } catch (e) { log(`${tagOf(job)} reply tokens: game data unreadable (${e.message})`); }
-  const text = RT.checkTokens(reply.text, { store, linked });
-  const summary = RT.checkTokens(reply.summary, { store, linked });
-  const dropped = text.dropped.length ? text.dropped : summary.dropped;
-  if (dropped.length) log(`${tagOf(job)} ${RT.dropsLine(dropped)}`);
-  return { text: text.text, summary: summary.text };
+  const text = RT.checkReply(reply.text, { store, linked });
+  for (const line of RT.logLines(text)) log(`${tagOf(job)} ${line}`);
+  return { ...reply, text: text.text, summary: RT.checkReply(reply.summary, { store, linked }).text };
 }
 
 function lateReply(job, raw) {
@@ -1634,7 +1632,7 @@ function finish(job, status, text, session, denied) {
   let macros = [];
   const plugin = registry.get(job.plugin);
   if (status === 'done') {
-    ({ text, summary } = checkedReply(job, P.splitSummary(text)));
+    ({ text, summary } = P.splitSummary(text));
     // After the split: a macro block the agent put after "TL;DR:" must not end up
     // in the game-chat summary. Only a plugin whose replies may carry macros
     // gets the buttons.
@@ -1645,10 +1643,11 @@ function finish(job, status, text, session, denied) {
       summary = P.stripMacroBlocks(summary);
     }
   }
-  noteMessage(job, status === 'done' ? 'assistant' : 'system', status === 'done' ? text : 'Bridge error: ' + text);
+  const shown = status === 'done' ? checkedReply(job, { text, summary }) : { text, summary };
+  noteMessage(job, status === 'done' ? 'assistant' : 'system', status === 'done' ? shown.text : 'Bridge error: ' + text);
   awardAchievements(job, status);
   const usage = P.usageFields(job.usage);
-  publish(chatKey(job), { chat: job.chat, id: job.id, status, text, summary, cwd: job.cwd, session, denied, macros, agent: job.agent || '', plugin: job.plugin || '', lateOk: status === 'error' && !!job.lateOk, ...usage }, true);
+  publish(chatKey(job), { chat: job.chat, id: job.id, status, text: shown.text, summary: shown.summary, cwd: job.cwd, session, denied, macros, agent: job.agent || '', plugin: job.plugin || '', lateOk: status === 'error' && !!job.lateOk, ...usage }, true);
   mapShare.onReplyPublished();
   signal('sig', job.id, true);
   tellPluginFinished(plugin, job, { status, text, summary });
