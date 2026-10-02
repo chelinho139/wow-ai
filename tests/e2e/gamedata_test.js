@@ -101,7 +101,7 @@ test('a Classic Era client with only Forever data synced runs without a data ser
     await h.client.say('hello');
     await h.client.say('hello again');
     for (const run of h.agentCalls()) {
-      assert.ok(!run.argv.includes('--mcp-config'), 'no Forever answers for an Era client');
+      assert.deepEqual(Object.keys(JSON.parse(listAfter(run.argv, '--mcp-config')[0]).mcpServers), ['wowgoals'], 'no Forever answers for an Era client');
       assert.ok(!listAfter(run.argv, '--allowedTools').includes('mcp__wowdata'));
     }
     assert.equal(h.bridge.output.match(/wowdata: no synced game data for Classic Era under .*\(claude-wow data sync --flavor classic_era\)/g).length, 1);
@@ -113,7 +113,7 @@ test('with no synced data, ask runs go without the server and the bridge says wh
     await h.client.say('hello');
     await h.client.say('hello again');
     for (const run of h.agentCalls()) {
-      assert.ok(!run.argv.includes('--mcp-config'));
+      assert.deepEqual(Object.keys(JSON.parse(listAfter(run.argv, '--mcp-config')[0]).mcpServers), ['wowgoals']);
       assert.ok(!listAfter(run.argv, '--allowedTools').includes('mcp__wowdata'));
     }
     assert.equal(h.bridge.output.match(/wowdata: no synced game data/g).length, 1);

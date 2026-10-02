@@ -5,6 +5,7 @@ const net = require('net');
 const LP = require('../liveproto');
 const P = require('../protocol');
 const SS = require('../sessions');
+const GM = require('../goalsmcp');
 
 const DEFAULTS = { waitMs: 3000, permissionTimeoutMs: 120000, helloTimeoutMs: 5000, pickupMs: 45000, pickupPollMs: 5000 };
 const CLAUDE_INFO_TTL_MS = 5000;
@@ -327,6 +328,30 @@ function createLive(overrides = {}) {
     else if (msg.type === 'goal_call') onGoalCall(s, msg);
   }
 
+  function acceptRun(s, msg) {
+    const grants = core && core.runGrants;
+    const accepted = grants ? grants.hello(msg) : null;
+    sessions.delete(s.id);
+    if (!accepted) {
+      s.sock.write(LP.encode({ type: 'reject', reason: 'bad run hello' }));
+      s.sock.destroy();
+      log('refused an in-game run connection without a valid run grant');
+      return;
+    }
+    s.run = accepted.run;
+    s.sock.write(LP.encode(accepted.welcome));
+  }
+
+  async function onRunMessage(s, msg) {
+    if (msg.type !== GM.CALL) return;
+    const answer = await core.runGrants.onCall(s.run, msg);
+    if (!s.sock.destroyed) s.sock.write(LP.encode(answer));
+  }
+
+  function runEndpoint() {
+    return server && server.listening ? address : '';
+  }
+
   async function detectListening(s) {
     if (!s.ppid) return { listening: false, why: 'the channel server did not name its Claude Code process' };
     let line = null;
@@ -347,8 +372,10 @@ function createLive(overrides = {}) {
     const hello = setTimeout(() => { if (!s.verified) sock.destroy(); }, opt('helloTimeoutMs'));
     if (hello.unref) hello.unref();
     sock.on('data', LP.lineReader(msg => {
+      if (s.run) { onRunMessage(s, msg); return; }
       if (s.verified) { onVerified(s, msg); return; }
       clearTimeout(hello);
+      if (msg.type === GM.HELLO) { acceptRun(s, msg); return; }
       if (msg.type !== 'hello' || typeof msg.nonce !== 'string' || !msg.nonce || !LP.sameProof(msg.proof, LP.proof(token, 'client', msg.nonce))) {
         sock.write(LP.encode({ type: 'reject', reason: 'bad hello' }));
         sock.destroy();
@@ -528,6 +555,7 @@ function createLive(overrides = {}) {
     stop,
     status,
     sessions: sessionsList,
+    runEndpoint,
     banner: () => `forwards chats to a running Claude Code session (${LP.DEV_FLAG} ${LP.CHANNEL_ARG}); see docs/LIVE-SESSION.md`,
     _state: { sessions, pending, permissions, get address() { return address; } },
   };
