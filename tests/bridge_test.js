@@ -210,17 +210,18 @@ test('systemPrompt always asks for the TL;DR block, and adds the game rules and 
 
 test('systemRulesHash follows the rule text only, and rulesChanged needs a recorded hash that differs', () => {
   const ask = { tools: 'Be the guide.', voice: 'player' };
-  const hash = P.systemRulesHash(ask);
+  const hash = P.systemRulesHash('Character: A', ask);
   assert.match(hash, /^[0-9a-f]{16}$/);
-  assert.equal(P.systemRulesHash({ ...ask }), hash);
-  assert.notEqual(P.systemRulesHash({ tools: 'Be the coder.', voice: 'player' }), hash);
-  assert.notEqual(P.systemRulesHash({ tools: 'Be the guide.' }), hash);
+  assert.equal(P.systemRulesHash('Character: B\nPosition: 3, 4', { ...ask }), hash, 'the context text is not part of it');
+  assert.notEqual(P.systemRulesHash('', ask), hash, 'having a game context is: it adds the game rules');
+  assert.notEqual(P.systemRulesHash('Character: A', { tools: 'Be the coder.', voice: 'player' }), hash);
+  assert.notEqual(P.systemRulesHash('Character: A', { tools: 'Be the guide.' }), hash);
   const state = {};
   assert.equal(P.rulesChanged(state, 'k', hash), false, 'a session from before the hash existed is kept');
   P.noteRules(state, 'k', hash);
   assert.equal(P.rulesChanged(state, 'k', hash), false);
-  assert.equal(P.rulesChanged(state, 'k', P.systemRulesHash({})), true);
-  assert.equal(P.rulesChanged(state, 'other', P.systemRulesHash({})), false);
+  assert.equal(P.rulesChanged(state, 'k', P.systemRulesHash('', {})), true);
+  assert.equal(P.rulesChanged(state, 'other', P.systemRulesHash('', {})), false);
 });
 
 test('messagePrompt puts the situation and the vision paragraph before the text, and nothing else', () => {

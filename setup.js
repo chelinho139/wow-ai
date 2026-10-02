@@ -110,7 +110,7 @@ function findClient() {
       if (isClient(dir)) return dir;
     }
   }
-  throw new Error('Could not find the WoW client. Pass --wow "<path to World of Warcraft/_classic_beta_ or _classic_era_>"');
+  throw new Error('Could not find the WoW client. Pass --wow "<path to World of Warcraft/_classic_beta_, _forever_ or _classic_era_>"');
 }
 
 function findAccount(client) {

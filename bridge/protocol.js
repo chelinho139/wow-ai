@@ -457,8 +457,8 @@ function systemPrompt(ctx, primer, opts) {
 }
 
 const RULES_HASH_LENGTH = 16;
-function systemRulesHash(opts) {
-  return crypto.createHash('sha256').update(systemPrompt('game', '', opts)).digest('hex').slice(0, RULES_HASH_LENGTH);
+function systemRulesHash(ctx, opts) {
+  return crypto.createHash('sha256').update(systemPrompt(ctx, '', opts)).digest('hex').slice(0, RULES_HASH_LENGTH);
 }
 
 function rulesChanged(state, key, hash) {

@@ -1268,7 +1268,7 @@ function runAgent(job, opts = {}) {
     log(`${tag} plugin changed (${prevPlugin} -> ${plugin.id}): new session`);
     delete state.sessions[skey]; delete state.sessions[key];
   }
-  const rulesHash = P.systemRulesHash({ tools: plugin.tools, surfaces: plugin.surfaces, voice: plugin.voice });
+  const rulesHash = P.systemRulesHash(gameContext(), { tools: plugin.tools, surfaces: plugin.surfaces, voice: plugin.voice });
   if (agentId === 'claude' && state.sessions[skey] && P.rulesChanged(state, skey, rulesHash)) {
     log(`${tag} system prompt rules changed (${state.sessionRules[skey]} -> ${rulesHash}): new session`);
     delete state.sessions[skey]; delete state.sessions[key];
@@ -1474,7 +1474,7 @@ function runAgent(job, opts = {}) {
       (state.sessionCwd = state.sessionCwd || {})[skey] = cwd;
       (state.sessionAgent = state.sessionAgent || {})[skey] = agentId;
       (state.sessionPlugin = state.sessionPlugin || {})[skey] = plugin.id;
-      if (!resume) P.noteRules(state, skey, rulesHash);
+      if (sessionId !== resume) P.noteRules(state, skey, rulesHash);
       // Context growth: one more turn on this session, and what the next one will carry.
       job.usage = P.noteUsage(state, skey, { usage, fresh: !resume, agent: agentId, startedAt });
     }
