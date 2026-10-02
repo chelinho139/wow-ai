@@ -2,7 +2,9 @@ local O = {}
 ClaudeWoWObserved = O
 
 O.VENDOR_ITEMS_MAX = 40
-O.AH_QUOTES_MAX = 12
+O.AH_QUOTES_MAX = 50
+O.AH_BROWSE_RESULTS_MAX = 12
+O.AH_SECTION_BYTES = 1200
 O.LOOT_ENTRIES_MAX = 8
 O.LOOT_ITEMS_MAX = 6
 O.LOOTED_GUIDS_MAX = 64
@@ -18,12 +20,22 @@ O.POSITION_SCALE = 1000
 O.LOOT_SLOT_ITEM = 1
 O.SOURCE_CODES = { Creature = "n", Vehicle = "n", GameObject = "o" }
 O.FISHING_CODE = "f"
+O.AH_LIST = "list"
+O.AH_PAGE_MAX = 50
+O.AUCTION_NAME = 1
+O.AUCTION_COUNT = 3
+O.AUCTION_BUYOUT = 10
+O.AUCTION_ITEM_ID = 17
+O.AUCTION_HAS_ALL_INFO = 18
+O.LINK_SUFFIX_FIELD = 7
+O.ERA_AUCTION_API = { "QueryAuctionItems", "GetNumAuctionItems", "GetAuctionItemInfo", "GetAuctionItemLink", "CanSendAuctionQuery", "PlaceAuctionBid", "hooksecurefunc" }
+O.ERA_HOOKS = { query = "QueryAuctionItems", bid = "PlaceAuctionBid", dequote = "DequoteString", search = "AuctionFrameBrowse_Search" }
 O.PROBES = {
 	"GetMerchantNumItems",
 	"GetMerchantItemID",
 	{ "C_MerchantFrame.GetItemInfo", "GetMerchantItemInfo" },
-	"C_AuctionHouse.GetBrowseResults",
-	"C_AuctionHouse.GetCommoditySearchResultInfo",
+	{ "C_AuctionHouse.GetBrowseResults", O.ERA_AUCTION_API },
+	{ "C_AuctionHouse.GetCommoditySearchResultInfo", O.ERA_AUCTION_API },
 	"GetNumLootItems",
 	"GetLootSlotType",
 	"GetLootSlotLink",
@@ -34,9 +46,10 @@ O.PROBES = {
 	"UnitGUID",
 	"UnitIsDead",
 }
-O.EVENTS = { "MERCHANT_SHOW", "AUCTION_HOUSE_BROWSE_RESULTS_UPDATED", "COMMODITY_SEARCH_RESULTS_UPDATED", "LOOT_READY", "LOOT_OPENED", "LOOT_CLOSED" }
+O.EVENTS = { "MERCHANT_SHOW", "AUCTION_HOUSE_BROWSE_RESULTS_UPDATED", "COMMODITY_SEARCH_RESULTS_UPDATED", "AUCTION_ITEM_LIST_UPDATE", "AUCTION_HOUSE_CLOSED", "LOOT_READY", "LOOT_OPENED", "LOOT_CLOSED" }
+O.debug = { ah = nil, ahUnsent = 0 }
 
-local state = { vendor = nil, ah = {}, loot = {}, looted = {}, lootedOrder = {}, windowAt = nil, spell = nil, gather = {} }
+local state = { vendor = nil, ah = {}, loot = {}, looted = {}, lootedOrder = {}, windowAt = nil, spell = nil, gather = {}, queries = 0, lastQuery = nil, before = nil, playerQuery = nil, hooked = {} }
 
 local function Try(fn, ...)
 	if type(fn) ~= "function" then return nil end
@@ -141,14 +154,14 @@ function O.OnMerchant()
 	Changed()
 end
 
-local function Quote(itemID, price, quantity)
+local function Quote(itemID, price, quantity, rows, stack)
 	if not (WholeNumber(itemID) and itemID > 0 and WholeNumber(price) and price > 0) then return false end
 	quantity = WholeNumber(quantity) or 0
 	local now = time()
 	for _, q in ipairs(state.ah) do
-		if q.id == itemID and q.price == price and q.quantity == quantity and now - q.at < O.AH_REPEAT_SECONDS then return false end
+		if q.id == itemID and q.price == price and q.quantity == quantity and q.rows == rows and q.stack == stack and now - q.at < O.AH_REPEAT_SECONDS then return false end
 	end
-	Push(state.ah, { id = itemID, price = price, quantity = quantity, at = now }, O.AH_QUOTES_MAX)
+	Push(state.ah, { id = itemID, price = price, quantity = quantity, rows = rows, stack = stack, at = now }, O.AH_QUOTES_MAX)
 	return true
 end
 
@@ -156,7 +169,7 @@ function O.OnBrowse()
 	local results = Try(C_AuctionHouse and C_AuctionHouse.GetBrowseResults)
 	if type(results) ~= "table" then return end
 	local added = false
-	for i = 1, math.min(#results, O.AH_QUOTES_MAX) do
+	for i = 1, math.min(#results, O.AH_BROWSE_RESULTS_MAX) do
 		local r = results[i]
 		local key = type(r) == "table" and r.itemKey
 		local plain = type(key) == "table" and (key.itemSuffix or 0) == 0 and (key.battlePetSpeciesID or 0) == 0
@@ -169,6 +182,137 @@ function O.OnCommodity(itemID)
 	if not (WholeNumber(itemID) and itemID > 0) then return end
 	local first = Try(C_AuctionHouse and C_AuctionHouse.GetCommoditySearchResultInfo, itemID, 1)
 	if type(first) == "table" and Quote(itemID, first.unitPrice, first.quantity) then Changed() end
+end
+
+function O.OnAuctionQuery(text, exact)
+	state.queries = state.queries + 1
+	state.lastQuery = { text = PlainString(text) or "", exact = exact and true or false }
+end
+
+function O.BeforeQuery()
+	state.before = { at = GetTime(), count = state.queries, canSend = Try(CanSendAuctionQuery, O.AH_LIST) and true or false }
+end
+
+local function AsciiLower(s)
+	return (s:gsub("[A-Z]", string.lower))
+end
+
+local function NonAscii(s)
+	return s:find("[\128-\255]") ~= nil
+end
+
+function O.OnPlayerSearch()
+	local before, now = state.before, GetTime()
+	state.before = nil
+	state.playerQuery = nil
+	if not before or before.at ~= now or state.queries ~= before.count + 1 then
+		O.debug.ah = "the search sent no query of its own"
+		return
+	end
+	if not before.canSend then
+		O.debug.ah = "the search was throttled"
+		return
+	end
+	local query = state.lastQuery or { text = "", exact = false }
+	local caseSensitive = NonAscii(query.text)
+	state.playerQuery = { count = state.queries, text = caseSensitive and query.text or AsciiLower(query.text), exact = query.exact, caseSensitive = caseSensitive }
+end
+
+function O.OnBid()
+	if state.playerQuery then O.debug.ah = "a bid or buyout was placed" end
+	state.playerQuery = nil
+end
+
+local function Hook(key, fn)
+	local name = O.ERA_HOOKS[key]
+	if not state.hooked[key] and type(_G[name]) == "function" then state.hooked[key] = pcall(hooksecurefunc, name, fn) end
+end
+
+function O.AuctionHooked()
+	local h = state.hooked
+	return (h.query and h.bid and h.dequote and h.search) and true or false
+end
+
+function O.HookAuctionQueries()
+	if type(hooksecurefunc) ~= "function" then return false end
+	Hook("query", function(text, _, _, _, _, _, _, exact) O.OnAuctionQuery(text, exact) end)
+	Hook("bid", function() O.OnBid() end)
+	if state.hooked.query and state.hooked.bid then
+		Hook("dequote", function() O.BeforeQuery() end)
+		Hook("search", function() O.OnPlayerSearch() end)
+	end
+	return O.AuctionHooked()
+end
+
+function O.AuctionLinkItem(link)
+	link = PlainString(link)
+	local body = link and link:match("|Hitem:([^|]+)|h")
+	if not body then return nil end
+	local fields = {}
+	for f in (body .. ":"):gmatch("([^:]*):") do fields[#fields + 1] = f end
+	local id = tonumber(fields[1])
+	if not (WholeNumber(id) and id > 0) then return nil end
+	local suffix = fields[O.LINK_SUFFIX_FIELD]
+	return id, suffix ~= nil and (suffix == "" or tonumber(suffix) == 0)
+end
+
+local function SkipList(reason, consume)
+	O.debug.ah = reason
+	if consume then state.playerQuery = nil end
+end
+
+local function NameMatches(name, search)
+	if not search.caseSensitive then name = AsciiLower(name) end
+	if search.exact then return name == search.text end
+	return string.find(name, search.text, 1, true) ~= nil
+end
+
+local function AuctionRows(batch, search)
+	local items, order = {}, {}
+	for i = 1, batch do
+		local r = Returns(GetAuctionItemInfo, O.AH_LIST, i)
+		local id, plain = O.AuctionLinkItem(Try(GetAuctionItemLink, O.AH_LIST, i))
+		local name = r and PlainString(r[O.AUCTION_NAME + 1])
+		if not r or not r[O.AUCTION_HAS_ALL_INFO + 1] or not id or not name then return nil end
+		if plain and not NameMatches(name, search) then return false end
+		local count, buyout, reported = WholeNumber(r[O.AUCTION_COUNT + 1]), WholeNumber(r[O.AUCTION_BUYOUT + 1]), r[O.AUCTION_ITEM_ID + 1]
+		if plain and count and count > 0 and buyout and (reported == nil or reported == id) then
+			local it = items[id]
+			if not it then
+				it = { rows = 0, quantity = 0 }
+				items[id] = it
+				order[#order + 1] = id
+			end
+			it.rows = it.rows + 1
+			it.quantity = it.quantity + count
+			if buyout > 0 and (not it.buyout or buyout * it.count < it.buyout * count) then it.buyout, it.count = buyout, count end
+		end
+	end
+	return items, order
+end
+
+function O.OnAuctionList()
+	if not O.AuctionHooked() then return SkipList("query hooks not installed", true) end
+	local search = state.playerQuery
+	if not search then return SkipList("no player search waiting") end
+	if search.count ~= state.queries then return SkipList("another query ran after the player's search", true) end
+	if not (AuctionFrame and Try(AuctionFrame.IsShown, AuctionFrame)) then return SkipList("auction window not shown", true) end
+	if search.text == "" then return SkipList("no search text to check the rows against", true) end
+	local batch, total = Try(GetNumAuctionItems, O.AH_LIST)
+	batch, total = WholeNumber(batch), WholeNumber(total)
+	if not (batch and total) then return SkipList("no result count", true) end
+	if total > batch or batch > O.AH_PAGE_MAX then return SkipList("result spans pages: " .. Int(total) .. " auctions, " .. Int(batch) .. " shown", true) end
+	local items, order = AuctionRows(batch, search)
+	if items == false then return SkipList(search.caseSensitive and "a row does not match the search text (case-sensitive: the search text is not ASCII)" or "a row does not match the search text", true) end
+	if not items then return SkipList("a row has no item info yet") end
+	state.playerQuery = nil
+	local added = false
+	for _, id in ipairs(order) do
+		local it = items[id]
+		if it.buyout and Quote(id, math.floor((it.buyout + it.count - 1) / it.count), it.quantity, it.rows, it.count) then added = true end
+	end
+	O.debug.ah = "read " .. Int(#order) .. " items from " .. Int(batch) .. " auctions"
+	if added then Changed() end
 end
 
 local function Looted(guid)
@@ -287,8 +431,15 @@ function O.OnSpell(unit, spellID)
 end
 
 function O.Sections()
-	local ah = {}
-	for _, q in ipairs(state.ah) do ah[#ah + 1] = Int(q.id) .. "=" .. Int(q.price) .. "/" .. Int(q.quantity) .. "@" .. Int(q.at) end
+	local ah, bytes = {}, 0
+	for i = #state.ah, 1, -1 do
+		local q = state.ah[i]
+		local part = Int(q.id) .. "=" .. Int(q.price) .. "/" .. Int(q.quantity) .. "@" .. Int(q.at) .. (q.rows and q.stack and ("/" .. Int(q.rows) .. "/" .. Int(q.stack)) or "")
+		if bytes + #part + 1 > O.AH_SECTION_BYTES then break end
+		bytes = bytes + #part + 1
+		table.insert(ah, 1, part)
+	end
+	O.debug.ahUnsent = #state.ah - #ah
 	return { vendor = state.vendor, ah = #ah > 0 and table.concat(ah, ",") or nil, loot = #state.loot > 0 and table.concat(state.loot, ";") or nil }
 end
 
@@ -301,16 +452,27 @@ function O.OnEvent(event, ...)
 		local unit, _, spellID = ...
 		return O.OnSpell(unit, spellID)
 	end
+	if event == "AUCTION_HOUSE_CLOSED" then
+		state.playerQuery = nil
+		return
+	end
+	if event == "AUCTION_ITEM_LIST_UPDATE" and not Active() then return SkipList("telemetry is not collecting", true) end
 	if not Active() then return end
 	if event == "MERCHANT_SHOW" then return O.OnMerchant() end
 	if event == "AUCTION_HOUSE_BROWSE_RESULTS_UPDATED" then return O.OnBrowse() end
 	if event == "COMMODITY_SEARCH_RESULTS_UPDATED" then return O.OnCommodity(...) end
+	if event == "AUCTION_ITEM_LIST_UPDATE" then return O.OnAuctionList() end
 	if event == "LOOT_READY" or event == "LOOT_OPENED" then return O.OnLoot() end
 end
 
 local frame = CreateFrame("Frame")
 frame:RegisterEvent("PLAYER_LOGIN")
+frame:RegisterEvent("ADDON_LOADED")
 frame:SetScript("OnEvent", function(_, event, ...)
+	if event == "ADDON_LOADED" then
+		if O.HookAuctionQueries() then frame:UnregisterEvent("ADDON_LOADED") end
+		return
+	end
 	if event == "PLAYER_LOGIN" then
 		for _, name in ipairs(O.EVENTS) do pcall(frame.RegisterEvent, frame, name) end
 		if not (frame.RegisterUnitEvent and pcall(frame.RegisterUnitEvent, frame, "UNIT_SPELLCAST_SUCCEEDED", "player")) then

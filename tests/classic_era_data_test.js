@@ -212,13 +212,13 @@ test('a taught spell whose name starts with "the" is not indexed as a game phras
   assert.deepEqual(blast.phrases.map(p => [p.run, p.source]), [['era blast', 'spell taught by an item']]);
 });
 
-test('market_price on Classic Era gives vendor prices only and says auction prices are not collected there; Forever keeps both', async () => {
+test('market_price on Classic Era gives the observed auction quote with rows, n and asOf and says how Era quotes are built; Forever has no such note', async () => {
   const dataDir = await syncedData('prices');
   const dir = scratch('price-lines');
   const key = G.characterOf(ERA_CONTEXT).key;
   const at = 1790000000;
   const lines = [
-    OB.lineFor('ah', { key: 'a1', at, itemID: ERA_HIDE, price: 90, quantity: 4 }),
+    OB.lineFor('ah', { key: 'a1', at, itemID: ERA_HIDE, price: 90, quantity: 4, rows: 2, stack: 3 }),
     OB.lineFor('ah', { key: 'a2', at, itemID: FOREVER_BLADE, price: 1500, quantity: 1 }),
     OB.lineFor('vendor', { key: 'v1', at, npcID: 3100, mapID: 9102, items: [{ itemID: ERA_HIDE, price: 60, stack: 1 }] }),
   ];
@@ -231,12 +231,14 @@ test('market_price on Classic Era gives vendor prices only and says auction pric
     return JSON.parse(r.text);
   };
   const era = await price(ERA_CONTEXT, ERA_HIDE);
-  assert.equal(era.auctionHouse, null, 'an auction line never backs an Era price');
+  assert.deepEqual(era.auctionHouse.latest, { price: 90, quantity: 4, rows: 2, stack: 3 });
+  assert.deepEqual([era.auctionHouse.n, era.auctionHouse.asOf, era.auctionHouse.trust], [1, at * 1000, 'observed']);
   assert.deepEqual(era.vendors.map(v => [v.price, v.stack]), [[60, 1]]);
-  assert.ok(era.notes.some(n => /Auction house prices are not collected on this client \(Classic Era\) yet/.test(n)), era.notes.join(' | '));
+  assert.ok(era.notes.some(n => /Classic Era\) each auction quote is one complete search result/.test(n)), era.notes.join(' | '));
+  assert.ok(!era.notes.some(n => /not collected/.test(n)), 'the old "not collected on Era" text is gone');
   const forever = await price(ERA_CONTEXT.replace(`World of Warcraft Classic (client ${ERA_CLIENT}, interface 11509)`, `World of Warcraft: Forever (client ${FOREVER_CLIENT}, interface 16001)`), FOREVER_BLADE);
-  assert.equal(forever.auctionHouse.latest.price, 1500);
-  assert.ok(!forever.notes.some(n => /not collected/.test(n)));
+  assert.deepEqual(forever.auctionHouse.latest, { price: 1500, quantity: 1 });
+  assert.ok(!forever.notes.some(n => /complete search result/.test(n)));
 });
 
 test('the wowdata server for an Era client serves Classic Era rows labeled with their flavor', async () => {
