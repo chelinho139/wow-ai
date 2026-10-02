@@ -58,7 +58,7 @@ local run = { outbound = {} }
 -- Whisper tabs (the section after the game context). Declared up here because
 -- Send, ApplyReplies and Finish use it and come first in the file.
 local Whisper = {}
-local Cli = { DIM_DEFAULT = 0.35, Links = {} }
+local Cli = { DIM_DEFAULT = 0.35, Links = {}, CONTEXT_WARN_DEFAULT = 300000, CONTEXT_WARN_OLD = 100000 }
 
 -- Shared window backdrop. Declared up here because ShowCopy (rendering section)
 -- uses it too: a later `local` would be invisible there and resolve to a nil global.
@@ -347,10 +347,10 @@ local function InitDB()
 	if s.autoRefresh == nil then s.autoRefresh = true end
 	if s.signal == nil then s.signal = true end
 	if s.context == nil then s.context = true end -- tell the agent about the character, zone, etc.
-	-- Context growth: say so once when a chat's context passes this many tokens
-	-- (/claude-wow context <n>; 0 = never). 100k is half of Claude's 200k window
-	-- and where a fresh chat lands after about eight messages.
-	if s.contextWarn == nil then s.contextWarn = 100000 end
+	if not s.contextWarnV2 then
+		s.contextWarnV2 = true
+		if s.contextWarn == nil or s.contextWarn == Cli.CONTEXT_WARN_OLD then s.contextWarn = Cli.CONTEXT_WARN_DEFAULT end
+	end
 	-- How much of each reply to print in the game chat. "summary" (the agent's
 	-- closing TL;DR lines) replaced "full" as the default; an install that still
 	-- has the old default saved moves over once, any other choice is kept.

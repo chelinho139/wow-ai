@@ -141,8 +141,8 @@ in `state.json` (`sessionUsage`) and ships it on the reply record; the addon's
 footer shows it like Claude Code's status line (`11m 58s · ↓ 106.9k tokens ·
 ≈$2.41 API` — the dollar figure is the API-list-price equivalent, a comparison,
 since a subscription is not billed per token), `/claude config context` and `diag`
-report it, and past `/claude config context <n>` (100k by default: half of a 200k
-window, about eight messages in) the chat says so once, with a **New chat**
+report it, and past `/claude config context <n>` (300k by default: a coding chat
+can start near 90k before its first tool call, so 100k warned on turn 1) the chat says so once, with a **New chat**
 button. Codex, Grok, agy and Hermes report nothing the bridge can trust, so those
 chats show turns and elapsed time only.
 

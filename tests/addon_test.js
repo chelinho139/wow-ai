@@ -2618,6 +2618,7 @@ test('context growth: the footer, /claude-wow context and diag show ctx and turn
   // The numbers measured on a live machine: 106,863 tokens after 8 turns.
   // The footer reads like Claude Code's own status line: elapsed since the session
   // started, the tokens the next message carries, the session at API list prices.
+  vm.run('SlashCmdList.CLAUDE("config context 100k")');
   replyWith(vm, 'ctx = 106863, turns = 8, window = 200000, since = time() - 718, cost = 2.41');
   assert.equal(vm.num('ClaudeWoWDB.chats[1].ctx'), 106863);
   assert.equal(vm.num('ClaudeWoWDB.chats[1].turns'), 8);
@@ -2668,7 +2669,7 @@ test('context growth: past the threshold the chat is warned once per crossing, w
   connect(vm);
   const last = () => vm.evaluate('ClaudeWoWDB.chats[1].history[#ClaudeWoWDB.chats[1].history].text');
   const warnings = () => vm.num('(function() local n = 0; for _, m in ipairs(ClaudeWoWDB.chats[1].history) do if m.newChat then n = n + 1 end end; return n end)()');
-  assert.equal(vm.num('ClaudeWoWDB.settings.contextWarn'), 100000, 'the default threshold');
+  assert.equal(vm.num('ClaudeWoWDB.settings.contextWarn'), 300000, 'the default threshold');
   vm.run('SlashCmdList.CLAUDE("config context 50k")');
   assert.equal(vm.num('ClaudeWoWDB.settings.contextWarn'), 50000, 'persisted in the saved settings');
   assert.ok(last().startsWith('Context warning at 50.0k tokens'), last());
@@ -2985,4 +2986,17 @@ test('the working bubble: a step count, the newest steps as a list, and no secon
   assert.match(body, /Working · \d+s · 12 steps\n\n\+6 earlier\n· Step 4\n· Step 5\n· Step 6\n· Step 7\n· Step 8\n· Step 9/, body);
   assert.doesNotMatch(body, /is working on #/, 'the footer status is not repeated in the bubble');
   assert.doesNotMatch(body, /0 actions|no activity seen yet/, body);
+});
+
+test('context warning: the default is 300k; a saved old default of 100k moves up once, any other choice is kept', () => {
+  for (const [saved, want] of [['nil', 300000], ['100000', 300000], ['50000', 50000], ['0', 0]]) {
+    const vm = newVM();
+    vm.run(`ClaudeWoWDB = { settings = { contextWarn = ${saved} } }`);
+    login(vm);
+    assert.equal(vm.num('ClaudeWoWDB.settings.contextWarn'), want, `saved ${saved}`);
+  }
+  const vm = newVM();
+  vm.run('ClaudeWoWDB = { settings = { contextWarn = 100000, contextWarnV2 = true } }');
+  login(vm);
+  assert.equal(vm.num('ClaudeWoWDB.settings.contextWarn'), 100000, 'a 100k chosen after the move is kept');
 });
