@@ -187,7 +187,8 @@ test('Claude stream: tool calls and text become progress, the result carries the
   let r = p.feed({ type: 'system', subtype: 'init', session_id: 'sess-1' });
   assert.equal(r.session, 'sess-1');
   r = p.feed({ type: 'assistant', session_id: 'sess-1', message: { content: [{ type: 'text', text: 'Let me look.' }, { type: 'tool_use', name: 'Edit', input: { file_path: 'player.gd' } }] } });
-  assert.deepEqual(r.progress, ['Let me look.', 'edit player.gd']);
+  assert.deepEqual(r.progress, ['Let me look.', 'Edit player.gd']);
+  assert.equal(r.steps, 1, 'only the tool call counts as a step, not the text');
   assert.equal(r.done, undefined);
   r = p.feed({ type: 'result', session_id: 'sess-1', is_error: false, result: 'Done.', permission_denials: [{ tool_name: 'Bash', tool_input: { command: 'cargo build' } }, { tool_name: 'WebSearch' }] });
   assert.deepEqual(r.done, { text: 'Done.', error: false });

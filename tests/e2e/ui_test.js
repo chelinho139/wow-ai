@@ -18,7 +18,7 @@ test('whisper-first: a message typed in the chat tab shows one progress line, th
     const id = c.lastSeq() + 1;
     c.typeInTab('[[tools 4]] [[sleep 3]] [[long 60]] what is new?');
     await c.waitFor(() => c.tabLines(chat).some(l => / is working\.\.\. /.test(l)), { label: 'the progress line' });
-    await c.waitFor(() => c.tabLines(chat).some(l => /\d+ actions?/.test(l)), { timeoutMs: 30000, label: 'the action count on the progress line' });
+    await c.waitFor(() => c.tabLines(chat).some(l => /\d+ (?:steps?|actions?)/.test(l)), { timeoutMs: 30000, label: 'the step or action count on the progress line' });
     assert.equal(c.tabLines(chat).filter(l => / is working\.\.\. /.test(l)).length, 1, 'progress is one line, edited in place');
 
     await c.waitFor(() => {

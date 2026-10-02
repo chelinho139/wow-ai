@@ -378,10 +378,24 @@ test('flags: a retry granted a folder carries it in dirs=, never in allow=', () 
   assert.deepEqual(f.allow, []);
 });
 
-test('describeToolUse gives one short line per tool call', () => {
-  assert.equal(P.describeToolUse({ name: 'Bash', input: { command: 'npm test\nsecond line' } }), '$ npm test');
-  assert.equal(P.describeToolUse({ name: 'Edit', input: { file_path: 'C:\\x\\player.gd' } }), 'edit player.gd');
+test('describeToolUse gives one short readable line per tool call', () => {
+  assert.equal(P.describeToolUse({ name: 'Bash', input: { command: 'gh pr list --author @me --json number,title', description: 'List my open PRs' } }), 'List my open PRs', 'the description Claude gives the command wins');
+  assert.equal(P.describeToolUse({ name: 'Bash', input: { command: 'npm test\nsecond line' } }), 'Run npm test');
+  assert.equal(P.describeToolUse({ name: 'Bash', input: { command: "cd /x && gh search prs --author=@me --jq '.[]' | sort" } }), 'Run gh search prs', 'flags, quotes and pipes are cut');
+  assert.equal(P.describeToolUse({ name: 'Edit', input: { file_path: 'C:\\x\\player.gd' } }), 'Edit player.gd');
+  assert.equal(P.describeToolUse({ name: 'WebFetch', input: { url: 'https://docs.github.com/en/rest?x=1' } }), 'Fetch docs.github.com');
+  assert.equal(P.describeToolUse({ name: 'mcp__claude_ai_Linear__list_issues' }), 'Linear: list issues');
+  assert.equal(P.describeToolUse({ name: 'mcp__plugin_playwright_playwright__browser_click' }), 'playwright: browser click');
   assert.equal(P.describeToolUse({ name: 'Mystery' }), 'Mystery');
+  const long = P.describeToolUse({ name: 'Bash', input: { command: 'x', description: 'a'.repeat(200) } });
+  assert.equal(long.length, 80);
+  assert.ok(long.endsWith('...'));
+});
+
+test('a working record carries its step count; other records never do', () => {
+  assert.match(P.luaTable('X', [{ chat: 'c', id: 1, status: 'working', text: 'x', steps: 4 }]), /steps = 4,/);
+  assert.ok(!/steps =/.test(P.luaTable('X', [{ chat: 'c', id: 1, status: 'working', text: 'x', steps: 0 }])));
+  assert.ok(!/steps =/.test(P.luaTable('X', [{ chat: 'c', id: 1, status: 'done', text: 'x', steps: 4 }])));
 });
 
 test('handled ids are tracked per session token and capped', () => {

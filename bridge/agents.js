@@ -182,7 +182,7 @@ function claudeParser(opts = {}) {
       }
       if (ev.type === 'assistant' && ev.message && Array.isArray(ev.message.content)) {
         for (const block of ev.message.content) {
-          if (block.type === 'tool_use') out.progress.push(describeToolUse(block));
+          if (block.type === 'tool_use') { out.progress.push(describeToolUse(block)); out.steps = (out.steps || 0) + 1; }
           else if (block.type === 'text' && block.text && block.text.trim()) out.progress.push(snippet(block.text));
         }
         const u = claudeUsage(ev.message.usage);

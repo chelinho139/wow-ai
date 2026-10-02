@@ -738,21 +738,61 @@ function denialNotes(agentName, fresh, again) {
   return notes;
 }
 
+const STEP_CHARS = 80;
+const MCP_PREFIXES = /^(?:claude_ai_|plugin_[^_]+_)/;
+
+function clip(text, max = STEP_CHARS) {
+  const s = String(text || '').trim().replace(/\s+/g, ' ');
+  return s.length > max ? s.slice(0, max - 3).trimEnd() + '...' : s;
+}
+
+function shortCommand(cmd) {
+  const first = String(cmd || '').split('\n')[0].replace(/^\s*cd\s+\S+\s*&&\s*/, '').trim();
+  const words = [];
+  for (const w of first.split(/\s+/)) {
+    if (!w || /^[-|&;<>'"$(]/.test(w) || words.length === 4) break;
+    words.push(w);
+  }
+  return words.join(' ') || first.split(/\s+/)[0] || '';
+}
+
+function hostOf(url) {
+  try { return new URL(String(url)).host; } catch { return clip(url, 40); }
+}
+
+function humanTool(name) {
+  return String(name || '').replace(/[_-]+/g, ' ').trim();
+}
+
+function describeMcp(name) {
+  const [, server = '', tool = ''] = /^mcp__(.*?)__(.*)$/.exec(name) || [];
+  const who = humanTool(server.replace(MCP_PREFIXES, ''));
+  const what = humanTool(tool.replace(/^[^_]*-/, ''));
+  return clip(who ? `${who}: ${what}` : what);
+}
+
 // One progress line per Claude tool call, as shown in the game's "working"
 // bubble (Codex and Grok have their own in agents.js).
 function describeToolUse(block) {
   const inp = block.input || {};
-  switch (block.name) {
-    case 'Bash': return `$ ${String(inp.command || '').split('\n')[0].slice(0, 110)}`;
-    case 'Read': return `read ${baseName(inp.file_path)}`;
-    case 'Edit': return `edit ${baseName(inp.file_path)}`;
-    case 'Write': return `write ${baseName(inp.file_path)}`;
-    case 'Grep': return `grep ${inp.pattern || ''}`;
-    case 'Glob': return `glob ${inp.pattern || ''}`;
-    case 'Agent': return `agent: ${inp.description || ''}`;
-    case 'WebSearch': return `search: ${inp.query || ''}`;
-    case 'WebFetch': return `fetch ${inp.url || ''}`;
-    default: return block.name;
+  const name = String(block.name || '');
+  switch (name) {
+    case 'Bash': return clip(inp.description) || clip(`Run ${shortCommand(inp.command)}`);
+    case 'Read': return `Read ${baseName(inp.file_path)}`;
+    case 'Edit':
+    case 'MultiEdit': return `Edit ${baseName(inp.file_path)}`;
+    case 'Write': return `Write ${baseName(inp.file_path)}`;
+    case 'NotebookEdit': return `Edit ${baseName(inp.notebook_path)}`;
+    case 'Grep': return clip(`Search for "${inp.pattern || ''}"`);
+    case 'Glob': return clip(`Find ${inp.pattern || 'files'}`);
+    case 'Agent':
+    case 'Task': return clip(`Agent: ${inp.description || 'subtask'}`);
+    case 'WebSearch': return clip(`Web search: ${inp.query || ''}`);
+    case 'WebFetch': return `Fetch ${hostOf(inp.url)}`;
+    case 'TodoWrite': return 'Update the plan';
+    case 'ToolSearch': return 'Load tools';
+    case 'Skill': return clip(`Use skill ${inp.skill || inp.command || ''}`);
+    default: return name.startsWith('mcp__') ? describeMcp(name) : name;
   }
 }
 
@@ -939,6 +979,7 @@ function luaTable(globalName, records, opts = {}) {
     if (r.summary) lines.push(`\t\t\tsummary = ${luaStr(r.summary)},`);
     if (r.title) lines.push(`\t\t\ttitle = ${luaStr(r.title)},`);
     if (r.title && Number(r.titleFor) > 0) lines.push(`\t\t\ttitleFor = ${Math.floor(Number(r.titleFor))},`);
+    if (r.status === 'working' && Number.isInteger(r.steps) && r.steps > 0) lines.push(`\t\t\tsteps = ${r.steps},`);
     if (r.late) lines.push('\t\t\tlate = true,');
     if (r.lateOk) lines.push('\t\t\tlateOk = true,');
     // Context growth (noteUsage): only on a final record, and only what is known.

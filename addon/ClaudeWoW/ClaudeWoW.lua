@@ -1520,22 +1520,46 @@ local function SelfTestSignals()
 	end
 end
 
+function Cli.WorkCount(chat)
+	local steps = run.steps and run.steps[chat.id] or 0
+	if steps > 0 then return steps .. (steps == 1 and " step" or " steps") end
+	local a = run.act and run.act[chat.id]
+	if a and not a.unreliable and a.count > 0 then return a.count .. (a.count == 1 and " action" or " actions") end
+	return nil
+end
+
 local function ActivityLine(chat)
 	local a = run.act and run.act[chat.id]
 	local now = GetTime()
 	local started = (a and a.startedAt) or run.sentAt or now
-	local s = "running " .. FmtDur(now - started)
-	if a and not a.unreliable then
-		s = s .. " - " .. a.count .. (a.count == 1 and " action" or " actions")
-		if a.last then
-			local quiet = now - a.last
-			s = s .. ", last " .. FmtDur(quiet) .. " ago"
-			if quiet > 120 then s = s .. " (quiet for a while - stuck? /claude cancel)" end
-		elseif now - started > 60 then
-			s = s .. ", no activity seen yet"
-		end
+	local parts = { FmtDur(now - started) }
+	local count = Cli.WorkCount(chat)
+	if count then table.insert(parts, count) end
+	local s = table.concat(parts, " " .. SEG.DOT .. " ")
+	if a and not a.unreliable and a.last then
+		local quiet = now - a.last
+		if quiet > 120 then s = s .. " " .. SEG.DOT .. " quiet for " .. FmtDur(quiet) .. ", stuck? /claude cancel" end
+	elseif not count and now - started > 60 then
+		s = s .. " " .. SEG.DOT .. " no activity seen yet"
 	end
 	return s
+end
+
+Cli.STEPS_SHOWN = 6
+
+function Cli.StepLines(chat)
+	local lines = {}
+	for line in tostring(chat.progress or ""):gmatch("[^\n]+") do
+		line = Trim(line)
+		if line ~= "" then table.insert(lines, line) end
+	end
+	local total = (run.steps and run.steps[chat.id]) or #lines
+	local first = math.max(1, #lines - Cli.STEPS_SHOWN + 1)
+	local out = {}
+	local hidden = math.max(0, total - (#lines - first + 1))
+	if hidden > 0 then table.insert(out, "+" .. hidden .. " earlier") end
+	for i = first, #lines do table.insert(out, SEG.DOT .. " " .. lines[i]) end
+	return out, lines[#lines]
 end
 
 local function FreeSlot()
@@ -1721,6 +1745,8 @@ local function ApplyReplies(replies)
 			elseif r.status == "working" then
 				if ClaudeWoWVoice then ClaudeWoWVoice.Started(r.id) end
 				c.progress = r.text
+				run.steps = run.steps or {}
+				run.steps[c.id] = tonumber(r.steps)
 				Whisper.Progress(c, r.text)
 			end
 		end
@@ -2788,9 +2814,11 @@ function Whisper.ProgressText(chat)
 	local started = (a and a.startedAt) or (run.whisperSentAt and run.whisperSentAt[chat.id]) or GetTime()
 	local elapsed = math.floor((GetTime() - started) / WL.ELAPSED_STEP) * WL.ELAPSED_STEP
 	local parts = { FmtElapsed(elapsed) }
-	if a and not a.unreliable and a.count > 0 then table.insert(parts, a.count .. (a.count == 1 and " action" or " actions")) end
+	local count = Cli.WorkCount(chat)
+	if count then table.insert(parts, count) end
 	local text = ChatAgentName(chat) .. " is working... " .. table.concat(parts, " " .. SEG.DOT .. " ")
-	local p = Trim(Flat(chat.progress or ""))
+	local _, latest = Cli.StepLines(chat)
+	local p = Trim(Flat(latest or ""))
 	if p ~= "" then
 		if #p > WL.PROGRESS_MAX then p = p:sub(1, WL.PROGRESS_MAX) .. "..." end
 		text = text .. " - " .. p
@@ -3118,6 +3146,7 @@ function ClaudeWoW.Send(text, allow, opts)
 	c.pendingId = id
 	c.draft = nil
 	c.progress = nil
+	if run.steps then run.steps[c.id] = nil end
 	if not c.quiet then
 		AddHistory(c, "user", text, id)
 		if wantsTitle then
@@ -3396,8 +3425,9 @@ function ClaudeWoW.AddChat(name, fields)
 	return c
 end
 
-function ClaudeWoW.NewChat(name)
+function ClaudeWoW.NewChat(name, prepare)
 	local c = AddChat(name and name ~= "" and name or nil)
+	if prepare then prepare(c) end
 	ClaudeWoW.SwitchChat(c.id)
 	Cli.Show(c)
 	return c
@@ -4010,7 +4040,7 @@ function ClaudeWoW.UpdateStatus()
 	if not ui.status then return end
 	local c = ActiveChat()
 	local mode = db.settings.mode
-	local s
+	local s, working
 	if c and c.pendingId then
 		local id = c.pendingId
 		local elapsed = run.sentAt and (GetTime() - run.sentAt) or 0
@@ -4022,8 +4052,9 @@ function ClaudeWoW.UpdateStatus()
 				s = "Slot pool used up this session - next keypress reloads to free it"
 			elseif run.pixelFailed then
 				s = "Bridge didn't see #" .. id .. " after " .. STRIP_TRIES .. " tries - next keypress switches to the reload path (or /claude reload)"
-			elseif c.progress or (run.act and run.act[c.id] and run.act[c.id].count > 0) then
+			elseif c.progress or Cli.WorkCount(c) then
 				s = ChatAgentName(c) .. " is working on #" .. id .. " - " .. ActivityLine(c)
+				working = true
 			elseif rec and not rec.acked then
 				s = "Sending #" .. id .. (rec.tries and rec.tries > 1 and (" (try " .. rec.tries .. "/" .. STRIP_TRIES .. ")") or "") .. "..."
 				local state = ClaudeWoW.BridgeState()
@@ -4061,6 +4092,7 @@ function ClaudeWoW.UpdateStatus()
 	end
 	ui.status:SetText(ui.native and Q.ShortStatus(c, s) or s)
 	run.statusText = s
+	run.statusWorking = working
 	ClaudeWoW.UpdateDot()
 	ClaudeWoW.UpdateConnect()
 	if ui.title then
@@ -4301,10 +4333,10 @@ function ClaudeWoW.Render()
 			Place(m.role, picker and m.head or m.text, m.t and date("%H:%M", m.t) or "", false, denied, m.agent, m.macros, m.newChat, picker)
 		end
 		if c.pendingId then
-			local p = c.progress
-			local head = "working... " .. ActivityLine(c)
-			if run.statusText and run.statusText ~= "" then head = head .. "\n" .. run.statusText end
-			Place("assistant", (p and p ~= "") and (head .. "\n\n" .. p) or head, "", true, nil, ChatAgent(c))
+			local head = "Working " .. SEG.DOT .. " " .. ActivityLine(c)
+			if run.statusText and run.statusText ~= "" and not run.statusWorking then head = head .. "\n" .. run.statusText end
+			local steps = Cli.StepLines(c)
+			Place("assistant", #steps > 0 and (head .. "\n\n" .. table.concat(steps, "\n")) or head, "", true, nil, ChatAgent(c))
 		elseif #c.history == 0 then
 			if run.restoring then
 				Place("system", "Connecting to the bridge and restoring your chats...", "", true)
@@ -7142,17 +7174,17 @@ function ClaudeWoW.RunCli(o)
 		Cli.RunResume(o)
 		return
 	end
-	local c
+	local c, notes
 	if o.continue or (o.flags > 0 and o.text == "" and not Cli.HasSetters(o)) then
 		c = ActiveChat()
 		if o.continue and type(o.name) == "string" then
 			c.name = o.name:sub(1, 24)
 			Whisper.Retitle(c)
 		end
+		notes = Cli.ApplyChatFlags(c, o)
 	else
-		c = ClaudeWoW.NewChat(type(o.name) == "string" and o.name:sub(1, 24) or nil)
+		c = ClaudeWoW.NewChat(type(o.name) == "string" and o.name:sub(1, 24) or nil, function(fresh) notes = Cli.ApplyChatFlags(fresh, o) end)
 	end
-	local notes = Cli.ApplyChatFlags(c, o)
 	if #notes > 0 then Cli.Out(c, table.concat(notes, "\n")) end
 	if o.text ~= "" then
 		ClaudeWoW.Send(o.text, nil, { chat = c.id })

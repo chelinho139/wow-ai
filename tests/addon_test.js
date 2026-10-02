@@ -1489,6 +1489,10 @@ test('whisper tabs: on by default; the active chat is a tab at login, Enter ther
   out = tabLines(vm, 11);
   assert.equal((out.match(/is working\.\.\./g) || []).length, 1, 'still one line');
   assert.ok(out.includes('Editing Map.lua') && !out.includes('Reading files'), 'showing the latest step');
+  slotReply(vm, chatId, 'status = "working", text = "List my open PRs\\nRun gh search prs", steps = 2');
+  out = tabLines(vm, 11);
+  assert.match(out, /Claude is working\.\.\. [^\n]*· 2 steps - Run gh search prs {2}\|H/, 'the step count and only the newest step: ' + out);
+  assert.ok(!out.includes('List my open PRs'), 'older steps stay out of the one-line tab: ' + out);
 
   slotReply(vm, chatId, 'status = "done", text = "hi back\\nsecond line", agent = "claude"');
   out = tabLines(vm, 11);
@@ -2906,7 +2910,10 @@ test('projects: a chat started by /claude in a whisper tab says general chat, no
   assert.match(general, / - general chat\. Type here/);
   assert.doesNotMatch(general, /coding in/);
   vm.run('SlashCmdList.CLAUDE("--project every fix the build")');
-  assert.match(chatTabText(vm, vm.evaluate('ClaudeWoWDB.activeChat')), /\nproject: every\n/);
+  const project = chatTabText(vm, vm.evaluate('ClaudeWoWDB.activeChat'));
+  assert.match(project, /\nproject: every\n/);
+  assert.match(project, / - coding in every\. Type here/, 'the welcome line names the project the flag set');
+  assert.doesNotMatch(project, /general chat/);
 });
 
 test('projects: a chat has none by default; --project, #name and none attach and detach one, and the wire carries the folder', () => {
@@ -2963,4 +2970,19 @@ test('a whisper reply waits briefly for an item the client has not loaded, then 
   deliver('again');
   for (let i = 0; i < 4; i++) vm.run('STUB.RunTimers()');
   assert.ok(chatTabText(vm, chatId).includes('farm |cff9d9d9ditem 2589|r'), 'after three tries the reply goes out with the plain id');
+});
+
+test('the working bubble: a step count, the newest steps as a list, and no second status line', () => {
+  const vm = newVM();
+  login(vm);
+  connectIn(vm, '');
+  vm.run('ClaudeWoW.Send("look at my open prs")');
+  const chatId = vm.evaluate('ClaudeWoWDB.chats[1].id');
+  const steps = Array.from({ length: 9 }, (_, i) => `Step ${i + 1}`).join('\\n');
+  nextSlot(vm, `{ now = time(), cwd = "", replies = { { chat = "${chatId}", id = ${pendingOf(vm, chatId)}, status = "working", text = "${steps}", steps = 12 } } }`);
+  vm.run('STUB.now = STUB.now + 6; STUB.Tick(); ClaudeWoW.Render()');
+  const body = vm.evaluate('(function() local t = {} for _, b in ipairs(ClaudeWoW.UI.bubbles) do if b.shown ~= false and b.body then table.insert(t, b.body.text) end end return table.concat(t, "\\n---\\n") end)()');
+  assert.match(body, /Working · \d+s · 12 steps\n\n\+6 earlier\n· Step 4\n· Step 5\n· Step 6\n· Step 7\n· Step 8\n· Step 9/, body);
+  assert.doesNotMatch(body, /is working on #/, 'the footer status is not repeated in the bubble');
+  assert.doesNotMatch(body, /0 actions|no activity seen yet/, body);
 });

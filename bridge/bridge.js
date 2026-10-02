@@ -1413,11 +1413,12 @@ function runAgent(job, opts = {}) {
   let stdoutText = '';
   let parserError = false;
 
+  let steps = 0;
   const pushProgress = (line) => {
     progress.push(line);
     while (progress.length > 10) progress.shift();
     beat(job);
-    publish(key, { chat: job.chat, id: job.id, status: 'working', text: checkedProgress(job, progress.join('\n')), cwd: job.cwd, session: sessionId, agent: agentId, plugin: plugin.id }, false);
+    publish(key, { chat: job.chat, id: job.id, status: 'working', text: checkedProgress(job, progress.join('\n')), steps, cwd: job.cwd, session: sessionId, agent: agentId, plugin: plugin.id }, false);
   };
   const noteMcpDown = (servers) => {
     log(`${tag} MCP server(s) not connected: ${servers.map(s => `${s.name} (${s.status})`).join(', ')}`);
@@ -1458,6 +1459,7 @@ function runAgent(job, opts = {}) {
     }
     if (r.session) sessionId = r.session;
     if (r.usage) usage = r.usage;
+    if (Number.isInteger(r.steps) && r.steps > 0) steps += r.steps;
     for (const p of r.progress) pushProgress(p);
     for (const d of r.denied) denied.add(d);
     if (Array.isArray(r.deniedAgain)) for (const d of r.deniedAgain) deniedAgain.add(d);
