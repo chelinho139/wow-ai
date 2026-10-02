@@ -186,6 +186,13 @@ test('systemPrompt always asks for the TL;DR block, and adds the game rules and 
   assert.ok(!P.systemPrompt('').includes('CLAUDE_WOW_MAP_FILE'), 'map hint only with the game context');
   assert.ok(s.includes('World of Warcraft: Forever is its own game'), 'a game chat is told Forever differs from the web databases');
   assert.ok(!P.systemPrompt('').includes('World of Warcraft: Forever is its own game'), 'and only a game chat');
+  const era = P.systemPrompt('Game: World of Warcraft Classic (client 1.15.9.70003, interface 11509)');
+  for (const prompt of [s, era]) {
+    assert.match(prompt, /Take every ID from the wowdata tools, which hold the client data of the player's own game \(Forever or Classic Era\), on both games; never use an ID from memory, a website or another game version\./);
+    assert.match(prompt, /use \{spell:ID\} only for a spell ID a wowdata result gave you/);
+    assert.match(prompt, /Take a quest ID only from the situation block's quest log/);
+    assert.doesNotMatch(prompt, /use the Classic ID|when you are sure of it/);
+  }
   assert.ok(!s.includes('ClaudeWoWNpcDB') && !s.includes('NPCs seen on this map'), 'no stored NPC data is offered');
   assert.ok(s.includes('in-game situation') && s.includes('Linked from the game'), 'says what the situation block and the links are');
   assert.ok(!s.includes('Testchar') && !s.includes('51.5'), 'the context\'s text is not in the system prompt: it changes with every step (messagePrompt carries it)');

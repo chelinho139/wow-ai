@@ -398,7 +398,7 @@ const PLAYER_VOICE_FORMAT = [
 ];
 
 const LINK_HINT = [
-  'Name an item, spell or quest with a token, not with its name: {item:ID}, {spell:ID} or {quest:ID}. The addon turns each token into the real in-game link, with the name and color the client has, and the player can hover or shift-click it. Do not also write the name next to the token. Use an ID only when you are sure of it: on World of Warcraft Classic (Classic Era) use the Classic ID, on Forever check it with the wowdata tools when you have them. A quest token shows only for a quest in the player\'s quest log. NPCs, zones and other things have no token: name them in plain words.',
+  'Name an item, spell or quest with a token, not with its name: {item:ID}, {spell:ID} or {quest:ID}. The addon turns each token into the real in-game link, with the name and color the client has, and the player can hover or shift-click it, so a wrong ID shows the wrong thing. Do not also write the name next to the token. Take every ID from the wowdata tools, which hold the client data of the player\'s own game (Forever or Classic Era), on both games; never use an ID from memory, a website or another game version. Spell names are not in that data: use {spell:ID} only for a spell ID a wowdata result gave you, such as a recipe. Take a quest ID only from the situation block\'s quest log; a quest token shows only for a quest in the player\'s quest log. Without the wowdata tools, or when they do not find it, name the thing in plain words. NPCs, zones and other things have no token: name them in plain words.',
   'For a list, put each item on its own line starting with "- "; the addon draws it as a bullet.',
 ];
 

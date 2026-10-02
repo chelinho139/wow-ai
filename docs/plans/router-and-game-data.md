@@ -14,7 +14,7 @@ Status: draft, revision 3 (2026-09-30). Step 2 is built for wago.tools only (§4
 - No stored NPC data. Sightings is removed by PR #23 (`chore/remove-sightings`), which is a prerequisite and not part of this plan.
 - No transport, map, macro or widget protocol changes.
 - No hosted service. Data is fetched and cached on the user's machine.
-- v1 data is **Forever only**. The addon also loads in Classic Era (`## Interface: 11509, 16001`), whose `Game:` line names client 1.15.x. That build is outside the 1.60.1 family, so the wowdata answers are labeled build-mismatch and reference tokens are refused there. A `classic_era` data flavor is a later step.
+- Data covers two games, one flavor each: Forever (`forever`, client 1.60.x) and Classic Era (`classic_era`, client 1.15.x, added in PR #49). The bridge picks the flavor from the client build in the `Game:` line and never falls back to the other one. No other game (retail, Season of Discovery, Anniversary) is in scope.
 
 ## 2. Order of work
 
@@ -66,6 +66,9 @@ Data first, router last. Each step must pay off on its own before the next one s
 - [x] Coordinates: `UiMapAssignment` rectangles turn `TaxiNodes` world positions into uiMap percent. Check: Orgrimmar comes out at 45.28, 63.75 on uiMap 1454 and The Sepulcher at 45.56, 42.42 on 1421. Zone rectangles overlap, so 65 of 100 flight paths sit in more than one zone. For those, `map` is the continent and `maps` lists every candidate. Picking the right zone needs area data the client tables here do not have.
 - [x] R11 build family: the manifest stores `buildFamily`, a SHA-256 per table and `tableHash`; a second build in the same family records `previous.changedTables`.
 - [x] First real sync (1.60.1.70094): 38,550 rows kept, 0 dropped. `items` 19,224, `quests` 6,605, `zones` 1,371, `flightpaths` 100, `uimaps` 60, `uimapassignments` 61, `skilllineabilities` 7,826, `spellreagents` 3,303. Before trimming edge spaces and allowing a reagent count of 0, 127 rows were dropped (7 names with a trailing space, 120 reagents with count 0).
+- [x] Classic Era flavor (PR #49): `claude-wow data sync --flavor classic_era`, wago.tools product `wow_classic_era`, family `1.15.9`. The same endpoint shapes answer for it: `https://wago.tools/api/builds` lists `wow_classic_era`, and `https://wago.tools/db2/<Table>/csv?build=1.15.9.70003` serves each table. Every table and every column the parsers read is in the Era build, so no table is dropped for Era. First real sync (1.15.9.70003, fetched 2026-10-02T00:00Z): 39,234 rows kept, 0 dropped. `items` 24,442, `quests` 4,807, `zones` 1,212, `flightpaths` 87 (54 `zoneAmbiguous`, 1 on no map), `uimaps` 54, `uimapassignments` 55, `skilllines` 129, `skilllineabilities` 6,143, `spellreagents` 2,305.
+- [x] Era checked by hand through `wow_item`, `wow_where`, `wow_flights` and `wow_sources` with client build 1.15.9.70003 (`buildCheck` `exact`, trust `client-data`): item 2589 is Linen Cloth (quality 1, item level 5, sells for 13 copper) and is a reagent for Tailoring (197), Engineering (202), First Aid (129) and Blacksmithing (164); Tirisfal Glades is uiMap 1420 under Eastern Kingdoms (1415) and area 85; uiMap 1420 holds flight path 11, Undercity, Tirisfal, at 61.2, 75.32 (`zoneAmbiguous`, so `map` is the continent); Brill has no flight path in Era, and the tool says so (`found: false`).
+- [x] The ask prompt tells the agent to take every `{item:ID}` and `{spell:ID}` from the wowdata tools on both games, a quest ID only from the quest log, and never an ID from memory.
 - [ ] Run it from install, setup and the weekly timer (§8).
 - [ ] NPC and object spawns: no source until a licensed one exists.
 
