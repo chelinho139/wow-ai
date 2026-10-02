@@ -10,6 +10,10 @@ O.GATHER_SPELLS_MAX = 80
 O.SPELL_WINDOW_SECONDS = 1
 O.WINDOW_SECONDS = 2
 O.AH_REPEAT_SECONDS = 300
+O.MERCHANT_PRICE = 3
+O.MERCHANT_STACK = 4
+O.MERCHANT_EXTENDED_COST = 8
+O.MERCHANT_CURRENCY = 9
 O.POSITION_SCALE = 1000
 O.LOOT_SLOT_ITEM = 1
 O.SOURCE_CODES = { Creature = "n", Vehicle = "n", GameObject = "o" }
@@ -17,7 +21,7 @@ O.FISHING_CODE = "f"
 O.PROBES = {
 	"GetMerchantNumItems",
 	"GetMerchantItemID",
-	"C_MerchantFrame.GetItemInfo",
+	{ "C_MerchantFrame.GetItemInfo", "GetMerchantItemInfo" },
 	"C_AuctionHouse.GetBrowseResults",
 	"C_AuctionHouse.GetCommoditySearchResultInfo",
 	"GetNumLootItems",
@@ -38,6 +42,12 @@ local function Try(fn, ...)
 	if type(fn) ~= "function" then return nil end
 	local ok, a, b, c, d, e, f, g, h = pcall(fn, ...)
 	if ok then return a, b, c, d, e, f, g, h end
+end
+
+local function Returns(fn, ...)
+	if type(fn) ~= "function" then return nil end
+	local r = { pcall(fn, ...) }
+	if r[1] then return r end
 end
 
 local function Int(n)
@@ -97,8 +107,23 @@ local function Push(list, entry, max)
 	while #list > max do table.remove(list, 1) end
 end
 
+local function ModernMerchant()
+	return C_MerchantFrame and type(C_MerchantFrame.GetItemInfo) == "function"
+end
+
+local function MerchantOffer(i)
+	if ModernMerchant() then
+		local info = Try(C_MerchantFrame.GetItemInfo, i)
+		if type(info) ~= "table" then return nil end
+		return info.price, info.stackCount, info.hasExtendedCost or info.currencyID ~= nil
+	end
+	local r = Returns(GetMerchantItemInfo, i)
+	if not r then return nil end
+	return r[O.MERCHANT_PRICE + 1], r[O.MERCHANT_STACK + 1], r[O.MERCHANT_EXTENDED_COST + 1] or r[O.MERCHANT_CURRENCY + 1] ~= nil
+end
+
 function O.OnMerchant()
-	if not (C_MerchantFrame and type(C_MerchantFrame.GetItemInfo) == "function") then return end
+	if not (ModernMerchant() or type(GetMerchantItemInfo) == "function") then return end
 	local code, npc = O.SourceOf(Try(UnitGUID, "npc"))
 	if code ~= "n" then return end
 	local count = WholeNumber(Try(GetMerchantNumItems)) or 0
@@ -106,11 +131,9 @@ function O.OnMerchant()
 	for i = 1, count do
 		if #parts >= O.VENDOR_ITEMS_MAX then break end
 		local id = Try(GetMerchantItemID, i)
-		local info = Try(C_MerchantFrame and C_MerchantFrame.GetItemInfo, i)
-		if WholeNumber(id) and id > 0 and type(info) == "table" and not info.hasExtendedCost and info.currencyID == nil
-			and WholeNumber(info.price) and info.price > 0 then
-			local stack = WholeNumber(info.stackCount) or 1
-			parts[#parts + 1] = Int(id) .. "=" .. Int(info.price) .. "/" .. Int(math.max(1, stack))
+		local price, stack, otherCost = MerchantOffer(i)
+		if WholeNumber(id) and id > 0 and not otherCost and WholeNumber(price) and price > 0 then
+			parts[#parts + 1] = Int(id) .. "=" .. Int(price) .. "/" .. Int(math.max(1, WholeNumber(stack) or 1))
 		end
 	end
 	local map = Place()

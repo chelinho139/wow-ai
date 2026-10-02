@@ -16,6 +16,7 @@ Voice.lua
 LootRoll.lua
 Achievements.lua
 Orders.lua
+DM.lua
 Widgets.lua
 Window.lua
 Telemetry.lua

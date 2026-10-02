@@ -33,6 +33,15 @@ test('register validates the shape and fills in the optional fields', () => {
   assert.equal(reg.get('two').tools, ' t ');
 });
 
+test('only a plugin that says searchesFiles: true keeps the file search tools, and only claude-code ships with it', () => {
+  const reg = PL.createRegistry();
+  assert.equal(reg.register(fake('plain')).searchesFiles, false);
+  assert.equal(reg.register(fake('truthy', { searchesFiles: 'yes' })).searchesFiles, false, 'a truthy value is not an opt-in');
+  assert.equal(reg.register(fake('coder', { searchesFiles: true })).searchesFiles, true);
+  const shipped = ['ask', 'claude-code', 'roast', 'stream', 'live'].map(id => require(`../bridge/plugins/${id}`));
+  assert.deepEqual(shipped.filter(p => PL.normalizePlugin(p).searchesFiles).map(p => p.id), ['claude-code']);
+});
+
 test('route: address, then the chat binding, then match(), then the default', () => {
   const reg = PL.createRegistry();
   reg.register(fake('code', { aliases: ['claude'] }));

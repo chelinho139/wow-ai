@@ -11,7 +11,8 @@ const MAX_ANCESTORS = 10;
 const UI_MAP_TYPE_NAMES = ['cosmic', 'world', 'continent', 'zone', 'dungeon', 'micro', 'orphan'];
 const ID_TEXT = /^\d{1,9}$/;
 
-const NO_DATA_NOTE = 'No game data is synced on this machine, so nothing here is verified. The owner can run "claude-wow data sync".';
+const noDataNote = store => `No game data is synced on this machine for this client, so nothing here is verified. The owner can run "${store.syncCommand || 'claude-wow data sync'}".`;
+const NO_FLAVOR_NOTE = 'The client build does not say which game this is (Forever is 1.60.*, Classic Era is 1.15.*), so no game data is used.';
 const MISMATCH_NOTE = 'The cached data is for a different build family than the client. Treat these rows as unverified for this client.';
 const UNKNOWN_BUILD_NOTE = 'The client build is unknown (the situation block has no Game: line), so these rows are not checked against the player\'s client build.';
 const tableUnavailableNote = ({ entity, problem }) => `Table ${entity} is unavailable (${problem}). A missing answer from it does not mean the thing is absent from the client data.`;
@@ -24,7 +25,7 @@ const NOT_IN_DATA = Object.freeze([
 ]);
 
 const INSTRUCTIONS = [
-  'Read-only World of Warcraft: Forever client data, cached on this machine from the client tables (DB2) of one build.',
+  'Read-only World of Warcraft client data for the player\'s game, cached on this machine from the client tables (DB2) of one build. The bridge picks the data from the client build the game reports: Forever (1.60.*) or Classic Era (1.15.*), never the other one.',
   `Each result carries source, build and trust. trust "${GD.TRUST.clientData}" rows come from the client tables of the player's build family; "none" means nothing was found, so say you do not know.`,
   `trust "${GD.TRUST.buildMismatch}" (buildCheck "build-mismatch") means the data is for another build family than the player's client: call it unverified. trust "${GD.TRUST.buildUnchecked}" means the client build is unknown: say the data is not checked against the client.`,
   'A table listed in "unavailable" could not be read: a missing answer from it is not proof that the thing is absent from the game.',
@@ -79,7 +80,8 @@ function cited(store, fields) {
 
 function envelope(store, tool, query, results, extra = {}) {
   const notes = [];
-  if (!store.build) notes.push(NO_DATA_NOTE);
+  if (!store.flavor) notes.push(NO_FLAVOR_NOTE);
+  else if (!store.build) notes.push(noDataNote(store));
   else if (store.buildCheck === GD.BUILD_CHECK.mismatch) notes.push(MISMATCH_NOTE);
   else if (store.buildCheck === GD.BUILD_CHECK.unknown) notes.push(UNKNOWN_BUILD_NOTE);
   const missed = store.takeMissed ? store.takeMissed() : [];
@@ -90,6 +92,7 @@ function envelope(store, tool, query, results, extra = {}) {
     tool,
     query,
     found,
+    flavor: store.flavor || null,
     source: store.source,
     build: store.build,
     clientBuild: store.clientBuild || null,
@@ -226,7 +229,7 @@ function requireOne(args, keys) {
 const TOOLS = [
   {
     name: 'wow_item',
-    description: 'Look up a Forever item by ID or by name in the client item table: name, quality, item level, required level, inventory type, sell and buy price in copper, the quest it starts, and (by ID) the profession recipes that use it as a reagent. It has no drop sources or vendors.',
+    description: 'Look up an item by ID or by name in the client item table: name, quality, item level, required level, inventory type, sell and buy price in copper, the quest it starts, and (by ID) the profession recipes that use it as a reagent. It has no drop sources or vendors.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -251,7 +254,7 @@ const TOOLS = [
   },
   {
     name: 'wow_quest',
-    description: 'Check a Forever quest ID against the client quest table, and list the items that start it. The client tables hold quest IDs only: there is no title, text, giver, objective or reward, so this tool never returns a quest name.',
+    description: 'Check a quest ID against the client quest table, and list the items that start it. The client tables hold quest IDs only: there is no title, text, giver, objective or reward, so this tool never returns a quest name.',
     inputSchema: {
       type: 'object',
       properties: { id: { type: 'integer', minimum: 1, description: 'Quest ID' } },
@@ -270,7 +273,7 @@ const TOOLS = [
   },
   {
     name: 'wow_flights',
-    description: 'Find Forever flight paths (TaxiNodes) by ID, by name, or every one on a world map (uiMapID). Each has its position in percent on the zone map, or on the continent when zones overlap there (zoneAmbiguous), and on every map that holds it. flags is the raw client value: faction and availability are not decoded.',
+    description: 'Find flight paths (TaxiNodes) by ID, by name, or every one on a world map (uiMapID). Each has its position in percent on the zone map, or on the continent when zones overlap there (zoneAmbiguous), and on every map that holds it. flags is the raw client value: faction and availability are not decoded.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -298,7 +301,7 @@ const TOOLS = [
   },
   {
     name: 'wow_where',
-    description: 'Find Forever places by name: world maps (UiMap, with uiMapID for map pins), areas and zones (AreaTable, with the maps they are on) and flight paths with their map position. With uiMapID, describe that map: its parents, child maps and how many flight paths it has. NPCs, objects and quest givers are not in this data.',
+    description: 'Find places by name: world maps (UiMap, with uiMapID for map pins), areas and zones (AreaTable, with the maps they are on) and flight paths with their map position. With uiMapID, describe that map: its parents, child maps and how many flight paths it has. NPCs, objects and quest givers are not in this data.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -411,23 +414,27 @@ function parseArgs(argv) {
     const a = argv[k];
     if (a === '--data') opts.dataDir = argv[++k] || '';
     else if (a === '--client-build') opts.clientBuild = argv[++k] || '';
+    else if (a === '--flavor') opts.flavor = argv[++k] || '';
     else throw new InputError(`unknown option ${JSON.stringify(a)}`);
   }
   return opts;
 }
 
-function launchConfig({ dataDir, clientBuild = '', runtime } = {}) {
-  const store = GD.openStore({ dataDir, clientBuild });
+function launchConfig({ dataDir, clientBuild = '', flavor, runtime } = {}) {
+  const store = GD.openStore({ dataDir, clientBuild, flavor });
   if (!store.build) return null;
   const R = require('./runtime');
-  const args = ['--data', dataDir, ...(store.clientBuild ? ['--client-build', store.clientBuild] : [])];
+  const args = [...(flavor ? ['--flavor', flavor] : []), '--data', dataDir, ...(store.clientBuild ? ['--client-build', store.clientBuild] : [])];
   const [command, commandArgs] = R.scriptCommand('data-mcp', args, runtime);
+  const server = { type: 'stdio', command, args: commandArgs, alwaysLoad: true };
   return {
+    flavor: store.flavor,
     build: store.build,
     clientBuild: store.clientBuild,
     buildCheck: store.buildCheck,
     rules: [RUN_RULE],
-    config: JSON.stringify({ mcpServers: { [SERVER_NAME]: { type: 'stdio', command, args: commandArgs, alwaysLoad: true } } }),
+    server,
+    config: JSON.stringify({ mcpServers: { [SERVER_NAME]: server } }),
   };
 }
 
@@ -438,8 +445,9 @@ function main(argv, deps = {}) {
   let opts;
   try { opts = parseArgs(argv); } catch (e) { log(e.message); process.exitCode = 2; return null; }
   const dataDir = opts.dataDir || require('./home').resolve(deps.env || process.env).data;
-  const store = GD.openStore({ dataDir, clientBuild: opts.clientBuild });
-  log(store.build ? `serving ${store.build} from ${store.dir} (client ${store.clientBuild || 'unknown'}: ${store.buildCheck})` : `no game data under ${dataDir}`);
+  if (opts.flavor !== undefined && !Object.prototype.hasOwnProperty.call(require('./datasync').FLAVORS, opts.flavor)) { log(`unknown flavor ${JSON.stringify(opts.flavor)}`); process.exitCode = 2; return null; }
+  const store = GD.openStore({ dataDir, clientBuild: opts.clientBuild, flavor: opts.flavor });
+  log(store.build ? `serving ${store.flavor} ${store.build} from ${store.dir} (client ${store.clientBuild || 'unknown'}: ${store.buildCheck})` : `no game data under ${dataDir}`);
   const server = createServer({ store, stdout, log });
   stdin.on('data', server.feed);
   stdin.on('end', () => { if (!deps.stdin) process.exit(0); });

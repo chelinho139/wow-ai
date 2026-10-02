@@ -26,6 +26,10 @@ match(msg)         when a bare message on a chat bound to nothing belongs to it
 tools              extra instructions placed in the system prompt after the reply rules
 surfaces           which of the core's surfaces its replies may use: "map", "macro", "ui"
                    (the window, the echo and the tab are how every reply reaches the player)
+searchesFiles      optional, false by default; true keeps Grep, Glob, LS and NotebookRead
+                   for its Claude runs (only `claude-code` sets it). Every other plugin's
+                   Claude runs get those four tools denied. Every plugin's Claude runs are
+                   denied `Read` of the bridge home (`~/.claude-wow/**`, by its real path too)
 handle(msg, core)  what to actually do; `core` lends it the agent runner, the
                    bridge's folder and the chat's session
 finished(msg, outcome, core)

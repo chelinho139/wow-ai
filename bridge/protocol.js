@@ -436,7 +436,7 @@ function visionHint(image) {
 const SITUATION_RULE = 'A message may open with a block marked as the player\'s in-game situation, reported by the addon the moment they wrote it (not written by them): character, zone, map coordinates, money, professions, quest log. Use it when the request is about the game or the character (questions, macros, addon code, gear advice); ignore it when the task is unrelated. Every message carries a fresh one, so the latest block is where they are now. Items, spells or quests the player shift-clicked into a message appear as [Name] in the text, with their tooltip in a "Linked from the game" block at the end of the message.';
 
 const WHERE_HINT = [
-  'The situation block\'s "Game:" line names the client. World of Warcraft: Forever is its own game: its NPCs, quests, drops and spawns can differ from retail and from Classic, so web databases and wikis (Wowhead and the like) are unverified guides there. World of Warcraft Classic (interface 115xx) is Classic Era: Classic web databases describe it, but the wowdata tools hold Forever data only (their answers are labeled build-mismatch there) and reference tokens are refused.',
+  'The situation block\'s "Game:" line names the client. World of Warcraft: Forever is its own game: its NPCs, quests, drops and spawns can differ from retail and from Classic, so web databases and wikis (Wowhead and the like) are unverified guides there. World of Warcraft Classic (interface 115xx) is Classic Era: Classic web databases describe it. The wowdata tools and reference tokens use the synced data of the client\'s own game (Forever or Classic Era), never the other one; with no data synced for it, tokens are refused.',
   'Coordinates are percent of the map with that uiMapID, 0 to 100, with 0,0 at the top left; give them as "x, y" and mark the spot on the map as well.',
 ];
 
@@ -847,6 +847,7 @@ function luaTable(globalName, records, opts = {}) {
   if (opts.map) lines.push(luaMap(opts.map));
   if (opts.achievementsLua) lines.push(opts.achievementsLua);
   if (opts.goalsLua) lines.push(opts.goalsLua);
+  if (opts.dmLua) lines.push(opts.dmLua);
   if (opts.gsLua) lines.push(opts.gsLua);
   if (opts.widgets) lines.push(luaWidgets(opts.widgets));
   const restore = opts.restore;

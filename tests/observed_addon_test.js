@@ -8,6 +8,7 @@ const { lua, lauxlib, lualib, to_luastring, to_jsstring } = require('fengari');
 const P = require('../bridge/protocol');
 const TL = require('../bridge/telemetry');
 const OB = require('../bridge/observed');
+const G = require('../bridge/goals');
 
 const ADDON = path.join(__dirname, '..', 'addon', 'ClaudeWoW');
 const CELLS_PER_ROW = 200;
@@ -322,4 +323,83 @@ test('round trip: the addon\'s observed sections land in observed.jsonl through 
     assert.deepEqual(lines.map(l => l.kind).sort(), ['loot', 'vendor']);
     assert.ok(lines.every(l => l.trust === 'observed' && l.n === 1));
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+const ERA_FACTION = 76;
+const ERA_CLIENT = `
+C_SkillInfo = nil
+C_AuctionHouse = nil
+C_MerchantFrame = { GetBuybackItemID = function() return nil end }
+C_Reputation = { GetWatchedFactionData = function() return nil end }
+function GetMerchantItemInfo(i)
+  local m = STUB.merchant[i]
+  if not m then return nil end
+  return "Merchant Item " .. i, 134400, m.price, m.stack, -1, true, true, m.ext or false, m.currency
+end
+STUB.skillLines = {
+  { "Professions", true }, { "Skinning", false, 187, 225 }, { "Weapon Skills", true }, { "Daggers", false, 100, 115 },
+}
+function GetNumSkillLines() return #STUB.skillLines end
+function GetSkillLineInfo(i)
+  local l = STUB.skillLines[i]
+  if not l then return nil end
+  return l[1], l[2], true, l[3] or 0, 0, 0, l[4] or 0, false, 0, 0, 0, 0, ""
+end
+function GetFactionInfoByID(id)
+  local f = STUB.factions and STUB.factions[id]
+  if not f then return nil end
+  return "Faction " .. id, "", f.standing, 3000, 9000, f.value, false, true, false, false, true, false, false, f.reportedID or id, false, false
+end
+`;
+
+function eraGs(factions = '') {
+  return `{ v = 1, watch = { items = {}, factions = { ${factions} } }, chars = {}, obs = 1, gather = { [${GATHER_SPELL}] = ${GATHER_SPELL} } }`;
+}
+
+test('Classic Era vendor window: prices come from GetMerchantItemInfo, extended-cost and currency items are left out', () => {
+  const vm = ready({ extra: ERA_CLIENT, gs: eraGs() });
+  vm.run('STUB.FireEvent("MERCHANT_SHOW")');
+  const r = nextRecord(vm);
+  assert.ok(r && r.sections.vendor, 'the vendor section went out');
+  assert.deepEqual(r.errors, []);
+  assert.deepEqual(r.sections.vendor.value.visit.items, [{ itemID: 501, price: 600, stack: 1 }, { itemID: 505, price: 25, stack: 5 }]);
+});
+
+test('Classic Era auction prices are not collected: the Era list event is not even registered', () => {
+  const vm = ready({ extra: ERA_CLIENT, gs: eraGs() });
+  vm.run('function GetNumAuctionItems() return 1, 1 end; function GetAuctionItemInfo() return "Auction Item", 134400, 1, 1, true, 10, nil, 5, 1, 1400, 0, false, nil, "Seller", nil, 0, 501, true end');
+  vm.run('STUB.FireEvent("AUCTION_ITEM_LIST_UPDATE")');
+  assert.equal(vm.evaluate('ClaudeWoWObserved.Sections().ah'), null);
+  vm.run('RESULT = false; for _, f in ipairs(STUB.frames) do if f.events.AUCTION_ITEM_LIST_UPDATE then RESULT = true end end');
+  assert.equal(vm.evaluate('RESULT'), 'false');
+});
+
+test('Classic Era skills: profession lines get their skill ID from the profession name table, other lines are left out', () => {
+  const vm = ready({ extra: ERA_CLIENT, gs: eraGs() });
+  assert.equal(vm.evaluate('ClaudeWoWTelemetry.Sections().skills'), '393=187/225');
+  vm.run('STUB.skillLines[2][3] = 188; STUB.FireEvent("SKILL_LINES_CHANGED")');
+  const r = nextRecord(vm);
+  assert.deepEqual(r.sections.skills.value.skills, { 393: { rank: 188, max: 225 } });
+});
+
+test('the addon profession name table matches the bridge one', () => {
+  const vm = ready({ extra: ERA_CLIENT, gs: eraGs() });
+  vm.run('local parts = {}; for name, id in pairs(ClaudeWoW.PROFESSION_SKILL_NAMES) do parts[#parts + 1] = id .. "=" .. name end; table.sort(parts); RESULT = table.concat(parts, ",")');
+  const bridge = Object.entries(G.PROFESSION_SKILL_IDS).map(([id, name]) => `${id}=${name}`).sort();
+  assert.deepEqual(vm.evaluate('RESULT').split(','), bridge);
+});
+
+test('Classic Era factions: standing from GetFactionInfoByID, and a row for another faction is never reported', () => {
+  const vm = ready({ extra: ERA_CLIENT, gs: eraGs(`${ERA_FACTION}, 81`) });
+  vm.run(`STUB.factions = { [${ERA_FACTION}] = { standing = 5, value = 3200 }, [81] = { standing = 4, value = 10, reportedID = 530 } }`);
+  vm.run('STUB.FireEvent("UPDATE_FACTION")');
+  const r = nextRecord(vm);
+  assert.deepEqual(r.sections.factions.value.factions, { [ERA_FACTION]: { reaction: 5, standing: 3200 } });
+});
+
+test('on Classic Era the capability probe names only the auction functions, which have no collector there', () => {
+  const vm = ready({ extra: ERA_CLIENT, gs: eraGs() });
+  assert.equal(vm.evaluate('table.concat(ClaudeWoWTelemetry.Missing(), ",")'), 'C_AuctionHouse.GetBrowseResults,C_AuctionHouse.GetCommoditySearchResultInfo');
+  const none = ready({ extra: `${ERA_CLIENT}\nGetMerchantItemInfo = nil\nGetFactionInfoByID = nil\nGetNumSkillLines = nil\nGetSkillLineInfo = nil`, gs: eraGs() });
+  assert.equal(none.evaluate('table.concat(ClaudeWoWTelemetry.Missing(), ",")'), 'C_SkillInfo.GetNumSkillLines,C_SkillInfo.GetSkillLineInfo,C_Reputation.GetFactionDataByID,C_MerchantFrame.GetItemInfo,C_AuctionHouse.GetBrowseResults,C_AuctionHouse.GetCommoditySearchResultInfo', 'with neither API, the modern name is reported');
 });

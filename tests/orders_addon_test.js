@@ -538,6 +538,78 @@ test('orders card: the module sends nothing and automates nothing', () => {
   assert.equal(vm.num('#STUB.chatSent'), before);
 });
 
+const QUEST_WATCH_STUB = `
+QuestWatchFrame = CreateFrame("Frame", "QuestWatchFrame", UIParent)
+QuestWatchFrame:SetSize(280, 52)
+QuestWatchFrame:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", -85, -200)
+NORMAL_FONT_COLOR = { r = 1, g = 0.82, b = 0 }
+HIGHLIGHT_FONT_COLOR = { r = 1, g = 1, b = 1 }
+GameFontNormal, GameFontHighlight = {}, {}
+STUB.atlasAsked, STUB.templatesAsked = {}, {}
+C_Texture = { GetAtlasExists = function(name) table.insert(STUB.atlasAsked, name) return true end }
+C_XMLUtil = { GetTemplateInfo = function(name) table.insert(STUB.templatesAsked, name) return nil end }
+do
+  local probe = CreateFrame("Frame")
+  local mt = getmetatable(probe)
+  local base = mt.__index
+  mt.__index = function(t, k)
+    if k == "SetTextColor" then return function(self, r, g, b) self.textColor = string.format("%.2f,%.2f,%.2f", r, g, b) end end
+    if k == "SetNormalTexture" then return function(self, file) self.normalFile = file end end
+    if k == "SetHighlightTexture" then return function(self, file, mode) self.highlightFile = file end end
+    if k == "CreateFontString" then
+      return function(self, name, layer, font)
+        local fs = base(t, k)(self, name, layer, font)
+        fs.font = font
+        return fs
+      end
+    end
+    return base(t, k)
+  end
+end
+`;
+
+test('orders card on Classic Era: follows QuestWatchFrame with its fonts, colors and dash lines, and asks for no tracker template or atlas', () => {
+  const vm = newVM({ prelude: QUEST_WATCH_STUB });
+  scenario(vm, [`{ rev = 5, char = "${CHAR}", order = { id = "o_5", text = "Craft until Leatherworking hits 125", pct = 71 }, goals = { { title = "Skinning 225", pct = 83 }, { title = "Cooking 75", pct = 100 } } }`]);
+  assert.equal(cardShown(vm), true);
+  assert.equal(vm.evaluate('ClaudeWoWOrders.debug.style'), 'watch');
+  assert.equal(vm.evaluate('ClaudeWoWOrders.debug.anchoredTo'), 'watch');
+  assert.equal(vm.evaluate('ClaudeWoWOrdersCard.rel == QuestWatchFrame'), 'true');
+  assert.deepEqual([vm.evaluate('ClaudeWoWOrdersCard.point'), vm.evaluate('ClaudeWoWOrdersCard.relPoint'), vm.num('ClaudeWoWOrdersCard.y')], ['TOPLEFT', 'BOTTOMLEFT', -4]);
+  assert.deepEqual([vm.evaluate('ClaudeWoWOrdersCard.header.Text.text'), vm.evaluate('ClaudeWoWOrdersCard.header.Text.font')], ['Orders', 'GameFontNormal']);
+  const line = expr => [vm.evaluate(`${expr}.text`), vm.evaluate(`${expr}.font`), vm.evaluate(`${expr}.textColor`)];
+  assert.deepEqual(line('ClaudeWoWOrdersCard.orderText'), ['Craft until Leatherworking hits 125', 'GameFontHighlight', '0.75,0.61,0.00'], 'the order is a watched quest title');
+  assert.deepEqual(line('ClaudeWoWOrdersCard.pctLine'), [' - 71%', 'GameFontHighlight', '0.80,0.80,0.80']);
+  assert.deepEqual(line('ClaudeWoWOrdersCard.goalLines[1]'), [' - Skinning 225: 83%', 'GameFontHighlight', '0.80,0.80,0.80']);
+  assert.deepEqual(line('ClaudeWoWOrdersCard.goalLines[2]'), [' - Cooking 75: 100%', 'GameFontHighlight', '1.00,1.00,1.00'], 'a finished line is bright, as a finished objective is');
+  assert.equal(vm.num('#ClaudeWoWOrdersCard.bars'), 0, 'the Era watch list has no progress bars');
+  vm.run('RESULT = 0; local mine = {}; for _, a in pairs(ClaudeWoWOrders.ATLAS) do mine[a] = true end; for _, a in ipairs(STUB.atlasAsked) do if mine[a] then RESULT = RESULT + 1 end end');
+  assert.equal(vm.num('RESULT'), 0, 'no tracker atlas lookup: Era answers yes for atlases it draws green');
+  vm.run('RESULT = 0; for _, t in ipairs(STUB.templatesAsked) do if t:find("^ObjectiveTracker") then RESULT = RESULT + 1 end end');
+  assert.equal(vm.num('RESULT'), 0, 'no ObjectiveTracker template lookup');
+  assert.equal(vm.evaluate('ClaudeWoWOrdersCard.header.MinimizeButton.normalFile'), 'Interface\\Buttons\\UI-MinusButton-Up');
+  assert.equal(vm.evaluate('ClaudeWoWOrdersCard.header.MinimizeButton.highlightFile'), 'Interface\\Buttons\\UI-PlusButton-Hilight');
+
+  vm.run('QuestWatchFrame:Hide()');
+  assert.equal(vm.evaluate('ClaudeWoWOrders.debug.anchoredTo'), 'watch-top', 'no watched quests: the card takes the watch list spot');
+  vm.run('QuestWatchFrame:Show()');
+  assert.equal(vm.evaluate('ClaudeWoWOrders.debug.anchoredTo'), 'watch');
+  vm.run('ClaudeWoWOrders.ToggleCollapsed()');
+  assert.equal(vm.evaluate('ClaudeWoWOrdersCard.header.MinimizeButton.normalFile'), 'Interface\\Buttons\\UI-PlusButton-Up');
+  assert.equal(vm.num('ClaudeWoWOrdersCard.height'), 16);
+  assert.equal(vm.evaluate('ClaudeWoWOrdersCard.orderText.shown'), 'false');
+  vm.run('ClaudeWoWOrders.ToggleCollapsed()');
+  for (const script of ['OnShow', 'OnHide', 'OnSizeChanged']) assert.equal(vm.num(`#QuestWatchFrame.hooks.${script}`), 1, `${script} hooked once`);
+});
+
+test('orders card: a client with the objective tracker keeps the tracker look even when it also has QuestWatchFrame', () => {
+  const vm = newVM({ prelude: TRACKER_STUB + QUEST_WATCH_STUB });
+  scenario(vm, [ORDER_GOALS(5)]);
+  assert.equal(vm.evaluate('ClaudeWoWOrders.debug.style'), 'tracker');
+  assert.equal(vm.evaluate('ClaudeWoWOrders.debug.anchoredTo'), 'tracker');
+  assert.equal(shownBars(vm), 3);
+});
+
 test('orders card: the toc loads Orders.lua after the core', () => {
   const toc = fs.readFileSync(path.join(ADDON, 'ClaudeWoW.toc'), 'utf8').split(/\r?\n/).map(l => l.trim()).filter(l => l && !l.startsWith('#'));
   assert.ok(toc.indexOf('Orders.lua') > toc.indexOf('ClaudeWoW.lua'), toc.join(', '));

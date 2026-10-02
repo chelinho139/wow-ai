@@ -66,8 +66,13 @@ function rankName(name, q) {
   return -1;
 }
 
-function openStore({ dataDir, flavor = 'forever', clientBuild = '' } = {}) {
-  const root = dataDir ? D.flavorDir(dataDir, flavor) : null;
+function flavorFor(clientBuild, flavor) {
+  return flavor === undefined ? D.flavorForBuild(clientBuild) : flavor;
+}
+
+function openStore({ dataDir, flavor: chosen, clientBuild = '' } = {}) {
+  const flavor = flavorFor(clientBuild, chosen);
+  const root = dataDir && flavor ? D.flavorDir(dataDir, flavor) : null;
   const current = root ? D.readCurrent(root) : null;
   const build = current ? current.build : null;
   const manifest = current ? current.manifest : null;
@@ -133,6 +138,9 @@ function openStore({ dataDir, flavor = 'forever', clientBuild = '' } = {}) {
   const buildCheck = buildCheckFor(clientBuild, build);
 
   return {
+    flavor: flavor || null,
+    flavorLabel: flavor ? D.FLAVORS[flavor].label : null,
+    syncCommand: D.syncCommand(flavor || D.DEFAULT_FLAVOR),
     build,
     buildFamily: manifest ? manifest.buildFamily || null : null,
     manifest,
@@ -155,4 +163,4 @@ function openStore({ dataDir, flavor = 'forever', clientBuild = '' } = {}) {
   };
 }
 
-module.exports = { TRUST, BUILD_CHECK, ENTITIES, MAX_QUERY_LENGTH, isId, clientBuildOf, buildCheckFor, rowTrustFor, foldName, openStore };
+module.exports = { TRUST, BUILD_CHECK, ENTITIES, MAX_QUERY_LENGTH, isId, clientBuildOf, flavorFor, buildCheckFor, rowTrustFor, foldName, openStore };

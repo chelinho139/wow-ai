@@ -53,7 +53,7 @@ The bridge drives whichever of these you have installed; each chat can use a dif
 ## Requirements
 
 - Windows (NTFS), or Linux with the game under Wine (see [docs/INSTALL-LINUX.md](docs/INSTALL-LINUX.md)), or macOS with a native client. python3 only if you use the deprecated pixel-capture fallback off Windows; the default screenshot transport needs nothing
-- World of Warcraft: Forever (tested on 1.60.1.69913 and 1.60.1.69977, TOC 16001), **windowed or borderless** (exclusive fullscreen blocks screen capture)
+- World of Warcraft: Forever (tested on 1.60.1.69913 and 1.60.1.69977, TOC 16001) or World of Warcraft Classic Era (1.15.9.70003, TOC 11509), **windowed or borderless** (exclusive fullscreen blocks screen capture). Game data for reference tokens is synced per game: `claude-wow data sync` for Forever, `claude-wow data sync --flavor classic_era` for Classic Era; the bridge uses the one that matches the client
 - Nothing else for the installer and the Homebrew route: the bridge ships as one self-contained binary (macOS arm64 and x64, Linux x64, Windows x64). From a checkout it runs on [Node.js](https://nodejs.org) 22.2 or newer, or on [Bun](https://bun.sh)
 - At least one agent CLI, installed and logged in:
   - [Claude Code](https://claude.com/claude-code): `claude --version` works

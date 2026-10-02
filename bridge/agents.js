@@ -204,7 +204,8 @@ function claudeParser(opts = {}) {
         const denials = Array.isArray(ev.permission_denials) ? ev.permission_denials : [];
         if (denials.length) {
           const neverOffered = new Set(Array.isArray(opts.neverOffer) ? opts.neverOffer : []);
-          const entries = denials.map(d => classifyDenial(d, refusals.get(String(d && d.tool_use_id)) || {}, opts)).filter(e => !neverOffered.has(e.rule));
+          const neverIf = typeof opts.neverOfferIf === 'function' ? opts.neverOfferIf : () => false;
+          const entries = denials.map(d => classifyDenial(d, refusals.get(String(d && d.tool_use_id)) || {}, opts)).filter(e => !neverOffered.has(e.rule) && !neverIf(e.rule));
           const again = entries.filter(e => deniedAgain(e, opts.granted));
           const fresh = entries.filter(e => !again.includes(e));
           out.denied = [...new Set(fresh.map(e => e.rule))];

@@ -3,6 +3,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
+const GM = require('../../bridge/goalsmcp');
+const P = require('../../bridge/protocol');
 const { makeRoot, gameRunner } = require('./helpers');
 
 const ROOT = makeRoot('roast');
@@ -29,6 +31,11 @@ test('a death is roasted end to end, and the sandbox bridge never tells the real
     await h.bridge.waitForLine(/roast: overlay not told, plugins\.stream\.enabled is false/);
     assert.doesNotMatch(h.bridge.output, /roast: overlay ->|roast: overlay at /);
     assert.equal(h.sb.cfg.plugins.stream.enabled, false);
+    const roastRun = h.agentCalls().at(-1);
+    const denied = roastRun.argv.filter((_, i) => i > roastRun.argv.indexOf('--disallowedTools'));
+    for (const rule of [...GM.FILE_SEARCH_TOOLS, ...[...new Set([h.sb.home, fs.realpathSync(h.sb.home)])].map(dir => P.absolutePathRule('Read', path.join(dir, '**')))]) {
+      assert.ok(denied.includes(rule), `the roast run is denied ${rule}`);
+    }
   });
 });
 

@@ -8,11 +8,27 @@ const path = require('path');
 const luaparse = require('luaparse');
 
 const ADDON = process.argv[2] || path.join(__dirname, '..', 'addon', 'ClaudeWoW');
+const MAIN_CHUNK_LOCALS_MAX = 190;
 let bad = 0;
-for (const f of ['Codec.lua', 'ClaudeWoW.lua', 'Inbox.lua', 'Map.lua', 'Roast.lua', 'Stream.lua', 'Voice.lua', 'LootRoll.lua', 'Achievements.lua', 'Orders.lua', 'Widgets.lua', 'Window.lua', 'Telemetry.lua', 'Observed.lua']) {
+
+function mainChunkLocals(ast) {
+  let n = 0;
+  for (const s of ast.body) {
+    if (s.type === 'LocalStatement') n += s.variables.length;
+    else if (s.type === 'FunctionDeclaration' && s.isLocal) n += 1;
+  }
+  return n;
+}
+
+for (const f of ['Codec.lua', 'ClaudeWoW.lua', 'Inbox.lua', 'Map.lua', 'Roast.lua', 'Stream.lua', 'Voice.lua', 'LootRoll.lua', 'Achievements.lua', 'Orders.lua', 'DM.lua', 'Widgets.lua', 'Window.lua', 'Telemetry.lua', 'Observed.lua']) {
   const src = fs.readFileSync(path.join(ADDON, f), 'utf8');
-  luaparse.parse(src, { luaVersion: '5.1' });
-  console.log('OK   ' + f + ' parses');
+  const ast = luaparse.parse(src, { luaVersion: '5.1' });
+  const locals = mainChunkLocals(ast);
+  if (locals > MAIN_CHUNK_LOCALS_MAX) {
+    bad++;
+    console.log(`TOO MANY LOCALS: ${f} has ${locals} main-chunk locals; Lua stops at 200, the budget is ${MAIN_CHUNK_LOCALS_MAX}. Fold constants into a table.`);
+  }
+  console.log('OK   ' + f + ' parses (' + locals + ' main-chunk locals)');
   // Blank out comments so a name mentioned in prose doesn't count as a use.
   const code = src.replace(/--\[\[[\s\S]*?\]\]|--[^\n]*/g, m => m.replace(/[^\n]/g, ' '));
   const forward = new Set([...code.matchAll(/^local (\w+)\s*$/gm)].map(m => m[1]));

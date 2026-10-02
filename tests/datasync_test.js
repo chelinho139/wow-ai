@@ -85,7 +85,10 @@ test('build strings: only four dotted integers reach a path or a URL', () => {
   assert.equal(D.tableUrl('ItemSparse', '1.60.1.70094'), 'https://wago.tools/db2/ItemSparse/csv?build=1.60.1.70094');
   assert.throws(() => D.parseArgs(['--build', '1.60.1']), D.UsageError);
   assert.throws(() => D.parseArgs(['--build']), D.UsageError);
-  assert.throws(() => D.parseArgs(['--flavor', 'forever']), D.UsageError);
+  assert.throws(() => D.parseArgs(['--flavor', 'retail']), D.UsageError);
+  assert.throws(() => D.parseArgs(['--flavor']), D.UsageError);
+  assert.deepEqual(D.parseArgs(['--flavor', 'classic_era']), { force: false, flavor: 'classic_era' });
+  assert.deepEqual(D.parseArgs(['--flavor=forever']), { force: false, flavor: 'forever' });
   assert.throws(() => D.parseArgs(['--nope']), D.UsageError);
   assert.deepEqual(D.parseArgs(['--build=1.60.1.5', '--force']), { force: true, build: '1.60.1.5' });
 });
@@ -102,8 +105,8 @@ test('a bad build string stops the sync before any fetch or folder', async () =>
   const code = await D.main(['sync', '--build', '../etc'], { env: { CLAUDE_WOW_HOME: scratch('badbuild-main') }, fetch: wago.fetchImpl, out: s => out.push(s), err: s => err.push(s) });
   assert.equal(code, 2);
   assert.match(err.join(''), /bad build string/);
-  assert.equal(await D.main(['sync', '--flavor=forever'], { env: { CLAUDE_WOW_HOME: scratch('badflag-main') }, fetch: wago.fetchImpl, out: s => out.push(s), err: s => err.push(s) }), 2);
-  assert.match(err.join(''), /unknown option "--flavor=forever"/);
+  assert.equal(await D.main(['sync', '--flavor=retail'], { env: { CLAUDE_WOW_HOME: scratch('badflag-main') }, fetch: wago.fetchImpl, out: s => out.push(s), err: s => err.push(s) }), 2);
+  assert.match(err.join(''), /unknown flavor "retail": use forever, classic_era/);
   assert.equal(wago.calls.length, 0);
 });
 
@@ -375,6 +378,10 @@ test('the current pointer is ignored when it is not a build string or has no man
   fs.writeFileSync(path.join(root, 'current'), `${BUILD}\n`);
   assert.equal(D.readCurrent(root), null);
   fs.writeFileSync(path.join(root, BUILD, 'manifest.json'), JSON.stringify({ build: BUILD }));
+  assert.equal(D.readCurrent(root), null, 'a manifest that names no flavor is not read');
+  fs.writeFileSync(path.join(root, BUILD, 'manifest.json'), JSON.stringify({ build: BUILD, flavor: 'classic_era' }));
+  assert.equal(D.readCurrent(root), null, 'nor one that names another flavor');
+  fs.writeFileSync(path.join(root, BUILD, 'manifest.json'), JSON.stringify({ build: BUILD, flavor: 'forever' }));
   assert.equal(D.readCurrent(root).build, BUILD);
 });
 

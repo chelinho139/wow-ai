@@ -28,6 +28,35 @@ function spentSlots(sb, kind) {
 
 const slotOfId = n => ((n - 1) % SLOTS) + 1;
 
+function addonRecordTracker(h) {
+  let unsettled = new Set();
+  let trackedTo = 0;
+  let logMark = 0;
+  const catchUp = () => {
+    for (let id = trackedTo + 1; id <= h.client.lastSeq(); id++) unsettled.add(id);
+    trackedTo = Math.max(trackedTo, h.client.lastSeq());
+  };
+  return {
+    unsettled: () => { catchUp(); return [...unsettled]; },
+    logMark: () => logMark,
+    settled: ids => { for (const id of ids) unsettled.delete(id); logMark = h.bridge.output.length; },
+    skipTo: lastSeq => { catchUp(); trackedTo = lastSeq; },
+  };
+}
+
+async function settleAddonRecords(h, tracker) {
+  await h.bridge.waitForLine(/hello from session /);
+  const ids = await h.client.waitFor(() => {
+    const acks = spentSlots(h.sb, 'ack');
+    const sigs = spentSlots(h.sb, 'sig');
+    const pending = tracker.unsettled();
+    const newHellos = (h.bridge.output.slice(tracker.logMark()).match(/hello from session /g) || []).length;
+    const unanswered = pending.filter(id => !sigs.includes(slotOfId(id)));
+    return pending.every(id => acks.includes(slotOfId(id))) && unanswered.length <= newHellos ? pending : null;
+  }, { timeoutMs: 30000, label: 'the bridge to ack every record the addon sent, its hello included, and to answer every one but the hellos' });
+  tracker.settled(ids);
+}
+
 function quietClient(h) {
   h.client.runLua('ClaudeWoWDB.stream = ClaudeWoWDB.stream or {}; ClaudeWoWDB.stream.follow = false');
 }
@@ -89,6 +118,8 @@ test('300 gs records whose seqs overlap the message ids spend no ack or sig file
     const first = await h.client.say('before the telemetry');
     assert.match(first.text, /before the telemetry/);
     await h.bridge.waitForLine(/game context updated: Character: Testchar/);
+    const tracker = addonRecordTracker(h);
+    await settleAddonRecords(h, tracker);
     const session = h.client.db().session;
     const ackBefore = spentSlots(h.sb, 'ack');
     const sigBefore = spentSlots(h.sb, 'sig');
@@ -114,6 +145,7 @@ test('300 gs records whose seqs overlap the message ids spend no ack or sig file
     assert.equal(events.length, RECORDS - 1, 'one money event per record after the baseline');
 
     const slotB = ((between.id - 1) % SLOTS) + 1;
+    await settleAddonRecords(h, tracker);
     const issuedTo = h.client.lastSeq();
     assertSpends(h, { session, before: ackBefore, kind: 'ack', messageId: between.id, issuedFrom, issuedTo, logFrom });
     const sigs = spentSlots(h.sb, 'sig').filter(s => !sigBefore.includes(s));
@@ -155,11 +187,13 @@ test('a frame of [message, gs rider] from the real addon and a frame of [gs, mes
     const session = h.client.db().session;
 
     quietClient(h);
+    const tracker = addonRecordTracker(h);
     const slotOf = n => ((n - 1) % SLOTS) + 1;
     const RIDER_TRIES = 5;
     let round = null;
     for (let attempt = 1; attempt <= RIDER_TRIES; attempt++) {
       if (attempt > 1) await new Promise(r => setTimeout(r, 5000));
+      await settleAddonRecords(h, tracker);
       const ackBefore = spentSlots(h.sb, 'ack');
       const sigBefore = spentSlots(h.sb, 'sig');
       const nowSec = Math.floor(Date.now() / 1000);
@@ -170,6 +204,7 @@ test('a frame of [message, gs rider] from the real addon and a frame of [gs, mes
         messageId += 1;
         assert.ok(messageId - firstTry < SLOTS, 'a slot clear of the gs seqs and of every spent signal exists');
       }
+      tracker.skipTo(messageId - 1);
       h.client.runLua(`ClaudeWoWDB.lastSeq = ${messageId - 1}`);
       h.client.runLua('STUB.money = STUB.money + 77');
       const money = Number(h.client.luaValue('STUB.money'));
@@ -188,6 +223,7 @@ test('a frame of [message, gs rider] from the real addon and a frame of [gs, mes
       const gsSeq = Number(/telemetry: gs #(\d+)@/.exec(gsLine)[1]);
       assert.equal(readSnap().sections.money.value.copper, money);
       const slotA = slotOf(ridden.id);
+      await settleAddonRecords(h, tracker);
       const issuedTo = h.client.lastSeq();
       const newAcks = assertSpends(h, { session, before: ackBefore, kind: 'ack', messageId, issuedFrom: messageId, issuedTo, logFrom: mark });
       const newSigs = assertSpends(h, { session, before: sigBefore, kind: 'sig', messageId, issuedFrom: messageId, issuedTo, logFrom: mark });
@@ -198,6 +234,7 @@ test('a frame of [message, gs rider] from the real addon and a frame of [gs, mes
     assert.ok(round, `within ${RIDER_TRIES} rider records one gs seq landed on a slot whose ack and sig files were still armed`);
     assert.ok(!round.newAcks.includes(round.gsSlot) && !round.newSigs.includes(round.gsSlot), 'the gs seq spent nothing');
 
+    await settleAddonRecords(h, tracker);
     const ackMid = spentSlots(h.sb, 'ack');
     const sigMid = spentSlots(h.sb, 'sig');
     const calls = h.agentCalls().length;
@@ -214,6 +251,7 @@ test('a frame of [message, gs rider] from the real addon and a frame of [gs, mes
     await h.client.waitFor(() => h.agentCalls().length > calls, { timeoutMs: 30000, label: 'the message after the gs record to run' });
     const slotB = slotOf(id);
     await h.client.waitFor(() => !fs.existsSync(SIG.signalFile(h.sb.addons, 'sig', slotB)), { timeoutMs: 30000, label: 'its reply signal' });
+    await settleAddonRecords(h, tracker);
     const issuedToB = h.client.lastSeq();
     assert.ok(issuedToB - issuedFromB < 40, 'the addon sent fewer records than the window kept clear for the crafted seq');
     const newAcksB = assertSpends(h, { session, before: ackMid, kind: 'ack', messageId: id, issuedFrom: issuedFromB, issuedTo: issuedToB, logFrom: logFromB });

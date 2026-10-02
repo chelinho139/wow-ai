@@ -80,11 +80,12 @@ function playedLineIsFor(vm, index, event) {
 
 test('every feature module loads in .toc order and the core finds each one', () => {
   assert.deepEqual(TOC_FILES.slice(0, 3), ['Codec.lua', 'Inbox.lua', 'ClaudeWoW.lua']);
-  for (const f of ['Roast.lua', 'Voice.lua', 'LootRoll.lua', 'Achievements.lua', 'Orders.lua', 'Widgets.lua', 'Telemetry.lua']) {
+  for (const f of ['Roast.lua', 'Voice.lua', 'LootRoll.lua', 'Achievements.lua', 'Orders.lua', 'DM.lua', 'Widgets.lua', 'Telemetry.lua']) {
     assert.ok(TOC_FILES.indexOf(f) > TOC_FILES.indexOf('ClaudeWoW.lua'), `${f} loads after the core it extends`);
   }
+  assert.ok(TOC_FILES.indexOf('DM.lua') > TOC_FILES.indexOf('Orders.lua'), 'DM.lua takes the character key from Orders.lua');
   const vm = newVM();
-  for (const g of ['ClaudeWoWRoast', 'ClaudeWoWVoice', 'ClaudeWoWRoll', 'ClaudeWoWAchievements', 'ClaudeWoWOrders', 'ClaudeWoWWidgets', 'ClaudeWoWTelemetry']) {
+  for (const g of ['ClaudeWoWRoast', 'ClaudeWoWVoice', 'ClaudeWoWRoll', 'ClaudeWoWAchievements', 'ClaudeWoWOrders', 'ClaudeWoWDM', 'ClaudeWoWWidgets', 'ClaudeWoWTelemetry']) {
     assert.equal(vm.evaluate(`type(${g})`), 'table', g);
   }
   assert.equal(vm.evaluate('ClaudeWoW.LootRollEnabled()'), 'true');

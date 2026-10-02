@@ -12,6 +12,7 @@ T.HOUR_CAP = 120
 T.RESEND_AFTER = 60
 T.PUMP_SECONDS = 5
 T.LEARNED_MAX = 8
+T.TURNED_IN_MAX = 8
 T.WATCH_ITEMS_MAX = 20
 T.WATCH_FACTIONS_MAX = 10
 T.EQUIP_SLOTS = 19
@@ -19,7 +20,7 @@ T.FIRST_BAG = 0
 T.LAST_BAG = 4
 T.GENERAL_BAG_FAMILY = 0
 T.HASH_MOD = 65521
-T.ORDER = { "cap", "level", "zone", "money", "items", "skills", "equip", "factions", "life", "recipes", "vendor", "ah", "loot" }
+T.ORDER = { "cap", "level", "zone", "money", "items", "skills", "equip", "factions", "life", "recipes", "quests", "vendor", "ah", "loot" }
 T.OBSERVED = { "vendor", "ah", "loot" }
 T.PROBES = {
 	"GetMoney",
@@ -27,16 +28,19 @@ T.PROBES = {
 	"UnitXP",
 	"UnitXPMax",
 	"C_Map.GetBestMapForUnit",
-	"C_SkillInfo.GetNumSkillLines",
-	"C_SkillInfo.GetSkillLineInfo",
+	{ "C_SkillInfo.GetNumSkillLines", "GetNumSkillLines" },
+	{ "C_SkillInfo.GetSkillLineInfo", "GetSkillLineInfo" },
 	"C_Item.GetItemCount",
 	"C_Container.GetContainerNumFreeSlots",
 	"GetInventoryItemID",
-	"C_Reputation.GetFactionDataByID",
+	{ "C_Reputation.GetFactionDataByID", "GetFactionInfoByID" },
 	"C_Reputation.GetWatchedFactionData",
 }
-T.URGENT_EVENTS = { PLAYER_LEVEL_UP = true, PLAYER_DEAD = true, NEW_RECIPE_LEARNED = true }
+T.URGENT_EVENTS = { PLAYER_LEVEL_UP = true, PLAYER_DEAD = true, NEW_RECIPE_LEARNED = true, QUEST_TURNED_IN = true }
 T.CHANGE_EVENTS = { "PLAYER_MONEY", "PLAYER_XP_UPDATE", "ZONE_CHANGED_NEW_AREA", "BAG_UPDATE_DELAYED", "PLAYER_EQUIPMENT_CHANGED", "SKILL_LINES_CHANGED", "UPDATE_FACTION" }
+T.FACTION_STANDING = 3
+T.FACTION_BAR_VALUE = 6
+T.FACTION_ID = 14
 T.CHARS_MAX = 20
 T.KEY_MAX_CHARS = 64
 T.KEY_MAX_BYTES = 256
@@ -50,6 +54,12 @@ local function Try(fn, ...)
 	if type(fn) ~= "function" then return nil end
 	local ok, a, b, c, d = pcall(fn, ...)
 	if ok then return a, b, c, d end
+end
+
+local function Returns(fn, ...)
+	if type(fn) ~= "function" then return nil end
+	local r = { pcall(fn, ...) }
+	if r[1] then return r end
 end
 
 local function Int(n)
@@ -116,16 +126,26 @@ local function Root()
 	return root
 end
 
-local function CleanCharacter(c)
-	local learned = {}
-	for _, r in ipairs(type(c) == "table" and type(c.learned) == "table" and c.learned or {}) do
+local function CleanStamped(list, max)
+	local out = {}
+	for _, r in ipairs(type(list) == "table" and list or {}) do
 		if type(r) == "table" and WholeNumber(r.id) and r.id > 0 and WholeNumber(r.t) then
-			learned[#learned + 1] = { id = r.id, t = r.t }
+			out[#out + 1] = { id = r.id, t = r.t }
 		end
 	end
-	while #learned > T.LEARNED_MAX do table.remove(learned, 1) end
+	while #out > max do table.remove(out, 1) end
+	return out
+end
+
+local function CleanCharacter(c)
 	c = type(c) == "table" and c or {}
-	return { deaths = WholeNumber(c.deaths) or 0, lastDeath = WholeNumber(c.lastDeath) or 0, learned = learned, seen = WholeNumber(c.seen) or 0 }
+	return {
+		deaths = WholeNumber(c.deaths) or 0,
+		lastDeath = WholeNumber(c.lastDeath) or 0,
+		learned = CleanStamped(c.learned, T.LEARNED_MAX),
+		turnedIn = CleanStamped(c.turnedIn, T.TURNED_IN_MAX),
+		seen = WholeNumber(c.seen) or 0,
+	}
 end
 
 local function Mine()
@@ -164,7 +184,12 @@ function T.Missing()
 	local probes = { T.PROBES, state.observed and ClaudeWoWObserved and ClaudeWoWObserved.PROBES or {} }
 	for _, list in ipairs(probes) do
 		for _, name in ipairs(list) do
-			if type(Lookup(name)) ~= "function" then out[#out + 1] = name end
+			local names = type(name) == "table" and name or { name }
+			local found = false
+			for _, n in ipairs(names) do
+				if type(Lookup(n)) == "function" then found = true end
+			end
+			if not found then out[#out + 1] = names[1] end
 		end
 	end
 	return out
@@ -227,6 +252,17 @@ local function Equipment()
 	return table.concat(parts, ",")
 end
 
+local function FactionStanding(id)
+	if type(C_Reputation.GetFactionDataByID) == "function" then
+		local f = Try(C_Reputation.GetFactionDataByID, id)
+		if type(f) == "table" then return f.reaction, f.currentStanding end
+		return nil
+	end
+	local r = Returns(GetFactionInfoByID, id)
+	if not r or r[T.FACTION_ID + 1] ~= id then return nil end
+	return r[T.FACTION_STANDING + 1], r[T.FACTION_BAR_VALUE + 1]
+end
+
 local function Factions()
 	if not C_Reputation then return nil end
 	local ids = {}
@@ -235,18 +271,19 @@ local function Factions()
 	if type(bar) == "table" and WholeNumber(bar.factionID) and bar.factionID > 0 then ids[#ids + 1] = bar.factionID end
 	local parts, seen = {}, {}
 	for _, id in ipairs(ids) do
-		local f = not seen[id] and Try(C_Reputation.GetFactionDataByID, id)
+		local reaction, standing
+		if not seen[id] then reaction, standing = FactionStanding(id) end
 		seen[id] = true
-		if type(f) == "table" and WholeNumber(f.reaction) and type(f.currentStanding) == "number" and #parts < T.WATCH_FACTIONS_MAX + 1 then
-			parts[#parts + 1] = Int(id) .. "=" .. Int(f.reaction) .. "/" .. Int(f.currentStanding)
+		if WholeNumber(reaction) and type(standing) == "number" and #parts < T.WATCH_FACTIONS_MAX + 1 then
+			parts[#parts + 1] = Int(id) .. "=" .. Int(reaction) .. "/" .. Int(standing)
 		end
 	end
 	return table.concat(parts, ",")
 end
 
-local function Recipes(mine)
+local function Stamped(list)
 	local parts = {}
-	for _, r in ipairs(mine.learned or {}) do parts[#parts + 1] = Int(r.id) .. "@" .. Int(r.t) end
+	for _, r in ipairs(list or {}) do parts[#parts + 1] = Int(r.id) .. "@" .. Int(r.t) end
 	return table.concat(parts, ",")
 end
 
@@ -266,7 +303,8 @@ function T.Sections()
 	s.equip = Equipment()
 	s.factions = Factions()
 	s.life = Int(mine.deaths or 0) .. "," .. Int(mine.lastDeath or 0)
-	s.recipes = Recipes(mine)
+	s.recipes = Stamped(mine.learned)
+	s.quests = Stamped(mine.turnedIn)
 	local observed = state.observed and ClaudeWoWObserved and Try(ClaudeWoWObserved.Sections)
 	if type(observed) == "table" then
 		for _, name in ipairs(T.OBSERVED) do
@@ -313,7 +351,7 @@ function T.Command(rest)
 		local loot = ClaudeWoWObserved and ClaudeWoWObserved.LootKeyed and ClaudeWoWObserved.LootKeyed()
 		extra = loot and ", and the vendor prices, auction results and loot (with your map position) from windows you open" or ", and the vendor prices and auction results from windows you open (no loot: the bridge has no game data for this client)"
 	end
-	Print("Game state telemetry is on: money, level, zone, profession ranks, watched items, gear IDs, reputation, deaths and recipes" .. extra .. " go to the bridge on screenshots the addon takes anyway, plus one of its own at most every 2 minutes. /claude config telemetry off stops it.")
+	Print("Game state telemetry is on: money, level, zone, profession ranks, watched items, gear IDs, reputation, deaths, recipes and quest turn-ins" .. extra .. " go to the bridge on screenshots the addon takes anyway, plus one of its own at most every 2 minutes. /claude config telemetry off stops it.")
 end
 
 local function Enabled()
@@ -502,19 +540,21 @@ function T.OnEvent(event, ...)
 	else
 		state.hint = true
 	end
-	if event ~= "PLAYER_DEAD" and event ~= "NEW_RECIPE_LEARNED" then return end
+	if event ~= "PLAYER_DEAD" and event ~= "NEW_RECIPE_LEARNED" and event ~= "QUEST_TURNED_IN" then return end
 	local mine = Mine()
 	if not mine then return end
 	if event == "PLAYER_DEAD" then
 		mine.deaths = (WholeNumber(mine.deaths) or 0) + 1
 		mine.lastDeath = time()
-	elseif event == "NEW_RECIPE_LEARNED" then
-		local id = ...
-		if not (WholeNumber(id) and id > 0) then return end
-		mine.learned = type(mine.learned) == "table" and mine.learned or {}
-		table.insert(mine.learned, { id = id, t = time() })
-		while #mine.learned > T.LEARNED_MAX do table.remove(mine.learned, 1) end
+		return
 	end
+	local id = ...
+	if not (WholeNumber(id) and id > 0) then return end
+	local listKey, max = "learned", T.LEARNED_MAX
+	if event == "QUEST_TURNED_IN" then listKey, max = "turnedIn", T.TURNED_IN_MAX end
+	mine[listKey] = type(mine[listKey]) == "table" and mine[listKey] or {}
+	table.insert(mine[listKey], { id = id, t = time() })
+	while #mine[listKey] > max do table.remove(mine[listKey], 1) end
 end
 
 local frame = CreateFrame("Frame")

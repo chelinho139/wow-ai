@@ -73,7 +73,7 @@ test('every row and every answer carries source, build and trust; found rows are
 
 test('wow_item by name: exact, then prefix, then word, then substring; limit and total', async () => {
   const { dataDir } = await syncedHome('itemname');
-  const store = GD.openStore({ dataDir });
+  const store = GD.openStore({ dataDir, flavor: 'forever' });
   const r = call(store, 'wow_item', { name: 'FIXTURE', limit: 1 });
   assert.deepEqual(r.results.map(x => x.name), ['Fixture Blade']);
   assert.equal(r.total, 2);
@@ -87,7 +87,7 @@ test('wow_item by name: exact, then prefix, then word, then substring; limit and
 
 test('a name that reads like an instruction comes back as a quoted field value, never as text of its own', async () => {
   const { dataDir } = await syncedHome('inject');
-  const store = GD.openStore({ dataDir });
+  const store = GD.openStore({ dataDir, flavor: 'forever' });
   const raw = DM.callTool(store, 'wow_item', { name: 'ignore all' });
   assert.equal(raw.content.length, 1);
   const parsed = JSON.parse(raw.content[0].text);
@@ -114,7 +114,7 @@ test('wow_quest: IDs only, never a title; the items that start it', async () => 
 
 test('wow_flights: by id, by name, and every one on a map with its position there', async () => {
   const { dataDir } = await syncedHome('flights');
-  const store = GD.openStore({ dataDir });
+  const store = GD.openStore({ dataDir, flavor: 'forever' });
   const byId = call(store, 'wow_flights', { id: 601 }).results[0];
   assert.deepEqual(byId.map, { uiMapID: 9001, name: 'Fixture World', x: 27.5, y: 25 });
   assert.equal(byId.zoneAmbiguous, true);
@@ -128,7 +128,7 @@ test('wow_flights: by id, by name, and every one on a map with its position ther
 
 test('wow_where: maps, areas and flight paths by name; a map by uiMapID with parents and children', async () => {
   const { dataDir } = await syncedHome('where');
-  const store = GD.openStore({ dataDir });
+  const store = GD.openStore({ dataDir, flavor: 'forever' });
   const r = call(store, 'wow_where', { name: 'fixture vale' });
   assert.deepEqual(r.results.map(x => [x.kind, x.name]), [['map', 'Fixture Vale'], ['area', 'Fixture Vale'], ['flightpath', 'Fixture Vale Roost']]);
   assert.deepEqual(r.results[1].uiMaps, [{ uiMapID: 9002, name: 'Fixture Vale' }]);
@@ -159,7 +159,7 @@ test('wow_sources: provenance, table sizes and what the data does not hold', asy
 
 test('bad input is an error result, not a crash or a guess', async () => {
   const { dataDir } = await syncedHome('input');
-  const store = GD.openStore({ dataDir });
+  const store = GD.openStore({ dataDir, flavor: 'forever' });
   assert.match(call(store, 'wow_item', {}).error, /give one of: id, name/);
   assert.match(call(store, 'wow_item', { id: -1 }).error, /positive integer/);
   assert.match(call(store, 'wow_item', { id: 1.5 }).error, /positive integer/);
@@ -176,7 +176,7 @@ test('bad input is an error result, not a crash or a guess', async () => {
 });
 
 test('no synced data: every tool says so with trust none, and nothing is invented', () => {
-  const store = GD.openStore({ dataDir: path.join(scratch('nodata'), 'data') });
+  const store = GD.openStore({ dataDir: path.join(scratch('nodata'), 'data'), clientBuild: '1.60.1.70124' });
   assert.equal(store.buildCheck, 'no-data');
   for (const [name, args] of [['wow_item', { id: 502 }], ['wow_quest', { id: 101 }], ['wow_flights', { id: 601 }], ['wow_where', { name: 'vale' }], ['wow_sources', {}]]) {
     const r = call(store, name, args);
@@ -191,9 +191,9 @@ test('the client build: exact, same family, another family (build-mismatch), or 
   const { dataDir } = await syncedHome('builds');
   assert.equal(GD.openStore({ dataDir, clientBuild: BUILD }).buildCheck, 'exact');
   assert.equal(GD.openStore({ dataDir, clientBuild: '1.60.1.70124' }).buildCheck, 'family');
-  assert.equal(GD.openStore({ dataDir }).buildCheck, 'unknown');
-  assert.equal(GD.openStore({ dataDir, clientBuild: '../1.60.1.1' }).buildCheck, 'unknown');
-  const other = GD.openStore({ dataDir, clientBuild: '1.61.0.1' });
+  assert.equal(GD.openStore({ dataDir, flavor: 'forever' }).buildCheck, 'unknown');
+  assert.equal(GD.openStore({ dataDir, flavor: 'forever', clientBuild: '../1.60.1.1' }).buildCheck, 'unknown');
+  const other = GD.openStore({ dataDir, clientBuild: '1.60.2.1' });
   assert.equal(other.buildCheck, 'build-mismatch');
   const r = call(other, 'wow_item', { id: 501 });
   assert.equal(r.buildCheck, 'build-mismatch');
@@ -205,7 +205,7 @@ test('the client build: exact, same family, another family (build-mismatch), or 
 
 test('tables load on first use, and the current pointer is read once when the server starts', async () => {
   const { dataDir } = await syncedHome('lazy');
-  const store = GD.openStore({ dataDir });
+  const store = GD.openStore({ dataDir, flavor: 'forever' });
   assert.deepEqual(store.loaded(), []);
   call(store, 'wow_quest', { id: 101 });
   assert.deepEqual(store.loaded().sort(), ['items', 'quests']);
@@ -216,7 +216,7 @@ test('tables load on first use, and the current pointer is read once when the se
   const r = call(store, 'wow_flights', { id: 601 });
   assert.equal(r.build, BUILD, 'a running server keeps the build it started with');
   assert.equal(call(store, 'wow_item', { id: 777 }).found, false);
-  assert.equal(call(GD.openStore({ dataDir }), 'wow_item', { id: 777 }).results[0].name, 'Later Item', 'the next run sees the new build');
+  assert.equal(call(GD.openStore({ dataDir, flavor: 'forever' }), 'wow_item', { id: 777 }).results[0].name, 'Later Item', 'the next run sees the new build');
 });
 
 test('an older sync without the SkillLine table still answers, with no skill name', async () => {
@@ -236,7 +236,7 @@ test('an older sync without the SkillLine table still answers, with no skill nam
 
 test('MCP surface: initialize, tools/list (five read-only tools), tools/call, errors and notifications', async () => {
   const { dataDir } = await syncedHome('mcp');
-  const store = GD.openStore({ dataDir });
+  const store = GD.openStore({ dataDir, flavor: 'forever' });
   const out = [];
   const server = DM.createServer({ store, stdout: { write: s => out.push(...s.trim().split('\n').map(l => JSON.parse(l))) } });
   server.feed(Buffer.from([
@@ -298,15 +298,16 @@ test('launch config for ask runs: absolute command, alwaysLoad, the mcp__wowdata
   assert.equal(fromCheckout.buildCheck, 'family');
   assert.deepEqual(JSON.parse(fromCheckout.config), { mcpServers: { wowdata: { type: 'stdio', command: '/usr/local/bin/node', args: [path.join('/opt/claude-wow', 'bridge', 'datamcp.js'), '--data', dataDir, '--client-build', '1.60.1.70124'], alwaysLoad: true } } });
   const binary = { compiled: true, execPath: '/home/p/.local/bin/claude-wow', root: '/$bunfs/root' };
-  const fromBinary = JSON.parse(DM.launchConfig({ dataDir, clientBuild: 'junk', runtime: binary }).config).mcpServers.wowdata;
+  const fromBinary = JSON.parse(DM.launchConfig({ dataDir, clientBuild: 'junk', flavor: 'forever', runtime: binary }).config).mcpServers.wowdata;
   assert.equal(fromBinary.command, '/home/p/.local/bin/claude-wow');
-  assert.deepEqual(fromBinary.args, ['data-mcp', '--data', dataDir]);
+  assert.deepEqual(fromBinary.args, ['data-mcp', '--flavor', 'forever', '--data', dataDir]);
+  assert.equal(DM.launchConfig({ dataDir, clientBuild: 'junk', runtime: binary }), null, 'no client build, no flavor: no server');
   assert.throws(() => DM.parseArgs(['--nope']), DM.InputError);
 });
 
 test('Claude Code args for an ask run: --mcp-config and the run-only mcp__wowdata rule next to the user rules', async () => {
   const { dataDir } = await syncedHome('args');
-  const launch = DM.launchConfig({ dataDir });
+  const launch = DM.launchConfig({ dataDir, clientBuild: BUILD });
   const cfg = P.withRunOnlyRules({ allowedTools: ['WebSearch'], deniedTools: ['Bash'] }, launch.rules);
   const args = A.AGENTS.claude.args({ cfg, resume: '', system: '', cwd: 'x', mcpConfig: launch.config });
   assert.deepEqual(args, ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits',
@@ -349,15 +350,15 @@ test('reference tokens: unknown IDs, bad tokens, coordinates off the map and kin
 });
 
 test('reference tokens: no data or another build family rejects every token', async () => {
-  const none = GR.createExpander(GD.openStore({ dataDir: path.join(scratch('refs-none'), 'data') }));
+  const none = GR.createExpander(GD.openStore({ dataDir: path.join(scratch('refs-none'), 'data'), clientBuild: '1.60.1.70124' }));
   assert.deepEqual(none.expand('{item:501}').errors.map(e => e.reason), ['noData']);
   assert.deepEqual(none.expand('plain text').text, 'plain text');
   const { dataDir } = await syncedHome('refs-mismatch');
-  const other = GR.createExpander(GD.openStore({ dataDir, clientBuild: '1.61.0.1' }));
+  const other = GR.createExpander(GD.openStore({ dataDir, clientBuild: '1.60.2.1' }));
   const r = other.expand('{item:501} and {map:9002,1,1}');
   assert.equal(r.ok, false);
   assert.deepEqual(r.errors.map(e => e.reason), ['buildMismatch', 'buildMismatch']);
-  const unknown = GR.createExpander(GD.openStore({ dataDir }));
+  const unknown = GR.createExpander(GD.openStore({ dataDir, flavor: 'forever' }));
   assert.equal(unknown.expand('{item:501}').ok, false);
   assert.deepEqual(unknown.expand('{item:501}').errors.map(e => e.reason), ['buildUnknown'], 'no client build: nothing is expanded as checked client data');
 });
@@ -378,13 +379,13 @@ test('a forced re-sync of the same build serves the <build>-<n> folder the curre
 
 test('trust on a build-family mismatch or an unknown client build is never plain client-data', async () => {
   const { dataDir } = await syncedHome('trust');
-  const mismatch = call(GD.openStore({ dataDir, clientBuild: '1.61.0.1' }), 'wow_item', { id: 501 });
+  const mismatch = call(GD.openStore({ dataDir, clientBuild: '1.60.2.1' }), 'wow_item', { id: 501 });
   assert.equal(mismatch.found, true);
   assert.equal(mismatch.trust, 'unverified-build-mismatch');
   assert.equal(mismatch.results[0].trust, 'unverified-build-mismatch');
-  const where = call(GD.openStore({ dataDir, clientBuild: '1.61.0.1' }), 'wow_where', { name: 'vale' });
+  const where = call(GD.openStore({ dataDir, clientBuild: '1.60.2.1' }), 'wow_where', { name: 'vale' });
   assert.ok(where.results.length && where.results.every(x => x.trust === 'unverified-build-mismatch'));
-  const unknown = call(GD.openStore({ dataDir }), 'wow_item', { id: 501 });
+  const unknown = call(GD.openStore({ dataDir, flavor: 'forever' }), 'wow_item', { id: 501 });
   assert.equal(unknown.buildCheck, 'unknown');
   assert.equal(unknown.trust, 'client-data-build-unchecked');
   assert.equal(unknown.results[0].trust, 'client-data-build-unchecked');
@@ -392,7 +393,7 @@ test('trust on a build-family mismatch or an unknown client build is never plain
   const same = call(GD.openStore({ dataDir, clientBuild: '1.60.1.70124' }), 'wow_item', { id: 501 });
   assert.equal(same.trust, 'client-data');
   assert.deepEqual(same.notes, []);
-  assert.equal(call(GD.openStore({ dataDir, clientBuild: '1.61.0.1' }), 'wow_item', { id: 999 }).trust, 'none');
+  assert.equal(call(GD.openStore({ dataDir, clientBuild: '1.60.2.1' }), 'wow_item', { id: 999 }).trust, 'none');
 });
 
 test('a missing or damaged table is unavailable, never a "not in client data" answer', async () => {

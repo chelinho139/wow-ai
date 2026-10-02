@@ -138,7 +138,7 @@ end
 
 -- The footer segment's glyphs (Claude Code's own: "11m 58s · ↓ 186.7k tokens").
 -- One place to change if the client's font lacks one of them.
-local SEG_DOT, SEG_DOWN, SEG_APPROX = "·", "↓", "≈"
+local SEG = { DOT = "·", DOWN = "↓", APPROX = "≈" }
 
 -- "100000", "100k", "0.5m" -> a token count; anything else nil.
 local function ParseTokens(text)
@@ -1047,7 +1047,7 @@ RefreshStrip = function()
 					rec.shot = "log"
 					rec.logged = true
 					rec.loggedAt = GetTime()
-					if (rec.forget or rec.cancelOf) and not run.helloPollAt and not run.ackPollAt then
+					if (rec.forget or rec.cancelOf or rec.dm) and not run.helloPollAt and not run.ackPollAt then
 						run.ackPollAt = GetTime() + ClaudeWoW.ChatLog.ACK_POLL_SECONDS
 					end
 				end
@@ -1595,10 +1595,10 @@ local function ContextSegment(c, long)
 	local parts = {}
 	if c.since then table.insert(parts, FmtElapsed(time() - c.since)) end
 	if c.ctx then
-		table.insert(parts, SEG_DOWN .. " " .. FmtTokens(c.ctx) .. " tokens" .. ((long and c.window) and (" of " .. FmtTokens(c.window)) or ""))
+		table.insert(parts, SEG.DOWN .. " " .. FmtTokens(c.ctx) .. " tokens" .. ((long and c.window) and (" of " .. FmtTokens(c.window)) or ""))
 	end
-	if c.cost then table.insert(parts, SEG_APPROX .. string.format("$%.2f API", c.cost)) end
-	return table.concat(parts, " " .. SEG_DOT .. " ")
+	if c.cost then table.insert(parts, SEG.APPROX .. string.format("$%.2f API", c.cost)) end
+	return table.concat(parts, " " .. SEG.DOT .. " ")
 end
 
 -- "8 turns" for diag and the context report.
@@ -1625,7 +1625,7 @@ local function ContextReport(c)
 	end
 	if c and c.since then
 		size = size .. "\nSession: " .. FmtElapsed(time() - c.since) .. " since it started"
-			.. (c.cost and string.format("; %s$%.2f at API list prices so far (a comparison, not a bill: a subscription is not charged per token)", SEG_APPROX, c.cost) or "") .. "."
+			.. (c.cost and string.format("; %s$%.2f at API list prices so far (a comparison, not a bill: a subscription is not charged per token)", SEG.APPROX, c.cost) or "") .. "."
 	end
 	return size .. "\n" .. ContextThresholdLabel():gsub("^%l", string.upper) .. "."
 end
@@ -1643,7 +1643,7 @@ local function ContextWarning(c)
 	local size = FmtTokens(c.ctx) .. " tokens"
 	local text = "This chat's context is " .. size .. (c.window and (" of " .. FmtTokens(c.window)) or "") .. " after " .. (c.turns or "?") .. " turns, past the " .. FmtTokens(limit) .. " mark. "
 		.. "Every message you send here re-reads all " .. size .. " before it starts on your question, so each reply costs more than the last and is slower to start, and it only grows.\n"
-		.. (c.cost and string.format("At API list prices this session comes to %s$%.2f so far (a comparison, not a bill). ", SEG_APPROX, c.cost) or "")
+		.. (c.cost and string.format("At API list prices this session comes to %s$%.2f so far (a comparison, not a bill). ", SEG.APPROX, c.cost) or "")
 		.. "Start a new chat to reset it: the New chat button below, or /claude. You lose " .. ChatAgentName(c) .. "'s memory of this conversation; this transcript stays here.\n"
 		.. "Said once per crossing. /claude config context <n> moves the mark, /claude config context 0 turns it off."
 	AddHistory(c, "system", text)
@@ -1826,6 +1826,10 @@ local function TryLoadSlot(why)
 	if type(data) == "table" and data.map and ClaudeWoWMap then ClaudeWoWMap.Sync(data.map) end
 	if type(data) == "table" and data.achievements and ClaudeWoWAchievements then ClaudeWoWAchievements.Sync(data.achievements, data.now) end
 	if type(data) == "table" and data.goals and ClaudeWoWOrders then ClaudeWoWOrders.SyncSlot(data.goals, data.now) end
+	if type(data) == "table" and type(data.dm) == "table" then
+		run.bridgeDm = true
+		if ClaudeWoWDM then ClaudeWoWDM.SyncSlot(data.dm) end
+	end
 	if type(data) == "table" and data.widgets and ClaudeWoWWidgets then ClaudeWoWWidgets.Sync(data.widgets) end
 	if type(data) == "table" and ClaudeWoWTelemetry then ClaudeWoWTelemetry.Sync(data.gs) end
 	if why == "signal" and not matched then
@@ -1895,6 +1899,10 @@ local function Tick()
 		run.ackPollAt = nil
 		if not ClaudeWoW.PresenceWorks() then TryLoadSlot("ack") end
 	end
+	if run.dmPollAt and now >= run.dmPollAt then
+		run.dmPollAt = nil
+		TryLoadSlot("dm")
+	end
 	if run.restoring and now - run.restoring > 25 then
 		run.restoring = nil
 		ClaudeWoW.Render()
@@ -1907,6 +1915,7 @@ local function Tick()
 			NotedBridge()
 			if (rec.text or "") ~= "" and ClaudeWoWVoice then ClaudeWoWVoice.Started(id) end
 			if rec.hello and run.lateProbe and not run.lateProbe.result then run.helloPollAt = now + 1 end
+			if rec.dm and not (run.ackPollAt and not PresenceWorks()) then run.dmPollAt = now + 1 end
 		end
 		-- A hello only needs the bridge to have been seen; it never escalates.
 		-- A forget is the same, but the bridge must have been seen a moment after
@@ -1935,7 +1944,7 @@ local function Tick()
 				rec.sentAt = now
 				rec.shot = nil
 				changed = true
-			elseif rec.forget or rec.cancelOf then
+			elseif rec.forget or rec.cancelOf or rec.dm then
 				-- The bridge is away; db.forget keeps it for the next hello.
 				run.outbound[id] = nil
 				changed = true
@@ -1991,6 +2000,11 @@ local function ProcessInbox()
 	if inbox.map and ClaudeWoWMap then ClaudeWoWMap.Sync(inbox.map) end
 	if inbox.achievements and ClaudeWoWAchievements then ClaudeWoWAchievements.Sync(inbox.achievements, inbox.now) end
 	if inbox.goals and ClaudeWoWOrders then ClaudeWoWOrders.SyncInbox(inbox.goals, inbox.now) end
+	if type(inbox.dm) == "table" then
+		local stamp = tonumber(inbox.now)
+		if stamp and time() - stamp <= Q.INBOX_FRESH_SECONDS then run.bridgeDm = true end
+		if ClaudeWoWDM then ClaudeWoWDM.SyncInbox(inbox.dm) end
+	end
 	if inbox.widgets and ClaudeWoWWidgets then ClaudeWoWWidgets.Sync(inbox.widgets) end
 	if ClaudeWoWTelemetry then ClaudeWoWTelemetry.SyncInbox(inbox.gs, inbox.now) end
 end
@@ -2061,9 +2075,7 @@ end
 -- are meaningless markup to the agent; their tooltips are what the player sees).
 -- Every game API here is optional: whatever the client lacks is left out.
 
-local CONTEXT_MAX = 900 -- bytes of context per record; the strip has ~3.2 KB for everything
-local LINK_LINES_MAX = 30 -- tooltip lines kept per link
-local LINK_BYTES_MAX = 900 -- bytes kept per link
+local CTX = { MAX = 900, LINK_LINES_MAX = 30, LINK_BYTES_MAX = 900 }
 
 -- Call a game API that may not exist or may throw, and get its returns or nothing.
 local function Try(fn, ...)
@@ -2088,6 +2100,10 @@ local PROFESSION_SKILL_IDS = {
 	[333] = true, [393] = true, [129] = true, [185] = true, [356] = true,
 }
 ClaudeWoW.PROFESSION_SKILL_IDS = PROFESSION_SKILL_IDS
+ClaudeWoW.PROFESSION_SKILL_NAMES = {
+	Blacksmithing = 164, Leatherworking = 165, Alchemy = 171, Herbalism = 182, Mining = 186, Tailoring = 197,
+	Engineering = 202, Enchanting = 333, Skinning = 393, ["First Aid"] = 129, Cooking = 185, Fishing = 356,
+}
 
 -- The character's skill lines as { name, isHeader, rank, maxRank, skillID }.
 -- Forever only has C_SkillInfo (one table per line); the classic globals
@@ -2115,7 +2131,7 @@ function ClaudeWoW.SkillLines()
 	for i = 1, (type(n) == "number" and n or 0) do
 		local sname, isHeader, _, rank, _, _, maxRank = Try(GetSkillLineInfo, i)
 		if type(sname) == "string" then
-			out[#out + 1] = { name = sname, isHeader = isHeader and true or false, rank = rank, maxRank = maxRank }
+			out[#out + 1] = { name = sname, isHeader = isHeader and true or false, rank = rank, maxRank = maxRank, skillID = not isHeader and ClaudeWoW.PROFESSION_SKILL_NAMES[sname] or nil }
 		end
 	end
 	return out
@@ -2296,7 +2312,7 @@ function ClaudeWoW.GameContext()
 	if #quests > 0 then table.insert(lines, "Quest log (id, * = ready to turn in): " .. table.concat(quests, ",")) end
 
 	local s = table.concat(lines, "\n"):gsub("[\30\31]", " ")
-	if #s > CONTEXT_MAX then s = s:sub(1, CONTEXT_MAX) end
+	if #s > CTX.MAX then s = s:sub(1, CTX.MAX) end
 	return s
 end
 
@@ -2320,7 +2336,7 @@ local function TooltipLines(payload)
 	scanTip:ClearLines()
 	local lines = {}
 	if pcall(scanTip.SetHyperlink, scanTip, payload) then
-		for i = 1, math.min(scanTip:NumLines() or 0, LINK_LINES_MAX) do
+		for i = 1, math.min(scanTip:NumLines() or 0, CTX.LINK_LINES_MAX) do
 			local left = _G["ClaudeWoWScanTipTextLeft" .. i]
 			local right = _G["ClaudeWoWScanTipTextRight" .. i]
 			local l = Trim(tostring((left and left:GetText()) or ""))
@@ -2367,7 +2383,7 @@ function ClaudeWoW.ExpandLinks(text)
 		local head = "[" .. l.name .. "] " .. DescribeLink(l.payload)
 		local body = table.concat(TooltipLines(l.payload), "\n  ")
 		local block = body ~= "" and (head .. "\n  " .. body) or head
-		if #block > LINK_BYTES_MAX then block = block:sub(1, LINK_BYTES_MAX) .. "..." end
+		if #block > CTX.LINK_BYTES_MAX then block = block:sub(1, CTX.LINK_BYTES_MAX) .. "..." end
 		table.insert(blocks, block)
 	end
 	return out .. "\n\n--- Linked from the game ---\n" .. table.concat(blocks, "\n"), #links
@@ -2382,10 +2398,7 @@ end
 -- Whisper tabs
 ---------------------------------------------------------------------------
 
-local WHISPER_TEXT_MAX = 4000 -- characters of a reply written into the tab before it points at the window
-local WHISPER_PROBE_NAME = "Cwowprobe" -- /aiwhisper leak whispers this nobody to prove the leak filter works
-local WL = { SHORT_LINES = 8, SHORT_CHARS = 700, TLDR_LINES = 3, PREVIEW_LINES = 2, PROGRESS_MAX = 120, LINE_MAX = 300, BOOT_WAIT = 15, THROTTLE_SECONDS = 20, ELAPSED_STEP = 5, PULSE_SECONDS = 1 }
-local PRE_SEND_EVENT = "ChatFrame.OnEditBoxPreSendText"
+local WL = { TEXT_MAX = 4000, PROBE_NAME = "Cwowprobe", PRE_SEND_EVENT = "ChatFrame.OnEditBoxPreSendText", SHORT_LINES = 8, SHORT_CHARS = 700, TLDR_LINES = 3, PREVIEW_LINES = 2, PROGRESS_MAX = 120, LINE_MAX = 300, BOOT_WAIT = 15, THROTTLE_SECONDS = 20, ELAPSED_STEP = 5, PULSE_SECONDS = 1 }
 local preSendHooked = false
 local whisperLive = setmetatable({}, { __mode = "k" })
 
@@ -2514,7 +2527,7 @@ end
 function Whisper.HookPreSend(handler)
 	if preSendHooked then return true end
 	if type(EventRegistry) ~= "table" or type(EventRegistry.RegisterCallback) ~= "function" then return false end
-	preSendHooked = pcall(EventRegistry.RegisterCallback, EventRegistry, PRE_SEND_EVENT, handler, Whisper) and true or false
+	preSendHooked = pcall(EventRegistry.RegisterCallback, EventRegistry, WL.PRE_SEND_EVENT, handler, Whisper) and true or false
 	return preSendHooked
 end
 
@@ -2541,7 +2554,7 @@ end
 function Whisper.FrameFor(chat, create, select)
 	if not WhisperOn() or not chat then return nil end
 	if not preSendHooked then
-		run.whisperError = "this client has no " .. PRE_SEND_EVENT .. " hook, so a tab could not keep its whispers off the server"
+		run.whisperError = "this client has no " .. WL.PRE_SEND_EVENT .. " hook, so a tab could not keep its whispers off the server"
 		return nil
 	end
 	run.whisperTabs = run.whisperTabs or {}
@@ -2628,7 +2641,7 @@ end
 function Whisper.Body(text, summary)
 	local body = Display(text)
 	local mode = db.settings.echo
-	local limit = mode == "full" and WHISPER_TEXT_MAX or tonumber(mode)
+	local limit = mode == "full" and WL.TEXT_MAX or tonumber(mode)
 	if limit then
 		local lines, shown = {}, 0
 		for line in (body .. "\n"):gmatch("(.-)\n") do
@@ -2703,7 +2716,7 @@ function Whisper.ProgressText(chat)
 	local elapsed = math.floor((GetTime() - started) / WL.ELAPSED_STEP) * WL.ELAPSED_STEP
 	local parts = { FmtElapsed(elapsed) }
 	if a and not a.unreliable and a.count > 0 then table.insert(parts, a.count .. (a.count == 1 and " action" or " actions")) end
-	local text = ChatAgentName(chat) .. " is working... " .. table.concat(parts, " " .. SEG_DOT .. " ")
+	local text = ChatAgentName(chat) .. " is working... " .. table.concat(parts, " " .. SEG.DOT .. " ")
 	local p = Trim(Flat(chat.progress or ""))
 	if p ~= "" then
 		if #p > WL.PROGRESS_MAX then p = p:sub(1, WL.PROGRESS_MAX) .. "..." end
@@ -2909,7 +2922,7 @@ local function WhisperLeakFilter(_, _, msg, ...)
 	name = name:lower()
 	local ours = ReplyNameChat(name) ~= nil or (run.replyTarget and run.replyTarget:lower() == name)
 	if not ours and not WhisperOn() then return false end
-	ours = ours or name == WHISPER_PROBE_NAME:lower()
+	ours = ours or name == WL.PROBE_NAME:lower()
 	for _, c in ipairs(db.chats) do
 		if ChatAgentName(c):lower() == name then ours = true end
 	end
@@ -2927,7 +2940,7 @@ local whisperInstalled = false
 function Whisper.Install()
 	if whisperInstalled then return end
 	whisperInstalled = true
-	run.whisperLayers = { preSendHooked and PRE_SEND_EVENT or ("no " .. PRE_SEND_EVENT) }
+	run.whisperLayers = { preSendHooked and WL.PRE_SEND_EVENT or ("no " .. WL.PRE_SEND_EVENT) }
 	if type(ChatFrame_AddMessageEventFilter) == "function" then
 		pcall(ChatFrame_AddMessageEventFilter, "CHAT_MSG_SYSTEM", WhisperLeakFilter)
 		table.insert(run.whisperLayers, "leak filter")
@@ -3076,6 +3089,26 @@ local function SendCancel(chat, id)
 	run.outbound[db.lastSeq] = { chat = chat.id, cwd = chat.cwd or "", flags = "cancel=" .. id, name = chat.name or "", text = "", sentAt = GetTime(), cancelOf = id }
 	NoteStaleSignals(db.lastSeq)
 	RefreshStrip()
+end
+
+Q.DM_NEXT_GAP_SECONDS = 5
+Q.INBOX_FRESH_SECONDS = 300
+
+function ClaudeWoW.SendDmNext(charKey)
+	if not db or db.settings.mode ~= "pixel" then return "reload" end
+	if not run.bridgeDm then return "unsupported" end
+	if type(charKey) ~= "string" or charKey == "" then return "nochar" end
+	local now = GetTime()
+	for _, rec in pairs(run.outbound) do
+		if rec.dm and not rec.acked then return "busy" end
+	end
+	if run.dmSentAt and now - run.dmSentAt < Q.DM_NEXT_GAP_SECONDS then return "busy" end
+	run.dmSentAt = now
+	db.lastSeq = db.lastSeq + 1
+	run.outbound[db.lastSeq] = { chat = "", cwd = "", flags = "kind=dm", name = charKey, text = "next", sentAt = now, dm = true }
+	NoteStaleSignals(db.lastSeq)
+	RefreshStrip()
+	return "sent"
 end
 
 local function ForgetOnBridge(c)
@@ -3741,9 +3774,11 @@ end
 -- the macro, or updates the one with that name, and puts it on the cursor to drop
 -- on an action bar. The addon never runs a macro; the player's own click does.
 
-local MACRO_ACCOUNT_MAX = (Constants and Constants.MacroConsts and Constants.MacroConsts.MAX_ACCOUNT_MACROS) or 120
-local MACRO_CHAR_MAX = (Constants and Constants.MacroConsts and Constants.MacroConsts.MAX_CHARACTER_MACROS) or 30
-local MACRO_DEFAULT_ICON = 134400 -- question mark: with #showtooltip the game shows the spell's icon
+local MACRO = {
+	ACCOUNT_MAX = (Constants and Constants.MacroConsts and Constants.MacroConsts.MAX_ACCOUNT_MACROS) or 120,
+	CHAR_MAX = (Constants and Constants.MacroConsts and Constants.MacroConsts.MAX_CHARACTER_MACROS) or 30,
+	DEFAULT_ICON = 134400,
+}
 
 local function MacroSay(msg)
 	ClaudeWoW.Print(msg)
@@ -3767,8 +3802,8 @@ end
 -- The macro called `name` among account (1..120) or character (121..150) macros:
 -- the same name may exist in both, and only the requested kind counts.
 local function FindMacro(name, perCharacter)
-	local first = perCharacter and MACRO_ACCOUNT_MAX + 1 or 1
-	local last = perCharacter and MACRO_ACCOUNT_MAX + MACRO_CHAR_MAX or MACRO_ACCOUNT_MAX
+	local first = perCharacter and MACRO.ACCOUNT_MAX + 1 or 1
+	local last = perCharacter and MACRO.ACCOUNT_MAX + MACRO.CHAR_MAX or MACRO.ACCOUNT_MAX
 	for i = first, last do
 		local n, icon, body = Try(GetMacroInfo, i)
 		if n == name then return i, icon, body end
@@ -3782,7 +3817,7 @@ local function MacroIcon(icon)
 		if type(id) == "number" and id > 0 then return id end
 		return icon -- CreateMacro also takes a texture name
 	end
-	return MACRO_DEFAULT_ICON
+	return MACRO.DEFAULT_ICON
 end
 
 function ClaudeWoW.MacroLabel(m)
@@ -3835,16 +3870,16 @@ function ClaudeWoW.InstallMacro(m, confirmed)
 		end
 	else
 		local acc, chr = Try(GetNumMacros)
-		if m.char and type(chr) == "number" and chr >= MACRO_CHAR_MAX then
-			MacroSay("your character macros are full (" .. MACRO_CHAR_MAX .. "); delete one in /macro first.")
+		if m.char and type(chr) == "number" and chr >= MACRO.CHAR_MAX then
+			MacroSay("your character macros are full (" .. MACRO.CHAR_MAX .. "); delete one in /macro first.")
 			return
-		elseif not m.char and type(acc) == "number" and acc >= MACRO_ACCOUNT_MAX then
-			MacroSay("your account macros are full (" .. MACRO_ACCOUNT_MAX .. "); delete one in /macro first.")
+		elseif not m.char and type(acc) == "number" and acc >= MACRO.ACCOUNT_MAX then
+			MacroSay("your account macros are full (" .. MACRO.ACCOUNT_MAX .. "); delete one in /macro first.")
 			return
 		end
 		ok, newIndex = pcall(CreateMacro, m.name, MacroIcon(m.icon), m.body, m.char)
 		if (not ok or type(newIndex) ~= "number") and m.icon ~= nil then
-			ok, newIndex = pcall(CreateMacro, m.name, MACRO_DEFAULT_ICON, m.body, m.char)
+			ok, newIndex = pcall(CreateMacro, m.name, MACRO.DEFAULT_ICON, m.body, m.char)
 		end
 		if ok and type(newIndex) == "number" then
 			db.macroUndo = { name = m.name, char = m.char, created = true }
@@ -4076,7 +4111,11 @@ local function GetBubble(i)
 	-- FontStrings can't be selected, so a click opens the message in the copy box.
 	b:EnableMouse(true)
 	b:SetScript("OnMouseUp", function(self, button)
-		if button == "LeftButton" and self.text and self.text ~= "" then ClaudeWoW.ShowCopy(self.text) end
+		if button ~= "LeftButton" or not self.text or self.text == "" then return end
+		local clickedAt = GetTime()
+		C_Timer.After(0, function()
+			if self.linkClickAt ~= clickedAt then ClaudeWoW.ShowCopy(self.text) end
+		end)
 	end)
 	ui.bubbles[i] = b
 	return b
@@ -4333,14 +4372,12 @@ function ClaudeWoW.UpdateMini()
 	end
 end
 
-local ECHO_DEFAULT = 4000 -- characters of a reply to print into the game chat ("/claude-wow echo <n>")
+local ECHO = { DEFAULT = 4000, SUMMARY_LINES = 3, SUMMARY_FALLBACK_LINES = 2 }
 
 local function ChatLinks(chat)
 	return "  " .. Link("reply", chat.id, "reply", "55ff55") .. " " .. Link("open", chat.id, "open")
 end
 
-local SUMMARY_LINES = 3 -- lines of the agent's TL;DR block printed in "summary" mode
-local SUMMARY_FALLBACK_LINES = 2 -- lines of the reply shown when it came without one
 
 -- Print a reply into the game chat: prefix on the first line, then the text line
 -- by line up to the limit, then clickable links. `short` prints one preview line.
@@ -4359,8 +4396,8 @@ local function EchoToChat(chat, text, agent, summary)
 		return
 	end
 	if mode == "summary" then
-		local source, max = Display(summary or ""), SUMMARY_LINES
-		if not source:match("%S") then source, max = body, SUMMARY_FALLBACK_LINES end
+		local source, max = Display(summary or ""), ECHO.SUMMARY_LINES
+		if not source:match("%S") then source, max = body, ECHO.SUMMARY_FALLBACK_LINES end
 		local lines, total = {}, 0
 		for line in (source .. "\n"):gmatch("(.-)\n") do
 			if line:match("%S") then
@@ -4377,7 +4414,7 @@ local function EchoToChat(chat, text, agent, summary)
 		print("    " .. ChatLinks(chat):sub(3))
 		return
 	end
-	local limit = tonumber(mode) or ECHO_DEFAULT
+	local limit = tonumber(mode) or ECHO.DEFAULT
 	local first, shown = true, 0
 	for line in (body .. "\n"):gmatch("(.-)\n") do
 		if line:match("%S") then
@@ -4826,6 +4863,7 @@ Q.linkEvents:SetScript("OnEvent", function()
 end)
 
 function Q.LinkClick(self, link, text, button)
+	self.linkClickAt = GetTime()
 	if type(SetItemRef) == "function" then SetItemRef(link, text, button, self) end
 end
 
@@ -4863,8 +4901,8 @@ function Q.LayoutClassicPage(page, w, h)
 	end
 end
 
-function Q.ClassicParchment(tex, inset)
-	if not Q.IsClassicEra() then return false end
+function Q.BuildClassicPage(tex, inset)
+	if not Q.IsClassicEra() then return nil end
 	inset = inset or 0
 	local holder = tex:GetParent()
 	local page = CreateFrame("Frame", nil, holder)
@@ -4874,16 +4912,29 @@ function Q.ClassicParchment(tex, inset)
 	page.pieces = {}
 	for i, spec in ipairs(Q.CLASSIC_PAGE) do
 		local piece = i == 1 and tex or holder:CreateTexture(nil, "BACKGROUND", nil, 1)
-		if not pcall(piece.SetTexture, piece, spec.file) then return false end
+		if not pcall(piece.SetTexture, piece, spec.file) then return nil end
 		piece:SetTexCoord(spec.coords[1], spec.coords[2], spec.coords[3], spec.coords[4])
 		page.pieces[i] = piece
 	end
 	page:SetScript("OnSizeChanged", function(self, w, h) Q.LayoutClassicPage(self, w, h) end)
 	Q.LayoutClassicPage(page, Try(page.GetWidth, page) or 300, Try(page.GetHeight, page) or 300)
+	return page
+end
+
+function Q.ClassicParchment(tex, inset)
+	local page = Q.BuildClassicPage(tex, inset)
+	if not page then return false end
 	ui.art = ui.art or {}
 	ui.art.parchment = Q.CLASSIC_PAGE[1].file
 	ui.classicPage = page
 	return true
+end
+
+function ClaudeWoW.PaintParchment(tex)
+	local atlas = Q.QUEST_ART.parchment
+	if atlas and Q.ArtAllowed("parchment") and Q.AtlasExists(atlas) and pcall(tex.SetAtlas, tex, atlas) then return atlas end
+	if Q.BuildClassicPage(tex, 0) then return Q.CLASSIC_PAGE[1].file end
+	return nil
 end
 
 function Q.IsClassicEra()
@@ -5851,8 +5902,8 @@ local function BuildUI()
 	input:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
 	if plainInput then
 		input:SetScript("OnCursorChanged", ScrollingEdit_OnCursorChanged)
-		input:SetScript("OnTextChanged", ScrollingEdit_OnTextChanged)
-		if type(ScrollingEdit_OnUpdate) == "function" then input:SetScript("OnUpdate", ScrollingEdit_OnUpdate) end
+		input:SetScript("OnTextChanged", function(self) ScrollingEdit_OnTextChanged(self, inScroll) end)
+		if type(ScrollingEdit_OnUpdate) == "function" then input:SetScript("OnUpdate", function(self, elapsed) ScrollingEdit_OnUpdate(self, elapsed, inScroll) end) end
 	end
 	inScroll:SetScrollChild(input)
 	inScroll:HookScript("OnSizeChanged", function(self, w, h)
@@ -6762,7 +6813,7 @@ function Cli.EntryParts(e)
 	if where ~= "" then table.insert(meta, where) end
 	if e.at and e.at > 0 then table.insert(meta, Cli.Age(e.at)) end
 	local current = e.chat ~= nil and e.chat == db.activeChat
-	return title, table.concat(meta, " " .. SEG_DOT .. " "), Cli.Badge(e), current
+	return title, table.concat(meta, " " .. SEG.DOT .. " "), Cli.Badge(e), current
 end
 
 function Cli.EntryLine(i, e)
@@ -6770,13 +6821,13 @@ function Cli.EntryLine(i, e)
 	local parts = { title }
 	if meta ~= "" then table.insert(parts, meta) end
 	table.insert(parts, badge[1])
-	return i .. ". " .. table.concat(parts, " " .. SEG_DOT .. " ") .. (current and " (this chat)" or "")
+	return i .. ". " .. table.concat(parts, " " .. SEG.DOT .. " ") .. (current and " (this chat)" or "")
 end
 
 function Cli.EntryRich(i, e)
 	local title, meta, badge, current = Cli.EntryParts(e)
 	return "|cff7ec8ff[" .. i .. "]|r " .. title
-		.. (meta ~= "" and (" |cff888888" .. SEG_DOT .. " " .. meta .. "|r") or "")
+		.. (meta ~= "" and (" |cff888888" .. SEG.DOT .. " " .. meta .. "|r") or "")
 		.. " |cff" .. badge[2] .. badge[1] .. "|r"
 		.. (current and " |cffffd100(this chat)|r" or "")
 end
@@ -7340,7 +7391,7 @@ RunCommand = function(cmd, rest)
 		elseif tonumber(rest) then
 			s.echo = tostring(math.max(200, math.floor(tonumber(rest))))
 		end
-		AddHistory(c, "system", "replies in game chat: " .. s.echo .. " (summary = the agent's TL;DR lines, full = " .. ECHO_DEFAULT .. " chars, short, off, or a number of characters)")
+		AddHistory(c, "system", "replies in game chat: " .. s.echo .. " (summary = the agent's TL;DR lines, full = " .. ECHO.DEFAULT .. " chars, short, off, or a number of characters)")
 		ClaudeWoW.Render()
 	elseif cmd == "longchat" then
 		if rest == "on" then s.longchat = true elseif rest == "off" then s.longchat = false end
