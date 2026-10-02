@@ -107,7 +107,7 @@ Two things are different inside the binary, and `bridge/runtime.js` is the one p
 
 ## Conventions
 
-- **Lua** uses tabs, `local` everything, and only APIs present in the Forever client. Check against the `forever` branch of [Gethe/wow-ui-source](https://github.com/Gethe/wow-ui-source) before using a new API.
+- **Lua** uses tabs, `local` everything, and only APIs present in both clients, Forever and Classic Era, or a guarded fallback for the one that lacks it. Check against the `forever` and `classic_era` branches of [Gethe/wow-ui-source](https://github.com/Gethe/wow-ui-source) before using a new API.
 - **JavaScript** uses two-space indent, single quotes, `'use strict'`, CommonJS. The bridge must stay dependency-free: it is installed with `npm link` on machines that may never run `npm install`.
 - **Transport constants** (`slots`, `actMax`, `presenceMax`, strip cell size and row counts) live in three places that must agree: `config.example.json`, the top of `ClaudeWoW.lua`, and `Codec.lua`. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 - **Compatibility:** the bridge accepts older strip record formats, older `state.json` layouts, a `config.json` with Claude's settings at the top level, and history with role `claude`. Keep that when changing a format, and note it in `CHANGELOG.md`.

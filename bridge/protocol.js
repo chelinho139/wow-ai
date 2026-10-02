@@ -400,7 +400,7 @@ const PLAYER_VOICE_FORMAT = [
 ];
 
 const LINK_HINT = [
-  'Name an item, spell or quest with a token, not with its name: {item:ID}, {spell:ID} or {quest:ID}. The addon turns each token into the real in-game link, with the name and color the client has, and the player can hover or shift-click it. Do not also write the name next to the token. Use an ID only when you are sure of it: on World of Warcraft Classic (Classic Era) use the Classic ID, on Forever check it with the wowdata tools when you have them. A quest token shows only for a quest in the player\'s quest log. NPCs, zones and other things have no token: name them in plain words.',
+  'Name an item, spell or quest with a token, not with its name: {item:ID}, {spell:ID} or {quest:ID}. The addon turns each token into the real in-game link, with the name and color the client has, and the player can hover or shift-click it, so a wrong ID shows the wrong thing. Do not also write the name next to the token. On both games (Forever and Classic Era), an ID must come from a source that ties it to that exact thing: a "Linked from the game" entry in this chat (item, spell or quest), or a wowdata result whose name is the item you mean. When several wowdata rows share that name, use a token only if the player\'s link or the situation picks out one of them; otherwise name it in plain words. Never use an ID from memory, a website or another game version, and never pick one from a list of bare IDs (the recipe spell IDs of a wowdata result, the quest log line). Without such a source, name the thing in plain words. A quest token shows only for a quest in the player\'s quest log. NPCs, zones and other things have no token: name them in plain words.',
   'For a list, put each item on its own line starting with "- "; the addon draws it as a bullet.',
 ];
 
@@ -436,7 +436,7 @@ function visionHint(image) {
 const SITUATION_RULE = 'A message may open with a block marked as the player\'s in-game situation, reported by the addon the moment they wrote it (not written by them): character, zone, map coordinates, money, professions, quest log. Use it when the request is about the game or the character (questions, macros, addon code, gear advice); ignore it when the task is unrelated. Every message carries a fresh one, so the latest block is where they are now. Items, spells or quests the player shift-clicked into a message appear as [Name] in the text, with their tooltip in a "Linked from the game" block at the end of the message.';
 
 const WHERE_HINT = [
-  'The situation block\'s "Game:" line names the client. World of Warcraft: Forever is its own game: its NPCs, quests, drops and spawns can differ from retail and from Classic, so web databases and wikis (Wowhead and the like) are unverified guides there. World of Warcraft Classic (interface 115xx) is Classic Era: Classic web databases describe it. The wowdata tools and reference tokens use the synced data of the client\'s own game (Forever or Classic Era), never the other one; with no data synced for it, tokens are refused.',
+  'The situation block\'s "Game:" line names the client. World of Warcraft: Forever is its own game: its NPCs, quests, drops and spawns can differ from retail and from Classic, so web databases and wikis (Wowhead and the like) are unverified guides there. World of Warcraft Classic (interface 115xx) is Classic Era: Classic web databases describe it, but an item, spell or quest ID still comes only from the sources the link rule below names. The wowdata tools and order tokens use the synced data of the client\'s own game (Forever or Classic Era), never the other one; with no data synced for it, an order with a token is refused. The bridge does not check chat replies.',
   'Coordinates are percent of the map with that uiMapID, 0 to 100, with 0,0 at the top left; give them as "x, y" and mark the spot on the map as well.',
 ];
 
@@ -456,6 +456,20 @@ function systemPrompt(ctx, primer, opts) {
     lines.push('', 'Reference for writing addons and macros for this client. Follow it when the task is about WoW, and check anything it marks as uncertain against the Blizzard UI source it names:', '', ref);
   }
   return lines.join('\n');
+}
+
+const RULES_HASH_LENGTH = 16;
+function systemRulesHash(ctx, opts) {
+  return crypto.createHash('sha256').update(systemPrompt(ctx, '', opts)).digest('hex').slice(0, RULES_HASH_LENGTH);
+}
+
+function rulesChanged(state, key, hash) {
+  const before = state.sessionRules && state.sessionRules[key];
+  return !!before && before !== hash;
+}
+
+function noteRules(state, key, hash) {
+  (state.sessionRules = state.sessionRules || {})[key] = hash;
 }
 
 // The per-message part: the situation block (when the addon sends a context),
@@ -1218,7 +1232,7 @@ module.exports = {
   alreadyHandled, markHandled, pruneStale, MONTH_MS, noteAck, recentAcks, RECENT_ACKS_MAX, RECENT_ACK_MS,
   noteUsage, usageFields, tokensLabel,
   resolveCwd, sameFolder, baseName,
-  parseFlags, PERMISSION_MODES, permissionModeName, ADD_DIRS_MAX, jobsFromStrip, parseOutbox, withRunOnlyRules, withRunDeniedRules, withoutRules, absolutePathRule, systemPrompt, messagePrompt, visionHint, splitSummary,
+  parseFlags, PERMISSION_MODES, permissionModeName, ADD_DIRS_MAX, jobsFromStrip, parseOutbox, withRunOnlyRules, withRunDeniedRules, withoutRules, absolutePathRule, systemPrompt, systemRulesHash, rulesChanged, noteRules, messagePrompt, visionHint, splitSummary,
   ruleFor, describeToolUse,
   folderRule, ruleFolder, splitGrants, insideFolder, nearestFolder, denialPath, classifyDenial, grantsFor, deniedAgain, denialNotes,
   luaStr, luaTable, luaSession, SILENT_WAV, TRANSPORTS, DEFAULT_TRANSPORT, transportName, chooseTransport, FALLBACK_REASONS, transportFallback, transportNote, DEFAULT_LEVELS, screenshotLevels, STRIP_CODECS, DEFAULT_STRIP_CODEC, stripCodec, denseLevels,

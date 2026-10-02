@@ -1,4 +1,4 @@
-# WoW: Forever addon and macro primer
+# WoW: Forever and Classic Era addon and macro primer
 
 Read by the claude-wow bridge and appended to the agent's system prompt on every run (Claude and Grok; for Codex it goes at the top of the prompt) (see `primerFile` in docs/CONFIGURATION.md). Keep it short: it costs tokens on every message. Edit it freely; the bridge re-reads it on each run.
 

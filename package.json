@@ -2,7 +2,7 @@
   "name": "claude-wow",
   "version": "0.4.0",
   "private": true,
-  "description": "Claude in World of Warcraft: chat with Claude Code and other local coding agents (Codex, Grok Build, Antigravity, Hermes) from inside World of Warcraft: Forever, with no UI reloads. Pixel strip out, load-on-demand slots in.",
+  "description": "Claude in World of Warcraft: chat with Claude Code and other local coding agents (Codex, Grok Build, Antigravity, Hermes) from inside World of Warcraft: Forever or Classic Era, with no UI reloads. Pixel strip out, load-on-demand slots in.",
   "license": "MIT",
   "author": "chelinho139",
   "repository": {

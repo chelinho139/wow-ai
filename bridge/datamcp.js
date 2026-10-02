@@ -10,6 +10,7 @@ const MAX_CHILD_MAPS = 50;
 const MAX_ANCESTORS = 10;
 const UI_MAP_TYPE_NAMES = ['cosmic', 'world', 'continent', 'zone', 'dungeon', 'micro', 'orphan'];
 const ID_TEXT = /^\d{1,9}$/;
+const MAX_SHARED_IDS = 10;
 
 const noDataNote = store => `No game data is synced on this machine for this client, so nothing here is verified. The owner can run "${store.syncCommand || 'claude-wow data sync'}".`;
 const NO_FLAVOR_NOTE = 'The client build does not say which game this is (Forever is 1.60.*, Classic Era is 1.15.*), so no game data is used.';
@@ -159,6 +160,22 @@ function reagentUse(store, itemID) {
   return { reagentIn, reagentInTotal: recipes.length };
 }
 
+function sharedNameNotes(shown, hits) {
+  const idsByName = new Map();
+  for (const h of hits) {
+    const key = GD.foldName(h.row.name);
+    idsByName.set(key, [...(idsByName.get(key) || []), h.row.id]);
+  }
+  const notes = [];
+  for (const key of new Set(shown.map(h => GD.foldName(h.row.name)))) {
+    const ids = idsByName.get(key);
+    if (ids.length < 2) continue;
+    const name = shown.find(h => GD.foldName(h.row.name) === key).row.name;
+    notes.push(`${ids.length} items are named "${name}" (IDs ${ids.slice(0, MAX_SHARED_IDS).join(', ')}${ids.length > MAX_SHARED_IDS ? ', ...' : ''}): the name alone does not pick one.`);
+  }
+  return notes;
+}
+
 function itemRow(store, it, detailed) {
   const fields = {
     kind: 'item',
@@ -229,7 +246,7 @@ function requireOne(args, keys) {
 const TOOLS = [
   {
     name: 'wow_item',
-    description: 'Look up an item by ID or by name in the client item table: name, quality, item level, required level, inventory type, sell and buy price in copper, the quest it starts, and (by ID) the profession recipes that use it as a reagent. It has no drop sources or vendors.',
+    description: 'Look up an item by ID or by name in the client item table: name, quality, item level, required level, inventory type, sell and buy price in copper, the quest it starts, and (by ID) the profession recipes that use it as a reagent. It has no drop sources or vendors. Several items can share one name; a note then lists their IDs, and the name alone does not pick one.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -249,7 +266,8 @@ const TOOLS = [
       const name = nameArg(args, true);
       const limit = limitArg(args);
       const hits = store.search('items', name);
-      return envelope(store, 'wow_item', { name }, hits.slice(0, limit).map(h => itemRow(store, h.row, false)), { total: hits.length });
+      const shown = hits.slice(0, limit);
+      return envelope(store, 'wow_item', { name }, shown.map(h => itemRow(store, h.row, false)), { total: hits.length, notes: sharedNameNotes(shown, hits) });
     },
   },
   {

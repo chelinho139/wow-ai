@@ -4,7 +4,7 @@ Every route ends in the same place: the code on your machine, a `claude-wow` com
 
 Before any of them you need:
 
-- **World of Warcraft: Forever**, run at least once with the account you play on (setup reads the account folder).
+- **World of Warcraft: Forever** or **World of Warcraft Classic** (Classic Era), run at least once with the account you play on (setup reads the account folder). Setup looks for `_classic_beta_`, then `_forever_`, then `_classic_era_`, and never picks another client; with Forever and Classic Era both installed, pass `--wow ".../_classic_era_"` to set up Classic Era.
 - **Nothing else, on route 1 or 2**: the bridge ships as one self-contained binary for macOS (arm64, x64), Linux (x64) and Windows (x64), with its runtime inside. Route 3, and route 1 where there is no binary for your machine, run the checkout and need **Node.js 22.2 or newer** (`node -v`: [nodejs.org](https://nodejs.org), `brew install node`, `winget install OpenJS.NodeJS.LTS`) or [Bun](https://bun.sh).
 - **At least one agent CLI**, installed and logged in: `claude`, `codex`, `grok`, `agy` or `hermes` (see [AGENTS.md](AGENTS.md)). One is enough; the bridge lists what it found.
 
@@ -74,6 +74,17 @@ This route needs Node.js 22.2+ or Bun (`bun setup.js`, `bun bridge/supervisor.js
 `claude-wow setup` (the same as `node setup.js`) finds the client (or takes `--wow`), copies the addon into `Interface/AddOns/ClaudeWoW`, writes `config.json` in `~/.claude-wow` (or `CLAUDE_WOW_HOME`) with the paths and the default project folder, reports which agent CLIs it found, and creates the 200 reply-slot addons plus about 16,400 tiny signal files. That count is normal: the client only sees addon files that existed at launch, so every signal file exists up front and the bridge signals by deleting one. Re-running it keeps your config and the slot pool; `--project <folder>` on a re-run corrects the default folder, and `--wow <client folder>` on a re-run points the config at that client (`addonDir`, `inboxFile`, `savedVariablesFile`, `capture.processName`). The addon loads in WoW Forever (`_classic_beta_`) and in Classic Era (`_classic_era_`); to switch, run `claude-wow setup --wow "/Applications/World of Warcraft/_classic_era_"`, restart the bridge, and restart the game.
 
 Then **fully quit and relaunch World of Warcraft** (a `/reload` is not enough) and enable *Claude WoW* on the character-select AddOns screen. The 200 *Claude WoW slot* entries stay enabled; leave them alone.
+
+## Game data
+
+Claude checks game IDs (items, quests, zones, flight paths, skill lines) against the client tables of your own game. Fetch them once per game you play, and again after a game patch:
+
+| Game | Command | Folder |
+|---|---|---|
+| World of Warcraft: Forever (`1.60.*`) | `claude-wow data sync` | `~/.claude-wow/data/forever/` |
+| World of Warcraft Classic, Classic Era (`1.15.*`) | `claude-wow data sync --flavor classic_era` | `~/.claude-wow/data/classic_era/` |
+
+The bridge reads the client build the game reports and uses only the data of that game. With no data for it, the bridge refuses ID tokens in orders, goals and campaigns, and `ask` runs go without the `wowdata` tools; the bridge log names the command to run. No restart is needed after a sync. Details in [CONFIGURATION.md](CONFIGURATION.md#game-data).
 
 ## Running the bridge
 

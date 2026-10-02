@@ -4,7 +4,7 @@
   <img src="docs/screenshot.jpg" alt="The Claude WoW chat window open in Goldshire, with a message on its way to a coding agent" width="900">
 </p>
 
-Chat with your local coding agents from inside **World of Warcraft: Forever**: [Claude Code](https://claude.com/claude-code), [OpenAI Codex](https://developers.openai.com/codex), [xAI's Grok Build](https://docs.x.ai/build/overview), Google's Antigravity CLI and Hermes Agent. Send a task, go back to questing, get pinged in-game when the answer lands. No alt-tabbing, no `/reload` per message.
+Chat with your local coding agents from inside **World of Warcraft: Forever** or **World of Warcraft Classic** (Classic Era): [Claude Code](https://claude.com/claude-code), [OpenAI Codex](https://developers.openai.com/codex), [xAI's Grok Build](https://docs.x.ai/build/overview), Google's Antigravity CLI and Hermes Agent. Send a task, go back to questing, get pinged in-game when the answer lands. No alt-tabbing, no `/reload` per message.
 
 - Multiple chats, each its own persistent agent session (like separate terminals), running in parallel. Each chat picks its agent and its folder
 - Live progress while the agent works: action count, elapsed time, the files it's editing and commands it's running
@@ -329,7 +329,7 @@ The keys you are most likely to touch. Every key, flag and environment variable 
 | `maxParallel` | how many chats may run an agent at once (default 3) |
 | `gameContext` | `false` never tells the agent about your character, whatever the addon sends (default `true`) |
 | `primerFile` | the addon/macro primer appended with the context (default `docs/WOW-ADDON-PRIMER.md`; `""` = none) |
-| `capture.processName` | the game exe without `.exe` (`WowB` for Forever); set by `setup.js` |
+| `capture.processName` | the game exe without `.exe`, or the app name on macOS (`WowB` for Forever, `World of Warcraft Classic` for Classic Era on macOS); set by `setup.js` |
 | `capture.mode` | `screenshot` (default: the addon calls `Screenshot()`; the bridge reads the file from the client's `Screenshots` folder) or `pixel` (deprecated screen capture; see [Transports](#transports)) |
 | `vision.maxWidth`, `vision.keep` | screenshot mode: how wide the picture of your screen is scaled to before it goes to the agent (default 1280), and how many may wait in `~/.claude-wow/tmp` at once (default 6) |
 | `capture.keepComposited`, `capture.windowName` | Linux: keep the compositor drawing the game window (if the probe sees black), or find the window by title |

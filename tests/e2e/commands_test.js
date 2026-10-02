@@ -120,6 +120,36 @@ test('/claude -r resumes a Claude Code session headless in its folder: from the 
   });
 });
 
+test('a Claude chat starts a new session when the system prompt rules changed since its session began, and keeps one that has no recorded rules', async () => {
+  await withGame({}, async h => {
+    await h.client.connect();
+    const editState = async edit => {
+      await h.bridge.stop();
+      const state = JSON.parse(fs.readFileSync(h.sb.state, 'utf8'));
+      edit(state);
+      fs.writeFileSync(h.sb.state, JSON.stringify(state));
+      h.bridge.start();
+      await h.bridge.ready();
+    };
+    await h.client.say('first');
+    const first = h.agentCalls().at(-1);
+    assert.ok(!first.resume, 'a new chat starts a session');
+    await h.client.say('second');
+    assert.equal(h.agentCalls().at(-1).resume, first.session, 'same rules: resumed');
+    const recorded = Object.values(h.state().sessionRules || {});
+    assert.equal(recorded.length, 1);
+    assert.match(recorded[0], /^[0-9a-f]{16}$/);
+    await editState(state => { for (const k of Object.keys(state.sessionRules)) state.sessionRules[k] = '0000000000000000'; });
+    await h.client.say('third');
+    const third = h.agentCalls().at(-1);
+    assert.ok(!third.resume, 'changed rules: a new session');
+    await h.bridge.waitForLine(/system prompt rules changed \(0000000000000000 -> [0-9a-f]{16}\): new session/, { from: 0 });
+    await editState(state => { delete state.sessionRules; });
+    await h.client.say('fourth');
+    assert.equal(h.agentCalls().at(-1).resume, third.session, 'a session from before the rules were recorded keeps resuming');
+  });
+});
+
 test.after(() => {
   fs.rmSync(ROOT, { recursive: true, force: true });
 });
