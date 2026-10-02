@@ -270,6 +270,7 @@ const PROTO_MAX = PROTO;
 const LEGACY_PROTO = 1;
 const SEMVER_RE = /^\d{1,4}\.\d{1,4}\.\d{1,4}(?:[-+][0-9A-Za-z.+-]{1,24})?$/;
 const ADDON_VERSIONS_MAX = 8;
+const MAX_DATE_MS = 8.64e15;
 
 function bridgeVersion() {
   try { return require('../package.json').version; } catch { return '0.0.0'; }
@@ -346,7 +347,7 @@ function versionsSummary(state) {
   if (!r) return 'no hello with versions yet';
   const proto = Number.isInteger(r.proto) ? r.proto : `${LEGACY_PROTO} assumed`;
   const range = Number.isInteger(r.protoMin) && Number.isInteger(r.protoMax) ? protoRange(r) : '?';
-  return `addon ${r.version || 'unknown'} (protocol ${proto}), bridge ${r.bridge || 'unknown'} (protocol ${range}): ${r.verdict || 'unknown'}, at the last hello${Number.isFinite(r.at) ? ' ' + new Date(r.at).toISOString() : ''}`;
+  return `addon ${r.version || 'unknown'} (protocol ${proto}), bridge ${r.bridge || 'unknown'} (protocol ${range}): ${r.verdict || 'unknown'}${Number.isFinite(r.at) && Math.abs(r.at) <= MAX_DATE_MS ? ', at the last hello ' + new Date(r.at).toISOString() : ''}`;
 }
 
 function installedSummary(bridge = bridgeInfo()) {

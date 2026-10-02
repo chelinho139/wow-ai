@@ -233,8 +233,9 @@ test('service status and the doctor show both versions and the verdict of the la
     P.noteAddonVersion(fine, { session: 's', addonVersion: '0.4.0', addonProto: 1 }, bridgeAt('0.4.0', 1, 1), 5);
     assert.equal(Checks.checkVersions({ state: fine }).status, 'ok');
     assert.equal(Checks.checkVersions({ state: {} }).summary, `no hello with versions yet; this install is bridge ${PACKAGE_VERSION} (protocol ${P.PROTO})`);
-    const odd = { addons: { s: { ...fine.addons.s, at: 'yesterday' } } };
-    assert.match(P.versionsSummary(odd), /: equal, at the last hello$/, 'a bad time in state.json does not throw');
+    for (const at of ['yesterday', 1e20, undefined]) {
+      assert.match(P.versionsSummary({ addons: { s: { ...fine.addons.s, at } } }), /: equal$/, `a bad time (${at}) in state.json does not throw`);
+    }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -300,6 +301,10 @@ test('Inbox.lua carries the field too, under the 5-minute age rule', () => {
   assert.equal(told(fresh, 'older than the bridge (99.0.0)'), 1);
   const stale = newVM({ beforeLogin: `ClaudeWoW_Inbox = { now = time() - 3600, replies = {}${luaBridge(bridgeAt('99.0.0'))} }` });
   assert.equal(told(stale, 'older than the bridge'), 0);
+  for (const now of ['', 'now = "soon", ']) {
+    const undated = newVM({ beforeLogin: `ClaudeWoW_Inbox = { ${now}replies = {}${luaBridge(bridgeAt('99.0.0'))} }` });
+    assert.equal(told(undated, 'older than the bridge'), 0, `an inbox with ${now || 'no now'} is skipped`);
+  }
 });
 
 test('a malformed bridge field is ignored, guard by guard', () => {
@@ -313,6 +318,10 @@ test('a malformed bridge field is ignored, guard by guard', () => {
     'a fractional protoMin': `version = "99.0.0", protoMin = ${P.PROTO + 0.5}, protoMax = ${P.PROTO + 1}`,
     'a fractional protoMax': `version = "99.0.0", protoMin = ${P.PROTO}, protoMax = ${P.PROTO + 0.5}`,
     'no protoMax': `version = "99.0.0", protoMin = ${P.PROTO}`,
+    'no protoMin': `version = "99.0.0", protoMax = ${P.PROTO}`,
+    'a non-numeric protoMin': `version = "99.0.0", protoMin = "one", protoMax = ${P.PROTO}`,
+    'a version that is a number': `version = 99, protoMin = ${P.PROTO}, protoMax = ${P.PROTO}`,
+    'no version': `protoMin = ${P.PROTO}, protoMax = ${P.PROTO}`,
   };
   for (const [name, fields] of Object.entries(cases)) {
     const vm = newVM({ beforeLogin: `ClaudeWoW_Inbox = { now = time(), replies = {}, bridge = { ${fields} } }` });

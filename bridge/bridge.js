@@ -912,7 +912,6 @@ function submit(job) {
   }
   if (job.ctx !== undefined) setContext(job);
   else noteContextHeard();
-  if (!job.hello && (job.addonVersion || job.addonProto)) noteHelloVersions(job);
   if (job.forget) {
     // A deleted chat: forget it and ack. No agent run.
     markHandled(job);
@@ -1016,6 +1015,7 @@ function runJob(job) {
   signal('sig', job.id, false);
   resetBeats(job.id);
   ackJob(job);
+  if (job.addonVersion || job.addonProto) noteHelloVersions(job);
   const refusal = P.addonRefusal(state, job, BRIDGE_INFO);
   if (refusal) {
     log(`${tag} refused: ${refusal}`);
