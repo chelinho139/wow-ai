@@ -247,7 +247,7 @@ const LEVELS = P.screenshotLevels(cap.screenshotLevels);
 const STRIP_CODEC = P.stripCodec(cap.screenshotCodec);
 // The game-side files. A config.json written for one of the addon's old names
 // (WoWClaude, WoWAI) still works: the paths are derived from addonDir instead.
-const INBOX_FILE = cfg.inboxFile && !P.OLD_ADDON_PATH.test(cfg.inboxFile) ? cfg.inboxFile : path.join(cfg.addonDir || '', P.ADDON, 'Inbox.lua');
+const INBOX_FILE = cfg.inboxFile && !P.OLD_ADDON_PATH.test(cfg.inboxFile) && !P.SHIPPED_INBOX_PATH.test(cfg.inboxFile) ? cfg.inboxFile : SIG.runtimeInbox(cfg.addonDir || '');
 const SAVED_VARS = String(cfg.savedVariablesFile || '').replace(P.OLD_SAVED_FILE, P.ADDON + '.lua');
 
 let state = Object.keys(stateEarly).length ? stateEarly : { lastId: 0, sessions: {}, handled: {} };
@@ -725,6 +725,19 @@ const PRESENCE_MAX = cfg.presenceMax || SIG.DEFAULT_PRESENCE_MAX;
 const PRESENCE_INTERVAL_MS = cfg.presenceIntervalMs || 30000;
 function presenceReady() {
   return fs.existsSync(SIG.presenceDir(cfg.addonDir));
+}
+function migrateRuntime() {
+  if (!cfg.addonDir || !addonInstalled() || !SIG.needsMigration(cfg.addonDir)) return;
+  let r;
+  try {
+    r = SIG.prepareRuntime(cfg.addonDir, { slots: SLOTS, actMax: ACT_MAX, presence: state.presence, presenceMax: PRESENCE_MAX, tocInterface: cfg.tocInterface || P.TOC_INTERFACE });
+  } catch (e) {
+    log(`migrate: cannot create ${SIG.runtimeRoot(cfg.addonDir)} (${e.code || e.message}); run: node setup.js`);
+    return;
+  }
+  state.presence = r.presence.state;
+  saveState();
+  log(`migrate: created ${SIG.runtimeRoot(cfg.addonDir)} (${r.armed} signal file(s) armed); ${SIG.RESTART_NOTE}. The ${r.legacy} old folder(s) in ${path.join(cfg.addonDir, P.ADDON)} stay until setup or "npm run slots" removes them, because deleting them under a running game reads as every signal firing at once.`);
 }
 function preparePresence() {
   if (!presenceReady()) return;
@@ -1922,6 +1935,7 @@ if (inject !== null) {
     if (running.size === 0) { console.log('nothing pending'); process.exit(0); }
   } else {
     setInterval(pollSavedVariables, cfg.pollMs || 750);
+    migrateRuntime();
     if (Number.isFinite(state.lastId)) clearSignalsAhead(state.lastId);
     preparePresence();
     presenceBeat();

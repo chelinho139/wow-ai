@@ -4,6 +4,7 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { INERT_OPTIONS: INERT_STREAM } = require('../bridge/plugins/stream');
+const SIG = require('../bridge/signals');
 
 const REPO = path.resolve(__dirname, '..');
 const DEFAULT_ROOT = path.join(REPO, '.dev', 'sandboxes');
@@ -106,7 +107,7 @@ function buildConfig(L, opts = {}) {
   Object.assign(cfg, {
     addonDir: L.addons,
     savedVariablesFile: L.saved,
-    inboxFile: path.join(L.addons, 'ClaudeWoW', 'Inbox.lua'),
+    inboxFile: SIG.runtimeInbox(L.addons),
     defaultCwd: L.project,
     tocInterface: opts.tocInterface || CLIENT_INTERFACE,
     slots: opts.slots || 200,
@@ -127,11 +128,7 @@ function copyAddon(L) {
   const src = path.join(REPO, 'addon', 'ClaudeWoW');
   const dest = path.join(L.addons, 'ClaudeWoW');
   fs.mkdirSync(dest, { recursive: true });
-  for (const f of fs.readdirSync(src)) {
-    const target = path.join(dest, f);
-    if (f === 'Inbox.lua' && fs.existsSync(target)) continue;
-    fs.copyFileSync(path.join(src, f), target);
-  }
+  for (const f of fs.readdirSync(src)) fs.copyFileSync(path.join(src, f), path.join(dest, f));
 }
 
 function installAddon(L, env) {
@@ -185,7 +182,7 @@ function writeConfig(sb, patch) {
 }
 
 function signalFile(sb, kind, slot) {
-  return path.join(sb.addons, 'ClaudeWoW', kind, String(slot).padStart(3, '0') + '.wav');
+  return SIG.signalFile(sb.addons, kind, slot);
 }
 
 function spendSignals(sb, kinds, slots) {

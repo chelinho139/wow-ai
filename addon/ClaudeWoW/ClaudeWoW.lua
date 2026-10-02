@@ -32,7 +32,8 @@ local SLOT_COUNT = 200
 local SLOT_PREFIX = "ClaudeWoW_S"
 local ACT_MAX = 60 -- heartbeat files per message (act/NNN/01..60.wav)
 local PRESENCE_MAX = 2000
-local Presence = { RINGS = { "a", "b" }, STALL_SECONDS = 150 }
+local Presence = { RINGS = { "a", "b" }, STALL_SECONDS = 150, ROOT = "Interface\\AddOns\\ClaudeWoW_Runtime\\", LEGACY_ROOT = "Interface\\AddOns\\ClaudeWoW\\" }
+Presence.root = Presence.ROOT
 local STRIP_TRIES = 3 -- re-show an unacknowledged message this many times before falling back
 local CELL, CELLS_PER_ROW, MAX_ROWS = 4, 200, 48
 local STRIP_SECONDS = 40 -- max per message; it leaves the strip as soon as the bridge acknowledges
@@ -1183,7 +1184,7 @@ end
 
 local function CheckSignal(kind, id)
 	if run.signalUnreliable then return false end
-	return Presence.Fired(string.format("Interface\\AddOns\\ClaudeWoW\\%s\\%03d.wav", kind, SlotNumber(id)))
+	return Presence.Fired(string.format("%s%s\\%03d.wav", Presence.root, kind, SlotNumber(id)))
 end
 
 local function NoteStaleSignals(id)
@@ -1202,7 +1203,7 @@ local function FreshSignal(kind, id)
 end
 
 local function ActPath(id, k)
-	return string.format("Interface\\AddOns\\ClaudeWoW\\act\\%03d\\%02d.wav", SlotNumber(id), k)
+	return string.format("%sact\\%03d\\%02d.wav", Presence.root, SlotNumber(id), k)
 end
 
 local function StartActivity(chat, id)
@@ -1234,7 +1235,7 @@ local function NotedBridge(at)
 end
 
 local function PresencePath(ring, k)
-	return string.format("Interface\\AddOns\\ClaudeWoW\\presence\\%s\\%04d.wav", ring, k)
+	return string.format("%spresence\\%s\\%04d.wav", Presence.root, ring, k)
 end
 
 local function FindPresenceHead(ring)
@@ -1307,7 +1308,7 @@ function Presence.Check(info, bridgeNow)
 		p.staleRing[info.ring] = "the bridge is up but its beats stopped reaching this client"
 	end
 	if type(info.probe) == "string" and run.lateProbe and info.probe == run.lateProbe.token and run.lateProbe.result == nil then
-		run.lateProbe.result = SoundValid("Interface\\AddOns\\ClaudeWoW\\ctl\\probe-" .. info.probe .. ".wav") and "seen" or "unseen"
+		run.lateProbe.result = SoundValid(Presence.root .. "ctl\\probe-" .. info.probe .. ".wav") and "seen" or "unseen"
 	end
 end
 
@@ -1500,9 +1501,13 @@ local function SelfTestSignals()
 		signalStats.selftest = "PlaySoundFile missing"
 		return
 	end
-	-- ctl/absent.wav is never created by setup; it must read as unplayable.
-	local missingLooksValid = SoundValid("Interface\\AddOns\\ClaudeWoW\\ctl\\absent.wav")
-	local validLooksValid = SoundValid("Interface\\AddOns\\ClaudeWoW\\ctl\\valid.wav")
+	Presence.root = Presence.ROOT
+	local missingLooksValid = SoundValid(Presence.ROOT .. "ctl\\absent.wav")
+	local validLooksValid = SoundValid(Presence.ROOT .. "ctl\\valid.wav")
+	if not missingLooksValid and not validLooksValid and SoundValid(Presence.LEGACY_ROOT .. "ctl\\valid.wav") then
+		Presence.root = Presence.LEGACY_ROOT
+		validLooksValid = true
+	end
 	if missingLooksValid then
 		signalAvailable = false
 		signalStats.selftest = "a missing file reports as playable"
@@ -7439,7 +7444,7 @@ RunCommand = function(cmd, rest)
 			if not C_AddOns.IsAddOnLoaded(SlotName(i)) then free = free + 1 end
 		end
 		local lines = {
-			"sound channel: " .. (signalAvailable and "usable" or "UNUSABLE") .. " (self-test: " .. tostring(signalStats.selftest) .. ")" .. (signalStats.error and (" error: " .. signalStats.error) or ""),
+			"sound channel: " .. (signalAvailable and "usable" or "UNUSABLE") .. " (self-test: " .. tostring(signalStats.selftest) .. ", files: " .. Presence.root .. ")" .. (signalStats.error and (" error: " .. signalStats.error) or ""),
 			"signal setting: " .. tostring(s.signal) .. ", marked unreliable this session: " .. tostring(run.signalUnreliable or false),
 			"sound checks: " .. signalStats.checks .. ", valid hits: " .. signalStats.hits .. (signalStats.lastHit and (", last hit " .. FmtDur(GetTime() - signalStats.lastHit) .. " ago") or ""),
 			"slot polls this session: " .. (run.polls or 0) .. ", free slots: " .. free .. "/" .. SLOT_COUNT,

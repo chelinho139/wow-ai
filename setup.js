@@ -28,6 +28,7 @@ const R = require('./bridge/runtime');  // node, bun, or the compiled binary
 const A = require('./bridge/agents');   // which agent CLIs this PC has
 const AS = require('./bridge/assets');  // the addon, the config template and the capture scripts, by path
 const G = require('./bridge/gamefs');
+const SIG = require('./bridge/signals');
 const ADDON_SRC = AS.dir('addon/' + P.ADDON);
 const EXAMPLE = AS.file('bridge/config.example.json');
 let CONFIG = H.resolve().config; // settled in main(), after the legacy layout has been migrated
@@ -165,9 +166,7 @@ function copyAddon(client) {
   G.mkdir(dest);
   let copied = 0;
   for (const f of fs.readdirSync(ADDON_SRC)) {
-    const target = path.join(dest, f);
-    if (f === 'Inbox.lua' && fs.existsSync(target)) continue; // the bridge owns it once running
-    G.copyFile(path.join(ADDON_SRC, f), target);
+    G.copyFile(path.join(ADDON_SRC, f), path.join(dest, f));
     copied++;
   }
   return { dest, copied };
@@ -178,8 +177,8 @@ function copyAddon(client) {
 // to the codex and grok blocks from the example. Everything else is kept.
 function upgradeConfig(cfg, example) {
   const notes = [];
-  if (P.OLD_ADDON_PATH.test(cfg.inboxFile || '')) {
-    cfg.inboxFile = path.join(cfg.addonDir, P.ADDON, 'Inbox.lua');
+  if (P.OLD_ADDON_PATH.test(cfg.inboxFile || '') || P.SHIPPED_INBOX_PATH.test(cfg.inboxFile || '')) {
+    cfg.inboxFile = SIG.runtimeInbox(cfg.addonDir);
     notes.push('inboxFile');
   }
   if (P.OLD_SAVED_FILE.test(cfg.savedVariablesFile || '')) {
@@ -219,7 +218,7 @@ function processNameFor(client) {
 
 function pointAtClient(cfg, client, account) {
   cfg.addonDir = path.join(client, 'Interface', 'AddOns');
-  cfg.inboxFile = path.join(cfg.addonDir, P.ADDON, 'Inbox.lua');
+  cfg.inboxFile = SIG.runtimeInbox(cfg.addonDir);
   cfg.savedVariablesFile = path.join(client, 'WTF', 'Account', account, 'SavedVariables', P.ADDON + '.lua');
   const processName = processNameFor(client);
   if (processName) cfg.capture = { ...(cfg.capture || {}), processName };
@@ -376,8 +375,10 @@ try {
   pythonReport(cfg, transport);
   macCaptureReport(cfg, transport);
   console.log('slots    : building the reply-slot pool and signal files...');
+  const movesSignals = SIG.legacySignalFolders(cfg.addonDir).length > 0;
   const r = spawnSync(...R.scriptCommand('install-slots'), { stdio: 'inherit' });
   if (r.status !== 0) throw new Error('install-slots.js failed');
+  if (movesSignals) warn(SIG.RESTART_NOTE, 'A /reload is not enough: the game only sees files that existed when it started.');
   if (warnings.length) {
     console.log(`\n${warnings.length} warning(s) to deal with first:`);
     for (const w of warnings) console.log(`  - ${w}`);

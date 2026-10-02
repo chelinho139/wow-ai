@@ -151,14 +151,14 @@ test('the bridge on SIGTERM ends a running agent that ignores SIGTERM, and that 
   const home = path.join(dir, 'home');
   const addons = path.join(dir, 'client', 'Interface', 'AddOns');
   const project = path.join(dir, 'project');
-  for (const d of ['sig', 'ack', 'act', 'presence']) fs.mkdirSync(path.join(addons, 'ClaudeWoW', d), { recursive: true });
+  for (const d of ['sig', 'ack', 'act', 'presence']) fs.mkdirSync(path.join(addons, 'ClaudeWoW_Runtime', d), { recursive: true });
   fs.mkdirSync(project, { recursive: true });
   fs.mkdirSync(home, { recursive: true });
   const pidsFile = path.join(dir, 'pids.json');
   const agent = path.join(dir, 'stubborn-claude.js');
   fs.writeFileSync(agent, stubborn(pidsFile));
   fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({
-    addonDir: addons, savedVariablesFile: path.join(dir, 'ClaudeWoW.lua'), inboxFile: path.join(addons, 'ClaudeWoW', 'Inbox.lua'),
+    addonDir: addons, savedVariablesFile: path.join(dir, 'ClaudeWoW.lua'), inboxFile: path.join(addons, 'ClaudeWoW_Runtime', 'Inbox.lua'),
     defaultCwd: project, slots: 1, agent: 'claude', agents: { claude: { path: agent } }, plugins: { default: 'claude-code' },
     gameContext: false, primerFile: '', capture: { enabled: false }, killGraceMs: 500, timeoutMs: 600000,
   }));
@@ -184,7 +184,7 @@ test('the bridge on SIGTERM ends a running agent that ignores SIGTERM, and that 
   assert.match(out, new RegExp(`pid ${pids.pid} ignored SIGTERM for 500 ms; SIGKILL to its process group`), out);
   // The run's own 'close' handler had its turn before the exit: the chat was told.
   assert.match(out, /#1 error \(94 chars, no summary\)/, out);
-  assert.match(fs.readFileSync(path.join(addons, 'ClaudeWoW', 'Inbox.lua'), 'utf8'), /status = "error",\n\t\t\ttext = "The bridge was stopped while Claude was still working\. Send the message again once it is back\.",/);
+  assert.match(fs.readFileSync(path.join(addons, 'ClaudeWoW_Runtime', 'Inbox.lua'), 'utf8'), /status = "error",\n\t\t\ttext = "The bridge was stopped while Claude was still working\. Send the message again once it is back\.",/);
   assert.ok(await until(() => !pidAlive(pids.pid)), 'the agent is dead');
   assert.ok(await until(() => !pidAlive(pids.gpid)), 'and so is its child');
   fs.rmSync(dir, { recursive: true, force: true });

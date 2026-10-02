@@ -187,7 +187,12 @@ function T.Missing()
 			local names = type(name) == "table" and name or { name }
 			local found = false
 			for _, n in ipairs(names) do
-				if type(Lookup(n)) == "function" then found = true end
+				local together = type(n) == "table" and n or { n }
+				local all = #together > 0
+				for _, part in ipairs(together) do
+					if type(Lookup(part)) ~= "function" then all = false end
+				end
+				if all then found = true end
 			end
 			if not found then out[#out + 1] = names[1] end
 		end

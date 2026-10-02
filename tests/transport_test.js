@@ -31,7 +31,8 @@ function fakeInstall(dir, capture = {}) {
   const client = path.join(dir, 'client');
   const addons = path.join(client, 'Interface', 'AddOns');
   const project = path.join(dir, 'project');
-  for (const d of ['sig', 'ack', 'act', 'presence']) fs.mkdirSync(path.join(addons, 'ClaudeWoW', d), { recursive: true });
+  for (const d of ['sig', 'ack', 'act', 'presence']) fs.mkdirSync(path.join(addons, 'ClaudeWoW_Runtime', d), { recursive: true });
+  fs.mkdirSync(path.join(addons, 'ClaudeWoW'), { recursive: true });
   fs.writeFileSync(path.join(addons, 'ClaudeWoW', 'ClaudeWoW.toc'), '## Interface: 16001\n');
   fs.mkdirSync(path.join(addons, 'ClaudeWoW_S001'), { recursive: true });
   fs.writeFileSync(path.join(addons, 'ClaudeWoW_S001', 'Inbox.lua'), 'ClaudeWoW_SlotData = nil\n');
@@ -45,7 +46,7 @@ function fakeInstall(dir, capture = {}) {
   const cfg = {
     addonDir: addons,
     savedVariablesFile: path.join(savedDir, 'ClaudeWoW.lua'),
-    inboxFile: path.join(addons, 'ClaudeWoW', 'Inbox.lua'),
+    inboxFile: path.join(addons, 'ClaudeWoW_Runtime', 'Inbox.lua'),
     defaultCwd: project, slots: 1, agent: 'claude', agents: { claude: { path: agent } },
     plugins: { default: 'claude-code' }, gameContext: false, primerFile: '',
     capture: { enabled: true, ...capture },
@@ -90,7 +91,7 @@ test('a new install starts on the screenshot transport; the addon reporting shot
   assert.equal(state.transportFallback.session, 'sess1');
   assert.ok(Date.now() - state.transportFallback.at < 60000);
   // The slot files and Inbox.lua say pixel, with the note the addon shows in /claude-wow diag.
-  for (const f of [path.join(addons, 'ClaudeWoW_S001', 'Inbox.lua'), path.join(addons, 'ClaudeWoW', 'Inbox.lua')]) {
+  for (const f of [path.join(addons, 'ClaudeWoW_S001', 'Inbox.lua'), path.join(addons, 'ClaudeWoW_Runtime', 'Inbox.lua')]) {
     const lua = fs.readFileSync(f, 'utf8');
     assert.match(lua, /^\ttransport = "pixel",$/m, f);
     assert.match(lua, /^\ttransportNote = "pixel transport, fallen back to since \d{4}-\d\d-\d\d \d\d:\d\d UTC because the game client has no Screenshot\(\) function; the pixel capture is deprecated: set capture\.mode in config\.json to \\"pixel\\" to keep it without this note, or to \\"screenshot\\" to try the screenshot transport again",$/m, f);

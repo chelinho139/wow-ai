@@ -1,11 +1,12 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
+const { ADDON, RUNTIME_ADDON } = require('./protocol');
 
 const GAME_MODE = 0o777;
 const PERMISSION_BITS = 0o777;
 const WORLD_WRITABLE = 0o002;
-const ADDON_FOLDER = /^ClaudeWoW(_S\d{3})?$/;
+const ADDON_FOLDER = new RegExp(`^(${ADDON}(_S\\d{3})?|${RUNTIME_ADDON})$`);
 
 const matchesGame = (platform = process.platform) => platform !== 'win32';
 

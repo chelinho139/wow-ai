@@ -98,7 +98,7 @@ fs.writeFileSync(path.join(ADDONS, 'ClaudeWoW', 'ClaudeWoW.toc'), '## Interface:
 
 const cfg = JSON.parse(fs.readFileSync(path.join(SRC, 'config.example.json'), 'utf8'));
 cfg.addonDir = ADDONS;
-cfg.inboxFile = path.join(ADDONS, 'ClaudeWoW', 'Inbox.lua');
+cfg.inboxFile = path.join(ADDONS, 'ClaudeWoW_Runtime', 'Inbox.lua');
 cfg.savedVariablesFile = SAVED;
 cfg.defaultCwd = PROJ;
 cfg.capture = { ...cfg.capture, enabled: false, screenshotDir: path.join(S, 'wow', 'Screenshots') };

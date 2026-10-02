@@ -212,6 +212,17 @@ class WowClient {
     return m ? m[1].split(',').map(s => s.trim()).filter(Boolean) : [];
   }
 
+  startupAddons() {
+    const loadOnDemand = /^##\s*LoadOnDemand:\s*1\s*$/m;
+    return this.indexed.filter(name => name !== MAIN_ADDON).sort().filter(name => {
+      try {
+        return !loadOnDemand.test(fs.readFileSync(path.join(this.clientRoot, 'Interface', 'AddOns', name, name + '.toc'), 'utf8'));
+      } catch {
+        return false;
+      }
+    });
+  }
+
   boot() {
     this.L = this.newState();
     this.sessions += 1;
@@ -232,6 +243,7 @@ class WowClient {
       for _, f in ipairs(files) do DEV.RunAddonFile("${MAIN_ADDON}", f) end
       DEV.loaded["${MAIN_ADDON}"] = true
     `, '@boot');
+    for (const name of this.startupAddons()) this.runLua(`DEV.LoadAddOn(${luaQuote(name)})`, '@boot-' + name);
     if (fs.existsSync(this.sb.saved)) this.runLua(fs.readFileSync(this.sb.saved), '@SavedVariables');
     this.runLua(`DEV.Fire("ADDON_LOADED", "${MAIN_ADDON}")`);
     this.runLua('DEV.Fire("PLAYER_LOGIN")');

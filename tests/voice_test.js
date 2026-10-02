@@ -13,7 +13,7 @@ const EVENTS = ['sent', 'started', 'done', 'error', 'permission'];
 
 const VOICE_STUB = `
 VOICE = { played = {}, stopped = {}, race = "NightElf", sex = 3 }
-STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW\\\\ctl\\\\valid.wav"] = true
+STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW_Runtime\\\\ctl\\\\valid.wav"] = true
 STUB.armed = true
 local playSignalFile = PlaySoundFile
 PlaySoundFile = function(file, channel)
@@ -174,7 +174,7 @@ test('the bridge picking a message up plays the started line once the sent line 
   vm.run('ClaudeWoW.Send("fix the bug")');
   const id = vm.num('ClaudeWoWDB.chats[1].pendingId');
   const slot = String(id).padStart(3, '0');
-  vm.run(`STUB.now = STUB.now + 3; STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW\\\\ack\\\\${slot}.wav"] = false; STUB.Tick()`);
+  vm.run(`STUB.now = STUB.now + 3; STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW_Runtime\\\\ack\\\\${slot}.wav"] = false; STUB.Tick()`);
   const ids = played(vm);
   assert.equal(ids.length, 2);
   assert.ok(lineIds(vm, 'ClaudeWoWVoice.UNIT_PACK_LINES', 'peasant', 'yes').includes(ids[0]));
