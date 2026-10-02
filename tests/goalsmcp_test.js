@@ -54,6 +54,15 @@ test('in-game runs get goals, orders, campaigns and routes, never the vote tools
   assert.ok(GM.deniedBy(['Read(//h/.claude-wow/**)'], 'Read(//h/.claude-wow/**)'));
   assert.ok(!GM.deniedBy(['Read(//h/.claude-wow/**)'], 'Read(//h/.claude-wowx/a)'));
   assert.ok(!GM.deniedBy(['Read(//h/.claude-wow/**)'], 'Edit(//h/.claude-wow/a)'));
+  const winDeny = ['Read(//c/Users/RUNNER~1/AppData/Local/Temp/cw/home/**)'];
+  for (const rule of ['Read(C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\cw\\home/state.json)', 'Read(//c/users/runner~1/appdata/local/temp/cw/home/live.token)', 'Read(c:/Users//RUNNER~1/AppData/Local/Temp/cw/home\\tmp\\mcp\\x.json)', 'Read(//c/Users/RUNNER~1/AppData/Local/Temp/cw/home)']) assert.ok(GM.deniedBy(winDeny, rule, 'win32'), rule);
+  assert.ok(GM.deniedBy(['Read(C:\\Users\\me\\home\\**)'], 'Read(//c/Users/me/home/a.json)', 'win32'), 'a backslash deny rule matches a forward-slash read');
+  assert.ok(!GM.deniedBy(winDeny, 'Read(//c/Users/RUNNER~1/AppData/Local/Temp/cw/home2/state.json)', 'win32'), 'home2 is not home');
+  assert.ok(!GM.deniedBy(winDeny, 'Read(//d/Users/RUNNER~1/AppData/Local/Temp/cw/home/a)', 'win32'), 'another drive is another path');
+  assert.ok(!GM.deniedBy(['Read(//h/home/**)'], 'Read(//h/HOME/a)', 'darwin'), 'case counts off Windows');
+  assert.ok(!GM.deniedBy(['Read(//h/home/**)'], 'Read(//h/home2/a)', 'linux'));
+  assert.ok(GM.deniedBy(['Read(//h/home/**)'], 'Read(/h//home/a)', 'linux'), 'duplicate separators collapse');
+  assert.equal(P.absolutePathRule('Read', 'C:\\Users\\RUNNER~1\\home\\**'), 'Read(//c/Users/RUNNER~1/home/**)', 'the drive letter is kept');
   assert.deepEqual([...GM.DENIED_WITHOUT_TOOLS], ['mcp__wowgoals']);
   assert.match(GM.INSTRUCTIONS, /\{item:ID\}, \{skill:ID\}, \{map:ID,x,y\}/);
 });

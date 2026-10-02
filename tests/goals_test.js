@@ -707,7 +707,7 @@ test('in-game ask runs without the live socket: the channel goal tools and wowgo
   const dir = tmpDir('askrun');
   try {
     const { home, addons, saved, argvFile } = fakeInstall(dir);
-    const allow = ['mcp__claude-wow__order_issue', 'mcp__wowgoals__order_issue', 'mcp__wowgoals', 'WebFetch', 'mcp__wowgoals__*', 'mcp__wowgoals__goal_set(*)', 'mcp__wowgoals*', ' mcp__wowgoals__new_tool', 'Grep', 'Read(//' + home.slice(1) + '/state.json)', 'LS'].join('\x1F');
+    const allow = ['mcp__claude-wow__order_issue', 'mcp__wowgoals__order_issue', 'mcp__wowgoals', 'WebFetch', 'mcp__wowgoals__*', 'mcp__wowgoals__goal_set(*)', 'mcp__wowgoals*', ' mcp__wowgoals__new_tool', 'Grep', 'Read(' + home + '/state.json)', P.absolutePathRule('Read', path.join(home, 'state.json')), 'LS'].join('\x1F');
     const allowOnce = ['mcp__claude-wow__goal_set', 'mcp__wowgoals__goal_set', 'mcp__wowgoals__narrate(x)', 'Glob', 'TodoWrite'].join('\x1F');
     fs.writeFileSync(saved, `ClaudeWoWDB = {\n["outbox"] = {\n["id"] = 7,\n["session"] = "sess1",\n["chat"] = "chat1",\n["text"] = "${hex('set my order')}",\n["cwd"] = "",\n["plugin"] = "ask",\n["allow"] = "${hex(allow)}",\n["allowOnce"] = "${hex(allowOnce)}",\n["t"] = 1,\n},\n}\n`);
     const r = spawnSync(process.execPath, [BRIDGE, '--once'], { encoding: 'utf8', env: { ...process.env, CLAUDE_WOW_HOME: home }, timeout: 60000 });

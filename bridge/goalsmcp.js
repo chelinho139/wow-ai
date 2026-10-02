@@ -51,14 +51,29 @@ function isRunToolRule(rule) {
 }
 
 const RULE_RE = /^([^()]+)\((.*)\)$/;
-function deniedBy(denied, rule) {
+const DRIVE_RE = /^([A-Za-z]):(?:\/|$)/;
+
+function canonicalPath(raw, platform) {
+  let p = String(raw || '').trim().replace(/\\/g, '/').replace(/^\/+/, '');
+  const drive = DRIVE_RE.exec(p);
+  if (drive) p = `${drive[1]}/${p.slice(drive[0].length)}`;
+  p = p.replace(/\/{2,}/g, '/');
+  return platform === 'win32' ? p.toLowerCase() : p;
+}
+
+function deniedBy(denied, rule, platform = process.platform) {
   const r = String(rule || '').trim();
   const tool = r.split('(')[0];
   const ruleArg = RULE_RE.exec(r);
   return (denied || []).some(d => {
     if (d === r || d === tool) return true;
     const m = RULE_RE.exec(String(d));
-    return !!(m && ruleArg && m[1] === ruleArg[1] && m[2].endsWith('/**') && ruleArg[2].startsWith(m[2].slice(0, -2)));
+    if (!m || !ruleArg || m[1].trim() !== ruleArg[1].trim()) return false;
+    const deniedPath = canonicalPath(m[2], platform);
+    if (!deniedPath.endsWith('/**')) return false;
+    const dir = deniedPath.slice(0, -2);
+    const target = canonicalPath(ruleArg[2], platform);
+    return target === dir.slice(0, -1) || `${target}/`.startsWith(dir);
   });
 }
 
