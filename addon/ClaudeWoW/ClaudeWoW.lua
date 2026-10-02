@@ -4106,7 +4106,11 @@ local function GetBubble(i)
 	-- FontStrings can't be selected, so a click opens the message in the copy box.
 	b:EnableMouse(true)
 	b:SetScript("OnMouseUp", function(self, button)
-		if button == "LeftButton" and self.text and self.text ~= "" then ClaudeWoW.ShowCopy(self.text) end
+		if button ~= "LeftButton" or not self.text or self.text == "" then return end
+		local clickedAt = GetTime()
+		C_Timer.After(0, function()
+			if self.linkClickAt ~= clickedAt then ClaudeWoW.ShowCopy(self.text) end
+		end)
 	end)
 	ui.bubbles[i] = b
 	return b
@@ -4854,6 +4858,7 @@ Q.linkEvents:SetScript("OnEvent", function()
 end)
 
 function Q.LinkClick(self, link, text, button)
+	self.linkClickAt = GetTime()
 	if type(SetItemRef) == "function" then SetItemRef(link, text, button, self) end
 end
 

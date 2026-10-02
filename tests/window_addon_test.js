@@ -390,6 +390,27 @@ test('a reply names items and spells by token: the client turns each into a real
   assert.equal(vm.evaluate(`${b}.scripts.OnHyperlinkClick ~= nil`), 'true', 'the bubble handles link clicks');
 });
 
+test('clicking a link in a reply opens the link, not the copy box; clicking the text around it still opens the copy box', () => {
+  const vm = nativeVM();
+  vm.run(`
+    STUB.copies, STUB.refs = 0, {}
+    ClaudeWoW.ShowCopy = function(text) STUB.copies = STUB.copies + 1 end
+    SetItemRef = function(link) table.insert(STUB.refs, link) end
+    local c = ClaudeWoWDB.chats[1]
+    ClaudeWoW.SwitchChat(c.id)
+    c.history = { { role = "assistant", t = 1, text = "turn in |cffffff00|Hquest:361:5|h[A Letter Undelivered]|h|r" } }
+    ClaudeWoW.Render()
+    STUB.bubble = (function() for _, b in ipairs(ClaudeWoW.UI.bubbles) do if b.shown then return b end end end)()
+    STUB.bubble.scripts.OnHyperlinkClick(STUB.bubble, "quest:361:5", "[A Letter Undelivered]", "LeftButton")
+    STUB.bubble.scripts.OnMouseUp(STUB.bubble, "LeftButton")
+    STUB.RunTimers()
+  `);
+  assert.equal(vm.evaluate('STUB.refs[1]'), 'quest:361:5', 'the link goes to the game');
+  assert.equal(vm.num('STUB.copies'), 0, 'the same click does not open the copy box');
+  vm.run('STUB.now = STUB.now + 1; STUB.bubble.scripts.OnMouseUp(STUB.bubble, "LeftButton"); STUB.RunTimers()');
+  assert.equal(vm.num('STUB.copies'), 1, 'a click on plain text still opens the copy box');
+});
+
 test('the chat list orders by last activity: the open empty chat, then chats by their last message, then other empty chats', () => {
   const vm = nativeVM();
   vm.run(`
