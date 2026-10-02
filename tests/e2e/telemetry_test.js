@@ -31,17 +31,23 @@ const slotOfId = n => ((n - 1) % SLOTS) + 1;
 function addonRecordTracker(h) {
   let unsettled = new Set();
   let trackedTo = 0;
-  let logMark = 0;
   const catchUp = () => {
     for (let id = trackedTo + 1; id <= h.client.lastSeq(); id++) unsettled.add(id);
     trackedTo = Math.max(trackedTo, h.client.lastSeq());
   };
   return {
     unsettled: () => { catchUp(); return [...unsettled]; },
-    logMark: () => logMark,
-    settled: ids => { for (const id of ids) unsettled.delete(id); logMark = h.bridge.output.length; },
+    settled: ids => { for (const id of ids) unsettled.delete(id); },
     skipTo: lastSeq => { catchUp(); trackedTo = lastSeq; },
   };
+}
+
+function messageIds(h) {
+  const ids = new Set();
+  for (const chat of h.client.db().chats || []) {
+    for (const m of chat.history || []) if (m.role === 'user' && Number.isInteger(m.id)) ids.add(m.id);
+  }
+  return ids;
 }
 
 async function settleAddonRecords(h, tracker) {
@@ -50,10 +56,10 @@ async function settleAddonRecords(h, tracker) {
     const acks = spentSlots(h.sb, 'ack');
     const sigs = spentSlots(h.sb, 'sig');
     const pending = tracker.unsettled();
-    const newHellos = (h.bridge.output.slice(tracker.logMark()).match(/hello from session /g) || []).length;
-    const unanswered = pending.filter(id => !sigs.includes(slotOfId(id)));
-    return pending.every(id => acks.includes(slotOfId(id))) && unanswered.length <= newHellos ? pending : null;
-  }, { timeoutMs: 30000, label: 'the bridge to ack every record the addon sent, its hello included, and to answer every one but the hellos' });
+    const messages = messageIds(h);
+    const unanswered = pending.filter(id => messages.has(id) && !sigs.includes(slotOfId(id)));
+    return pending.every(id => acks.includes(slotOfId(id))) && unanswered.length === 0 ? pending : null;
+  }, { timeoutMs: 30000, label: 'the bridge to ack every record the addon sent and to answer every message among them' });
   tracker.settled(ids);
 }
 
@@ -119,13 +125,14 @@ test('300 gs records whose seqs overlap the message ids spend no ack or sig file
     assert.match(first.text, /before the telemetry/);
     await h.bridge.waitForLine(/game context updated: Character: Testchar/);
     const tracker = addonRecordTracker(h);
+    const issuedFrom = h.client.lastSeq() + 1;
+    const logFrom = h.bridge.output.length;
     await settleAddonRecords(h, tracker);
+    h.client.runLua('ClaudeWoW.Connect()');
     const session = h.client.db().session;
     const ackBefore = spentSlots(h.sb, 'ack');
     const sigBefore = spentSlots(h.sb, 'sig');
     const lastIdBefore = h.state().lastId;
-    const issuedFrom = h.client.lastSeq() + 1;
-    const logFrom = h.bridge.output.length;
     assert.ok(lastIdBefore < RECORDS, `message ids (${lastIdBefore}) sit inside the gs seq range, the case a shared id space would break`);
 
     const seqs = Array.from({ length: RECORDS }, (_, i) => i + 1);
