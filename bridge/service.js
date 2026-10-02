@@ -509,6 +509,10 @@ function backend(platform = process.platform) {
   return platform === 'darwin' ? mac : platform === 'win32' ? win : linux;
 }
 
+function readState(file) {
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return {}; }
+}
+
 function status(d, platform = process.platform, out = console.log) {
   const b = backend(platform);
   const installed = fs.existsSync(d.definition);
@@ -527,6 +531,7 @@ function status(d, platform = process.platform, out = console.log) {
   } else {
     out('  running   : no');
   }
+  out(`  versions  : ${P.versionsSummary(readState(d.state || H.resolve().state))}; this install is bridge ${P.bridgeVersion()} (protocol ${P.PROTO_MIN === P.PROTO_MAX ? P.PROTO_MIN : P.PROTO_MIN + ' to ' + P.PROTO_MAX})`);
   const log = fs.existsSync(serviceLogFile(d)) ? serviceLogFile(d) : H.resolve().log;
   out(`  log       : ${log}  (rotates at 5 MB, 5 kept)`);
   const tail = lastLines(log, 5);

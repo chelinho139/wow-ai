@@ -244,6 +244,7 @@ class WowClient {
       DEV.loaded["${MAIN_ADDON}"] = true
     `, '@boot');
     for (const name of this.startupAddons()) this.runLua(`DEV.LoadAddOn(${luaQuote(name)})`, '@boot-' + name);
+    if (o.afterAddonLoad) this.runLua(o.afterAddonLoad, '@afterAddonLoad');
     if (fs.existsSync(this.sb.saved)) this.runLua(fs.readFileSync(this.sb.saved), '@SavedVariables');
     this.runLua(`DEV.Fire("ADDON_LOADED", "${MAIN_ADDON}")`);
     this.runLua('DEV.Fire("PLAYER_LOGIN")');

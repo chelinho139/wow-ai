@@ -315,6 +315,10 @@ C_AddOns = {
 		if STUB.onLoadAddOn then STUB.onLoadAddOn(name) end
 		return true
 	end,
+	GetAddOnMetadata = function(name, key)
+		local meta = STUB.addonMeta and STUB.addonMeta[name]
+		return meta and meta[key] or nil
+	end,
 }
 C_Texture = { GetAtlasExists = function() return true end }
 function PlaySound() end

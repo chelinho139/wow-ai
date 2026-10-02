@@ -85,7 +85,7 @@ function stripRecords(vm, threshold) {
 }
 
 // Make the next LoadAddOn deliver this slot data (a Lua table literal body).
-const flagsOf = r => r.flags.split(';').filter(t => !/^(probe|pt|lc)=/.test(t)).join(';');
+const flagsOf = r => r.flags.split(';').filter(t => !/^(probe|pt|lc|ver|proto)=/.test(t)).join(';');
 
 function nextSlot(vm, luaBody) {
   vm.run(`STUB.onLoadAddOn = function(name) ClaudeWoW_SlotData = ${luaBody} end`);
@@ -137,7 +137,7 @@ test('hello goes out on the strip after login', () => {
   vm.run('STUB.RunTimers()'); // C_Timer.After(3, SayHello)
   const recs = stripRecords(vm);
   assert.equal(recs.length, 1);
-  assert.equal(recs[0].flags, 'h;c', 'a hello always carries the game context');
+  assert.equal(recs[0].flags, 'h;ver=0.4.0;proto=1;c', 'a hello carries the addon version, its protocol and the game context');
   assert.equal(recs[0].text, '');
   assert.equal(recs[0].session, vm.evaluate('ClaudeWoWDB.session'));
 });
@@ -185,13 +185,13 @@ test('the game context describes the character and rides on the hello, then only
   // Turning it off sends an empty context at once (a hello), so the bridge drops what it had.
   vm.run('SlashCmdList.CLAUDE("config context off")');
   assert.equal(vm.evaluate('ClaudeWoWDB.settings.context'), 'false');
-  const off = stripRecords(vm).filter(r => r.flags === 'h;c');
+  const off = stripRecords(vm).filter(r => flagsOf(r) === 'h;c');
   assert.equal(off.length, 1);
   assert.equal(off[0].ctx, '');
   assert.ok(vm.evaluate('ClaudeWoWDB.chats[2].history[#ClaudeWoWDB.chats[2].history].text').includes('Game context is OFF'));
   // Back on: another hello, with the context again.
   vm.run('SlashCmdList.CLAUDE("config context on")');
-  const on = stripRecords(vm).filter(r => r.flags === 'h;c');
+  const on = stripRecords(vm).filter(r => flagsOf(r) === 'h;c');
   assert.ok(on.some(r => r.ctx.includes('Character: Testchar')));
   assert.ok(vm.evaluate('ClaudeWoWDB.chats[2].history[#ClaudeWoWDB.chats[2].history].text').includes('Game context is ON'));
 });
@@ -402,7 +402,7 @@ test('until the bridge answers, Connect replaces Send and a message stays in the
   assert.equal(vm.evaluate('ClaudeWoWInput:GetText()'), 'fix the bug', 'message kept in the box');
   const hello = stripRecords(vm);
   assert.equal(hello.length, 1);
-  assert.equal(hello[0].flags, 'h;c', 'a hello went out instead');
+  assert.equal(flagsOf(hello[0]), 'h;c', 'a hello went out instead');
   assert.ok(texts().includes('Connecting...'));
   assert.ok(texts().includes('your message goes out as soon as it answers'));
   // No answer within CONNECT_WAIT: the attempt is reported as failed, Connect is back.
