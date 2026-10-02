@@ -29,6 +29,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Fixed
 
+- The Dungeon Master frame showed a blank parchment. Its text was drawn on the outer frame, and the parchment sits on a child frame, which the game always draws on top. The title, story and hint are now drawn on the parchment's own frame.
 - Classic Era: typing in the Claude input box raised a Lua error on every key ("attempt to index local 'scrollFrame' (a boolean value)"). The input passed its `OnTextChanged` and `OnUpdate` straight to Blizzard's `ScrollingEdit_OnTextChanged` / `ScrollingEdit_OnUpdate`, so the client's `userInput` flag arrived as their scroll frame argument. The input now hands them its own scroll frame.
 - Clicking an item, spell or quest link in a reply opened the copy box instead of the link, because the bubble's own click opens the copy box. A click on a link now goes to the game only; a click on the text around it still opens the copy box.
 - Dungeon Master: `/dm` with no campaign showed nothing. Its line went through `ClaudeWoW.Print`, which sends to the Claude whisper tab when one is open, so it landed in a tab the player was not looking at. `/dm` now always opens the same parchment frame: with no story it says "The Dungeon Master has no story for you yet." and one hint line, and with a campaign that waits for you it shows "Type /dm next to begin." `/dm` again hides it. `/dm next` replies and DM errors now go to the chat frame you typed in (the default chat frame when there is no edit box), never to the whisper tab.

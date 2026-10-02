@@ -341,6 +341,17 @@ test('dm frame: the explicit empty field hides it; a slot without the field (an 
   assert.equal(vm.evaluate('ClaudeWoWDMFrame.beatTitle.text'), 'The Dungeon Master has no story for you yet.');
 });
 
+test('the story text is drawn on the parchment frame itself, so the parchment never covers it', () => {
+  const vm = newVM();
+  nextSlot(vm, dmLua({ beat: BEAT1 }));
+  tick(vm);
+  assert.equal(shown(vm), true);
+  for (const part of ['beatTitle', 'body', 'hint']) {
+    assert.equal(vm.evaluate(`ClaudeWoWDMFrame.${part}:GetParent() == ClaudeWoWDMFrame.parchmentArea`), 'true', `${part} sits on the frame that holds the parchment, not under it`);
+  }
+  assert.equal(vm.evaluate('ClaudeWoWDMFrame.paper:GetParent() == ClaudeWoWDMFrame.parchmentArea'), 'true');
+});
+
 const WHISPER_SLOT = dm => `STUB.onLoadAddOn = function(name) ClaudeWoW_SlotData = { now = time(), cwd = "", agent = "claude", agents = { "claude" }, replies = {}, dm = ${dm} } end`;
 
 function dockedVM(dm) {
