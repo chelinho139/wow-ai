@@ -159,7 +159,7 @@ test('a healthy world: every check ok, exit code 0', () => {
   Doctor.main(['--json'], ctx.sys, l => json.push(l));
   const parsed = JSON.parse(json[0]);
   assert.equal(parsed.status, 'ok');
-  assert.equal(parsed.checks.length, 12);
+  assert.equal(parsed.checks.length, 13);
 });
 
 test('service: missing plist, missing node, unloaded job, dead child', () => {

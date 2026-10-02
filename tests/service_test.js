@@ -193,10 +193,11 @@ test('the environment baked into the service puts node on PATH and drops nothing
 test('status on a clean machine says not installed / not running and exits 3; help and bad input exit cleanly', () => {
   const lines = [];
   const dir = scratch('status');
-  const code = S.status({ run: dir, logs: dir, definition: path.join(dir, 'io.claudewow.bridge.plist') }, 'darwin', l => lines.push(l));
+  const code = S.status({ run: dir, logs: dir, definition: path.join(dir, 'io.claudewow.bridge.plist') }, 'darwin', l => lines.push(l), path.join(dir, 'state.json'));
   assert.equal(code, 3);
   assert.match(lines.join('\n'), /installed : no/);
   assert.match(lines.join('\n'), /running   : no/);
+  assert.match(lines.join('\n'), /versions  : no hello with versions yet/);
   const out = [];
   assert.equal(S.main(['help'], { out: l => out.push(l), err: () => {} }), 0);
   assert.match(out.join('\n'), /install\s+Run the bridge in the background/);

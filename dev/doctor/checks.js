@@ -2,7 +2,7 @@
 const path = require('path');
 const Service = require('../../bridge/service');
 const Screens = require('../../bridge/screenshots');
-const { slotNumber, pad3, ADDON, RUNTIME_ADDON } = require('../../bridge/protocol');
+const { slotNumber, pad3, ADDON, RUNTIME_ADDON, latestAddonVersion, versionVerdict, versionsSummary, installedSummary } = require('../../bridge/protocol');
 const GameFs = require('../../bridge/gamefs');
 const SIG = require('../../bridge/signals');
 
@@ -581,6 +581,16 @@ function checkCost(ctx) {
   return finish('cost', 'Cost', summary, []);
 }
 
+function checkVersions(ctx) {
+  const latest = latestAddonVersion(ctx.state);
+  const issues = [];
+  if (latest) {
+    const v = versionVerdict(latest, { version: latest.bridge || '0.0.0', protoMin: latest.protoMin, protoMax: latest.protoMax });
+    if (v.refuse) issues.push(fail(v.text, 'The addon and the bridge speak different protocols, so the bridge answers every message with an error.', v.verdict === 'update-addon' ? 'Update the addon, then restart WoW.' : 'Update the bridge, then run "claude-wow service restart".'));
+  }
+  return finish('versions', 'Versions', `${versionsSummary(ctx.state)}; ${installedSummary()}`, issues);
+}
+
 function allowsEdits(agentConfig) {
   if (EDITING_PERMISSION_MODES.includes(agentConfig.permissionMode)) return true;
   return (agentConfig.allowedTools || []).some(t => EDITING_TOOLS.test(t));
@@ -635,7 +645,7 @@ function checkCi(ctx) {
   return finish('ci', 'CI', `${repo.branch} latest run ${state} on ${String(latest.headSha).slice(0, 7)} (HEAD ${shortHead})`, issues);
 }
 
-const CHECKS = [checkService, checkDrift, checkLogs, checkSignals, checkPresence, checkInterface, checkPermissions, checkDisk, checkData, checkCost, checkConfig, checkCi];
+const CHECKS = [checkService, checkDrift, checkLogs, checkSignals, checkPresence, checkInterface, checkVersions, checkPermissions, checkDisk, checkData, checkCost, checkConfig, checkCi];
 
 function runChecks(ctx, checks = CHECKS) {
   return checks.map(check => {
@@ -647,6 +657,6 @@ function runChecks(ctx, checks = CHECKS) {
 
 module.exports = {
   CHECKS, LIMITS, TROUBLE_PATTERN,
-  runChecks, checkService, checkDrift, checkLogs, checkSignals, checkPresence, checkInterface, checkPermissions, checkDisk, checkData, checkCost, checkConfig, checkCi,
+  runChecks, checkService, checkDrift, checkLogs, checkSignals, checkPresence, checkInterface, checkVersions, checkPermissions, checkDisk, checkData, checkCost, checkConfig, checkCi,
   parseEtime, formatBytes, summarizeLog, parseLastSeq, slotsAhead, tocInterface, interfaceFromVersion, productForFlavor, parseBuildInfo, parseReflog, claudeProjectDir, allowsEdits,
 };

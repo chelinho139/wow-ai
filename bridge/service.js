@@ -509,7 +509,11 @@ function backend(platform = process.platform) {
   return platform === 'darwin' ? mac : platform === 'win32' ? win : linux;
 }
 
-function status(d, platform = process.platform, out = console.log) {
+function readState(file) {
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return {}; }
+}
+
+function status(d, platform = process.platform, out = console.log, stateFile = H.resolve().state) {
   const b = backend(platform);
   const installed = fs.existsSync(d.definition);
   const probe = installed ? b.probe(d) : { loaded: false, pid: 0, state: '' };
@@ -527,6 +531,7 @@ function status(d, platform = process.platform, out = console.log) {
   } else {
     out('  running   : no');
   }
+  out(`  versions  : ${P.versionsSummary(readState(stateFile))}; ${P.installedSummary()}`);
   const log = fs.existsSync(serviceLogFile(d)) ? serviceLogFile(d) : H.resolve().log;
   out(`  log       : ${log}  (rotates at 5 MB, 5 kept)`);
   const tail = lastLines(log, 5);
