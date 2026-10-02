@@ -186,7 +186,7 @@ test('systemPrompt always asks for the TL;DR block, and adds the game rules and 
   assert.ok(!P.systemPrompt('').includes('CLAUDE_WOW_MAP_FILE'), 'map hint only with the game context');
   assert.ok(s.includes('World of Warcraft: Forever is its own game'), 'a game chat is told Forever differs from the web databases');
   assert.ok(!P.systemPrompt('').includes('World of Warcraft: Forever is its own game'), 'and only a game chat');
-  assert.match(s, /an ID must come from a source that ties it to that exact thing: a "Linked from the game" entry in this chat \(item, spell or quest\), or a wowdata result whose name is the item you mean\. When several wowdata rows share that name, use a token only if the player's link or the situation picks out one of them; otherwise name it in plain words\./);
+  assert.match(s, /an ID must come from a source that ties it to that exact thing: a "Linked from the game" entry in this chat \(item, spell, quest, or a recipe shown as enchant, which is a spell ID\), or a wowdata result whose name is the item you mean\. When several wowdata rows share that name, use a token only if the player's link or the situation picks out one of them; otherwise name it in plain words\./);
   assert.match(s, /never pick one from a list of bare IDs/);
   assert.match(s, /Classic web databases describe it, but an item, spell or quest ID still comes only from the sources the link rule below names/);
   assert.doesNotMatch(s, /use the Classic ID|when you are sure of it|tokens are refused/);

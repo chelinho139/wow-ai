@@ -1120,14 +1120,12 @@ function liveStartCommand() {
 }
 
 function checkedReply(job, reply) {
-  if (!/\{[A-Za-z]+:\d/.test(reply.text + reply.summary)) return reply;
+  if (!/\{spell:\d/i.test(reply.text + reply.summary)) return reply;
   const chat = transcripts.chats[job.chat];
-  const linked = RT.linkedIds([job.text, ...(chat ? chat.messages.filter(m => m.role === 'user').map(m => m.text) : [])]);
-  let store = null;
-  try { store = GR.openFor(HOME.data, gameContext()); } catch (e) { log(`${tagOf(job)} reply tokens: game data unreadable (${e.message})`); }
-  const text = RT.checkReply(reply.text, { store, linked });
-  for (const line of RT.logLines(text)) log(`${tagOf(job)} ${line}`);
-  return { ...reply, text: text.text, summary: RT.checkReply(reply.summary, { store, linked }).text };
+  const linked = RT.linkedSpells([job.text, ...(chat ? chat.messages.filter(m => m.role === 'user').map(m => m.text) : [])]);
+  const text = RT.checkReply(reply.text, linked);
+  if (text.unverified.length) log(`${tagOf(job)} ${RT.logLine(text.unverified)}`);
+  return { ...reply, text: text.text, summary: RT.checkReply(reply.summary, linked).text };
 }
 
 function lateReply(job, raw) {

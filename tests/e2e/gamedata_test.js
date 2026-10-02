@@ -120,15 +120,11 @@ test('with no synced data, ask runs go without the server and the bridge says wh
   });
 });
 
-test('a reply keeps a spell token the player linked earlier in the chat, shows an unlinked one as plain text, and logs item IDs the data lacks', async () => {
-  const beforeLaunch = async sb => {
-    await D.sync({ dataDir: path.join(sb.home, 'data'), build: BUILD, fetch: fixtureFetch });
-  };
-  await withGame({ plugin: 'ask', beforeLaunch }, async h => {
+test('a reply keeps a spell token the player linked earlier in the chat and shows an unlinked one as plain text, with a log line', async () => {
+  await withGame({ plugin: 'ask' }, async h => {
     await h.client.say('is this good [Frostbolt]\n\n--- Linked from the game ---\n[Frostbolt] spell 116 [[reply ok]]');
-    const r = await h.client.say('and now [[reply cast {spell:116} not {spell:12294}, buy {item:501} not {item:999999}]]');
-    assert.equal(r.text, 'cast {spell:116} not spell 12294 (unverified), buy {item:501} not {item:999999}');
+    const r = await h.client.say('and now [[reply cast {spell:116} not {spell:12294}, buy {item:999999}]]');
+    assert.equal(r.text, 'cast {spell:116} not spell 12294 (unverified), buy {item:999999}');
     await h.bridge.waitForLine(/reply tokens: 1 spell token\(s\) not linked in this chat, shown as plain text: spell:12294$/m, { from: 0 });
-    await h.bridge.waitForLine(/reply tokens: 1 ID\(s\) the client will show gray: item:999999 \(not in the forever 1\.60\.1\.200 data\)/, { from: 0 });
   });
 });
