@@ -1775,6 +1775,77 @@ local function ImportRestore(r)
 	end
 end
 
+ClaudeWoW.Version = { PROTO = 1, SEMVER = "0.4.0", PATTERN = "^%d+%.%d+%.%d+[%w%.%-+]*$" }
+
+function ClaudeWoW.Version.Own()
+	local V = ClaudeWoW.Version
+	local read = C_AddOns and C_AddOns.GetAddOnMetadata
+	if type(read) == "function" then
+		local ok, v = pcall(read, "ClaudeWoW", "Version")
+		if ok and type(v) == "string" and #v <= 40 and v:match(V.PATTERN) then return v end
+	end
+	return V.SEMVER
+end
+
+function ClaudeWoW.Version.Compare(a, b)
+	local a1, a2, a3 = tostring(a):match("^(%d+)%.(%d+)%.(%d+)")
+	local b1, b2, b3 = tostring(b):match("^(%d+)%.(%d+)%.(%d+)")
+	if not a1 or not b1 then return nil end
+	local x = { tonumber(a1), tonumber(a2), tonumber(a3) }
+	local y = { tonumber(b1), tonumber(b2), tonumber(b3) }
+	for i = 1, 3 do
+		if x[i] ~= y[i] then return x[i] < y[i] and -1 or 1 end
+	end
+	return 0
+end
+
+function ClaudeWoW.Version.Verdict(b)
+	local V = ClaudeWoW.Version
+	local version = V.Own()
+	local range = b.protoMin == b.protoMax and tostring(b.protoMin) or (b.protoMin .. " to " .. b.protoMax)
+	local mine = version .. ", protocol " .. V.PROTO
+	local theirs = b.version .. ", protocol " .. range
+	if V.PROTO < b.protoMin then
+		return "update-addon", "This addon (" .. mine .. ") is too old for the bridge (" .. theirs .. "). The bridge refuses messages until you update the addon: update the addon in the CurseForge app or run claude-wow setup, then restart WoW."
+	end
+	if V.PROTO > b.protoMax then
+		return "update-bridge", "The bridge (" .. theirs .. ") is too old for this addon (" .. mine .. "). The bridge refuses messages until you update it: run brew upgrade claude-wow or the installer again, then claude-wow service restart."
+	end
+	if version == b.version then return "equal", "" end
+	local order = V.Compare(version, b.version)
+	if order == -1 then
+		return "addon-older", "This addon (" .. version .. ") is older than the bridge (" .. b.version .. "). They still work together; update the addon when you can."
+	end
+	if order == 1 then
+		return "bridge-older", "The bridge (" .. b.version .. ") is older than this addon (" .. version .. "). They still work together; update the bridge when you can."
+	end
+	return "differs", "This addon (" .. version .. ") and the bridge (" .. b.version .. ") are different builds. They still work together."
+end
+
+function ClaudeWoW.Version.Apply(b, stamp)
+	local V = ClaudeWoW.Version
+	if type(b) ~= "table" then return end
+	local at = tonumber(stamp)
+	if not at or time() - at > Q.INBOX_FRESH_SECONDS then return end
+	local lo, hi = tonumber(b.protoMin), tonumber(b.protoMax)
+	if type(b.version) ~= "string" or #b.version > 40 or not b.version:match(V.PATTERN) then return end
+	if not lo or not hi or lo ~= math.floor(lo) or hi ~= math.floor(hi) or lo < 1 or hi < lo then return end
+	run.bridgeVersion = { version = b.version, protoMin = lo, protoMax = hi }
+	local verdict, text = V.Verdict(run.bridgeVersion)
+	run.versionVerdict = verdict
+	if text ~= "" and run.versionTold ~= text then
+		run.versionTold = text
+		TellPlayer(text)
+	end
+end
+
+function ClaudeWoW.Version.Status()
+	local V = ClaudeWoW.Version
+	local b = run.bridgeVersion
+	local bridge = b and (b.version .. " (protocol " .. (b.protoMin == b.protoMax and b.protoMin or (b.protoMin .. " to " .. b.protoMax)) .. ")") or "not reported (an older bridge, or not heard yet)"
+	return "versions: addon " .. V.Own() .. " (protocol " .. V.PROTO .. "), bridge " .. bridge .. ", verdict: " .. (run.versionVerdict or "unknown")
+end
+
 local function TryLoadSlot(why)
 	local name = FreeSlot()
 	if not name then
@@ -1820,6 +1891,7 @@ local function TryLoadSlot(why)
 		ApplyTransport(data)
 		if acked then RefreshStrip() end
 		Presence.Check(data.presence, data.now)
+		ClaudeWoW.Version.Apply(data.bridge, data.now)
 	end
 	local matched = ApplyReplies(type(data) == "table" and data.replies or nil)
 	if type(data) == "table" and data.restore then ImportRestore(data.restore) end
@@ -1995,6 +2067,7 @@ local function ProcessInbox()
 	ClaudeWoW.ApplyLive(inbox.live)
 	ClaudeWoW.ApplySessions(inbox.sessions, inbox.now)
 	ApplyTransport(inbox)
+	ClaudeWoW.Version.Apply(inbox.bridge, inbox.now)
 	ApplyReplies(inbox.replies)
 	if inbox.restore then ImportRestore(inbox.restore) end
 	if inbox.map and ClaudeWoWMap then ClaudeWoWMap.Sync(inbox.map) end
@@ -3020,6 +3093,8 @@ function ClaudeWoW.Send(text, allow, opts)
 	if wantsTitle then table.insert(optionTokens, "t") end
 	for _, t in ipairs(optionTokens) do table.insert(tokens, t) end
 	local flags = table.concat(tokens, ";")
+	local outboxTokens = { "ver=" .. ClaudeWoW.Version.Own(), "proto=" .. ClaudeWoW.Version.PROTO }
+	for _, t in ipairs(optionTokens) do table.insert(outboxTokens, t) end
 	local newSession = c.resetNext and true or nil
 	c.resetNext = nil
 	db.outbox = {
@@ -3031,7 +3106,7 @@ function ClaudeWoW.Send(text, allow, opts)
 		ctx = ctx and ToHex(ctx) or nil,
 		agent = (c.agent and c.agent ~= "") and c.agent or nil,
 		plugin = plugin ~= "" and plugin or nil,
-		opts = #optionTokens > 0 and ToHex(table.concat(optionTokens, ";")) or nil,
+		opts = ToHex(table.concat(outboxTokens, ";")),
 		allow = allowHex,
 		allowOnce = allowOnceHex,
 		newSession = newSession,
@@ -3130,7 +3205,7 @@ function ClaudeWoW.SayHello()
 	db.lastSeq = db.lastSeq + 1
 	local c = ActiveChat()
 	local ctx = db.settings.context and ClaudeWoW.GameContext() or ""
-	local flags = "h"
+	local flags = "h;ver=" .. ClaudeWoW.Version.Own() .. ";proto=" .. ClaudeWoW.Version.PROTO
 	if Presence.Channel() and not (run.lateProbe and run.lateProbe.result) then
 		run.lateProbe = run.lateProbe or { token = string.format("%06x%04x", time() % 16777216, math.floor(now * 1000) % 65536) }
 		flags = flags .. ";probe=" .. run.lateProbe.token
@@ -7454,6 +7529,7 @@ RunCommand = function(cmd, rest)
 			"presence: head at " .. (run.presence and string.format("a %d, b %d", run.presence.heads.a, run.presence.heads.b) or "?") .. ", beats seen: " .. tostring(run.presence and run.presence.beats or 0),
 			select(5, ClaudeWoW.BridgeState()),
 			"mode: " .. s.mode .. ", session token: " .. tostring(db.session),
+			ClaudeWoW.Version.Status(),
 			Whisper.Status(),
 			"transport: " .. tostring(s.transport or "pixel") .. (s.transport == "screenshot" and type(Screenshot) ~= "function" and " (Screenshot() missing: strip stays up, and the bridge is told to fall back to the pixel capture)" or "")
 				.. (s.transport == "pixel" and s.transportNote and (" (bridge: " .. s.transportNote .. ")") or "")

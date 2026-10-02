@@ -533,6 +533,7 @@ function takeWidgetCommands(job, text) {
 }
 
 let acksSent = [];
+const BRIDGE_INFO = P.bridgeInfo();
 
 // Slot file / Inbox.lua body: see protocol.luaTable.
 function slotFile(globalName, records, urgent = true) {
@@ -549,7 +550,7 @@ function slotFile(globalName, records, urgent = true) {
   if (TELEMETRY_ON) {
     try { gsLua = telemetry.luaGs(); } catch (e) { log(`telemetry: slot field gs left out (${e && e.message ? e.message : e})`); }
   }
-  return P.luaTable(globalName, records, { live: liveInfo, sessions: sessionList(), cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), plugin: DEFAULT_PLUGIN, plugins: registry.ids(), map, widgets, transport: TRANSPORT, levels: LEVELS, codec: STRIP_CODEC, chatlog: chatLogSlot(), acks: P.recentAcks(acksSent), transportNote, achievementsLua, goalsLua, dmLua, gsLua, presence: presenceInfo() });
+  return P.luaTable(globalName, records, { live: liveInfo, sessions: sessionList(), cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), plugin: DEFAULT_PLUGIN, plugins: registry.ids(), map, widgets, transport: TRANSPORT, levels: LEVELS, codec: STRIP_CODEC, chatlog: chatLogSlot(), acks: P.recentAcks(acksSent), transportNote, achievementsLua, goalsLua, dmLua, gsLua, presence: presenceInfo(), bridge: BRIDGE_INFO });
 }
 
 function recentClaudeSessions() {
@@ -932,6 +933,7 @@ function submit(job) {
     // The addon announcing itself: ack, offer a restore if its data is fresh,
     // and refresh the slots so it can read our clock. No agent run.
     markHandled(job);
+    noteHelloVersions(job);
     mapShare.onHello(job);
     placeProbe(job);
     presenceBeat();
@@ -956,6 +958,13 @@ function submit(job) {
     return;
   }
   runJob(job);
+}
+
+function noteHelloVersions(job) {
+  const v = P.noteAddonVersion(state, job, BRIDGE_INFO);
+  if (!v.changed) return;
+  const addon = `addon ${job.addonVersion || 'version unknown'} (protocol ${job.addonProto || P.LEGACY_PROTO + ' assumed'})`;
+  log(`versions from session ${job.session}: ${addon}, bridge ${BRIDGE_INFO.version}: ${v.verdict}${v.text ? ': ' + v.text : ''}`);
 }
 
 function cancelRun(job) {
@@ -1006,6 +1015,13 @@ function runJob(job) {
   signal('sig', job.id, false);
   resetBeats(job.id);
   ackJob(job);
+  if (job.addonVersion || job.addonProto) noteHelloVersions(job);
+  const refusal = P.addonRefusal(state, job, BRIDGE_INFO);
+  if (refusal) {
+    log(`${tag} refused: ${refusal}`);
+    finish(job, 'error', refusal);
+    return;
+  }
   if (job.resume && !job.liveTarget) {
     const found = resolveResume(job);
     if (found.error) {
