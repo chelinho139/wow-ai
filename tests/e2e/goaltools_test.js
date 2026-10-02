@@ -73,7 +73,7 @@ test('an in-game ask run gets the wowgoals server for that run only; its calls w
     for (const rule of GM.RUN_RULES) assert.ok(allowed.includes(rule), `${rule} is a run-only rule`);
     const denied = listAfter(askRun.argv, '--disallowedTools');
     assert.deepEqual(denied.filter(r => r.startsWith('mcp__wowgoals')), GM.DENIED_WITH_TOOLS.filter(r => r.startsWith('mcp__wowgoals')));
-    for (const rule of ['Bash', ...GM.ASK_DENIED_TOOLS, ...[...new Set([h.sb.home, fs.realpathSync(h.sb.home)])].map(dir => P.absolutePathRule('Read', path.join(dir, '**')))]) assert.ok(denied.includes(rule), `${rule} is denied to an ask run that holds a grant`);
+    for (const rule of ['Bash', ...GM.FILE_SEARCH_TOOLS, ...[...new Set([h.sb.home, fs.realpathSync(h.sb.home)])].map(dir => P.absolutePathRule('Read', path.join(dir, '**')))]) assert.ok(denied.includes(rule), `${rule} is denied to an ask run that holds a grant`);
     assert.ok(allowed.includes('Bash(node:*)'), 'the sandbox config allows node, so the Bash deny is what holds');
     const previous = runs[runs.length - 2].mcpConfig.mcpServers.wowgoals;
     assert.notEqual(previous.env[GM.TOKEN_ENV], server.env[GM.TOKEN_ENV], 'every run gets its own grant');
@@ -89,7 +89,8 @@ test('an in-game ask run gets the wowgoals server for that run only; its calls w
     const codingRun = h.agentCalls().at(-1);
     assert.ok(!codingRun.argv.includes('--mcp-config'), 'the coding plugin runs without it');
     assert.ok(listAfter(codingRun.argv, '--disallowedTools').includes('mcp__wowgoals'));
-    for (const rule of ['Bash', ...GM.ASK_DENIED_TOOLS]) assert.ok(!listAfter(codingRun.argv, '--disallowedTools').includes(rule), `coding runs keep ${rule}`);
+    for (const rule of ['Bash', ...GM.FILE_SEARCH_TOOLS]) assert.ok(!listAfter(codingRun.argv, '--disallowedTools').includes(rule), `coding runs keep ${rule}`);
+    for (const rule of [...new Set([h.sb.home, fs.realpathSync(h.sb.home)])].map(dir => P.absolutePathRule('Read', path.join(dir, '**')))) assert.ok(listAfter(codingRun.argv, '--disallowedTools').includes(rule), `coding runs are denied ${rule}`);
     assert.ok(!listAfter(codingRun.argv, '--allowedTools').some(r => r.startsWith('mcp__wowgoals')));
     assert.ok(!/wowgoals/.test(fs.readFileSync(h.sb.config, 'utf8')), 'no rule is ever saved');
   });

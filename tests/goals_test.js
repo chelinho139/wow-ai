@@ -11,6 +11,7 @@ const P = require('../bridge/protocol');
 const ST = require('../bridge/plugins/stream');
 const GD = require('../bridge/gamedata');
 const GR = require('../bridge/gamerefs');
+const GM = require('../bridge/goalsmcp');
 
 const ROOT = path.join(__dirname, '..');
 const BRIDGE = path.join(ROOT, 'bridge', 'bridge.js');
@@ -731,6 +732,57 @@ test('in-game ask runs without the live socket: the channel goal tools and wowgo
     const deniedLine = (/^\s*denied = \{.*\},$/m.exec(lua) || [''])[0];
     assert.match(deniedLine, /"NotebookEdit"/, lua);
     assert.doesNotMatch(lua, /goal_set|order_issue|campaign_start|goal_vote_open|future_tool|wowgoals|Grep/, 'neither the roll nor the reply offers a goal write tool');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+function runPluginOnce(dir, { plugin, agent = '' }) {
+  const install = fakeInstall(dir);
+  const configFile = path.join(install.home, 'config.json');
+  const config = JSON.parse(fs.readFileSync(configFile, 'utf8'));
+  config.plugins.roast = { cwd: path.join(dir, 'roast-scratch') };
+  config.agents.grok = { path: config.agents.claude.path, allowedTools: ['WebSearch'] };
+  fs.writeFileSync(configFile, JSON.stringify(config, null, 2));
+  const agentLine = agent ? `["agent"] = "${agent}",\n` : '';
+  fs.writeFileSync(install.saved, `ClaudeWoWDB = {\n["outbox"] = {\n["id"] = 7,\n["session"] = "sess1",\n["chat"] = "chat1",\n["text"] = "${hex('grep the home')}",\n["cwd"] = "",\n["plugin"] = "${plugin}",\n${agentLine}["allow"] = "${hex('Grep')}",\n["t"] = 1,\n},\n}\n`);
+  const r = spawnSync(process.execPath, [BRIDGE, '--once'], { encoding: 'utf8', env: { ...process.env, CLAUDE_WOW_HOME: install.home }, timeout: 60000 });
+  const out = r.stdout + r.stderr;
+  if (!agent) assert.equal(r.status, 0, out);
+  assert.match(out, new RegExp(`\\[${plugin}\\]`), out);
+  const homes = [...new Set([install.home, fs.realpathSync(install.home)])];
+  return { ...install, out, argv: JSON.parse(fs.readFileSync(install.argvFile, 'utf8')), homeReads: homes.map(h => P.absolutePathRule('Read', path.join(h, '**'))) };
+}
+
+test('a Claude roast run from the game is denied Grep, Glob, LS, NotebookRead and Read of the bridge home, and a roll cannot grant Grep back', { timeout: 60000 }, () => {
+  const dir = tmpDir('roast');
+  try {
+    const { argv, homeReads } = runPluginOnce(dir, { plugin: 'roast' });
+    const denied = argList(argv, '--disallowedTools');
+    for (const rule of [...GM.FILE_SEARCH_TOOLS, ...homeReads]) assert.ok(denied.includes(rule), `${rule} is denied to a roast run: ${denied.join(' ')}`);
+    assert.ok(!argList(argv, '--allowedTools').includes('Grep'), 'a Need roll for Grep is not granted');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a Claude claude-code run from the game keeps Grep, Glob, LS and NotebookRead for its project but is denied Read of the bridge home', { timeout: 60000 }, () => {
+  const dir = tmpDir('coding');
+  try {
+    const { argv, homeReads } = runPluginOnce(dir, { plugin: 'claude-code' });
+    const denied = argList(argv, '--disallowedTools');
+    for (const rule of homeReads) assert.ok(denied.includes(rule), `${rule} is denied to a coding run: ${denied.join(' ')}`);
+    for (const tool of GM.FILE_SEARCH_TOOLS) assert.ok(!denied.includes(tool), `a coding run keeps ${tool}`);
+    assert.ok(argList(argv, '--allowedTools').includes('Grep'), 'a coding run may be granted Grep');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a Grok run gets no home read deny, so it can still read the screenshot the bridge keeps in the home', { timeout: 60000 }, () => {
+  const dir = tmpDir('grok');
+  try {
+    const { argv, home, homeReads } = runPluginOnce(dir, { plugin: 'roast', agent: 'grok' });
+    assert.ok(argv.includes('--prompt-file'), `the Grok command line ran: ${argv.join(' ')}`);
+    const denied = argv.filter((_, i) => argv[i - 1] === '--deny');
+    assert.ok(denied.length > 0, 'the in-game deny rules still reach Grok');
+    assert.ok(!denied.some(r => homeReads.includes(r)), `no Read of the whole home: ${denied.join(' ')}`);
+    for (const tool of GM.FILE_SEARCH_TOOLS) assert.ok(!denied.includes(tool), `Grok keeps ${tool}`);
+    assert.ok(denied.some(r => r.includes(path.basename(home)) && r.includes('live.token')), 'the token file stays denied');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 

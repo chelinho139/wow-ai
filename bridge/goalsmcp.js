@@ -25,7 +25,7 @@ const fullToolName = tool => `mcp__${SERVER_NAME}__${tool}`;
 const SERVER_RULE = `mcp__${SERVER_NAME}`;
 const RUN_RULES = Object.freeze(TOOL_NAMES.map(fullToolName));
 const DENIED_WITH_TOOLS = Object.freeze([...LIVE_SESSION_ONLY.map(fullToolName), 'Bash']);
-const ASK_DENIED_TOOLS = Object.freeze(['Grep', 'Glob', 'LS', 'NotebookRead']);
+const FILE_SEARCH_TOOLS = Object.freeze(['Grep', 'Glob', 'LS', 'NotebookRead']);
 const DENIED_WITHOUT_TOOLS = Object.freeze([SERVER_RULE]);
 
 const INSTRUCTIONS = [
@@ -313,7 +313,7 @@ function main(argv, deps = {}) {
 
 module.exports = {
   SERVER_NAME, SCRIPT, HELLO, CALL, RESULT, TOKEN_ENV, INSTRUCTIONS,
-  TOOL_NAMES, LIVE_SESSION_ONLY, RUN_RULES, SERVER_RULE, DENIED_WITH_TOOLS, DENIED_WITHOUT_TOOLS, ASK_DENIED_TOOLS,
+  TOOL_NAMES, LIVE_SESSION_ONLY, RUN_RULES, SERVER_RULE, DENIED_WITH_TOOLS, DENIED_WITHOUT_TOOLS, FILE_SEARCH_TOOLS,
   fullToolName, isRunToolRule, deniedBy, toolSchemas, createRunGrants, launchConfig, mcpConfig, createServer, parseArgs, main,
 };
 

@@ -39,6 +39,7 @@ function normalizePlugin(raw) {
     match: typeof raw.match === 'function' ? raw.match : () => false,
     tools: String(raw.tools || ''),
     surfaces: Array.isArray(raw.surfaces) ? raw.surfaces.map(String) : [],
+    searchesFiles: raw.searchesFiles === true,
   };
 }
 
