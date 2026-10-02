@@ -110,6 +110,7 @@ function insideAny(p, dirs) {
 
 function bashRefusal(command, argv, stuck) {
   const word = String(command).trim().split(/\s+/)[0];
+  if (argList(argv, '--disallowedTools').includes('Bash')) return 'Permission to use Bash has been denied.';
   const rules = argList(argv, '--allowedTools');
   const dirs = stuck ? [process.cwd()] : [process.cwd(), ...argList(argv, '--add-dir')];
   const outside = String(command).split(/\s+/).slice(1).find(a => path.isAbsolute(a) && !insideAny(a, dirs));
@@ -309,6 +310,17 @@ async function main() {
   if (command) {
     const denial = runBash(session, command, argv);
     if (denial) { denials.push(denial); session.pendingBash = command; } else delete session.pendingBash;
+  }
+
+  if (typeof d['use-tool'] === 'string') {
+    const name = d['use-tool'].trim();
+    const id = `toolu_use_${session.turns}`;
+    emit({ type: 'assistant', session_id: session.id, message: { model: MODEL, role: 'assistant', content: [{ type: 'tool_use', id, name, input: { path: '.' } }], usage: turnUsage(session.turns) } });
+    if (argList(argv, '--disallowedTools').includes(name)) {
+      const refusal = `Permission to use ${name} has been denied.`;
+      emit({ type: 'user', session_id: session.id, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, is_error: true, content: refusal }] } });
+      denials.push({ tool_name: name, tool_use_id: id, tool_input: { path: '.' } });
+    }
   }
 
   let mcpSaid = '';

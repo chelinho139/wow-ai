@@ -24,10 +24,8 @@ const TOOL_NAMES = Object.freeze(ALL_TOOL_NAMES.filter(t => !LIVE_SESSION_ONLY.i
 const fullToolName = tool => `mcp__${SERVER_NAME}__${tool}`;
 const SERVER_RULE = `mcp__${SERVER_NAME}`;
 const RUN_RULES = Object.freeze(TOOL_NAMES.map(fullToolName));
-const TOKEN_READERS = Object.freeze(['node', 'python', 'python3', 'ruby', 'perl', 'osascript', 'ps', 'bash', 'sh', 'zsh', 'env', 'printenv', 'cat', 'head', 'tail', 'less', 'more', 'git', 'npm', 'npx', 'pip', 'pytest']);
-const TOKEN_READER_RULES = Object.freeze(TOKEN_READERS.map(cmd => `Bash(${cmd}:*)`));
-const DENIED_WITH_TOOLS = Object.freeze([...LIVE_SESSION_ONLY.map(fullToolName), ...TOKEN_READER_RULES]);
-const BROAD_BASH_RE = /^Bash(?:\((?:\*|\*:\*|:\*|\s*)\))?$/;
+const DENIED_WITH_TOOLS = Object.freeze([...LIVE_SESSION_ONLY.map(fullToolName), 'Bash']);
+const ASK_DENIED_TOOLS = Object.freeze(['Grep', 'Glob', 'LS', 'NotebookRead']);
 const DENIED_WITHOUT_TOOLS = Object.freeze([SERVER_RULE]);
 
 const INSTRUCTIONS = [
@@ -52,8 +50,16 @@ function isRunToolRule(rule) {
   return String(rule || '').trim().startsWith(SERVER_RULE);
 }
 
-function isBroadBashRule(rule) {
-  return BROAD_BASH_RE.test(String(rule || '').trim());
+const RULE_RE = /^([^()]+)\((.*)\)$/;
+function deniedBy(denied, rule) {
+  const r = String(rule || '').trim();
+  const tool = r.split('(')[0];
+  const ruleArg = RULE_RE.exec(r);
+  return (denied || []).some(d => {
+    if (d === r || d === tool) return true;
+    const m = RULE_RE.exec(String(d));
+    return !!(m && ruleArg && m[1] === ruleArg[1] && m[2].endsWith('/**') && ruleArg[2].startsWith(m[2].slice(0, -2)));
+  });
 }
 
 function createRunGrants({ call, character = () => '', log = () => {} } = {}) {
@@ -208,7 +214,11 @@ function createServer(opts) {
   }
 
   function connect() {
-    return open();
+    if (!granted()) return false;
+    if (open()) return true;
+    dropped = true;
+    log('cannot reach the claude-wow bridge socket (missing or not private); the goal tools are off for this run');
+    return false;
   }
 
   function askBridge(tool, args) {
@@ -288,8 +298,8 @@ function main(argv, deps = {}) {
 
 module.exports = {
   SERVER_NAME, SCRIPT, HELLO, CALL, RESULT, TOKEN_ENV, INSTRUCTIONS,
-  TOOL_NAMES, LIVE_SESSION_ONLY, RUN_RULES, SERVER_RULE, DENIED_WITH_TOOLS, DENIED_WITHOUT_TOOLS, TOKEN_READER_RULES,
-  fullToolName, isRunToolRule, isBroadBashRule, toolSchemas, createRunGrants, launchConfig, mcpConfig, createServer, parseArgs, main,
+  TOOL_NAMES, LIVE_SESSION_ONLY, RUN_RULES, SERVER_RULE, DENIED_WITH_TOOLS, DENIED_WITHOUT_TOOLS, ASK_DENIED_TOOLS,
+  fullToolName, isRunToolRule, deniedBy, toolSchemas, createRunGrants, launchConfig, mcpConfig, createServer, parseArgs, main,
 };
 
 if (require.main === module) main(process.argv.slice(2));

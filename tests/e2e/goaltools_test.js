@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const GM = require('../../bridge/goalsmcp');
+const P = require('../../bridge/protocol');
 const { makeRoot, gameRunner, isAlive } = require('./helpers');
 
 const ROOT = makeRoot('goaltools');
@@ -72,8 +73,8 @@ test('an in-game ask run gets the wowgoals server for that run only; its calls w
     for (const rule of GM.RUN_RULES) assert.ok(allowed.includes(rule), `${rule} is a run-only rule`);
     const denied = listAfter(askRun.argv, '--disallowedTools');
     assert.deepEqual(denied.filter(r => r.startsWith('mcp__wowgoals')), GM.DENIED_WITH_TOOLS.filter(r => r.startsWith('mcp__wowgoals')));
-    for (const rule of GM.TOKEN_READER_RULES) assert.ok(denied.includes(rule), `${rule} is denied while the run holds a token`);
-    assert.ok(allowed.includes('Bash(node:*)'), 'the sandbox config allows node, so the deny is what holds');
+    for (const rule of ['Bash', ...GM.ASK_DENIED_TOOLS, ...[...new Set([h.sb.home, fs.realpathSync(h.sb.home)])].map(dir => P.absolutePathRule('Read', path.join(dir, '**')))]) assert.ok(denied.includes(rule), `${rule} is denied to an ask run that holds a grant`);
+    assert.ok(allowed.includes('Bash(node:*)'), 'the sandbox config allows node, so the Bash deny is what holds');
     const previous = runs[runs.length - 2].mcpConfig.mcpServers.wowgoals;
     assert.notEqual(previous.env[GM.TOKEN_ENV], server.env[GM.TOKEN_ENV], 'every run gets its own grant');
     const replay = await callServer(server, 'order_issue', { text: 'skin 20' });
@@ -88,7 +89,7 @@ test('an in-game ask run gets the wowgoals server for that run only; its calls w
     const codingRun = h.agentCalls().at(-1);
     assert.ok(!codingRun.argv.includes('--mcp-config'), 'the coding plugin runs without it');
     assert.ok(listAfter(codingRun.argv, '--disallowedTools').includes('mcp__wowgoals'));
-    assert.ok(!listAfter(codingRun.argv, '--disallowedTools').includes('Bash(node:*)'), 'coding runs keep their interpreters');
+    for (const rule of ['Bash', ...GM.ASK_DENIED_TOOLS]) assert.ok(!listAfter(codingRun.argv, '--disallowedTools').includes(rule), `coding runs keep ${rule}`);
     assert.ok(!listAfter(codingRun.argv, '--allowedTools').some(r => r.startsWith('mcp__wowgoals')));
     assert.ok(!/wowgoals/.test(fs.readFileSync(h.sb.config, 'utf8')), 'no rule is ever saved');
   });
@@ -113,7 +114,7 @@ test('while a run is live a second connection with its token is refused, and a c
 
     const run = h.agentCalls().at(-1);
     assert.ok(listAfter(run.argv, '--allowedTools').includes('Bash(*)'));
-    assert.ok(listAfter(run.argv, '--disallowedTools').includes('Bash(*)'), 'a broad Bash rule is denied while the run holds a token');
+    assert.ok(listAfter(run.argv, '--disallowedTools').includes('Bash'), 'Bash is denied while the run holds a grant, whatever the config allows');
     const configFile = listAfter(run.argv, '--mcp-config')[0];
     assert.ok(fs.existsSync(configFile), 'the config file exists while the run is live');
     if (process.platform !== 'win32') assert.equal(fs.statSync(configFile).mode & 0o777, 0o600);
@@ -131,5 +132,21 @@ test('while a run is live a second connection with its token is refused, and a c
     assert.ok(!fs.existsSync(ordersFile), 'a call after the cancel wrote nothing');
     await h.client.waitFor(() => !isAlive(run.pid), { timeoutMs: 15000, label: 'the agent process to end' });
     await h.client.waitFor(() => !fs.existsSync(configFile), { timeoutMs: 15000, label: 'the config file to be removed' });
+  });
+});
+
+test('a tool an ask run is denied never becomes a Need roll and is never saved', async () => {
+  await withGame({ plugin: 'ask' }, async h => {
+    await h.client.say('hello');
+    await h.bridge.waitForLine(/game context updated: Character: Testchar/);
+    const rollOpen = () => h.client.luaValue('ClaudeWoWRoll.Current() and "open" or "none"') === 'open';
+    const grep = await h.client.say('[[use-tool Grep]]');
+    assert.deepEqual(grep.denied || [], [], 'a denied Grep is not offered');
+    assert.equal(rollOpen(), false);
+    const cat = await h.client.say(`[[bash cat ${path.join(h.sb.home, 'live.token')}]]`);
+    assert.match(cat.text, /^blocked/);
+    assert.deepEqual(cat.denied || [], [], 'a Bash command in a run that holds a grant is not offered');
+    assert.equal(rollOpen(), false);
+    assert.ok(!/Grep|Bash\(cat/.test(fs.readFileSync(h.sb.config, 'utf8')), 'nothing denied is saved');
   });
 });

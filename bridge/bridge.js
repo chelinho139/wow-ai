@@ -205,7 +205,7 @@ function holdLock() {
         const now = readJsonQuiet(LOCK_FILE);
         if (now && now.pid === process.pid) { try { fs.rmSync(LOCK_FILE, { force: true }); } catch {} }
       });
-      return;
+      return true;
     } catch (e) {
       if (e.code !== 'EEXIST') throw e;
     }
@@ -219,8 +219,9 @@ function holdLock() {
     try { fs.rmSync(LOCK_FILE, { force: true }); } catch {}
   }
   log(`could not take ${LOCK_FILE}; starting without the single-bridge guard`);
+  return false;
 }
-if (!exitWhenIdle) holdLock();
+const holdsLock = !exitWhenIdle && holdLock();
 
 const stateEarly = readJson(STATE_FILE, {});
 const chosen = P.chooseTransport(cap, stateEarly);
@@ -1136,12 +1137,20 @@ function stopPlugins() {
 // instructions (tools) go into the system prompt; its surfaces say whether the
 // run may mark the map and whether macro blocks in the reply become buttons.
 const IN_GAME_NEVER_GRANTED = LP.GOAL_WRITE_TOOLS;
-function inGameGrantable(rules) {
-  return P.withoutRules(rules, IN_GAME_NEVER_GRANTED).filter(r => !GM.isRunToolRule(r));
+function neverOffered(denied) {
+  return rule => GM.isRunToolRule(rule) || GM.deniedBy(denied, rule);
 }
-function inGameDeniedTools(withRunTools, allowed) {
-  const broadBash = withRunTools ? (allowed || []).filter(GM.isBroadBashRule) : [];
-  return [...LP.GOAL_WRITE_TOOLS, ...(withRunTools ? GM.DENIED_WITH_TOOLS : GM.DENIED_WITHOUT_TOOLS), ...broadBash, ...homeGuardRules()];
+function inGameGrantable(rules, denied) {
+  const blocked = neverOffered(denied);
+  return P.withoutRules(rules, IN_GAME_NEVER_GRANTED).filter(r => !blocked(r));
+}
+function inGameDeniedTools(askRun, withRunTools) {
+  return [
+    ...LP.GOAL_WRITE_TOOLS,
+    ...(withRunTools ? GM.DENIED_WITH_TOOLS : GM.DENIED_WITHOUT_TOOLS),
+    ...homeGuardRules(),
+    ...(askRun ? [...GM.ASK_DENIED_TOOLS, ...homeDirs().map(dir => P.absolutePathRule('Read', path.join(dir, '**')))] : []),
+  ];
 }
 
 const loggedNoRunTools = new Set();
@@ -1163,19 +1172,22 @@ function runGrantCharacter() {
 }
 
 const MCP_CONFIG_DIR = path.join(TMP_DIR, 'mcp');
-try { fs.rmSync(MCP_CONFIG_DIR, { recursive: true, force: true }); } catch {}
+if (holdsLock) { try { fs.rmSync(MCP_CONFIG_DIR, { recursive: true, force: true }); } catch {} }
 function writePrivateFile(file, content) {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   fs.writeFileSync(file, content, { mode: 0o600, flag: 'wx' });
   fs.chmodSync(file, 0o600);
 }
 
-function homeGuardRules() {
+function homeDirs() {
   let real = HOME.dir;
   try { real = fs.realpathSync(HOME.dir); } catch {}
-  const homes = [...new Set([HOME.dir, real])];
+  return [...new Set([HOME.dir, real])];
+}
+
+function homeGuardRules() {
   const mcpDir = path.relative(HOME.dir, MCP_CONFIG_DIR);
-  return homes.flatMap(dir => [
+  return homeDirs().flatMap(dir => [
     P.absolutePathRule('Read', LP.tokenFile(dir)),
     P.absolutePathRule('Edit', path.join(dir, path.basename(HOME.goals), '**')),
     P.absolutePathRule('Read', path.join(dir, mcpDir, '**')),
@@ -1203,8 +1215,11 @@ function runAgent(job, opts = {}) {
   job.agent = agentId;
   const agent = A.AGENTS[agentId];
   const chosen = chatSettings(job);
-  const grantForGood = P.splitGrants(inGameGrantable(job.allow));
-  const grantOnce = P.splitGrants(inGameGrantable(job.allowOnce));
+  const askRun = !!opts.runTools && agentId === 'claude';
+  const runToolSocket = askRun ? runToolsSocket(tag) : '';
+  const runDenied = inGameDeniedTools(askRun, !!runToolSocket);
+  const grantForGood = P.splitGrants(inGameGrantable(job.allow, runDenied));
+  const grantOnce = P.splitGrants(inGameGrantable(job.allowOnce, runDenied));
   if (grantForGood.rules.length) {
     const added = allowRules(agentId, grantForGood.rules);
     log(`${tag} allowed for ${agentId}: ${grantForGood.rules.join(', ')}${added.length ? '' : ' (already allowed)'}`);
@@ -1213,10 +1228,9 @@ function runAgent(job, opts = {}) {
     log(`${tag} allowed for this run only (${agentId}): ${grantOnce.rules.join(', ')}`);
   }
   const dataServer = opts.gameData && agentId === 'claude' ? gameDataServer(tag) : null;
-  const runToolSocket = opts.runTools && agentId === 'claude' ? runToolsSocket(tag) : '';
   const runOnlyRules = [...grantOnce.rules, ...(dataServer ? dataServer.rules : []), ...(runToolSocket ? GM.RUN_RULES : [])];
   const baseCfg = A.withPluginSettings(A.agentConfig(cfg, agentId), agentId, core.options(plugin.id));
-  const acfg = A.withChatSettings(P.withRunDeniedRules(P.withRunOnlyRules(baseCfg, runOnlyRules), inGameDeniedTools(!!runToolSocket, [...(baseCfg.allowedTools || []), ...runOnlyRules])), agentId, chosen);
+  const acfg = A.withChatSettings(P.withRunDeniedRules(P.withRunOnlyRules(baseCfg, runOnlyRules), runDenied), agentId, chosen);
   const runDirs = [...grantForGood.dirs, ...grantOnce.dirs].map(d => P.resolveCwd(d, DEFAULT_CWD));
   if (runDirs.length) {
     acfg.addDirs = [...new Set([...A.addDirs(acfg), ...runDirs])];
@@ -1328,7 +1342,7 @@ function runAgent(job, opts = {}) {
   if (job.title) nameChat(job, key);
 
   const granted = P.grantsFor(acfg, cwd);
-  const parser = agent.parser({ cwd, granted, isDir: isDirectory, neverOffer: IN_GAME_NEVER_GRANTED, neverOfferIf: GM.isRunToolRule });
+  const parser = agent.parser({ cwd, granted, isDir: isDirectory, neverOffer: [...IN_GAME_NEVER_GRANTED, ...(acfg.deniedTools || [])], neverOfferIf: neverOffered(acfg.deniedTools || []) });
   job.activity = ACH.createRunLog(agentId);
   const progress = [];
   let sessionId = resume || '';

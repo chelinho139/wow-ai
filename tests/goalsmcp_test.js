@@ -38,7 +38,7 @@ function fakeStdout() {
   };
 }
 
-test('in-game runs get goals, orders, campaigns and routes, never the vote tools; token readers are denied next to them', () => {
+test('in-game runs get goals, orders, campaigns and routes, never the vote tools; Bash is denied next to them', () => {
   assert.deepEqual([...GM.TOOL_NAMES], IN_GAME_TOOLS);
   assert.deepEqual(GM.toolSchemas().map(t => t.name), IN_GAME_TOOLS);
   assert.deepEqual([...GM.RUN_RULES], IN_GAME_TOOLS.map(t => `mcp__wowgoals__${t}`));
@@ -46,9 +46,14 @@ test('in-game runs get goals, orders, campaigns and routes, never the vote tools
     assert.ok(!GM.RUN_RULES.includes(`mcp__wowgoals__${vote}`), vote);
     assert.ok(GM.DENIED_WITH_TOOLS.includes(`mcp__wowgoals__${vote}`), `${vote} is denied even when the server is there`);
   }
-  for (const cmd of ['node', 'python', 'python3', 'ruby', 'perl', 'osascript', 'ps']) assert.ok(GM.DENIED_WITH_TOOLS.includes(`Bash(${cmd}:*)`), cmd);
-  for (const rule of ['Bash', 'Bash(*)', 'Bash(*:*)', ' Bash(:*) ']) assert.ok(GM.isBroadBashRule(rule), rule);
-  for (const rule of ['Bash(git:*)', 'Bash(npm test)', 'WebFetch']) assert.ok(!GM.isBroadBashRule(rule), rule);
+  assert.ok(GM.DENIED_WITH_TOOLS.includes('Bash'), 'one rule denies every shell command');
+  assert.deepEqual([...GM.ASK_DENIED_TOOLS], ['Grep', 'Glob', 'LS', 'NotebookRead']);
+  for (const rule of ['Bash(cat:*)', 'Bash', ' Bash(node -e x) ', 'Grep', 'Grep(path=/x)']) assert.ok(GM.deniedBy(['Bash', 'Grep'], rule), rule);
+  for (const rule of ['WebFetch', 'Read(//x)', 'Bashful']) assert.ok(!GM.deniedBy(['Bash', 'Grep'], rule), rule);
+  assert.ok(GM.deniedBy(['Read(//h/.claude-wow/**)'], 'Read(//h/.claude-wow/live.token)'));
+  assert.ok(GM.deniedBy(['Read(//h/.claude-wow/**)'], 'Read(//h/.claude-wow/**)'));
+  assert.ok(!GM.deniedBy(['Read(//h/.claude-wow/**)'], 'Read(//h/.claude-wowx/a)'));
+  assert.ok(!GM.deniedBy(['Read(//h/.claude-wow/**)'], 'Edit(//h/.claude-wow/a)'));
   assert.deepEqual([...GM.DENIED_WITHOUT_TOOLS], ['mcp__wowgoals']);
   assert.match(GM.INSTRUCTIONS, /\{item:ID\}, \{skill:ID\}, \{map:ID,x,y\}/);
 });
@@ -287,6 +292,16 @@ test('a wowgoals server with a wrong token is refused at hello and reaches no st
     assert.ok(r.logs.some(l => /refused an in-game run connection without a valid run grant/.test(l)), r.logs.join('\n'));
     const none = GM.createServer({ stdout: fakeStdout(), socket: '', runId: '', token: '' });
     assert.equal(none.connect(), false, 'no grant, no eager connection');
+    if (POSIX) {
+    const missingLogs = [];
+    const missingOut = fakeStdout();
+    const missing = GM.createServer({ stdout: missingOut, socket: path.join(r.home, 'no.sock'), runId: grant.id, token: 'a'.repeat(64), log: l => missingLogs.push(l), connect: () => { throw new Error('must not connect'); } });
+    assert.equal(missing.connect(), false, 'a missing socket fails at startup');
+    assert.deepEqual(missingLogs.filter(l => /goal tools are off for this run/.test(l)).length, 1);
+    missing.handle({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'goal_list', arguments: {} } });
+    assert.match((await until(() => missingOut.lines.find(l => l.id === 1))).result.content[0].text, /goal tools are off for the rest of this run/, 'no lazy connection after a failed start');
+    missing.stop();
+    }
     const out = fakeStdout();
     const bare = GM.createServer({ stdout: out, socket: r.live.runEndpoint(), runId: '', token: '' });
     bare.handle({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'goal_list', arguments: {} } });
