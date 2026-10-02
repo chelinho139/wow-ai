@@ -54,11 +54,23 @@ test('an addon on a newer protocol than the bridge gets an error reply naming th
   await withGame({ client: { afterAddonLoad: `ClaudeWoW.Version.PROTO = ${P.PROTO + 1}` } }, async h => {
     await h.client.waitFor(() => (Object.values(h.state().addons || {})[0] || {}).verdict === 'update-bridge', { timeoutMs: 30000, label: 'the hello judged update-bridge' });
     const r = await h.client.say('are you there');
-    assert.match(r.text, /The bridge \(.*\) is too old for this addon \(.*protocol 2\)\. The bridge refuses messages until you update it: run brew upgrade claude-wow/);
+    assert.match(r.text, new RegExp(`The bridge \\(.*\\) is too old for this addon \\(.*protocol ${P.PROTO + 1}\\)\\. The bridge refuses messages until you update it: run brew upgrade claude-wow`));
     assert.equal(h.agentCalls().length, 0, 'the message never reached an agent');
     await h.bridge.waitForLine(/refused: The bridge/, { timeoutMs: 5000 });
     const lines = (h.client.activeChat().history || []).filter(m => m.role === 'system' && /is too old for this addon/.test(m.text || '') && m.id !== r.id);
     assert.equal(lines.length, 1, 'the addon said it once itself');
+  });
+});
+
+test('a reload-mode session that never says hello is judged from its outbox and refused across a protocol mismatch', async () => {
+  await withGame({ client: { afterAddonLoad: `ClaudeWoW.Version.PROTO = ${P.PROTO + 1}; ClaudeWoW.SayHello = function() end` } }, async h => {
+    h.client.slash('/claude config mode reload');
+    h.client.send('through the outbox');
+    await h.bridge.waitForLine(/refused: The bridge/, { timeoutMs: 30000 });
+    const rec = Object.values(h.state().addons || {})[0];
+    assert.equal(rec.proto, P.PROTO + 1);
+    assert.equal(rec.verdict, 'update-bridge');
+    assert.equal(h.agentCalls().length, 0, 'the message never reached an agent');
   });
 });
 

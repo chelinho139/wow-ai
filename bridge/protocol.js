@@ -268,7 +268,7 @@ const PROTO = 1;
 const PROTO_MIN = PROTO;
 const PROTO_MAX = PROTO;
 const LEGACY_PROTO = 1;
-const SEMVER_RE = /^\d{1,4}\.\d{1,4}\.\d{1,4}(?:[-+][0-9A-Za-z.-]{1,32})?$/;
+const SEMVER_RE = /^\d{1,4}\.\d{1,4}\.\d{1,4}(?:[-+][0-9A-Za-z.+-]{1,24})?$/;
 const ADDON_VERSIONS_MAX = 8;
 
 function bridgeVersion() {
@@ -346,7 +346,11 @@ function versionsSummary(state) {
   if (!r) return 'no hello with versions yet';
   const proto = Number.isInteger(r.proto) ? r.proto : `${LEGACY_PROTO} assumed`;
   const range = Number.isInteger(r.protoMin) && Number.isInteger(r.protoMax) ? protoRange(r) : '?';
-  return `addon ${r.version || 'unknown'} (protocol ${proto}), bridge ${r.bridge || 'unknown'} (protocol ${range}): ${r.verdict || 'unknown'}, at the last hello ${new Date(r.at || 0).toISOString()}`;
+  return `addon ${r.version || 'unknown'} (protocol ${proto}), bridge ${r.bridge || 'unknown'} (protocol ${range}): ${r.verdict || 'unknown'}, at the last hello${Number.isFinite(r.at) ? ' ' + new Date(r.at).toISOString() : ''}`;
+}
+
+function installedSummary(bridge = bridgeInfo()) {
+  return `this install is bridge ${bridge.version} (protocol ${protoRange(bridge)})`;
 }
 
 // Strip payload: records separated by \x1E, fields by \x1F:
@@ -402,7 +406,7 @@ function parseOutbox(src) {
   const opts = b.match(/\["opts"\]\s*=\s*"([0-9a-fA-F]*)"/);
   if (opts && opts[1]) {
     const f = parseFlags(fromHex(opts[1]));
-    for (const k of ['model', 'effort', 'permissionMode', 'addDirs', 'resume', 'liveTarget']) if (f[k] !== undefined) job[k] = f[k];
+    for (const k of ['model', 'effort', 'permissionMode', 'addDirs', 'resume', 'liveTarget', 'addonVersion', 'addonProto']) if (f[k] !== undefined) job[k] = f[k];
   }
   return job;
 }
@@ -1323,7 +1327,7 @@ module.exports = {
   alreadyHandled, markHandled, pruneStale, MONTH_MS, noteAck, recentAcks, RECENT_ACKS_MAX, RECENT_ACK_MS,
   noteUsage, usageFields, tokensLabel,
   resolveCwd, sameFolder, baseName,
-  PROTO, PROTO_MIN, PROTO_MAX, LEGACY_PROTO, SEMVER_RE, ADDON_VERSIONS_MAX, bridgeVersion, bridgeInfo, compareSemver, versionVerdict, noteAddonVersion, addonRefusal, latestAddonVersion, versionsSummary,
+  PROTO, PROTO_MIN, PROTO_MAX, LEGACY_PROTO, SEMVER_RE, ADDON_VERSIONS_MAX, bridgeVersion, bridgeInfo, compareSemver, versionVerdict, noteAddonVersion, addonRefusal, latestAddonVersion, versionsSummary, installedSummary,
   parseFlags, PERMISSION_MODES, permissionModeName, ADD_DIRS_MAX, jobsFromStrip, parseOutbox, withRunOnlyRules, withRunDeniedRules, withoutRules, absolutePathRule, systemPrompt, systemRulesHash, rulesChanged, noteRules, messagePrompt, visionHint, splitSummary,
   ruleFor, describeToolUse,
   folderRule, ruleFolder, splitGrants, insideFolder, nearestFolder, denialPath, classifyDenial, grantsFor, deniedAgain, denialNotes,

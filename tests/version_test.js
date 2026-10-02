@@ -98,6 +98,30 @@ test('the hello carries ver= and proto=, and the bridge parses them from the sam
   assert.equal(job.text, '');
 });
 
+test('a reload-mode message carries ver= and proto= in its outbox, so the bridge judges a session that never says hello', () => {
+  const vm = newVM({ beforeLogin: `ClaudeWoW.Version.PROTO = ${P.PROTO + 1}` });
+  vm.run('SlashCmdList.CLAUDE("config mode reload")');
+  vm.run('ClaudeWoW.Send("via reload")');
+  const out = name => vm.evaluate(`ClaudeWoWDB.outbox.${name}`);
+  const saved = `ClaudeWoWDB = { ["outbox"] = { ["id"] = ${out('id')}, ["session"] = "${out('session')}", ["chat"] = "${out('chat')}", ["text"] = "${out('text')}", ["opts"] = "${out('opts')}" } }`;
+  const job = P.parseOutbox(saved);
+  assert.equal(job.addonVersion, TOC_VERSION);
+  assert.equal(job.addonProto, P.PROTO + 1);
+  assert.equal(job.text, 'via reload');
+  const state = {};
+  assert.equal(P.addonRefusal(state, job), '', 'no record yet');
+  P.noteAddonVersion(state, job);
+  assert.match(P.addonRefusal(state, job), /The bridge \(.*\) is too old for this addon/);
+});
+
+test('a version with a prerelease and build metadata is accepted on both sides', () => {
+  const v = '0.4.0-beta.1+build.2';
+  assert.equal(P.parseFlags(`h;ver=${v}`).addonVersion, v);
+  assert.equal(P.bridgeInfo(v).version, v);
+  const vm = newVM({ prelude: `STUB.addonMeta = { ClaudeWoW = { Version = "${v}" } }` });
+  assert.equal(vm.evaluate('ClaudeWoW.Version.Own()'), v);
+});
+
 test('bad ver= and proto= values are dropped, and an unknown token on a hello is ignored', () => {
   const f = P.parseFlags('h;ver=1.2;proto=0;zz=9');
   assert.equal(f.hello, true);
@@ -197,7 +221,7 @@ test('service status and the doctor show both versions and the verdict of the la
     P.noteAddonVersion(state, { session: 's', addonVersion: '0.3.0', addonProto: 9 }, bridgeAt('0.4.0', 1, 1), Date.UTC(2026, 9, 2));
     fs.writeFileSync(path.join(dir, 'state.json'), JSON.stringify(state));
     const lines = [];
-    S.status({ run: dir, logs: dir, definition: path.join(dir, 'none.plist'), state: path.join(dir, 'state.json') }, 'darwin', l => lines.push(l));
+    S.status({ run: dir, logs: dir, definition: path.join(dir, 'none.plist') }, 'darwin', l => lines.push(l), path.join(dir, 'state.json'));
     const line = lines.find(l => l.startsWith('  versions  :'));
     assert.match(line, /addon 0\.3\.0 \(protocol 9\), bridge 0\.4\.0 \(protocol 1\): update-bridge, at the last hello 2026-10-02T00:00:00\.000Z/);
     assert.match(line, new RegExp(`this install is bridge ${PACKAGE_VERSION.replace(/\./g, '\\.')}`));
@@ -208,7 +232,9 @@ test('service status and the doctor show both versions and the verdict of the la
     const fine = {};
     P.noteAddonVersion(fine, { session: 's', addonVersion: '0.4.0', addonProto: 1 }, bridgeAt('0.4.0', 1, 1), 5);
     assert.equal(Checks.checkVersions({ state: fine }).status, 'ok');
-    assert.equal(Checks.checkVersions({ state: {} }).summary, 'no hello with versions yet');
+    assert.equal(Checks.checkVersions({ state: {} }).summary, `no hello with versions yet; this install is bridge ${PACKAGE_VERSION} (protocol ${P.PROTO})`);
+    const odd = { addons: { s: { ...fine.addons.s, at: 'yesterday' } } };
+    assert.match(P.versionsSummary(odd), /: equal, at the last hello$/, 'a bad time in state.json does not throw');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -274,8 +300,30 @@ test('Inbox.lua carries the field too, under the 5-minute age rule', () => {
   assert.equal(told(fresh, 'older than the bridge (99.0.0)'), 1);
   const stale = newVM({ beforeLogin: `ClaudeWoW_Inbox = { now = time() - 3600, replies = {}${luaBridge(bridgeAt('99.0.0'))} }` });
   assert.equal(told(stale, 'older than the bridge'), 0);
-  const broken = newVM({ beforeLogin: 'ClaudeWoW_Inbox = { now = time(), replies = {}, bridge = { version = "x", protoMin = 1, protoMax = 1 } }' });
-  assert.equal(told(broken, 'bridge'), 0, 'a malformed field is ignored');
+});
+
+test('a malformed bridge field is ignored, guard by guard', () => {
+  const good = newVM({ beforeLogin: `ClaudeWoW_Inbox = { now = time(), replies = {}, bridge = { version = "99.0.0", protoMin = ${P.PROTO}, protoMax = ${P.PROTO} } }` });
+  assert.equal(told(good, 'older than the bridge'), 1, 'the well-formed field is read');
+  const cases = {
+    'a version that is not semver': `version = "x", protoMin = ${P.PROTO}, protoMax = ${P.PROTO}`,
+    'a version longer than 40 characters': `version = "99.0.0-${'a'.repeat(35)}", protoMin = ${P.PROTO}, protoMax = ${P.PROTO}`,
+    'protoMin below 1': `version = "99.0.0", protoMin = 0, protoMax = ${P.PROTO}`,
+    'protoMax below protoMin': `version = "99.0.0", protoMin = ${P.PROTO + 1}, protoMax = ${P.PROTO}`,
+    'a fractional protoMin': `version = "99.0.0", protoMin = ${P.PROTO + 0.5}, protoMax = ${P.PROTO + 1}`,
+    'a fractional protoMax': `version = "99.0.0", protoMin = ${P.PROTO}, protoMax = ${P.PROTO + 0.5}`,
+    'no protoMax': `version = "99.0.0", protoMin = ${P.PROTO}`,
+  };
+  for (const [name, fields] of Object.entries(cases)) {
+    const vm = newVM({ beforeLogin: `ClaudeWoW_Inbox = { now = time(), replies = {}, bridge = { ${fields} } }` });
+    assert.equal(told(vm, 'bridge'), 0, name);
+    vm.run('SlashCmdList.CLAUDEWOW("diag")');
+    assert.equal(told(vm, 'verdict: unknown'), 1, name);
+  }
+  const longest = '9999.9999.9999-' + 'a'.repeat(24);
+  assert.ok(P.SEMVER_RE.test(longest));
+  assert.ok(!P.SEMVER_RE.test(longest + 'a'));
+  assert.ok(longest.length <= 40, 'every version the bridge accepts fits the addon cap');
 });
 
 test('the verdict rides on the hello poll: no slot load of its own', () => {

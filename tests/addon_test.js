@@ -137,7 +137,7 @@ test('hello goes out on the strip after login', () => {
   vm.run('STUB.RunTimers()'); // C_Timer.After(3, SayHello)
   const recs = stripRecords(vm);
   assert.equal(recs.length, 1);
-  assert.equal(recs[0].flags, 'h;ver=0.4.0;proto=1;c', 'a hello carries the addon version, its protocol and the game context');
+  assert.equal(recs[0].flags, `h;ver=${vm.evaluate('ClaudeWoW.Version.SEMVER')};proto=${vm.evaluate('ClaudeWoW.Version.PROTO')};c`,'a hello carries the addon version, its protocol and the game context');
   assert.equal(recs[0].text, '');
   assert.equal(recs[0].session, vm.evaluate('ClaudeWoWDB.session'));
 });

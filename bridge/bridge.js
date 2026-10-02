@@ -912,6 +912,7 @@ function submit(job) {
   }
   if (job.ctx !== undefined) setContext(job);
   else noteContextHeard();
+  if (!job.hello && (job.addonVersion || job.addonProto)) noteHelloVersions(job);
   if (job.forget) {
     // A deleted chat: forget it and ack. No agent run.
     markHandled(job);
@@ -952,14 +953,6 @@ function submit(job) {
   if (cur && cur.job.id === job.id) return;
   const q = queued.get(key);
   if (q && q.id === job.id) return;
-  const refusal = P.addonRefusal(state, job, BRIDGE_INFO);
-  if (refusal) {
-    signal('sig', job.id, false);
-    ackJob(job);
-    log(`${tagOf(job)} refused: ${refusal}`);
-    finish(job, 'error', refusal);
-    return;
-  }
   if (cur || running.size >= MAX_PARALLEL) {
     queued.set(key, job);
     log(`#${job.id}${job.session ? '@' + job.session : ''} queued (${cur ? 'chat busy' : running.size + ' running'})`);
@@ -972,7 +965,7 @@ function noteHelloVersions(job) {
   const v = P.noteAddonVersion(state, job, BRIDGE_INFO);
   if (!v.changed) return;
   const addon = `addon ${job.addonVersion || 'version unknown'} (protocol ${job.addonProto || P.LEGACY_PROTO + ' assumed'})`;
-  log(`hello from session ${job.session}: ${addon}, bridge ${BRIDGE_INFO.version}: ${v.verdict}${v.text ? ': ' + v.text : ''}`);
+  log(`versions from session ${job.session}: ${addon}, bridge ${BRIDGE_INFO.version}: ${v.verdict}${v.text ? ': ' + v.text : ''}`);
 }
 
 function cancelRun(job) {
@@ -1023,6 +1016,12 @@ function runJob(job) {
   signal('sig', job.id, false);
   resetBeats(job.id);
   ackJob(job);
+  const refusal = P.addonRefusal(state, job, BRIDGE_INFO);
+  if (refusal) {
+    log(`${tag} refused: ${refusal}`);
+    finish(job, 'error', refusal);
+    return;
+  }
   if (job.resume && !job.liveTarget) {
     const found = resolveResume(job);
     if (found.error) {

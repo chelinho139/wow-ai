@@ -3093,6 +3093,8 @@ function ClaudeWoW.Send(text, allow, opts)
 	if wantsTitle then table.insert(optionTokens, "t") end
 	for _, t in ipairs(optionTokens) do table.insert(tokens, t) end
 	local flags = table.concat(tokens, ";")
+	local outboxTokens = { "ver=" .. ClaudeWoW.Version.Own(), "proto=" .. ClaudeWoW.Version.PROTO }
+	for _, t in ipairs(optionTokens) do table.insert(outboxTokens, t) end
 	local newSession = c.resetNext and true or nil
 	c.resetNext = nil
 	db.outbox = {
@@ -3104,7 +3106,7 @@ function ClaudeWoW.Send(text, allow, opts)
 		ctx = ctx and ToHex(ctx) or nil,
 		agent = (c.agent and c.agent ~= "") and c.agent or nil,
 		plugin = plugin ~= "" and plugin or nil,
-		opts = #optionTokens > 0 and ToHex(table.concat(optionTokens, ";")) or nil,
+		opts = ToHex(table.concat(outboxTokens, ";")),
 		allow = allowHex,
 		allowOnce = allowOnceHex,
 		newSession = newSession,

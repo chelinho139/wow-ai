@@ -2,7 +2,7 @@
 const path = require('path');
 const Service = require('../../bridge/service');
 const Screens = require('../../bridge/screenshots');
-const { slotNumber, pad3, ADDON, RUNTIME_ADDON, latestAddonVersion, versionVerdict, versionsSummary } = require('../../bridge/protocol');
+const { slotNumber, pad3, ADDON, RUNTIME_ADDON, latestAddonVersion, versionVerdict, versionsSummary, installedSummary } = require('../../bridge/protocol');
 const GameFs = require('../../bridge/gamefs');
 const SIG = require('../../bridge/signals');
 
@@ -588,7 +588,7 @@ function checkVersions(ctx) {
     const v = versionVerdict(latest, { version: latest.bridge || '0.0.0', protoMin: latest.protoMin, protoMax: latest.protoMax });
     if (v.refuse) issues.push(fail(v.text, 'The addon and the bridge speak different protocols, so the bridge answers every message with an error.', v.verdict === 'update-addon' ? 'Update the addon, then restart WoW.' : 'Update the bridge, then run "claude-wow service restart".'));
   }
-  return finish('versions', 'Versions', versionsSummary(ctx.state), issues);
+  return finish('versions', 'Versions', `${versionsSummary(ctx.state)}; ${installedSummary()}`, issues);
 }
 
 function allowsEdits(agentConfig) {
