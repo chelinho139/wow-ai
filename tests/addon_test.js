@@ -357,6 +357,8 @@ test('a shift-clicked link lands in the focused input and is sent as its name pl
   // Bare links (no colour) and repeated links: one block each, tooltip or not.
   vm.run('RESULT = (ClaudeWoW.ExpandLinks("x |Hspell:1978|h[Serpent Sting]|h y |Hspell:1978|h[Serpent Sting]|h"))');
   assert.equal(vm.evaluate('RESULT'), 'x [Serpent Sting] y [Serpent Sting]\n\n--- Linked from the game ---\n[Serpent Sting] spell 1978');
+  vm.run('RESULT = (ClaudeWoW.ExpandLinks("x |Hspell:1978|h[Serpent Sting]|h y |Henchant:7418|h[Enchant Bracer - Minor Health]|h z |Hitem:2140|h[Fine Longsword]|h"))');
+  assert.deepEqual([...require('../bridge/replytokens').linkedSpells([vm.evaluate('RESULT')])].sort((a, b) => a - b), [1978, 7418], 'the bridge reads the spell and recipe IDs the addon writes');
   vm.run('RESULT, COUNT = ClaudeWoW.ExpandLinks("plain text | with a pipe")');
   assert.equal(vm.evaluate('RESULT'), 'plain text | with a pipe');
   assert.equal(vm.evaluate('COUNT'), '0');

@@ -128,3 +128,17 @@ test('a reply keeps a spell token the player linked earlier in the chat and show
     await h.bridge.waitForLine(/reply tokens: 1 spell token\(s\) not linked in this chat, shown as plain text: spell:12294$/m, { from: 0 });
   });
 });
+
+test('progress shown while the agent works gets the same spell check as the reply', async () => {
+  await withGame({ plugin: 'ask' }, async h => {
+    await h.client.connect();
+    const id = h.client.lastSeq() + 1;
+    h.client.send('think first [[think use {spell:12294} now]] [[tools 1]] [[sleep 6]] [[reply done]]');
+    const progress = await h.client.waitFor(() => {
+      const c = h.client.activeChat();
+      return c && c.pendingId === id && typeof c.progress === 'string' && c.progress.includes('12294') && c.progress;
+    }, { timeoutMs: 30000, label: 'the working bubble with the agent text' });
+    assert.match(progress, /use spell 12294 \(unverified\) now/);
+    assert.doesNotMatch(progress, /\{spell:12294\}/);
+  });
+});

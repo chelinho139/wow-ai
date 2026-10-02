@@ -1119,10 +1119,18 @@ function liveStartCommand() {
   return LP.startCommand({ repo: REPO, home: liveHomeArg() });
 }
 
+function linkedSpellsOf(job) {
+  const chat = transcripts.chats[job.chat];
+  return RT.linkedSpells([job.text, ...(chat ? chat.messages.filter(m => m.role === 'user').map(m => m.text) : [])]);
+}
+
+function checkedProgress(job, text) {
+  return /\{spell:\d/i.test(text) ? RT.checkReply(text, linkedSpellsOf(job)).text : text;
+}
+
 function checkedReply(job, reply) {
   if (!/\{spell:\d/i.test(reply.text + reply.summary)) return reply;
-  const chat = transcripts.chats[job.chat];
-  const linked = RT.linkedSpells([job.text, ...(chat ? chat.messages.filter(m => m.role === 'user').map(m => m.text) : [])]);
+  const linked = linkedSpellsOf(job);
   const text = RT.checkReply(reply.text, linked);
   if (text.unverified.length) log(`${tagOf(job)} ${RT.logLine(text.unverified)}`);
   return { ...reply, text: text.text, summary: RT.checkReply(reply.summary, linked).text };
@@ -1393,7 +1401,7 @@ function runAgent(job, opts = {}) {
     progress.push(line);
     while (progress.length > 10) progress.shift();
     beat(job);
-    publish(key, { chat: job.chat, id: job.id, status: 'working', text: progress.join('\n'), cwd: job.cwd, session: sessionId, agent: agentId, plugin: plugin.id }, false);
+    publish(key, { chat: job.chat, id: job.id, status: 'working', text: checkedProgress(job, progress.join('\n')), cwd: job.cwd, session: sessionId, agent: agentId, plugin: plugin.id }, false);
   };
   const noteMcpDown = (servers) => {
     log(`${tag} MCP server(s) not connected: ${servers.map(s => `${s.name} (${s.status})`).join(', ')}`);

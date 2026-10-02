@@ -285,6 +285,7 @@ async function main() {
   if (typeof d['mcp-term'] === 'string') await holdUntilTerm(d['mcp-term'], argv);
   if (d.hang) { setInterval(() => {}, 1 << 30); await new Promise(() => {}); }
 
+  if (typeof d.think === 'string') emit({ type: 'assistant', session_id: session.id, message: { model: MODEL, role: 'assistant', content: [{ type: 'text', text: d.think }], usage: turnUsage(session.turns) } });
   const tools = Number(d.tools) || 0;
   const pause = Number(d.sleep) || 0;
   for (let i = 1; i <= tools; i++) {
