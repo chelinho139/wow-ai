@@ -426,13 +426,15 @@ function launchConfig({ dataDir, clientBuild = '', flavor, runtime } = {}) {
   const R = require('./runtime');
   const args = [...(flavor ? ['--flavor', flavor] : []), '--data', dataDir, ...(store.clientBuild ? ['--client-build', store.clientBuild] : [])];
   const [command, commandArgs] = R.scriptCommand('data-mcp', args, runtime);
+  const server = { type: 'stdio', command, args: commandArgs, alwaysLoad: true };
   return {
     flavor: store.flavor,
     build: store.build,
     clientBuild: store.clientBuild,
     buildCheck: store.buildCheck,
     rules: [RUN_RULE],
-    config: JSON.stringify({ mcpServers: { [SERVER_NAME]: { type: 'stdio', command, args: commandArgs, alwaysLoad: true } } }),
+    server,
+    config: JSON.stringify({ mcpServers: { [SERVER_NAME]: server } }),
   };
 }
 

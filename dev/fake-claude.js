@@ -110,6 +110,7 @@ function insideAny(p, dirs) {
 
 function bashRefusal(command, argv, stuck) {
   const word = String(command).trim().split(/\s+/)[0];
+  if (argList(argv, '--disallowedTools').includes('Bash')) return 'Permission to use Bash has been denied.';
   const rules = argList(argv, '--allowedTools');
   const dirs = stuck ? [process.cwd()] : [process.cwd(), ...argList(argv, '--add-dir')];
   const outside = String(command).split(/\s+/).slice(1).find(a => path.isAbsolute(a) && !insideAny(a, dirs));
@@ -132,10 +133,128 @@ function runBash(session, command, argv) {
   return { tool_name: 'Bash', tool_use_id: id, tool_input: { command } };
 }
 
+function mcpConfigOf(argv) {
+  const value = arg(argv, '--mcp-config');
+  if (!value) return null;
+  try { return JSON.parse(value.trim().startsWith('{') ? value : fs.readFileSync(value, 'utf8')); } catch { return null; }
+}
+
+function rpcClient(server, opts = {}) {
+  const { spawn } = require('child_process');
+  const child = spawn(server.command, server.args || [], { env: { ...process.env, ...(server.env || {}) }, stdio: ['pipe', 'pipe', 'ignore'], detached: !!opts.detached });
+  const waiting = new Map();
+  let buf = '';
+  child.on('error', () => {});
+  child.stdout.on('data', chunk => {
+    buf += chunk.toString('utf8');
+    let nl;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      let msg = null;
+      try { msg = JSON.parse(buf.slice(0, nl)); } catch {}
+      buf = buf.slice(nl + 1);
+      if (msg && waiting.has(msg.id)) { waiting.get(msg.id)(msg); waiting.delete(msg.id); }
+    }
+  });
+  const request = (body, ms = 10000) => new Promise(resolve => {
+    if (body.id !== undefined) {
+      const timer = setTimeout(() => { waiting.delete(body.id); resolve(null); }, ms);
+      waiting.set(body.id, msg => { clearTimeout(timer); resolve(msg); });
+    }
+    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', ...body }) + '\n');
+    if (body.id === undefined) resolve(null);
+  });
+  return { child, request };
+}
+
+function resultText(msg) {
+  const result = msg && msg.result;
+  return { isError: !result || !!result.isError, text: result && Array.isArray(result.content) ? result.content.map(c => c.text || '').join('\n') : 'no answer' };
+}
+
+async function holdUntilTerm(spec, argv) {
+  const m = /^(\S+)\s+(\S+)\s*(.*)$/.exec(String(spec).trim());
+  const server = m ? ((mcpConfigOf(argv) || {}).mcpServers || {})[m[1]] : null;
+  const log = entry => { fs.mkdirSync(stateDir(), { recursive: true }); fs.appendFileSync(path.join(stateDir(), 'term-calls.jsonl'), JSON.stringify(entry) + '\n'); };
+  if (!server) { log({ phase: 'setup', error: 'no server' }); return; }
+  let args = {};
+  try { args = m[3] ? JSON.parse(m[3]) : {}; } catch {}
+  const c = rpcClient(server, { detached: true });
+  await c.request({ id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } });
+  log({ phase: 'first', ...resultText(await c.request({ id: 2, method: 'tools/call', params: { name: 'goal_list', arguments: {} } })) });
+  process.on('SIGTERM', async () => {
+    log({ phase: 'term', ...resultText(await c.request({ id: 3, method: 'tools/call', params: { name: m[2], arguments: args } }, 3000)) });
+    try { process.kill(-c.child.pid, 'SIGKILL'); } catch {}
+    process.exit(0);
+  });
+  setInterval(() => {}, 1 << 30);
+  await new Promise(() => {});
+}
+
 function mcpServers(argv, failing) {
   let names = [];
-  try { names = Object.keys(JSON.parse(arg(argv, '--mcp-config') || '{}').mcpServers || {}); } catch {}
+  names = Object.keys((mcpConfigOf(argv) || {}).mcpServers || {});
   return names.map(name => ({ name, status: name === failing ? 'failed' : 'connected' }));
+}
+
+function mcpRuleAllows(argv, server, tool) {
+  const full = `mcp__${server}__${tool}`;
+  const matches = rule => rule === full || rule === `mcp__${server}`;
+  return argList(argv, '--allowedTools').some(matches) && !argList(argv, '--disallowedTools').some(matches);
+}
+
+function rpcExchange(server, requests) {
+  return new Promise(resolve => {
+    const { spawn } = require('child_process');
+    const child = spawn(server.command, server.args || [], { env: { ...process.env, ...(server.env || {}) }, stdio: ['pipe', 'pipe', 'ignore'] });
+    const wanted = requests.filter(r => r.id !== undefined).map(r => r.id);
+    const got = new Map();
+    let buf = '';
+    const done = () => { child.kill(); resolve(got); };
+    const timer = setTimeout(done, 20000);
+    child.on('error', () => { clearTimeout(timer); resolve(got); });
+    child.stdout.on('data', chunk => {
+      buf += chunk.toString('utf8');
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        let msg = null;
+        try { msg = JSON.parse(buf.slice(0, nl)); } catch {}
+        buf = buf.slice(nl + 1);
+        if (msg && msg.id !== undefined) got.set(msg.id, msg);
+      }
+      if (wanted.every(id => got.has(id))) { clearTimeout(timer); done(); }
+    });
+    for (const r of requests) child.stdin.write(JSON.stringify({ jsonrpc: '2.0', ...r }) + '\n');
+  });
+}
+
+async function runMcpCall(session, spec, argv) {
+  const m = /^(\S+)\s+(\S+)\s*(.*)$/.exec(String(spec).trim());
+  if (!m) return { text: 'mcp-call needs a server, a tool and JSON arguments' };
+  const [, name, tool, rawArgs] = m;
+  const full = `mcp__${name}__${tool}`;
+  const id = `toolu_mcp_${session.turns}`;
+  let args = {};
+  try { args = rawArgs ? JSON.parse(rawArgs) : {}; } catch { return { text: `mcp-call arguments are not JSON: ${rawArgs}` }; }
+  emit({ type: 'assistant', session_id: session.id, message: { model: MODEL, role: 'assistant', content: [{ type: 'tool_use', id, name: full, input: args }], usage: turnUsage(session.turns) } });
+  if (!mcpRuleAllows(argv, name, tool)) {
+    const refusal = `Claude requested permissions to use ${full}, but you haven't granted it yet.`;
+    emit({ type: 'user', session_id: session.id, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, is_error: true, content: refusal }] } });
+    return { text: `mcp ${tool} denied`, denial: { tool_name: full, tool_use_id: id, tool_input: args } };
+  }
+  let server = null;
+  server = ((mcpConfigOf(argv) || {}).mcpServers || {})[name] || null;
+  if (!server) return { text: `mcp ${tool}: no MCP server named ${name}` };
+  const got = await rpcExchange(server, [
+    { id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'fake-claude', version: '0' } } },
+    { method: 'notifications/initialized' },
+    { id: 2, method: 'tools/call', params: { name: tool, arguments: args } },
+  ]);
+  const res = got.get(2);
+  const result = res && res.result;
+  const text = result && Array.isArray(result.content) ? result.content.map(c => c.text || '').join('\n') : `no answer (${res && res.error ? res.error.message : 'the server said nothing'})`;
+  const isError = !result || !!result.isError;
+  emit({ type: 'user', session_id: session.id, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, is_error: isError, content: text }] } });
+  return { text: `mcp ${tool} ${isError ? 'error' : 'ok'}: ${text}` };
 }
 
 function lastUserLine(text) {
@@ -154,7 +273,7 @@ async function main() {
   const prior = resume ? loadSession(resume) : null;
   const session = prior || { id: resume || crypto.randomUUID(), turns: 0, total: {}, created: Date.now() };
   session.turns += 1;
-  recordCall({ at: new Date().toISOString(), session: session.id, turn: session.turns, resume: resume || null, images, directives: d, argv, cwd: process.cwd(), pid: process.pid });
+  recordCall({ at: new Date().toISOString(), session: session.id, turn: session.turns, resume: resume || null, images, directives: d, argv, mcpConfig: mcpConfigOf(argv), cwd: process.cwd(), pid: process.pid });
 
   if (d.auth) {
     emit({ type: 'result', subtype: 'success', is_error: true, result: 'Invalid API key · Please run /login', session_id: session.id });
@@ -163,6 +282,7 @@ async function main() {
   if (d['no-result']) process.exit(Number(d['no-result']) || 1);
   emit({ type: 'system', subtype: 'init', session_id: session.id, model: MODEL, cwd: process.cwd(), tools: [], mcp_servers: mcpServers(argv, d['mcp-fail']) });
   if (d.crash) { process.stderr.write('fake-claude: crashing on request\n'); process.exit(Number(d.crash) || 3); }
+  if (typeof d['mcp-term'] === 'string') await holdUntilTerm(d['mcp-term'], argv);
   if (d.hang) { setInterval(() => {}, 1 << 30); await new Promise(() => {}); }
 
   const tools = Number(d.tools) || 0;
@@ -192,10 +312,28 @@ async function main() {
     if (denial) { denials.push(denial); session.pendingBash = command; } else delete session.pendingBash;
   }
 
+  if (typeof d['use-tool'] === 'string') {
+    const name = d['use-tool'].trim();
+    const id = `toolu_use_${session.turns}`;
+    emit({ type: 'assistant', session_id: session.id, message: { model: MODEL, role: 'assistant', content: [{ type: 'tool_use', id, name, input: { path: '.' } }], usage: turnUsage(session.turns) } });
+    if (argList(argv, '--disallowedTools').includes(name)) {
+      const refusal = `Permission to use ${name} has been denied.`;
+      emit({ type: 'user', session_id: session.id, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, is_error: true, content: refusal }] } });
+      denials.push({ tool_name: name, tool_use_id: id, tool_input: { path: '.' } });
+    }
+  }
+
+  let mcpSaid = '';
+  if (typeof d['mcp-call'] === 'string') {
+    const r = await runMcpCall(session, d['mcp-call'], argv);
+    mcpSaid = r.text;
+    if (r.denial) denials.push(r.denial);
+  }
+
   const u = turnUsage(session.turns);
   session.total = addUsage(session.total, u);
   saveSession(session);
-  const said = denials.length ? `blocked (turn ${session.turns}): ${command}` : command ? `ran (turn ${session.turns}): ${command}` : '';
+  const said = mcpSaid || (denials.length ? `blocked (turn ${session.turns}): ${command}` : command ? `ran (turn ${session.turns}): ${command}` : '');
   const reply = d.reply !== undefined && d.reply !== true ? String(d.reply) : said || `echo (turn ${session.turns}): ${lastUserLine(text).slice(0, 200)}`;
   const body = d.long ? `${reply}\n` + 'lorem ipsum dolor sit amet '.repeat(Number(d.long) || 100) : reply;
   emit({ type: 'assistant', session_id: session.id, message: { model: MODEL, role: 'assistant', content: [{ type: 'text', text: body }], usage: u } });

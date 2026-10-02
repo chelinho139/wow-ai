@@ -5,6 +5,7 @@ const net = require('net');
 const LP = require('../liveproto');
 const P = require('../protocol');
 const SS = require('../sessions');
+const GM = require('../goalsmcp');
 
 const DEFAULTS = { waitMs: 3000, permissionTimeoutMs: 120000, helloTimeoutMs: 5000, pickupMs: 45000, pickupPollMs: 5000 };
 const CLAUDE_INFO_TTL_MS = 5000;
@@ -21,6 +22,7 @@ function createLive(overrides = {}) {
   const pending = new Map();
   const permissions = new Map();
   const waiters = new Set();
+  const runSockets = new Set();
   let server = null;
   let address = '';
   let token = '';
@@ -327,6 +329,35 @@ function createLive(overrides = {}) {
     else if (msg.type === 'goal_call') onGoalCall(s, msg);
   }
 
+  async function acceptRun(s, msg) {
+    const grants = core && core.runGrants;
+    sessions.delete(s.id);
+    s.runPending = true;
+    let accepted = { why: 'this bridge gives no run grants' };
+    try { if (grants) accepted = await grants.hello(msg, s.sock); } catch (e) { accepted = { why: e && e.message ? e.message : String(e) }; }
+    s.runPending = false;
+    if (!accepted.run || s.sock.destroyed) {
+      if (accepted.run) grants.detach(accepted.run, s.sock);
+      s.sock.write(LP.encode({ type: 'reject', reason: 'bad run hello' }));
+      s.sock.destroy();
+      log(`refused an in-game run connection without a valid run grant (${accepted.why || 'closed during the hello'})`);
+      return;
+    }
+    s.run = accepted.run;
+    runSockets.add(s.sock);
+    s.sock.write(LP.encode(accepted.welcome));
+  }
+
+  async function onRunMessage(s, msg) {
+    if (msg.type !== GM.CALL) return;
+    const answer = await core.runGrants.onCall(s.run, msg);
+    if (!s.sock.destroyed) s.sock.write(LP.encode(answer));
+  }
+
+  function runEndpoint() {
+    return server ? address : '';
+  }
+
   async function detectListening(s) {
     if (!s.ppid) return { listening: false, why: 'the channel server did not name its Claude Code process' };
     let line = null;
@@ -347,8 +378,11 @@ function createLive(overrides = {}) {
     const hello = setTimeout(() => { if (!s.verified) sock.destroy(); }, opt('helloTimeoutMs'));
     if (hello.unref) hello.unref();
     sock.on('data', LP.lineReader(msg => {
+      if (s.runPending) return;
+      if (s.run) { onRunMessage(s, msg); return; }
       if (s.verified) { onVerified(s, msg); return; }
       clearTimeout(hello);
+      if (msg.type === GM.HELLO) { acceptRun(s, msg); return; }
       if (msg.type !== 'hello' || typeof msg.nonce !== 'string' || !msg.nonce || !LP.sameProof(msg.proof, LP.proof(token, 'client', msg.nonce))) {
         sock.write(LP.encode({ type: 'reject', reason: 'bad hello' }));
         sock.destroy();
@@ -377,6 +411,11 @@ function createLive(overrides = {}) {
     sock.on('close', () => {
       clearTimeout(hello);
       sessions.delete(s.id);
+      if (s.run) {
+        runSockets.delete(sock);
+        if (core && core.runGrants) core.runGrants.detach(s.run, sock);
+        return;
+      }
       if (!s.verified) return;
       log(`session "${s.name}" disconnected`);
       for (const [chatId, p] of [...pending]) {
@@ -398,7 +437,8 @@ function createLive(overrides = {}) {
     address = LP.endpoint(core.home, platform);
     if (platform !== 'win32') { try { fs.rmSync(address, { force: true }); } catch {} }
     server = net.createServer(onConnection);
-    server.on('error', e => log(`cannot listen on ${address}: ${e.message}`));
+    const listener = server;
+    listener.on('error', e => { log(`cannot listen on ${address}: ${e.message}`); if (server === listener) server = null; });
     const umask = platform !== 'win32' ? process.umask(0o177) : null;
     server.listen(address, () => {
       if (platform !== 'win32') { try { fs.chmodSync(address, 0o600); } catch {} }
@@ -412,6 +452,8 @@ function createLive(overrides = {}) {
     for (const [chatId] of [...permissions]) clearPermission(chatId);
     for (const s of sessions.values()) s.sock.destroy();
     sessions.clear();
+    for (const sock of [...runSockets]) sock.destroy();
+    runSockets.clear();
     if (server) {
       server.close();
       server = null;
@@ -528,8 +570,9 @@ function createLive(overrides = {}) {
     stop,
     status,
     sessions: sessionsList,
+    runEndpoint,
     banner: () => `forwards chats to a running Claude Code session (${LP.DEV_FLAG} ${LP.CHANNEL_ARG}); see docs/LIVE-SESSION.md`,
-    _state: { sessions, pending, permissions, get address() { return address; } },
+    _state: { sessions, pending, permissions, runSockets, get address() { return address; } },
   };
 }
 

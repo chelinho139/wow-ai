@@ -56,6 +56,7 @@ const SS = require('./sessions');
 const G = require('./gamefs');
 const SIG = require('./signals');
 const DM = require('./datamcp');
+const GM = require('./goalsmcp');
 const GD = require('./gamedata');
 const DSYNC = require('./datasync');
 const GR = require('./gamerefs');
@@ -204,7 +205,7 @@ function holdLock() {
         const now = readJsonQuiet(LOCK_FILE);
         if (now && now.pid === process.pid) { try { fs.rmSync(LOCK_FILE, { force: true }); } catch {} }
       });
-      return;
+      return true;
     } catch (e) {
       if (e.code !== 'EEXIST') throw e;
     }
@@ -218,8 +219,9 @@ function holdLock() {
     try { fs.rmSync(LOCK_FILE, { force: true }); } catch {}
   }
   log(`could not take ${LOCK_FILE}; starting without the single-bridge guard`);
+  return false;
 }
-if (!exitWhenIdle) holdLock();
+const holdsLock = !exitWhenIdle && holdLock();
 
 const stateEarly = readJson(STATE_FILE, {});
 const chosen = P.chooseTransport(cap, stateEarly);
@@ -419,6 +421,7 @@ let captureChild = null; // the capture script on the pixel transport (startCapt
 function shutdown(sig) {
   if (shuttingDown) return;
   shuttingDown = true;
+  try { runGrants.revokeAll(); } catch {}
   stopPlugins();
   let voteClosing = Promise.resolve();
   try { voteClosing = VOTES.settleWithin(voteBox.stop(), VOTES.SHUTDOWN_PUSH_WAIT_MS); } catch {}
@@ -955,6 +958,7 @@ function cancelRun(job) {
   if (cur && cur.job.id === job.cancel) {
     cur.job.cancelled = true;
     log(`${tagOf(cur.job)} cancelled from the game; ending it and everything it started`);
+    revokeRunGrant(cur.job);
     if (cur.child) killTree(cur.child);
     return;
   }
@@ -1047,8 +1051,15 @@ const core = {
     return goalStore.call(tool, args);
   },
   gameData: () => GR.openFor(HOME.data, (state.context && state.context.text) || ''),
+  get runGrants() { return runGrants; },
   agentPids: () => [...running.values()].map(r => r.child).concat(T.titleChildren()).filter(Boolean).map(c => c.pid),
 };
+
+const runGrants = GM.createRunGrants({
+  call: (tool, args) => core.goals(tool, args),
+  character: () => runGrantCharacter(),
+  log,
+});
 
 const voteBox = VOTES.createVotes({
   config: () => cfg.votes,
@@ -1126,18 +1137,65 @@ function stopPlugins() {
 // instructions (tools) go into the system prompt; its surfaces say whether the
 // run may mark the map and whether macro blocks in the reply become buttons.
 const IN_GAME_NEVER_GRANTED = LP.GOAL_WRITE_TOOLS;
-function inGameDeniedTools() {
-  return [...IN_GAME_NEVER_GRANTED, ...homeGuardRules()];
+function neverOffered(denied) {
+  return rule => GM.isRunToolRule(rule) || GM.deniedBy(denied, rule);
+}
+function inGameGrantable(rules, denied) {
+  const blocked = neverOffered(denied);
+  return P.withoutRules(rules, IN_GAME_NEVER_GRANTED).filter(r => !blocked(r));
+}
+function inGameDeniedTools(askRun, withRunTools) {
+  return [
+    ...LP.GOAL_WRITE_TOOLS,
+    ...(withRunTools ? GM.DENIED_WITH_TOOLS : GM.DENIED_WITHOUT_TOOLS),
+    ...homeGuardRules(),
+    ...(askRun ? [...GM.ASK_DENIED_TOOLS, ...homeDirs().map(dir => P.absolutePathRule('Read', path.join(dir, '**')))] : []),
+  ];
+}
+
+const loggedNoRunTools = new Set();
+function noRunTools(tag, why) {
+  if (loggedNoRunTools.has(why)) return '';
+  loggedNoRunTools.add(why);
+  log(`${tag} ${GM.SERVER_NAME}: ${why}, so in-game runs go without the goal, order and campaign tools`);
+  return '';
+}
+function runToolsSocket(tag) {
+  const lp = livePlugin();
+  const socket = lp && typeof lp.runEndpoint === 'function' ? lp.runEndpoint() : '';
+  if (!socket) return noRunTools(tag, 'the live socket is not listening (plugins.live.enabled, or --once)');
+  if (!runGrantCharacter()) return noRunTools(tag, 'the game context names no character');
+  return socket;
+}
+function runGrantCharacter() {
+  return (GOALS.characterOf((state.context && state.context.text) || '') || {}).key || '';
+}
+
+const MCP_CONFIG_DIR = path.join(TMP_DIR, 'mcp');
+if (holdsLock) { try { fs.rmSync(MCP_CONFIG_DIR, { recursive: true, force: true }); } catch {} }
+function writePrivateFile(file, content) {
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(file, content, { mode: 0o600, flag: 'wx' });
+  fs.chmodSync(file, 0o600);
+}
+
+function homeDirs() {
+  let real = HOME.dir;
+  try { real = fs.realpathSync(HOME.dir); } catch {}
+  return [...new Set([HOME.dir, real])];
 }
 
 function homeGuardRules() {
-  let real = HOME.dir;
-  try { real = fs.realpathSync(HOME.dir); } catch {}
-  const homes = [...new Set([HOME.dir, real])];
-  return homes.flatMap(dir => [
+  const mcpDir = path.relative(HOME.dir, MCP_CONFIG_DIR);
+  return homeDirs().flatMap(dir => [
     P.absolutePathRule('Read', LP.tokenFile(dir)),
     P.absolutePathRule('Edit', path.join(dir, path.basename(HOME.goals), '**')),
+    P.absolutePathRule('Read', path.join(dir, mcpDir, '**')),
   ]);
+}
+
+function revokeRunGrant(job) {
+  if (job && job.runGrantId && runGrants.revoke(job.runGrantId)) log(`${tagOf(job)} ${GM.SERVER_NAME} grant revoked before the run is ended`);
 }
 
 function runAgent(job, opts = {}) {
@@ -1157,8 +1215,11 @@ function runAgent(job, opts = {}) {
   job.agent = agentId;
   const agent = A.AGENTS[agentId];
   const chosen = chatSettings(job);
-  const grantForGood = P.splitGrants(P.withoutRules(job.allow, IN_GAME_NEVER_GRANTED));
-  const grantOnce = P.splitGrants(P.withoutRules(job.allowOnce, IN_GAME_NEVER_GRANTED));
+  const askRun = !!opts.runTools && agentId === 'claude';
+  const runToolSocket = askRun ? runToolsSocket(tag) : '';
+  const runDenied = inGameDeniedTools(askRun, !!runToolSocket);
+  const grantForGood = P.splitGrants(inGameGrantable(job.allow, runDenied));
+  const grantOnce = P.splitGrants(inGameGrantable(job.allowOnce, runDenied));
   if (grantForGood.rules.length) {
     const added = allowRules(agentId, grantForGood.rules);
     log(`${tag} allowed for ${agentId}: ${grantForGood.rules.join(', ')}${added.length ? '' : ' (already allowed)'}`);
@@ -1167,9 +1228,9 @@ function runAgent(job, opts = {}) {
     log(`${tag} allowed for this run only (${agentId}): ${grantOnce.rules.join(', ')}`);
   }
   const dataServer = opts.gameData && agentId === 'claude' ? gameDataServer(tag) : null;
-  const runOnlyRules = dataServer ? [...grantOnce.rules, ...dataServer.rules] : grantOnce.rules;
+  const runOnlyRules = [...grantOnce.rules, ...(dataServer ? dataServer.rules : []), ...(runToolSocket ? GM.RUN_RULES : [])];
   const baseCfg = A.withPluginSettings(A.agentConfig(cfg, agentId), agentId, core.options(plugin.id));
-  const acfg = A.withChatSettings(P.withRunDeniedRules(P.withRunOnlyRules(baseCfg, runOnlyRules), inGameDeniedTools()), agentId, chosen);
+  const acfg = A.withChatSettings(P.withRunDeniedRules(P.withRunOnlyRules(baseCfg, runOnlyRules), runDenied), agentId, chosen);
   const runDirs = [...grantForGood.dirs, ...grantOnce.dirs].map(d => P.resolveCwd(d, DEFAULT_CWD));
   if (runDirs.length) {
     acfg.addDirs = [...new Set([...A.addDirs(acfg), ...runDirs])];
@@ -1234,9 +1295,23 @@ function runAgent(job, opts = {}) {
     try { fs.mkdirSync(TMP_DIR, { recursive: true }); fs.writeFileSync(promptFile, input.promptFile); }
     catch (e) { finish(job, 'error', `Could not write the prompt file ${promptFile}: ${e.message}`); return; }
   }
+  const runGrant = runToolSocket ? runGrants.grant(tag) : null;
+  const runServer = runGrant ? GM.launchConfig({ runId: runGrant.id, token: runGrant.token, socket: runToolSocket }).server : null;
+  const mcpJson = GM.mcpConfig({ [DM.SERVER_NAME]: dataServer && dataServer.server, [GM.SERVER_NAME]: runServer });
+  const mcpConfigFile = mcpJson ? path.join(MCP_CONFIG_DIR, `mcp-${job.id}-${crypto.randomBytes(8).toString('hex')}.json`) : '';
+  if (mcpConfigFile) {
+    try { writePrivateFile(mcpConfigFile, mcpJson); }
+    catch (e) {
+      if (runGrant) runGrants.revoke(runGrant.id);
+      if (input.promptFile !== undefined) { try { fs.unlinkSync(promptFile); } catch {} }
+      finish(job, 'error', `Could not write the MCP config file ${mcpConfigFile}: ${e.message}`);
+      return;
+    }
+  }
+  if (runGrant) job.runGrantId = runGrant.id;
   const args = [...cmd.args, ...agent.args({
     cfg: acfg, resume, cwd, system, systemShort, promptFile, images,
-    prompt, timeoutMs: cfg.timeoutMs, mcpConfig: dataServer ? dataServer.config : '',
+    prompt, timeoutMs: cfg.timeoutMs, mcpConfig: mcpConfigFile,
   })];
   const env = agent.env({ ...process.env });
   // Where this run's tools append map commands (docs/MAP.md); any agent can use
@@ -1256,7 +1331,7 @@ function runAgent(job, opts = {}) {
     } catch (e) { log(`${tag} ui file unavailable: ${e.message}`); }
   }
 
-  const picked = [acfg.model && 'model ' + acfg.model, acfg.effort && 'effort ' + acfg.effort, chosen.permissionMode && 'mode ' + acfg.permissionMode, (acfg.addDirs || []).length && '+' + acfg.addDirs.length + ' dir(s)', dataServer && 'wowdata ' + dataServer.build + ' ' + dataServer.flavor].filter(Boolean).join(', ');
+  const picked = [acfg.model && 'model ' + acfg.model, acfg.effort && 'effort ' + acfg.effort, chosen.permissionMode && 'mode ' + acfg.permissionMode, (acfg.addDirs || []).length && '+' + acfg.addDirs.length + ' dir(s)', dataServer && 'wowdata ' + dataServer.build + ' ' + dataServer.flavor, runGrant && GM.SERVER_NAME + ' for this run'].filter(Boolean).join(', ');
   log(`${tag} (${job.via}) [${plugin.id}] ${agent.name} starting in ${cwd}${picked ? ' [' + picked + ']' : ''}${resume ? ' (resume ' + resume.slice(0, 8) + ')' : ' (new session)'}${ctx ? ' [game context]' : ''}${image ? ` [screen ${image.width}x${image.height}, ${Math.round(image.bytes / 1024)} KB]` : ''}${running.size ? ' [' + (running.size + 1) + ' running]' : ''}`);
   const startedAt = Date.now(); // a fresh session's clock starts here (the footer's elapsed time)
   const child = PR.spawnChild(cmd.file, args, { cwd, env, windowsHide: true, stdio: [input.stdin !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
@@ -1267,7 +1342,7 @@ function runAgent(job, opts = {}) {
   if (job.title) nameChat(job, key);
 
   const granted = P.grantsFor(acfg, cwd);
-  const parser = agent.parser({ cwd, granted, isDir: isDirectory, neverOffer: IN_GAME_NEVER_GRANTED });
+  const parser = agent.parser({ cwd, granted, isDir: isDirectory, neverOffer: [...IN_GAME_NEVER_GRANTED, ...(acfg.deniedTools || [])], neverOfferIf: neverOffered(acfg.deniedTools || []) });
   job.activity = ACH.createRunLog(agentId);
   const progress = [];
   let sessionId = resume || '';
@@ -1291,6 +1366,8 @@ function runAgent(job, opts = {}) {
     log(`${tag} MCP server(s) not connected: ${servers.map(s => `${s.name} (${s.status})`).join(', ')}`);
     const ours = dataServer && servers.find(s => s.name === DM.SERVER_NAME);
     if (ours) notes.push(`The game data server (${DM.SERVER_NAME}) did not start (${ours.status}), so this answer was not checked against the client data.`);
+    const goalsDown = runGrant && servers.find(s => s.name === GM.SERVER_NAME);
+    if (goalsDown) notes.push(`The goal tools server (${GM.SERVER_NAME}) did not start (${goalsDown.status}), so no goal, order or campaign was changed by this run.`);
   };
   if (agent.stream === 'text') pushProgress(`${agent.name} is working (no live progress)`);
   if (input.note) notes.push(input.note);
@@ -1350,12 +1427,15 @@ function runAgent(job, opts = {}) {
   const timer = setTimeout(() => {
     job.timedOut = true;
     log(`${tag} timed out after ${cfg.timeoutMs || 1800000} ms; ending it and everything it started (SIGTERM, SIGKILL after ${KILL_GRACE_MS} ms)`);
+    revokeRunGrant(job);
     killTree(child);
   }, cfg.timeoutMs || 1800000);
 
   const cleanup = () => {
     clearTimeout(timer);
     clearInterval(keepalive);
+    if (runGrant) runGrants.revoke(runGrant.id);
+    if (mcpConfigFile) { try { fs.unlinkSync(mcpConfigFile); } catch {} }
     if (input.promptFile !== undefined) { try { fs.unlinkSync(promptFile); } catch {} }
     // The game view was for this run only; the agent has it in its session now.
     if (job.image) { try { fs.unlinkSync(job.image.file); } catch {} }

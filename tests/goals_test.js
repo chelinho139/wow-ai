@@ -642,6 +642,10 @@ function fakeInstall(dir) {
   const denials = [
     { tool_name: 'mcp__claude-wow__order_issue', tool_use_id: 't1', tool_input: { text: 'x' } },
     { tool_name: 'NotebookEdit', tool_use_id: 't2', tool_input: {} },
+    { tool_name: 'mcp__wowgoals__campaign_start', tool_use_id: 't3', tool_input: {} },
+    { tool_name: 'mcp__wowgoals__goal_vote_open', tool_use_id: 't4', tool_input: {} },
+    { tool_name: 'mcp__wowgoals__future_tool', tool_use_id: 't5', tool_input: {} },
+    { tool_name: 'Grep', tool_use_id: 't6', tool_input: { path: '/' } },
   ];
   fs.writeFileSync(agent, [
     `require('fs').writeFileSync(${JSON.stringify(argvFile)}, JSON.stringify(process.argv.slice(2)));`,
@@ -699,12 +703,12 @@ test('the bridge stamps when the game last confirmed its context: a message with
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('in-game ask runs: goal write tools are denied, a Need roll can never grant or persist them, and the roll never offers them', { timeout: 60000 }, () => {
+test('in-game ask runs without the live socket: the channel goal tools and wowgoals are denied, a Need roll can never grant or persist them, and the roll never offers them', { timeout: 60000 }, () => {
   const dir = tmpDir('askrun');
   try {
     const { home, addons, saved, argvFile } = fakeInstall(dir);
-    const allow = ['mcp__claude-wow__order_issue', 'WebFetch'].join('\x1F');
-    const allowOnce = ['mcp__claude-wow__goal_set', 'Glob'].join('\x1F');
+    const allow = ['mcp__claude-wow__order_issue', 'mcp__wowgoals__order_issue', 'mcp__wowgoals', 'WebFetch', 'mcp__wowgoals__*', 'mcp__wowgoals__goal_set(*)', 'mcp__wowgoals*', ' mcp__wowgoals__new_tool', 'Grep', 'Read(' + home + '/state.json)', P.absolutePathRule('Read', path.join(home, 'state.json')), 'LS'].join('\x1F');
+    const allowOnce = ['mcp__claude-wow__goal_set', 'mcp__wowgoals__goal_set', 'mcp__wowgoals__narrate(x)', 'Glob', 'TodoWrite'].join('\x1F');
     fs.writeFileSync(saved, `ClaudeWoWDB = {\n["outbox"] = {\n["id"] = 7,\n["session"] = "sess1",\n["chat"] = "chat1",\n["text"] = "${hex('set my order')}",\n["cwd"] = "",\n["plugin"] = "ask",\n["allow"] = "${hex(allow)}",\n["allowOnce"] = "${hex(allowOnce)}",\n["t"] = 1,\n},\n}\n`);
     const r = spawnSync(process.execPath, [BRIDGE, '--once'], { encoding: 'utf8', env: { ...process.env, CLAUDE_WOW_HOME: home }, timeout: 60000 });
     const out = r.stdout + r.stderr;
@@ -712,18 +716,21 @@ test('in-game ask runs: goal write tools are denied, a Need roll can never grant
     assert.match(out, /\[ask\]/, out);
     const argv = JSON.parse(fs.readFileSync(argvFile, 'utf8'));
     const homes = [...new Set([home, fs.realpathSync(home)])];
-    const guards = homes.flatMap(h => [P.absolutePathRule('Read', path.join(h, 'live.token')), P.absolutePathRule('Edit', path.join(h, 'goals', '**'))]);
-    assert.deepEqual(argList(argv, '--disallowedTools'), [...LP.GOAL_WRITE_TOOLS, ...guards], 'the token and the goal store are off limits by their real path too');
+    const guards = homes.flatMap(h => [P.absolutePathRule('Read', path.join(h, 'live.token')), P.absolutePathRule('Edit', path.join(h, 'goals', '**')), P.absolutePathRule('Read', path.join(h, 'tmp', 'mcp', '**'))]);
+    assert.deepEqual(argList(argv, '--disallowedTools'), [...LP.GOAL_WRITE_TOOLS, 'mcp__wowgoals', ...guards, 'Grep', 'Glob', 'LS', 'NotebookRead', ...homes.map(h => P.absolutePathRule('Read', path.join(h, '**')))], 'the token and the goal store are off limits by their real path too');
     assert.ok(guards.every(g => /^(Read|Edit)\(\/\/[^/]/.test(g)), 'absolute paths take the // prefix');
+    assert.ok(!argv.includes('--mcp-config'), 'no live socket under --once, so no wowgoals server');
+    assert.match(out, /wowgoals: the live socket is not listening/);
     const allowed = argList(argv, '--allowedTools');
-    assert.ok(allowed.includes('WebFetch') && allowed.includes('Glob'), 'other granted rules still work, for good and once');
+    assert.ok(allowed.includes('WebFetch') && allowed.includes('TodoWrite') && !allowed.includes('Glob'), 'other granted rules still work, for good and once');
     for (const tool of LP.GOAL_WRITE_TOOLS) assert.ok(!allowed.includes(tool), `${tool} is never allowed`);
+    assert.deepEqual(allowed.filter(r => r.trim().startsWith('mcp__wowgoals')), [], 'a roll never grants a wowgoals rule');
     const config = JSON.parse(fs.readFileSync(path.join(home, 'config.json'), 'utf8'));
     assert.deepEqual(config.agents.claude.allowedTools, ['WebSearch', 'WebFetch'], 'a Need click never persists a goal write tool');
     const lua = fs.readFileSync(path.join(addons, 'ClaudeWoW_S001', 'Inbox.lua'), 'utf8');
     const deniedLine = (/^\s*denied = \{.*\},$/m.exec(lua) || [''])[0];
     assert.match(deniedLine, /"NotebookEdit"/, lua);
-    assert.doesNotMatch(lua, /goal_set|order_issue/, 'neither the roll nor the reply offers a goal write tool');
+    assert.doesNotMatch(lua, /goal_set|order_issue|campaign_start|goal_vote_open|future_tool|wowgoals|Grep/, 'neither the roll nor the reply offers a goal write tool');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
