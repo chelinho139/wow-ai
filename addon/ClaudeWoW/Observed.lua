@@ -2,7 +2,9 @@ local O = {}
 ClaudeWoWObserved = O
 
 O.VENDOR_ITEMS_MAX = 40
-O.AH_QUOTES_MAX = 12
+O.AH_QUOTES_MAX = 50
+O.AH_BROWSE_RESULTS_MAX = 12
+O.AH_SECTION_BYTES = 1200
 O.LOOT_ENTRIES_MAX = 8
 O.LOOT_ITEMS_MAX = 6
 O.LOOTED_GUIDS_MAX = 64
@@ -45,9 +47,9 @@ O.PROBES = {
 	"UnitIsDead",
 }
 O.EVENTS = { "MERCHANT_SHOW", "AUCTION_HOUSE_BROWSE_RESULTS_UPDATED", "COMMODITY_SEARCH_RESULTS_UPDATED", "AUCTION_ITEM_LIST_UPDATE", "AUCTION_HOUSE_CLOSED", "LOOT_READY", "LOOT_OPENED", "LOOT_CLOSED" }
-O.debug = { ah = nil }
+O.debug = { ah = nil, ahUnsent = 0 }
 
-local state = { vendor = nil, ah = {}, loot = {}, looted = {}, lootedOrder = {}, windowAt = nil, spell = nil, gather = {}, queries = 0, before = nil, dequoting = false, playerQuery = nil, hooked = {} }
+local state = { vendor = nil, ah = {}, loot = {}, looted = {}, lootedOrder = {}, windowAt = nil, spell = nil, gather = {}, queries = 0, lastQuery = nil, before = nil, playerQuery = nil, hooked = {} }
 
 local function Try(fn, ...)
 	if type(fn) ~= "function" then return nil end
@@ -167,7 +169,7 @@ function O.OnBrowse()
 	local results = Try(C_AuctionHouse and C_AuctionHouse.GetBrowseResults)
 	if type(results) ~= "table" then return end
 	local added = false
-	for i = 1, math.min(#results, O.AH_QUOTES_MAX) do
+	for i = 1, math.min(#results, O.AH_BROWSE_RESULTS_MAX) do
 		local r = results[i]
 		local key = type(r) == "table" and r.itemKey
 		local plain = type(key) == "table" and (key.itemSuffix or 0) == 0 and (key.battlePetSpeciesID or 0) == 0
@@ -182,13 +184,21 @@ function O.OnCommodity(itemID)
 	if type(first) == "table" and Quote(itemID, first.unitPrice, first.quantity) then Changed() end
 end
 
-function O.OnAuctionQuery()
+function O.OnAuctionQuery(text, exact)
 	state.queries = state.queries + 1
+	state.lastQuery = { text = PlainString(text) or "", exact = exact and true or false }
 end
 
-function O.BeforeQuery(raw)
-	if state.dequoting then return end
-	state.before = { at = GetTime(), count = state.queries, canSend = Try(CanSendAuctionQuery, O.AH_LIST) and true or false, raw = PlainString(raw) or "" }
+function O.BeforeQuery()
+	state.before = { at = GetTime(), count = state.queries, canSend = Try(CanSendAuctionQuery, O.AH_LIST) and true or false }
+end
+
+local function AsciiLower(s)
+	return (s:gsub("[A-Z]", string.lower))
+end
+
+local function NonAscii(s)
+	return s:find("[\128-\255]") ~= nil
 end
 
 function O.OnPlayerSearch()
@@ -203,10 +213,9 @@ function O.OnPlayerSearch()
 		O.debug.ah = "the search was throttled"
 		return
 	end
-	state.dequoting = true
-	local inner = PlainString(Try(DequoteString, before.raw))
-	state.dequoting = false
-	state.playerQuery = { count = state.queries, text = string.lower(inner or before.raw), exact = inner ~= nil }
+	local query = state.lastQuery or { text = "", exact = false }
+	local caseSensitive = NonAscii(query.text)
+	state.playerQuery = { count = state.queries, text = caseSensitive and query.text or AsciiLower(query.text), exact = query.exact, caseSensitive = caseSensitive }
 end
 
 function O.OnBid()
@@ -226,10 +235,10 @@ end
 
 function O.HookAuctionQueries()
 	if type(hooksecurefunc) ~= "function" then return false end
-	Hook("query", function() O.OnAuctionQuery() end)
+	Hook("query", function(text, _, _, _, _, _, _, exact) O.OnAuctionQuery(text, exact) end)
 	Hook("bid", function() O.OnBid() end)
 	if state.hooked.query and state.hooked.bid then
-		Hook("dequote", function(raw) O.BeforeQuery(raw) end)
+		Hook("dequote", function() O.BeforeQuery() end)
 		Hook("search", function() O.OnPlayerSearch() end)
 	end
 	return O.AuctionHooked()
@@ -253,7 +262,7 @@ local function SkipList(reason, consume)
 end
 
 local function NameMatches(name, search)
-	name = string.lower(name)
+	if not search.caseSensitive then name = AsciiLower(name) end
 	if search.exact then return name == search.text end
 	return string.find(name, search.text, 1, true) ~= nil
 end
@@ -265,7 +274,7 @@ local function AuctionRows(batch, search)
 		local id, plain = O.AuctionLinkItem(Try(GetAuctionItemLink, O.AH_LIST, i))
 		local name = r and PlainString(r[O.AUCTION_NAME + 1])
 		if not r or not r[O.AUCTION_HAS_ALL_INFO + 1] or not id or not name then return nil end
-		if not NameMatches(name, search) then return false end
+		if plain and not NameMatches(name, search) then return false end
 		local count, buyout, reported = WholeNumber(r[O.AUCTION_COUNT + 1]), WholeNumber(r[O.AUCTION_BUYOUT + 1]), r[O.AUCTION_ITEM_ID + 1]
 		if plain and count and count > 0 and buyout and (reported == nil or reported == id) then
 			local it = items[id]
@@ -294,21 +303,15 @@ function O.OnAuctionList()
 	if not (batch and total) then return SkipList("no result count", true) end
 	if total > batch or batch > O.AH_PAGE_MAX then return SkipList("result spans pages: " .. Int(total) .. " auctions, " .. Int(batch) .. " shown", true) end
 	local items, order = AuctionRows(batch, search)
-	if items == false then return SkipList("a row does not match the search text", true) end
+	if items == false then return SkipList(search.caseSensitive and "a row does not match the search text (case-sensitive: the search text is not ASCII)" or "a row does not match the search text", true) end
 	if not items then return SkipList("a row has no item info yet") end
 	state.playerQuery = nil
-	local added, kept, priced = false, 0, 0
+	local added = false
 	for _, id in ipairs(order) do
 		local it = items[id]
-		if it.buyout then
-			priced = priced + 1
-			if kept < O.AH_QUOTES_MAX then
-				kept = kept + 1
-				if Quote(id, math.floor((it.buyout + it.count - 1) / it.count), it.quantity, it.rows, it.count) then added = true end
-			end
-		end
+		if it.buyout and Quote(id, math.floor((it.buyout + it.count - 1) / it.count), it.quantity, it.rows, it.count) then added = true end
 	end
-	O.debug.ah = "read " .. Int(#order) .. " items from " .. Int(batch) .. " auctions" .. (priced > kept and (", " .. Int(priced - kept) .. " over the " .. Int(O.AH_QUOTES_MAX) .. "-quote cap dropped") or "")
+	O.debug.ah = "read " .. Int(#order) .. " items from " .. Int(batch) .. " auctions"
 	if added then Changed() end
 end
 
@@ -428,8 +431,15 @@ function O.OnSpell(unit, spellID)
 end
 
 function O.Sections()
-	local ah = {}
-	for _, q in ipairs(state.ah) do ah[#ah + 1] = Int(q.id) .. "=" .. Int(q.price) .. "/" .. Int(q.quantity) .. "@" .. Int(q.at) .. (q.rows and q.stack and ("/" .. Int(q.rows) .. "/" .. Int(q.stack)) or "") end
+	local ah, bytes = {}, 0
+	for i = #state.ah, 1, -1 do
+		local q = state.ah[i]
+		local part = Int(q.id) .. "=" .. Int(q.price) .. "/" .. Int(q.quantity) .. "@" .. Int(q.at) .. (q.rows and q.stack and ("/" .. Int(q.rows) .. "/" .. Int(q.stack)) or "")
+		if bytes + #part + 1 > O.AH_SECTION_BYTES then break end
+		bytes = bytes + #part + 1
+		table.insert(ah, 1, part)
+	end
+	O.debug.ahUnsent = #state.ah - #ah
 	return { vendor = state.vendor, ah = #ah > 0 and table.concat(ah, ",") or nil, loot = #state.loot > 0 and table.concat(state.loot, ";") or nil }
 end
 

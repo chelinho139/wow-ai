@@ -90,7 +90,7 @@ function farmView(store, item, lines, minSamples, asOfContext) {
 }
 
 const AUCTION_NOTES_BY_FLAVOR = Object.freeze({
-  classic_era: 'On this client (Classic Era) each auction quote is one complete search result the player ran that fit on one page: price is the lowest buyout per item, rounded up to whole copper; quantity is every item listed for it in that result, bid-only auctions included; rows is the number of those auctions; stack is the size of the auction that set the price, so a price from a stack of 20 may not buy a single item.',
+  classic_era: 'On this client (Classic Era) each auction quote is one complete search result, sent through the Blizzard browse window, that fit on one page: price is the lowest buyout per item, rounded up to whole copper; quantity is every item listed for it in that result, bid-only auctions included; rows is the number of those auctions; stack is the size of the auction that set the price, so a price from a stack of 20 may not buy a single item.',
 });
 
 function priceView(store, item, lines, asOfContext) {

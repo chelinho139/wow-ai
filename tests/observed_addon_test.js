@@ -592,11 +592,27 @@ test('Classic Era: a row with no link or without all its info stores nothing for
   assert.deepEqual(eraQuotes(vm), [[2589, 40, 1, 1, 1], [2592, 5, 1, 1, 1]]);
 });
 
-test('Classic Era: more priced items than the quote cap keeps the first 12 and says how many were dropped', () => {
+test('Classic Era: a full page of 50 items keeps 50 quotes; the section sends the newest that fit its byte budget and counts the rest', () => {
   const vm = eraAuctionHouse();
-  const rows = Array.from({ length: 14 }, (_, i) => ({ id: 3000 + i, count: 1, buyout: 10 + i }));
-  assert.equal(playerSearch(vm, rows), 'read 14 items from 14 auctions, 2 over the 12-quote cap dropped');
-  assert.deepEqual(eraQuotes(vm).map(q => q[0]), rows.slice(0, 12).map(r => r.id));
+  const rows = Array.from({ length: 50 }, (_, i) => ({ id: 3000 + i, count: 1, buyout: 10 + i }));
+  assert.equal(playerSearch(vm, rows), 'read 50 items from 50 auctions');
+  const section = vm.evaluate('ClaudeWoWObserved.Sections().ah');
+  assert.ok(section.length <= Number(vm.evaluate('ClaudeWoWObserved.AH_SECTION_BYTES')), `section is ${section.length} bytes`);
+  const sent = section.split(',').length;
+  assert.equal(Number(vm.evaluate('ClaudeWoWObserved.debug.ahUnsent')), 50 - sent, 'every quote left out is counted');
+  assert.deepEqual(eraQuotes(vm).map(q => q[0]), rows.slice(50 - sent).map(r => r.id), 'the newest quotes go first');
+  assert.equal(OB.parseAh(section).quotes.length, sent, 'the bridge parser accepts the whole section');
+});
+
+test('Classic Era: the name check reads the query\'s own text, compares ASCII case only, is case-sensitive for non-ASCII text, and skips suffix rows', () => {
+  const vm = eraAuctionHouse();
+  assert.equal(playerSearch(vm, [{ id: 2589, count: 1, buyout: 40, name: 'TEST CLOTH' }, { id: 15210, count: 1, buyout: 9, name: 'Other Thing', suffix: 1179 }]), 'read 1 items from 2 auctions', 'a suffix row is skipped before the name check');
+  vm.run('BrowseName:SetText("tést")');
+  assert.equal(playerSearch(vm, [{ id: 2590, count: 1, buyout: 50, name: 'Bolt of tést' }]), 'read 1 items from 1 auctions');
+  assert.equal(playerSearch(vm, [{ id: 2590, count: 1, buyout: 50, name: 'Bolt of Tést' }]), 'a row does not match the search text (case-sensitive: the search text is not ASCII)', 'ASCII lowering would have matched this; non-ASCII text compares as typed');
+  const fromArgs = eraAuctionHouse({ extra: 'function DequoteString() return nil end\nfunction AuctionFrameBrowse_Search() DequoteString("ignored"); QueryAuctionItems("cloth", 0, 0, 0, false, -1, false, true, nil) end' });
+  assert.equal(playerSearch(fromArgs, [{ id: 2589, count: 1, buyout: 40, name: 'Bolt of Cloth' }]), 'a row does not match the search text', 'text and exact flag come from the query arguments');
+  assert.equal(playerSearch(fromArgs, [{ id: 2589, count: 1, buyout: 40, name: 'Cloth' }]), 'read 1 items from 1 auctions');
 });
 
 test('Classic Era: results that arrive after the auction frame closed are not read', () => {
