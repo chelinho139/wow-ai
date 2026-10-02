@@ -126,8 +126,16 @@ function shown(vm) {
 }
 
 function printedCount(vm, needle) {
-  vm.run(`RESULT = 0; for _, m in ipairs(STUB.printed) do if m:find(${q(needle)}, 1, true) then RESULT = RESULT + 1 end end`);
+  vm.run(`RESULT = 0
+    local lines = {}
+    for _, m in ipairs(STUB.prints) do lines[#lines + 1] = m end
+    for _, m in ipairs(DEFAULT_CHAT_FRAME and DEFAULT_CHAT_FRAME.messages or {}) do lines[#lines + 1] = m.text end
+    for _, m in ipairs(lines) do if m:find(${q(needle)}, 1, true) then RESULT = RESULT + 1 end end`);
   return vm.num('RESULT');
+}
+
+function linesIn(vm, frameName) {
+  return vm.evaluate(`STUB.Lines(${frameName})`) || '';
 }
 
 function decodeStrip(vm) {
@@ -328,9 +336,65 @@ test('dm frame: the explicit empty field hides it; a slot without the field (an 
   assert.equal(shown(vm), true);
   sendAndRead(vm, dmLua({ rev: 5 }), 'campaign ended');
   assert.equal(shown(vm), false);
-  vm.run('ClaudeWoWDM.Toggle()');
-  assert.equal(shown(vm), false, '/dm with nothing to show opens nothing');
-  assert.equal(printedCount(vm, 'No story beat yet'), 1);
+  vm.run('SlashCmdList.CLAUDEWOWDM("")');
+  assert.equal(shown(vm), true, '/dm after the campaign ended opens the empty state');
+  assert.equal(vm.evaluate('ClaudeWoWDMFrame.beatTitle.text'), 'The Dungeon Master has no story for you yet.');
+});
+
+const WHISPER_SLOT = dm => `STUB.onLoadAddOn = function(name) ClaudeWoW_SlotData = { now = time(), cwd = "", agent = "claude", agents = { "claude" }, replies = {}, dm = ${dm} } end`;
+
+function dockedVM(dm) {
+  const vm = newVM({ prelude: 'STUB.ChatDock()' });
+  vm.run(WHISPER_SLOT(dm));
+  tick(vm);
+  return vm;
+}
+
+test('/dm with no campaign: the same parchment frame opens with a native empty state, and /dm again hides it', () => {
+  const vm = dockedVM(dmLua({}));
+  assert.equal(vm.evaluate('ClaudeWoWDMFrame'), null, 'nothing drawn before /dm');
+  vm.run('ChatFrame1EditBox:SetText("/dm"); STUB.PressEnter(ChatFrame1EditBox)');
+  assert.equal(shown(vm), true, '/dm opens the frame');
+  assert.equal(vm.evaluate('ClaudeWoWDM.debug.parchment'), 'QuestBG-Parchment', 'the same parchment art');
+  assert.equal(vm.evaluate('ClaudeWoWDMFrame.beatTitle.text'), 'The Dungeon Master has no story for you yet.');
+  assert.equal(vm.evaluate('ClaudeWoWDMFrame.body.text'), 'A live Claude session starts a campaign. Its first beat shows here.');
+  assert.equal(vm.evaluate('ClaudeWoWDMFrame.hint.shown'), 'false');
+  assert.equal(printedCount(vm, 'story'), 0, 'nothing printed instead');
+  vm.run('ChatFrame1EditBox:SetText("/dm"); STUB.PressEnter(ChatFrame1EditBox)');
+  assert.equal(shown(vm), false, '/dm again hides it');
+});
+
+test('/dm with a campaign waiting for /dm next: the frame shows the begin hint, and a beat replaces the empty state', () => {
+  const vm = newVM();
+  vm.run('SlashCmdList.CLAUDEWOWDM("")');
+  assert.equal(vm.evaluate('ClaudeWoWDMFrame.beatTitle.text'), 'The Dungeon Master has no story for you yet.');
+  nextSlot(vm, dmLua({ manual: true }));
+  tick(vm);
+  assert.equal(shown(vm), true, 'the open empty state stays open');
+  assert.equal(vm.evaluate('ClaudeWoWDMFrame.beatTitle.text'), 'The story is ready.');
+  assert.equal(vm.evaluate('ClaudeWoWDMFrame.hint.text'), 'Type /dm next to begin.');
+  assert.equal(vm.evaluate('ClaudeWoWDMFrame.hint.shown'), 'true');
+  vm.run('SlashCmdList.CLAUDEWOWDM("")');
+  assert.equal(shown(vm), false);
+  vm.run('SlashCmdList.CLAUDEWOWDM("")');
+  assert.equal(shown(vm), true);
+  assert.equal(vm.evaluate('ClaudeWoWDMFrame.hint.text'), 'Type /dm next to begin.');
+  sendAndRead(vm, dmLua({ rev: 2, beat: BEAT1, manual: true }), 'go');
+  assert.equal(vm.evaluate('ClaudeWoWDMFrame.beatTitle.text'), 'A story begins');
+  assert.equal(vm.evaluate('ClaudeWoWDMFrame.hint.text'), 'Type /dm next when you are ready to go on.');
+});
+
+test('/dm next with no campaign: the reply lands in the chat frame the player typed in, never the Claude whisper tab', () => {
+  const vm = dockedVM(dmLua({}));
+  assert.equal(vm.num('STUB.tempWindows'), 1, 'the Claude whisper tab is open');
+  vm.run('ClaudeWoW.Print("routing probe")');
+  assert.ok(linesIn(vm, 'ChatFrame11').includes('routing probe'), 'ClaudeWoW.Print goes to the whisper tab here');
+  vm.run('ChatFrame1EditBox:SetText("/dm next"); STUB.PressEnter(ChatFrame1EditBox)');
+  assert.ok(!linesIn(vm, 'ChatFrame11').includes('no campaign beat'), 'not in the whisper tab');
+  assert.ok(linesIn(vm, 'ChatFrame1').includes('There is no campaign beat waiting for /dm next.'), linesIn(vm, 'ChatFrame1'));
+  vm.run('SlashCmdList.CLAUDEWOWDM("next")');
+  assert.equal(printedCount(vm, 'There is no campaign beat waiting'), 2, 'no edit box: the default chat frame');
+  assert.ok(!linesIn(vm, 'ChatFrame11').includes('no campaign beat'));
 });
 
 test('dm frame: a beat for another character, or a field with no character, stays hidden', () => {

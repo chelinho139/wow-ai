@@ -22,6 +22,11 @@ local BEAT_ID_MAX = 16
 local MAX_DATA_AGE_SECONDS = 300
 local SIGNATURE_SEPARATOR = "\031"
 local HINT_TEXT = "Type /dm next when you are ready to go on."
+local EMPTY_TITLE = "The Dungeon Master has no story for you yet."
+local EMPTY_BODY = "A live Claude session starts a campaign. Its first beat shows here."
+local READY_TITLE = "The story is ready."
+local READY_HINT = "Type /dm next to begin."
+local CHAT_PREFIX = "|cff66ccff[Claude WoW]|r "
 local PORTRAIT = "Interface\\AddOns\\ClaudeWoW\\Portrait"
 local PARCHMENT_FALLBACK_COLOR = { 0.80, 0.70, 0.52, 1 }
 local INK = { 0.18, 0.12, 0.06 }
@@ -51,11 +56,23 @@ T.debug = { renders = 0, native = {} }
 local frame
 local watcher
 
-local function Print(msg)
-	if ClaudeWoW and ClaudeWoW.Print then
-		ClaudeWoW.Print(msg)
+local function CanAddMessage(f)
+	return type(f) == "table" and type(f.AddMessage) == "function"
+end
+
+local function OutputFrame(editBox)
+	local typedIn = type(editBox) == "table" and editBox.chatFrame
+	if CanAddMessage(typedIn) then return typedIn end
+	if CanAddMessage(DEFAULT_CHAT_FRAME) then return DEFAULT_CHAT_FRAME end
+	return nil
+end
+
+local function Print(msg, editBox)
+	local out = OutputFrame(editBox)
+	if out then
+		out:AddMessage(CHAT_PREFIX .. msg)
 	else
-		print("|cff66ccff[Claude WoW]|r " .. msg)
+		print(CHAT_PREFIX .. msg)
 	end
 end
 
@@ -216,22 +233,33 @@ local function Build()
 	if not ok then f.buildError = err end
 end
 
-local function Layout(view)
+local function PlaceText(title, body, hint, hintShown)
 	frame.beatTitle:ClearAllPoints()
 	frame.beatTitle:SetPoint("TOPLEFT", frame.paper, "TOPLEFT", TEXT_X, TEXT_Y)
-	frame.beatTitle:SetText(view.beat.title)
+	frame.beatTitle:SetText(title)
 	frame.body:ClearAllPoints()
 	frame.body:SetPoint("TOPLEFT", frame.beatTitle, "BOTTOMLEFT", 0, -LINE_GAP)
-	frame.body:SetText(table.concat(view.beat.lines, "\n"))
-	frame.hint:SetText(HINT_TEXT)
-	frame.hint:SetShown(view.manual)
+	frame.body:SetText(body)
+	frame.hint:SetText(hint)
+	frame.hint:SetShown(hintShown)
 end
 
-local function ReportError(err)
+local function Layout(view)
+	frame.emptyState = view.beat == nil
+	if view.beat then
+		PlaceText(view.beat.title, table.concat(view.beat.lines, "\n"), HINT_TEXT, view.manual)
+	elseif view.manual then
+		PlaceText(READY_TITLE, "", READY_HINT, true)
+	else
+		PlaceText(EMPTY_TITLE, EMPTY_BODY, "", false)
+	end
+end
+
+local function ReportError(err, editBox)
 	local text = tostring(err)
 	if text == T.debug.lastError then return end
 	T.debug.lastError = text
-	Print("the DM frame could not be drawn: " .. text)
+	Print("the DM frame could not be drawn: " .. text, editBox)
 end
 
 local function InCombat()
@@ -247,8 +275,12 @@ local function Reveal()
 	PlayQuestSound("IG_QUEST_LIST_OPEN")
 end
 
+local function ShowingEmptyState()
+	return frame ~= nil and frame.emptyState == true and frame:IsShown()
+end
+
 local function Draw(view, reveal)
-	if not view or not view.beat then
+	if not view.beat and not reveal and not ShowingEmptyState() then
 		if frame then frame:Hide() end
 		return
 	end
@@ -260,9 +292,9 @@ local function Draw(view, reveal)
 	T.debug.lastError = nil
 end
 
-local function DrawFailed(err)
+local function DrawFailed(err, editBox)
 	if frame then pcall(frame.Hide, frame) end
-	ReportError(err)
+	ReportError(err, editBox)
 end
 
 function T.Sync(data)
@@ -302,26 +334,18 @@ function T.Frame()
 	return frame
 end
 
-function T.Toggle()
-	if not T.view or not T.view.beat then
-		if T.view and T.view.manual then
-			Print("The story is ready. Type /dm next to begin.")
-		else
-			Print("No story beat yet. The Dungeon Master shows the current beat once Claude starts a campaign and its first beat fires.")
-		end
-		return
-	end
+function T.Toggle(editBox)
 	if frame and frame:IsShown() then
 		frame:Hide()
 		return
 	end
-	local ok, err = pcall(Draw, T.view, true)
+	local ok, err = pcall(Draw, T.view or Normalize({}), true)
 	if not ok then
-		DrawFailed(err)
+		DrawFailed(err, editBox)
 		T.signature = nil
 		return
 	end
-	if T.showAfterCombat then Print("The Dungeon Master shows after combat.") end
+	if T.showAfterCombat then Print("The Dungeon Master shows after combat.", editBox) end
 end
 
 local NEXT_REPLIES = {
@@ -332,27 +356,27 @@ local NEXT_REPLIES = {
 	nochar = "The game did not name your character, so the bridge cannot tell whose story this is.",
 }
 
-function T.Next()
+function T.Next(editBox)
 	if not T.view or (not T.view.beat and not T.view.manual) then
-		Print("There is no campaign beat waiting for /dm next.")
+		Print("There is no campaign beat waiting for /dm next.", editBox)
 		return
 	end
 	if not T.view.manual then
-		Print("The next beat starts on its own when its moment comes, not with /dm next.")
+		Print("The next beat starts on its own when its moment comes, not with /dm next.", editBox)
 		return
 	end
 	local result = ClaudeWoW and type(ClaudeWoW.SendDmNext) == "function" and ClaudeWoW.SendDmNext(T.CharacterKey()) or "unsupported"
-	Print(NEXT_REPLIES[result] or NEXT_REPLIES.unsupported)
+	Print(NEXT_REPLIES[result] or NEXT_REPLIES.unsupported, editBox)
 end
 
-function T.Command(rest)
+function T.Command(rest, editBox)
 	local word = tostring(rest or ""):lower():match("^%s*(%S*)")
 	if word == "" then
-		T.Toggle()
+		T.Toggle(editBox)
 	elseif word == "next" then
-		T.Next()
+		T.Next(editBox)
 	else
-		Print("/dm shows or hides the Dungeon Master. /dm next goes on to the next beat when it waits for you.")
+		Print("/dm shows or hides the Dungeon Master. /dm next goes on to the next beat when it waits for you.", editBox)
 	end
 end
 
@@ -364,7 +388,7 @@ pcall(watcher.RegisterEvent, watcher, "PLAYER_REGEN_ENABLED")
 watcher:SetScript("OnEvent", function()
 	if not T.showAfterCombat then return end
 	T.showAfterCombat = nil
-	if frame and T.view and T.view.beat and not frame.buildError then
+	if frame and not frame.buildError then
 		frame:Show()
 		PlayQuestSound("IG_QUEST_LIST_OPEN")
 	end
