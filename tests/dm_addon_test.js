@@ -232,8 +232,8 @@ test('dm frame: every fallback branch draws; the parchment is the window\'s own 
     assert.equal(vm.evaluate('ClaudeWoWDM.debug.parchment'), want.parchment, why);
     assert.equal(vm.evaluate('ClaudeWoWDM.debug.lastError'), null, why);
     assert.equal(vm.evaluate('ClaudeWoWDM.debug.parchmentSize'), '322x404', `${why}: one size for any art`);
-    assert.equal(vm.num('ClaudeWoWDMFrame.paper.width'), 322, why);
-    assert.equal(vm.num('ClaudeWoWDMFrame.paper.height'), 404, why);
+    assert.equal(vm.num('ClaudeWoWDMFrame.parchmentArea.width'), 322, why);
+    assert.equal(vm.num('ClaudeWoWDMFrame.parchmentArea.height'), 404, why);
   }
 });
 

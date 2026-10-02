@@ -36,22 +36,29 @@ function jsonl(rows) {
   return rows.map(r => JSON.stringify(r)).join('\n') + '\n';
 }
 
-function makeData() {
-  const root = tmpDir('data');
-  const dir = path.join(root, 'forever', '1.60.1.200');
+function addFlavor(root, flavor, build, extra = {}) {
+  const dir = path.join(root, flavor, build);
   fs.mkdirSync(dir, { recursive: true });
   for (const f of fs.readdirSync(FIXTURE)) fs.copyFileSync(path.join(FIXTURE, f), path.join(dir, f));
-  fs.writeFileSync(path.join(root, 'forever', 'current'), '1.60.1.200\n');
+  fs.writeFileSync(path.join(root, flavor, 'current'), `${build}\n`);
   fs.appendFileSync(path.join(dir, 'uimaps.jsonl'), jsonl(STORY_MAP_ROWS));
   fs.writeFileSync(path.join(dir, 'quests.jsonl'), jsonl(QUEST_ROWS));
   const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8'));
   manifest.entities.uimaps.rows += STORY_MAP_ROWS.length;
   manifest.entities.quests = { file: 'quests.jsonl', table: 'QuestV2', rows: QUEST_ROWS.length };
-  fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(manifest));
+  fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify({ ...manifest, build, ...extra }));
+}
+
+function makeData({ era = false } = {}) {
+  const root = tmpDir('data');
+  addFlavor(root, 'forever', '1.60.1.200');
+  if (era) addFlavor(root, 'classic_era', '1.15.9.70003', { flavor: 'classic_era', product: 'wow_classic_era', buildFamily: '1.15.9' });
   return root;
 }
 
 const DATA = makeData();
+const DATA_WITH_ERA = makeData({ era: true });
+const ERA_CONTEXT = BONE_CONTEXT.replace('Game: World of Warcraft: Forever (client 1.60.1.70124, interface 16001)', 'Game: World of Warcraft Classic (client 1.15.9.70003, interface 11509)');
 const openData = text => GD.openStore({ dataDir: DATA, clientBuild: GD.clientBuildOf(text) });
 
 function rig(opts = {}) {
@@ -166,7 +173,7 @@ test('triggers: zone and quest IDs must be in the synced data; level, death and 
   assert.equal(C.checkTrigger({ type: 'manual' }, null).ok, true);
   assert.equal(C.checkTrigger({ type: 'reach' }, null).ok, false, 'no trigger type the telemetry does not report');
   const era = GD.openStore({ dataDir: DATA, clientBuild: '1.15.9.70003' });
-  assert.match(C.checkTrigger({ type: 'zone', mapID: 9101 }, era).text, /not in the client's build family/);
+  assert.match(C.checkTrigger({ type: 'zone', mapID: 9101 }, era).text, /No game data is synced for this build yet \(claude-wow data sync --flavor classic_era\)/);
   assert.match(C.checkTrigger({ type: 'zone', mapID: 9101 }, null).text, /No game data is synced/);
 });
 
@@ -306,7 +313,7 @@ test('story text is refused when multi-word game names cannot be checked: no dat
   const r = C.checkStory('take the low road home', { names: ['Bone'], store: mismatch, maxLength: 400, what: 'line' });
   assert.equal(r.ok, false);
   assert.match(r.text, /cannot be checked/);
-  assert.match(r.text, /not in the client's build family/);
+  assert.match(r.text, /No game data is synced for this build yet \(claude-wow data sync --flavor classic_era\)/);
   assert.equal(C.checkStory('A cold wind.', { names: [], store: null, maxLength: 400, what: 'line' }).ok, false, 'no data at all');
   assert.equal(C.checkStory('A cold wind.', { names: [], store: openData(BONE_CONTEXT), maxLength: 400, what: 'line' }).ok, true);
 });
@@ -453,4 +460,28 @@ test('tools: five campaign tools on the live session; every one is denied to in-
   const names = out[0].result.tools.map(t => t.name);
   for (const tool of C.TOOL_NAMES) assert.ok(names.includes(tool), tool);
   ch.stop();
+});
+
+test('Classic Era: a campaign starts and narrates against the Era data for an Era client, and the Forever data alone refuses the same text', async () => {
+  assert.notEqual(ERA_CONTEXT, BONE_CONTEXT);
+  const args = { title: 'A letter with no name', beats: [beat('The quiet road', ['The road into {map:9101,50,50} is quiet.'], { type: 'zone', mapID: 9101 }), beat('Begin', ['Go.'], { type: 'manual' })] };
+  const era = rig({ ctx: ERA_CONTEXT, gameData: text => GD.openStore({ dataDir: DATA_WITH_ERA, clientBuild: GD.clientBuildOf(text) }) });
+  try {
+    const started = await era.store.call('campaign_start', args);
+    assert.equal(started.ok, true, started.text);
+    const doc = era.read();
+    assert.equal(doc.campaign.beats[0].narration[0], 'The road into Fixture Pines is quiet.');
+    assert.ok(doc.campaign.beats[0].refs.every(r => r.build === '1.15.9.70003'), 'refs come from the Era data');
+    assert.equal((await era.store.call('beat_trigger', { id: 'b1' })).ok, true);
+    const said = await era.store.call('narrate', { text: 'The wind turns cold on {map:9102,10,10}.' });
+    assert.equal(said.ok, true, said.text);
+    assert.match(said.text, /Fixture Hold/);
+  } finally { era.cleanup(); }
+  const foreverOnly = rig({ ctx: ERA_CONTEXT, gameData: text => GD.openStore({ dataDir: DATA, clientBuild: GD.clientBuildOf(text) }) });
+  try {
+    const refused = await foreverOnly.store.call('campaign_start', args);
+    assert.equal(refused.ok, false);
+    assert.match(refused.text, /No game data is synced for this build yet \(claude-wow data sync --flavor classic_era\)/);
+    assert.equal(fs.existsSync(foreverOnly.file), false, 'nothing was saved');
+  } finally { foreverOnly.cleanup(); }
 });
