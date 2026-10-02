@@ -105,12 +105,12 @@ function findClient() {
       .filter(Boolean).flatMap(p => ['Program Files (x86)', 'Program Files'].map(pf => path.join(p, 'drive_c', pf, 'World of Warcraft')));
   }
   for (const root of roots) {
-    for (const flavor of ['_classic_beta_', '_forever_', '_retail_', '_classic_era_', '_classic_']) {
+    for (const flavor of ['_classic_beta_', '_forever_', '_classic_era_']) {
       const dir = path.join(root, flavor);
       if (isClient(dir)) return dir;
     }
   }
-  throw new Error('Could not find the WoW client. Pass --wow "<path to World of Warcraft/_classic_beta_>"');
+  throw new Error('Could not find the WoW client. Pass --wow "<path to World of Warcraft/_classic_beta_ or _classic_era_>"');
 }
 
 function findAccount(client) {

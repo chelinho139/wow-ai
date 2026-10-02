@@ -186,9 +186,9 @@ test('systemPrompt always asks for the TL;DR block, and adds the game rules and 
   assert.ok(!P.systemPrompt('').includes('CLAUDE_WOW_MAP_FILE'), 'map hint only with the game context');
   assert.ok(s.includes('World of Warcraft: Forever is its own game'), 'a game chat is told Forever differs from the web databases');
   assert.ok(!P.systemPrompt('').includes('World of Warcraft: Forever is its own game'), 'and only a game chat');
-  assert.match(s, /an ID must come from a source that ties it to that exact thing: a "Linked from the game" entry in this message \(item, spell or quest\), or a wowdata result whose name is the item you mean\./);
+  assert.match(s, /an ID must come from a source that ties it to that exact thing: a "Linked from the game" entry in this chat \(item, spell or quest\), or a wowdata result whose name is the item you mean\. When several wowdata rows share that name, use a token only if the player's link or the situation picks out one of them; otherwise name it in plain words\./);
   assert.match(s, /never pick one from a list of bare IDs/);
-  assert.match(s, /Classic web databases describe it, but a game ID still comes only from the sources the link rule below names/);
+  assert.match(s, /Classic web databases describe it, but an item, spell or quest ID still comes only from the sources the link rule below names/);
   assert.doesNotMatch(s, /use the Classic ID|when you are sure of it|tokens are refused/);
   assert.ok(!s.includes('ClaudeWoWNpcDB') && !s.includes('NPCs seen on this map'), 'no stored NPC data is offered');
   assert.ok(s.includes('in-game situation') && s.includes('Linked from the game'), 'says what the situation block and the links are');
@@ -206,6 +206,21 @@ test('systemPrompt always asks for the TL;DR block, and adds the game rules and 
   for (const s of [P.systemPrompt(''), P.systemPrompt('Character: X', '# P'), P.systemPrompt('Character: X', '# P', { image: { width: 1, height: 1 } })]) {
     assert.ok(!s.includes('screenshot of the player'), 'the vision paragraph is not in the system prompt');
   }
+});
+
+test('systemRulesHash follows the rule text only, and rulesChanged needs a recorded hash that differs', () => {
+  const ask = { tools: 'Be the guide.', voice: 'player' };
+  const hash = P.systemRulesHash(ask);
+  assert.match(hash, /^[0-9a-f]{16}$/);
+  assert.equal(P.systemRulesHash({ ...ask }), hash);
+  assert.notEqual(P.systemRulesHash({ tools: 'Be the coder.', voice: 'player' }), hash);
+  assert.notEqual(P.systemRulesHash({ tools: 'Be the guide.' }), hash);
+  const state = {};
+  assert.equal(P.rulesChanged(state, 'k', hash), false, 'a session from before the hash existed is kept');
+  P.noteRules(state, 'k', hash);
+  assert.equal(P.rulesChanged(state, 'k', hash), false);
+  assert.equal(P.rulesChanged(state, 'k', P.systemRulesHash({})), true);
+  assert.equal(P.rulesChanged(state, 'other', P.systemRulesHash({})), false);
 });
 
 test('messagePrompt puts the situation and the vision paragraph before the text, and nothing else', () => {

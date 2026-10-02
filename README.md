@@ -329,7 +329,7 @@ The keys you are most likely to touch. Every key, flag and environment variable 
 | `maxParallel` | how many chats may run an agent at once (default 3) |
 | `gameContext` | `false` never tells the agent about your character, whatever the addon sends (default `true`) |
 | `primerFile` | the addon/macro primer appended with the context (default `docs/WOW-ADDON-PRIMER.md`; `""` = none) |
-| `capture.processName` | the game exe without `.exe` (`WowB` for Forever); set by `setup.js` |
+| `capture.processName` | the game exe without `.exe`, or the app name on macOS (`WowB` for Forever, `World of Warcraft Classic` for Classic Era on macOS); set by `setup.js` |
 | `capture.mode` | `screenshot` (default: the addon calls `Screenshot()`; the bridge reads the file from the client's `Screenshots` folder) or `pixel` (deprecated screen capture; see [Transports](#transports)) |
 | `vision.maxWidth`, `vision.keep` | screenshot mode: how wide the picture of your screen is scaled to before it goes to the agent (default 1280), and how many may wait in `~/.claude-wow/tmp` at once (default 6) |
 | `capture.keepComposited`, `capture.windowName` | Linux: keep the compositor drawing the game window (if the probe sees black), or find the window by title |

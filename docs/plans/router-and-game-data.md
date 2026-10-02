@@ -69,7 +69,7 @@ Data first, router last. Each step must pay off on its own before the next one s
 - [x] Classic Era flavor (PR #49): `claude-wow data sync --flavor classic_era`, wago.tools product `wow_classic_era`, family `1.15.9`. The same endpoint shapes answer for it: `https://wago.tools/api/builds` lists `wow_classic_era`, and `https://wago.tools/db2/<Table>/csv?build=1.15.9.70003` serves each table. Every table and every column the parsers read is in the Era build, so no table is dropped for Era. First real sync (1.15.9.70003, fetched 2026-10-02T00:00Z): 39,234 rows kept, 0 dropped. `items` 24,442, `quests` 4,807, `zones` 1,212, `flightpaths` 87 (54 `zoneAmbiguous`, 1 on no map), `uimaps` 54, `uimapassignments` 55, `skilllines` 129, `skilllineabilities` 6,143, `spellreagents` 2,305.
 - [x] Era checked by hand through `wow_item`, `wow_where`, `wow_flights` and `wow_sources` with client build 1.15.9.70003 (`buildCheck` `exact`, trust `client-data`): item 2589 is Linen Cloth (quality 1, item level 5, sells for 13 copper) and is a reagent for Tailoring (197), Engineering (202), First Aid (129) and Blacksmithing (164); Tirisfal Glades is uiMap 1420 under Eastern Kingdoms (1415) and area 85; uiMap 1420 holds flight path 11, Undercity, Tirisfal, at 61.2, 75.32 (`zoneAmbiguous`, so `map` is the continent); Brill has no flight path in Era, and the tool says so (`found: false`).
 - [x] The ask prompt's link rule is the same on both games: an `{item:ID}`, `{spell:ID}` or `{quest:ID}` only from a "Linked from the game" entry or a wowdata row whose name is that item, never from memory, a website or a list of bare IDs.
-- [ ] Session reset on a system prompt change (§6): not built. A Claude Code chat that started before the link rule keeps its old system prompt.
+- [x] Session reset on a system prompt change (§6), PR #61: the bridge records a hash of the rule text (the system prompt without the primer) when a Claude session starts, and starts a new session when it differs. A session from before the hash existed has none and keeps resuming.
 - [ ] Run it from install, setup and the weekly timer (§8).
 - [ ] NPC and object spawns: no source until a licensed one exists.
 
@@ -97,9 +97,8 @@ Data first, router last. Each step must pay off on its own before the next one s
 
 ## 6. Step 4: `wow-data` skill and prompt change
 
-- `WHERE_HINT` gains one line: use the `wowdata` tools first, cite `trust`, say "unverified" for web answers, say "I do not know, check in game" rather than invent coordinates. New Forever zones (Hyjal, Riverglades, Zephras, Shen'dralas) never use Classic data.
-- `ask.js` `TOOLS` drops "use web search for current game data".
-- **Session reset:** Claude Code records a chat's system prompt at its first request and reuses it on resume (`--system-prompt-snapshot`, on by default). Existing chats would keep the old prompt. The bridge stores a hash of the system prompt per session key and starts a new session when it changes, the same way it already does when the agent or plugin changes. This ships in the same PR as the prompt change, with a test in `tests/bridge_test.js`.
+- Superseded by PR #61: `WHERE_HINT` names the client's game and says the wowdata tools use only its data; `LINK_HINT` says where an item, spell or quest ID may come from. The `ask.js` `TOOLS` line was not changed.
+- **Session reset:** Claude Code records a chat's system prompt at its first request and reuses it on resume (`--system-prompt-snapshot`, on by default). Existing chats would keep the old prompt. Built in PR #61: the bridge stores a hash of the rule text per session key (`sessionRules` in `state.json`; the primer is left out, so a primer edit still reaches only new chats) and starts a new Claude session when it changes, the same way it already does when the agent or plugin changes. Tests: `tests/bridge_test.js` and `tests/e2e/commands_test.js`.
 - The primer stays in the system prompt. It is recorded once and prefix-cached, so it costs little, and every macro answer needs its Forever API rules.
 
 ## 7. Step 5: plugin, and the router if it pays

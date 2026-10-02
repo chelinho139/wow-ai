@@ -4,7 +4,7 @@ Every route ends in the same place: the code on your machine, a `claude-wow` com
 
 Before any of them you need:
 
-- **World of Warcraft: Forever** or **World of Warcraft Classic** (Classic Era), run at least once with the account you play on (setup reads the account folder). With more than one client installed, setup picks Forever first; pass `--wow ".../_classic_era_"` to set up Classic Era.
+- **World of Warcraft: Forever** or **World of Warcraft Classic** (Classic Era), run at least once with the account you play on (setup reads the account folder). Setup looks for `_classic_beta_`, then `_forever_`, then `_classic_era_`, and never picks another client; with Forever and Classic Era both installed, pass `--wow ".../_classic_era_"` to set up Classic Era.
 - **Nothing else, on route 1 or 2**: the bridge ships as one self-contained binary for macOS (arm64, x64), Linux (x64) and Windows (x64), with its runtime inside. Route 3, and route 1 where there is no binary for your machine, run the checkout and need **Node.js 22.2 or newer** (`node -v`: [nodejs.org](https://nodejs.org), `brew install node`, `winget install OpenJS.NodeJS.LTS`) or [Bun](https://bun.sh).
 - **At least one agent CLI**, installed and logged in: `claude`, `codex`, `grok`, `agy` or `hermes` (see [AGENTS.md](AGENTS.md)). One is enough; the bridge lists what it found.
 

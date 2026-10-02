@@ -85,6 +85,22 @@ test('wow_item by name: exact, then prefix, then word, then substring; limit and
   assert.equal(call(store, 'wow_item', { name: 'nothing like it' }).found, false);
 });
 
+test('wow_item by name says when several items share a shown name, and only then', async () => {
+  const { dataDir } = await syncedHome('sharedname');
+  const { dir } = D.readCurrent(D.flavorDir(dataDir, 'forever'));
+  const items = fs.readFileSync(path.join(dir, 'items.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+  const blade = items.find(it => it.name === 'Fixture Blade');
+  fs.appendFileSync(path.join(dir, 'items.jsonl'), JSON.stringify({ ...blade, id: 9001, name: 'fixture blade' }) + '\n');
+  const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8'));
+  manifest.entities.items.rows += 1;
+  fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(manifest));
+  const store = GD.openStore({ dataDir, flavor: 'forever' });
+  const shared = call(store, 'wow_item', { name: 'Fixture Blade', limit: 1 });
+  assert.deepEqual(shared.results.map(x => x.id), [blade.id]);
+  assert.deepEqual(shared.notes.filter(n => /share|named/.test(n)), [`2 items are named "Fixture Blade" (IDs ${blade.id}, 9001): the name alone does not pick one.`]);
+  assert.deepEqual(call(store, 'wow_item', { name: 'Fixture Letter' }).notes.filter(n => /named/.test(n)), []);
+});
+
 test('a name that reads like an instruction comes back as a quoted field value, never as text of its own', async () => {
   const { dataDir } = await syncedHome('inject');
   const store = GD.openStore({ dataDir, flavor: 'forever' });
