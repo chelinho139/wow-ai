@@ -420,6 +420,7 @@ let captureChild = null; // the capture script on the pixel transport (startCapt
 function shutdown(sig) {
   if (shuttingDown) return;
   shuttingDown = true;
+  try { runGrants.revokeAll(); } catch {}
   stopPlugins();
   let voteClosing = Promise.resolve();
   try { voteClosing = VOTES.settleWithin(voteBox.stop(), VOTES.SHUTDOWN_PUSH_WAIT_MS); } catch {}
@@ -956,6 +957,7 @@ function cancelRun(job) {
   if (cur && cur.job.id === job.cancel) {
     cur.job.cancelled = true;
     log(`${tagOf(cur.job)} cancelled from the game; ending it and everything it started`);
+    revokeRunGrant(cur.job);
     if (cur.child) killTree(cur.child);
     return;
   }
@@ -1052,7 +1054,11 @@ const core = {
   agentPids: () => [...running.values()].map(r => r.child).concat(T.titleChildren()).filter(Boolean).map(c => c.pid),
 };
 
-const runGrants = GM.createRunGrants({ call: (tool, args) => core.goals(tool, args), log });
+const runGrants = GM.createRunGrants({
+  call: (tool, args) => core.goals(tool, args),
+  character: () => (GOALS.characterOf((state.context && state.context.text) || '') || {}).key || '',
+  log,
+});
 
 const voteBox = VOTES.createVotes({
   config: () => cfg.votes,
@@ -1130,6 +1136,9 @@ function stopPlugins() {
 // instructions (tools) go into the system prompt; its surfaces say whether the
 // run may mark the map and whether macro blocks in the reply become buttons.
 const IN_GAME_NEVER_GRANTED = Object.freeze([...LP.GOAL_WRITE_TOOLS, ...GM.NEVER_SAVED]);
+function inGameGrantable(rules) {
+  return P.withoutRules(rules, IN_GAME_NEVER_GRANTED).filter(r => !GM.isRunToolRule(r));
+}
 function inGameDeniedTools(withRunTools) {
   return [...LP.GOAL_WRITE_TOOLS, ...(withRunTools ? GM.DENIED_WITH_TOOLS : GM.DENIED_WITHOUT_TOOLS), ...homeGuardRules()];
 }
@@ -1145,14 +1154,27 @@ function runToolsSocket(tag) {
   return socket;
 }
 
+const MCP_CONFIG_DIR = path.join(TMP_DIR, 'mcp');
+function writePrivateFile(file, content) {
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(file, content, { mode: 0o600, flag: 'wx' });
+  fs.chmodSync(file, 0o600);
+}
+
 function homeGuardRules() {
   let real = HOME.dir;
   try { real = fs.realpathSync(HOME.dir); } catch {}
   const homes = [...new Set([HOME.dir, real])];
+  const mcpDir = path.relative(HOME.dir, MCP_CONFIG_DIR);
   return homes.flatMap(dir => [
     P.absolutePathRule('Read', LP.tokenFile(dir)),
     P.absolutePathRule('Edit', path.join(dir, path.basename(HOME.goals), '**')),
+    P.absolutePathRule('Read', path.join(dir, mcpDir, '**')),
   ]);
+}
+
+function revokeRunGrant(job) {
+  if (job && job.runGrantId && runGrants.revoke(job.runGrantId)) log(`${tagOf(job)} ${GM.SERVER_NAME} grant revoked before the run is ended`);
 }
 
 function runAgent(job, opts = {}) {
@@ -1172,8 +1194,8 @@ function runAgent(job, opts = {}) {
   job.agent = agentId;
   const agent = A.AGENTS[agentId];
   const chosen = chatSettings(job);
-  const grantForGood = P.splitGrants(P.withoutRules(job.allow, IN_GAME_NEVER_GRANTED));
-  const grantOnce = P.splitGrants(P.withoutRules(job.allowOnce, IN_GAME_NEVER_GRANTED));
+  const grantForGood = P.splitGrants(inGameGrantable(job.allow));
+  const grantOnce = P.splitGrants(inGameGrantable(job.allowOnce));
   if (grantForGood.rules.length) {
     const added = allowRules(agentId, grantForGood.rules);
     log(`${tag} allowed for ${agentId}: ${grantForGood.rules.join(', ')}${added.length ? '' : ' (already allowed)'}`);
@@ -1252,10 +1274,21 @@ function runAgent(job, opts = {}) {
   }
   const runGrant = runToolSocket ? runGrants.grant(tag) : null;
   const runServer = runGrant ? GM.launchConfig({ runId: runGrant.id, token: runGrant.token, socket: runToolSocket }).server : null;
-  const mcpConfig = GM.mcpConfig({ [DM.SERVER_NAME]: dataServer && dataServer.server, [GM.SERVER_NAME]: runServer });
+  const mcpJson = GM.mcpConfig({ [DM.SERVER_NAME]: dataServer && dataServer.server, [GM.SERVER_NAME]: runServer });
+  const mcpConfigFile = mcpJson ? path.join(MCP_CONFIG_DIR, `mcp-${job.id}-${crypto.randomBytes(8).toString('hex')}.json`) : '';
+  if (mcpConfigFile) {
+    try { writePrivateFile(mcpConfigFile, mcpJson); }
+    catch (e) {
+      if (runGrant) runGrants.revoke(runGrant.id);
+      if (input.promptFile !== undefined) { try { fs.unlinkSync(promptFile); } catch {} }
+      finish(job, 'error', `Could not write the MCP config file ${mcpConfigFile}: ${e.message}`);
+      return;
+    }
+  }
+  if (runGrant) job.runGrantId = runGrant.id;
   const args = [...cmd.args, ...agent.args({
     cfg: acfg, resume, cwd, system, systemShort, promptFile, images,
-    prompt, timeoutMs: cfg.timeoutMs, mcpConfig,
+    prompt, timeoutMs: cfg.timeoutMs, mcpConfig: mcpConfigFile,
   })];
   const env = agent.env({ ...process.env });
   // Where this run's tools append map commands (docs/MAP.md); any agent can use
@@ -1280,13 +1313,14 @@ function runAgent(job, opts = {}) {
   const startedAt = Date.now(); // a fresh session's clock starts here (the footer's elapsed time)
   const child = PR.spawnChild(cmd.file, args, { cwd, env, windowsHide: true, stdio: [input.stdin !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
   running.set(key, { job, child });
+  if (runGrant) runGrants.attachPid(runGrant.id, child.pid);
   noteInflight(key, job, child, agent.name, path.basename(args.find(a => /\.[cm]?js$/.test(String(a))) || cmd.file));
   publish(key, { chat: job.chat, id: job.id, status: 'working', text: resume ? 'thinking...' : 'starting a new session...', cwd: job.cwd, session: resume, agent: agentId, plugin: plugin.id }, true);
   if (input.stdin !== undefined) { child.stdin.on('error', () => {}); child.stdin.end(input.stdin); }
   if (job.title) nameChat(job, key);
 
   const granted = P.grantsFor(acfg, cwd);
-  const parser = agent.parser({ cwd, granted, isDir: isDirectory, neverOffer: IN_GAME_NEVER_GRANTED });
+  const parser = agent.parser({ cwd, granted, isDir: isDirectory, neverOffer: IN_GAME_NEVER_GRANTED, neverOfferIf: GM.isRunToolRule });
   job.activity = ACH.createRunLog(agentId);
   const progress = [];
   let sessionId = resume || '';
@@ -1371,6 +1405,7 @@ function runAgent(job, opts = {}) {
   const timer = setTimeout(() => {
     job.timedOut = true;
     log(`${tag} timed out after ${cfg.timeoutMs || 1800000} ms; ending it and everything it started (SIGTERM, SIGKILL after ${KILL_GRACE_MS} ms)`);
+    revokeRunGrant(job);
     killTree(child);
   }, cfg.timeoutMs || 1800000);
 
@@ -1378,6 +1413,7 @@ function runAgent(job, opts = {}) {
     clearTimeout(timer);
     clearInterval(keepalive);
     if (runGrant) runGrants.revoke(runGrant.id);
+    if (mcpConfigFile) { try { fs.unlinkSync(mcpConfigFile); } catch {} }
     if (input.promptFile !== undefined) { try { fs.unlinkSync(promptFile); } catch {} }
     // The game view was for this run only; the agent has it in its session now.
     if (job.image) { try { fs.unlinkSync(job.image.file); } catch {} }

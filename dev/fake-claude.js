@@ -132,9 +132,66 @@ function runBash(session, command, argv) {
   return { tool_name: 'Bash', tool_use_id: id, tool_input: { command } };
 }
 
+function mcpConfigOf(argv) {
+  const value = arg(argv, '--mcp-config');
+  if (!value) return null;
+  try { return JSON.parse(value.trim().startsWith('{') ? value : fs.readFileSync(value, 'utf8')); } catch { return null; }
+}
+
+function rpcClient(server, opts = {}) {
+  const { spawn } = require('child_process');
+  const child = spawn(server.command, server.args || [], { env: { ...process.env, ...(server.env || {}) }, stdio: ['pipe', 'pipe', 'ignore'], detached: !!opts.detached });
+  const waiting = new Map();
+  let buf = '';
+  child.on('error', () => {});
+  child.stdout.on('data', chunk => {
+    buf += chunk.toString('utf8');
+    let nl;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      let msg = null;
+      try { msg = JSON.parse(buf.slice(0, nl)); } catch {}
+      buf = buf.slice(nl + 1);
+      if (msg && waiting.has(msg.id)) { waiting.get(msg.id)(msg); waiting.delete(msg.id); }
+    }
+  });
+  const request = (body, ms = 10000) => new Promise(resolve => {
+    if (body.id !== undefined) {
+      const timer = setTimeout(() => { waiting.delete(body.id); resolve(null); }, ms);
+      waiting.set(body.id, msg => { clearTimeout(timer); resolve(msg); });
+    }
+    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', ...body }) + '\n');
+    if (body.id === undefined) resolve(null);
+  });
+  return { child, request };
+}
+
+function resultText(msg) {
+  const result = msg && msg.result;
+  return { isError: !result || !!result.isError, text: result && Array.isArray(result.content) ? result.content.map(c => c.text || '').join('\n') : 'no answer' };
+}
+
+async function holdUntilTerm(spec, argv) {
+  const m = /^(\S+)\s+(\S+)\s*(.*)$/.exec(String(spec).trim());
+  const server = m ? ((mcpConfigOf(argv) || {}).mcpServers || {})[m[1]] : null;
+  const log = entry => { fs.mkdirSync(stateDir(), { recursive: true }); fs.appendFileSync(path.join(stateDir(), 'term-calls.jsonl'), JSON.stringify(entry) + '\n'); };
+  if (!server) { log({ phase: 'setup', error: 'no server' }); return; }
+  let args = {};
+  try { args = m[3] ? JSON.parse(m[3]) : {}; } catch {}
+  const c = rpcClient(server, { detached: true });
+  await c.request({ id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } });
+  log({ phase: 'first', ...resultText(await c.request({ id: 2, method: 'tools/call', params: { name: 'goal_list', arguments: {} } })) });
+  process.on('SIGTERM', async () => {
+    log({ phase: 'term', ...resultText(await c.request({ id: 3, method: 'tools/call', params: { name: m[2], arguments: args } }, 3000)) });
+    try { process.kill(-c.child.pid, 'SIGKILL'); } catch {}
+    process.exit(0);
+  });
+  setInterval(() => {}, 1 << 30);
+  await new Promise(() => {});
+}
+
 function mcpServers(argv, failing) {
   let names = [];
-  try { names = Object.keys(JSON.parse(arg(argv, '--mcp-config') || '{}').mcpServers || {}); } catch {}
+  names = Object.keys((mcpConfigOf(argv) || {}).mcpServers || {});
   return names.map(name => ({ name, status: name === failing ? 'failed' : 'connected' }));
 }
 
@@ -184,7 +241,7 @@ async function runMcpCall(session, spec, argv) {
     return { text: `mcp ${tool} denied`, denial: { tool_name: full, tool_use_id: id, tool_input: args } };
   }
   let server = null;
-  try { server = (JSON.parse(arg(argv, '--mcp-config') || '{}').mcpServers || {})[name] || null; } catch {}
+  server = ((mcpConfigOf(argv) || {}).mcpServers || {})[name] || null;
   if (!server) return { text: `mcp ${tool}: no MCP server named ${name}` };
   const got = await rpcExchange(server, [
     { id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'fake-claude', version: '0' } } },
@@ -215,7 +272,7 @@ async function main() {
   const prior = resume ? loadSession(resume) : null;
   const session = prior || { id: resume || crypto.randomUUID(), turns: 0, total: {}, created: Date.now() };
   session.turns += 1;
-  recordCall({ at: new Date().toISOString(), session: session.id, turn: session.turns, resume: resume || null, images, directives: d, argv, cwd: process.cwd(), pid: process.pid });
+  recordCall({ at: new Date().toISOString(), session: session.id, turn: session.turns, resume: resume || null, images, directives: d, argv, mcpConfig: mcpConfigOf(argv), cwd: process.cwd(), pid: process.pid });
 
   if (d.auth) {
     emit({ type: 'result', subtype: 'success', is_error: true, result: 'Invalid API key · Please run /login', session_id: session.id });
@@ -224,6 +281,7 @@ async function main() {
   if (d['no-result']) process.exit(Number(d['no-result']) || 1);
   emit({ type: 'system', subtype: 'init', session_id: session.id, model: MODEL, cwd: process.cwd(), tools: [], mcp_servers: mcpServers(argv, d['mcp-fail']) });
   if (d.crash) { process.stderr.write('fake-claude: crashing on request\n'); process.exit(Number(d.crash) || 3); }
+  if (typeof d['mcp-term'] === 'string') await holdUntilTerm(d['mcp-term'], argv);
   if (d.hang) { setInterval(() => {}, 1 << 30); await new Promise(() => {}); }
 
   const tools = Number(d.tools) || 0;

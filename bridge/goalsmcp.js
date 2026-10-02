@@ -45,26 +45,69 @@ function version() {
   try { return require('../package.json').version; } catch { return '0.0.0'; }
 }
 
-function createRunGrants({ call, log = () => {} } = {}) {
+const ANCESTRY_DEPTH_MAX = 64;
+
+function isRunToolRule(rule) {
+  return String(rule || '').trim().startsWith(SERVER_RULE);
+}
+
+function createRunGrants({ call, character = () => '', parentOf = pid => LP.parentPid(pid), log = () => {} } = {}) {
   const runs = new Map();
 
   function grant(label) {
     const id = crypto.randomBytes(16).toString('hex');
     const token = crypto.randomBytes(32).toString('hex');
-    runs.set(id, { id, token, label: String(label || '') });
+    runs.set(id, { id, token, label: String(label || ''), character: String(character() || ''), pid: 0, conn: null });
     return { id, token };
   }
 
-  function revoke(id) {
-    return runs.delete(id);
+  function attachPid(id, pid) {
+    const run = runs.get(id);
+    if (run && Number.isInteger(pid) && pid > 0) run.pid = pid;
   }
 
-  function hello(msg) {
+  function revoke(id) {
+    const run = runs.get(id);
+    if (!run) return false;
+    runs.delete(id);
+    if (run.conn) run.conn.destroy();
+    run.conn = null;
+    return true;
+  }
+
+  function revokeAll() {
+    for (const id of [...runs.keys()]) revoke(id);
+  }
+
+  const attached = run => !!(run.conn && !run.conn.destroyed);
+
+  async function descends(pid, ancestor) {
+    let p = pid;
+    for (let depth = 0; p > 1 && depth < ANCESTRY_DEPTH_MAX; depth++) {
+      if (p === ancestor) return true;
+      try { p = await parentOf(p); } catch { return false; }
+      if (!p) return false;
+    }
+    return false;
+  }
+
+  async function hello(msg, conn) {
     const id = String((msg && msg.run) || '');
     const run = RUN_ID_RE.test(id) ? runs.get(id) : null;
     const nonce = msg && typeof msg.nonce === 'string' ? msg.nonce : '';
-    if (!run || !nonce || !LP.sameProof(msg.proof, LP.proof(run.token, 'client', nonce))) return null;
+    if (!run || !nonce || !LP.sameProof(msg.proof, LP.proof(run.token, 'client', nonce))) return { why: 'no valid run grant' };
+    const pid = Number(msg.pid);
+    if (!run.pid) return { why: `${run.label} has no agent process yet` };
+    if (!Number.isInteger(pid) || pid <= 0) return { why: `${run.label}: the server did not name its pid` };
+    if (!(await descends(pid, run.pid))) return { why: `${run.label}: pid ${pid} does not run under the run's agent pid ${run.pid}` };
+    if (runs.get(run.id) !== run) return { why: `${run.label} ended during the hello` };
+    if (attached(run)) return { why: `${run.label} already has a connection` };
+    run.conn = conn || null;
     return { run, welcome: { type: 'welcome', proof: LP.proof(run.token, 'bridge', nonce) } };
+  }
+
+  function detach(run, conn) {
+    if (run && run.conn === conn) run.conn = null;
   }
 
   async function onCall(run, msg) {
@@ -73,6 +116,11 @@ function createRunGrants({ call, log = () => {} } = {}) {
     if (runs.get(run.id) !== run) {
       log(`${run.label} ${tool} refused: the in-game run that held the grant has ended`);
       return answer(false, `${tool} was refused: the in-game run that held it has ended.`);
+    }
+    const now = String(character() || '');
+    if (!run.character || !now || now !== run.character) {
+      log(`${run.label} ${tool} refused: the run was granted for ${run.character || 'no character'}, the game now reports ${now || 'no character'}`);
+      return answer(false, `${tool} was refused: this run was started for ${run.character || 'no reported character'}, and the game now reports ${now || 'no character'}.`);
     }
     if (!TOOL_NAMES.includes(tool)) {
       log(`${run.label} ${tool} refused: not given to in-game runs`);
@@ -86,7 +134,7 @@ function createRunGrants({ call, log = () => {} } = {}) {
     return answer(ok, String((result && result.text) || ''));
   }
 
-  return { grant, revoke, hello, onCall, get size() { return runs.size; } };
+  return { grant, attachPid, revoke, revokeAll, hello, detach, onCall, get size() { return runs.size; } };
 }
 
 function launchConfig({ runId, token, socket, runtime } = {}) {
@@ -111,6 +159,7 @@ function createServer(opts) {
   const platform = opts.platform || process.platform;
   const connectTo = opts.connect || (addr => net.connect(addr));
   const timeoutMs = opts.timeoutMs || CALL_TIMEOUT_MS;
+  const ownPid = opts.pid || process.pid;
   const log = opts.log || (() => {});
   const calls = new Map();
   let nextCall = 1;
@@ -161,7 +210,7 @@ function createServer(opts) {
     sock = s;
     verified = false;
     myNonce = LP.nonce();
-    s.on('connect', () => s.write(LP.encode({ type: HELLO, run: runId, nonce: myNonce, proof: LP.proof(token, 'client', myNonce) })));
+    s.on('connect', () => s.write(LP.encode({ type: HELLO, run: runId, pid: ownPid, nonce: myNonce, proof: LP.proof(token, 'client', myNonce) })));
     s.on('data', LP.lineReader(onBridge, () => s.destroy()));
     s.on('error', () => {});
     s.on('close', () => {
@@ -248,7 +297,7 @@ function main(argv, deps = {}) {
 module.exports = {
   SERVER_NAME, SCRIPT, HELLO, CALL, RESULT, TOKEN_ENV, INSTRUCTIONS,
   TOOL_NAMES, LIVE_SESSION_ONLY, RUN_RULES, SERVER_RULE, NEVER_SAVED, DENIED_WITH_TOOLS, DENIED_WITHOUT_TOOLS,
-  fullToolName, toolSchemas, createRunGrants, launchConfig, mcpConfig, createServer, parseArgs, main,
+  fullToolName, isRunToolRule, toolSchemas, createRunGrants, launchConfig, mcpConfig, createServer, parseArgs, main,
 };
 
 if (require.main === module) main(process.argv.slice(2));

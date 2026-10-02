@@ -51,7 +51,7 @@ test('in-game runs get goals, orders, campaigns and routes, never the vote tools
   assert.match(GM.INSTRUCTIONS, /\{item:ID\}, \{skill:ID\}, \{map:ID,x,y\}/);
 });
 
-test('launch config: the bridge\'s own command, the run id in argv, the token only in the server env, alwaysLoad', () => {
+test('launch config: the bridge\'s own command, the run id in the server args, the token only in the server env (the bridge writes it to a private file, never to argv), alwaysLoad', () => {
   const checkout = { compiled: false, execPath: '/usr/local/bin/node', root: '/opt/claude-wow' };
   const runId = 'a'.repeat(32);
   const launch = GM.launchConfig({ runId, token: 'secret-token', socket: '/h/live.sock', runtime: checkout });
@@ -73,21 +73,33 @@ test('Claude args for an ask run: the run-only wowgoals rules next to the user r
   assert.deepEqual(args, ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits',
     '--allowedTools', 'WebSearch', ...GM.RUN_RULES, '--disallowedTools', ...GM.DENIED_WITH_TOOLS, '--mcp-config', mcpConfig]);
   assert.deepEqual(P.withoutRules(['WebFetch', ...GM.RUN_RULES, 'mcp__wowgoals'], GM.NEVER_SAVED), ['WebFetch']);
+  for (const rule of ['mcp__wowgoals__goal_set(*)', 'mcp__wowgoals*', ' mcp__wowgoals__new_tool', 'mcp__wowgoals']) assert.ok(GM.isRunToolRule(rule), rule);
+  assert.ok(!GM.isRunToolRule('mcp__wowdata') && !GM.isRunToolRule('WebFetch'));
 });
 
-test('run grants: a hello needs the run\'s own proof; a vote tool, an ended run and an unknown run are refused before the store', async () => {
+const TREE = { 4242: 900, 900: 777, 777: 1, 5555: 1 };
+const parentOf = async pid => TREE[pid] || null;
+const fakeConn = () => ({ destroyed: false, destroy() { this.destroyed = true; } });
+const helloFor = (id, token, pid = 4242, nonce = 'n1') => ({ type: GM.HELLO, run: id, pid, nonce, proof: LP.proof(token, 'client', nonce) });
+
+test('run grants: a hello needs the run\'s own proof and a pid under the run\'s agent; a vote tool, an ended run and an unknown run are refused before the store', async () => {
   const calls = [];
-  const grants = GM.createRunGrants({ call: async (tool, args) => { calls.push([tool, args]); return { ok: true, text: 'done' }; } });
+  const grants = GM.createRunGrants({ call: async (tool, args) => { calls.push([tool, args]); return { ok: true, text: 'done' }; }, character: () => 'Bone-Forever', parentOf });
   const one = grants.grant('#1');
   const two = grants.grant('#2');
   assert.match(one.id, /^[0-9a-f]{32}$/);
   assert.notEqual(one.token, two.token);
-  const helloFor = (id, token, nonce = 'n1') => ({ type: GM.HELLO, run: id, nonce, proof: LP.proof(token, 'client', nonce) });
-  assert.equal(grants.hello(helloFor(one.id, two.token)), null, 'another run\'s token does not open this run');
-  assert.equal(grants.hello(helloFor('c'.repeat(32), one.token)), null);
-  assert.equal(grants.hello({ ...helloFor(one.id, one.token), nonce: '' }), null);
-  const ok = grants.hello(helloFor(one.id, one.token));
+  assert.match((await grants.hello(helloFor(one.id, one.token), fakeConn())).why, /no agent process yet/, 'no hello before the agent is spawned');
+  grants.attachPid(one.id, 777);
+  assert.equal((await grants.hello(helloFor(one.id, two.token), fakeConn())).run, undefined, 'another run\'s token does not open this run');
+  assert.equal((await grants.hello(helloFor('c'.repeat(32), one.token), fakeConn())).run, undefined);
+  assert.equal((await grants.hello({ ...helloFor(one.id, one.token), nonce: '' }, fakeConn())).run, undefined);
+  assert.match((await grants.hello(helloFor(one.id, one.token, 5555), fakeConn())).why, /pid 5555 does not run under the run's agent pid 777/, 'the right token from outside the run is refused');
+  assert.match((await grants.hello(helloFor(one.id, one.token, 0), fakeConn())).why, /did not name its pid/);
+  const conn = fakeConn();
+  const ok = await grants.hello(helloFor(one.id, one.token), conn);
   assert.deepEqual(ok.welcome, { type: 'welcome', proof: LP.proof(one.token, 'bridge', 'n1') });
+  assert.match((await grants.hello(helloFor(one.id, one.token, 4242, 'n2'), fakeConn())).why, /already has a connection/, 'one connection per grant');
 
   const vote = await grants.onCall(ok.run, { call: 1, tool: 'goal_vote_open', args: {} });
   assert.deepEqual(vote, { type: GM.RESULT, call: 1, ok: false, text: 'goal_vote_open is not given to in-game runs.' });
@@ -96,12 +108,37 @@ test('run grants: a hello needs the run\'s own proof; a vote tool, an ended run 
   assert.deepEqual(calls, [['goal_list', {}]]);
 
   assert.equal(grants.revoke(one.id), true);
+  assert.equal(conn.destroyed, true, 'revoking closes the run\'s connection');
   const ended = await grants.onCall(ok.run, { call: 3, tool: 'goal_list', args: {} });
   assert.equal(ended.ok, false);
   assert.match(ended.text, /the in-game run that held it has ended/);
-  assert.equal(grants.hello(helloFor(one.id, one.token)), null, 'an ended run cannot connect again');
+  assert.equal((await grants.hello(helloFor(one.id, one.token, 4242, 'n3'), fakeConn())).run, undefined, 'an ended run cannot connect again');
   assert.equal(calls.length, 1);
   assert.equal(grants.size, 1);
+  grants.revokeAll();
+  assert.equal(grants.size, 0);
+});
+
+test('run grants are bound to the character the game reported when the run started', async () => {
+  let character = 'Bone-Forever';
+  const calls = [];
+  const grants = GM.createRunGrants({ call: async tool => { calls.push(tool); return { ok: true, text: 'done' }; }, character: () => character, parentOf });
+  const g = grants.grant('#3');
+  grants.attachPid(g.id, 777);
+  const { run } = await grants.hello(helloFor(g.id, g.token), fakeConn());
+  assert.equal((await grants.onCall(run, { call: 1, tool: 'goal_list' })).ok, true);
+  character = 'Alt-Forever';
+  const alt = await grants.onCall(run, { call: 2, tool: 'order_issue', args: { text: 'skin 10' } });
+  assert.equal(alt.ok, false);
+  assert.match(alt.text, /started for Bone-Forever, and the game now reports Alt-Forever/);
+  character = '';
+  assert.equal((await grants.onCall(run, { call: 3, tool: 'goal_list' })).ok, false, 'no reported character, no write');
+  const late = GM.createRunGrants({ call: async () => ({ ok: true }), character: () => '', parentOf });
+  const none = late.grant('#5');
+  late.attachPid(none.id, 777);
+  const noneRun = (await late.hello(helloFor(none.id, none.token), fakeConn())).run;
+  assert.equal((await late.onCall(noneRun, { call: 4, tool: 'goal_list' })).ok, false, 'a grant made with no character never writes');
+  assert.deepEqual(calls, ['goal_list']);
 });
 
 function tmpHome() {
@@ -114,16 +151,16 @@ async function socketRig() {
   const ctx = { text: CONTEXT, at: Date.now() };
   const store = G.createGoals({ dir: path.join(home, 'goals'), context: () => ctx, streamOptions: () => ({ url: 'http://127.0.0.1:9' }), post: async (url, command) => { posts.push(command); return { ok: true, status: 200 }; } });
   const storeCalls = [];
-  const grants = GM.createRunGrants({ call: (tool, args) => { storeCalls.push(tool); return store.call(tool, args); } });
+  const grants = GM.createRunGrants({ call: (tool, args) => { storeCalls.push(tool); return store.call(tool, args); }, character: () => 'Bone-Forever', parentOf });
   const logs = [];
   const core = { home, timeoutMs: 60000, options: () => ({}), log: l => logs.push(l), tag: j => `#${j.id}`, publish: () => {}, runGrants: grants };
   const live = createLive({ commandLine: () => '', parentOf: async () => null, pickedUp: () => false });
   live.start(core);
   await until(() => live.runEndpoint());
   const servers = [];
-  const serve = (runId, token) => {
+  const serve = (runId, token, pid = 4242) => {
     const out = fakeStdout();
-    const srv = GM.createServer({ stdout: out, socket: live.runEndpoint(), runId, token, timeoutMs: 3000 });
+    const srv = GM.createServer({ stdout: out, socket: live.runEndpoint(), runId, token, pid, timeoutMs: 3000 });
     servers.push(srv);
     let id = 1;
     const call = async (name, args) => {
@@ -142,6 +179,7 @@ test('an ask run\'s wowgoals server writes through the bridge socket with the sa
   try {
     assert.ok(!POSIX || fs.statSync(r.live.runEndpoint()).isSocket());
     const grant = r.grants.grant('#7');
+    r.grants.attachPid(grant.id, 777);
     const s = r.serve(grant.id, grant.token);
     s.srv.handle({ jsonrpc: '2.0', id: 100, method: 'tools/list' });
     assert.deepEqual((await until(() => s.out.lines.find(l => l.id === 100))).result.tools.map(t => t.name), IN_GAME_TOOLS);
@@ -170,11 +208,33 @@ test('an ask run\'s wowgoals server writes through the bridge socket with the sa
     assert.deepEqual(r.storeCalls, ['goal_set', 'order_issue', 'order_issue']);
     assert.deepEqual(r.live.sessions(), [], 'a run connection is not a live session');
 
+    assert.equal(r.live._state.runSockets.size, 1, 'the bridge tracks the run connection');
+    const second = r.serve(grant.id, grant.token, 900);
+    const twice = await second.call('goal_list', {});
+    assert.equal(twice.isError, true, 'a second connection for an attached grant is refused');
+    assert.ok(r.logs.some(l => /already has a connection/.test(l)), r.logs.join('\n'));
+    assert.deepEqual(r.storeCalls, ['goal_set', 'order_issue', 'order_issue']);
+
     r.grants.revoke(grant.id);
+    await until(() => r.live._state.runSockets.size === 0);
     const late = await s.call('goal_list', {});
     assert.equal(late.isError, true);
-    assert.match(late.content[0].text, /has ended/);
+    assert.match(late.content[0].text, /closed the connection/);
     assert.deepEqual(r.storeCalls, ['goal_set', 'order_issue', 'order_issue']);
+  } finally { r.cleanup(); }
+});
+
+test('live.stop() closes the run connections it accepted', async () => {
+  const r = await socketRig();
+  try {
+    const grant = r.grants.grant('#9');
+    r.grants.attachPid(grant.id, 777);
+    const s = r.serve(grant.id, grant.token);
+    assert.equal((await s.call('goal_list', {})).isError, false);
+    const [sock] = [...r.live._state.runSockets];
+    r.live.stop();
+    assert.equal(sock.destroyed, true);
+    assert.equal(r.live._state.runSockets.size, 0);
   } finally { r.cleanup(); }
 });
 
@@ -182,6 +242,7 @@ test('a wowgoals server with a wrong token is refused at hello and reaches no st
   const r = await socketRig();
   try {
     const grant = r.grants.grant('#8');
+    r.grants.attachPid(grant.id, 777);
     const s = r.serve(grant.id, 'f'.repeat(64));
     const res = await s.call('goal_list', {});
     assert.equal(res.isError, true);

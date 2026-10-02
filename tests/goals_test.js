@@ -644,6 +644,7 @@ function fakeInstall(dir) {
     { tool_name: 'NotebookEdit', tool_use_id: 't2', tool_input: {} },
     { tool_name: 'mcp__wowgoals__campaign_start', tool_use_id: 't3', tool_input: {} },
     { tool_name: 'mcp__wowgoals__goal_vote_open', tool_use_id: 't4', tool_input: {} },
+    { tool_name: 'mcp__wowgoals__future_tool', tool_use_id: 't5', tool_input: {} },
   ];
   fs.writeFileSync(agent, [
     `require('fs').writeFileSync(${JSON.stringify(argvFile)}, JSON.stringify(process.argv.slice(2)));`,
@@ -705,8 +706,8 @@ test('in-game ask runs without the live socket: the channel goal tools and wowgo
   const dir = tmpDir('askrun');
   try {
     const { home, addons, saved, argvFile } = fakeInstall(dir);
-    const allow = ['mcp__claude-wow__order_issue', 'mcp__wowgoals__order_issue', 'mcp__wowgoals', 'WebFetch', 'mcp__wowgoals__*'].join('\x1F');
-    const allowOnce = ['mcp__claude-wow__goal_set', 'mcp__wowgoals__goal_set', 'Glob'].join('\x1F');
+    const allow = ['mcp__claude-wow__order_issue', 'mcp__wowgoals__order_issue', 'mcp__wowgoals', 'WebFetch', 'mcp__wowgoals__*', 'mcp__wowgoals__goal_set(*)', 'mcp__wowgoals*', ' mcp__wowgoals__new_tool'].join('\x1F');
+    const allowOnce = ['mcp__claude-wow__goal_set', 'mcp__wowgoals__goal_set', 'mcp__wowgoals__narrate(x)', 'Glob'].join('\x1F');
     fs.writeFileSync(saved, `ClaudeWoWDB = {\n["outbox"] = {\n["id"] = 7,\n["session"] = "sess1",\n["chat"] = "chat1",\n["text"] = "${hex('set my order')}",\n["cwd"] = "",\n["plugin"] = "ask",\n["allow"] = "${hex(allow)}",\n["allowOnce"] = "${hex(allowOnce)}",\n["t"] = 1,\n},\n}\n`);
     const r = spawnSync(process.execPath, [BRIDGE, '--once'], { encoding: 'utf8', env: { ...process.env, CLAUDE_WOW_HOME: home }, timeout: 60000 });
     const out = r.stdout + r.stderr;
@@ -714,7 +715,7 @@ test('in-game ask runs without the live socket: the channel goal tools and wowgo
     assert.match(out, /\[ask\]/, out);
     const argv = JSON.parse(fs.readFileSync(argvFile, 'utf8'));
     const homes = [...new Set([home, fs.realpathSync(home)])];
-    const guards = homes.flatMap(h => [P.absolutePathRule('Read', path.join(h, 'live.token')), P.absolutePathRule('Edit', path.join(h, 'goals', '**'))]);
+    const guards = homes.flatMap(h => [P.absolutePathRule('Read', path.join(h, 'live.token')), P.absolutePathRule('Edit', path.join(h, 'goals', '**')), P.absolutePathRule('Read', path.join(h, 'tmp', 'mcp', '**'))]);
     assert.deepEqual(argList(argv, '--disallowedTools'), [...LP.GOAL_WRITE_TOOLS, 'mcp__wowgoals', ...guards], 'the token and the goal store are off limits by their real path too');
     assert.ok(guards.every(g => /^(Read|Edit)\(\/\/[^/]/.test(g)), 'absolute paths take the // prefix');
     assert.ok(!argv.includes('--mcp-config'), 'no live socket under --once, so no wowgoals server');
@@ -722,13 +723,13 @@ test('in-game ask runs without the live socket: the channel goal tools and wowgo
     const allowed = argList(argv, '--allowedTools');
     assert.ok(allowed.includes('WebFetch') && allowed.includes('Glob'), 'other granted rules still work, for good and once');
     for (const tool of LP.GOAL_WRITE_TOOLS) assert.ok(!allowed.includes(tool), `${tool} is never allowed`);
-    assert.deepEqual(allowed.filter(r => r.startsWith('mcp__wowgoals')), [], 'a roll never grants a wowgoals rule');
+    assert.deepEqual(allowed.filter(r => r.trim().startsWith('mcp__wowgoals')), [], 'a roll never grants a wowgoals rule');
     const config = JSON.parse(fs.readFileSync(path.join(home, 'config.json'), 'utf8'));
     assert.deepEqual(config.agents.claude.allowedTools, ['WebSearch', 'WebFetch'], 'a Need click never persists a goal write tool');
     const lua = fs.readFileSync(path.join(addons, 'ClaudeWoW_S001', 'Inbox.lua'), 'utf8');
     const deniedLine = (/^\s*denied = \{.*\},$/m.exec(lua) || [''])[0];
     assert.match(deniedLine, /"NotebookEdit"/, lua);
-    assert.doesNotMatch(lua, /goal_set|order_issue|campaign_start|goal_vote_open|wowgoals/, 'neither the roll nor the reply offers a goal write tool');
+    assert.doesNotMatch(lua, /goal_set|order_issue|campaign_start|goal_vote_open|future_tool|wowgoals/, 'neither the roll nor the reply offers a goal write tool');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 

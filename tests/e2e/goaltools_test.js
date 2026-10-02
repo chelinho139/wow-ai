@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const GM = require('../../bridge/goalsmcp');
-const { makeRoot, gameRunner } = require('./helpers');
+const { makeRoot, gameRunner, isAlive } = require('./helpers');
 
 const ROOT = makeRoot('goaltools');
 const withGame = gameRunner(ROOT);
@@ -54,7 +54,12 @@ test('an in-game ask run gets the wowgoals server for that run only; its calls w
 
     const runs = h.agentCalls();
     const askRun = runs[runs.length - 1];
-    const server = JSON.parse(listAfter(askRun.argv, '--mcp-config')[0]).mcpServers.wowgoals;
+    const server = askRun.mcpConfig.mcpServers.wowgoals;
+    assert.ok(!askRun.argv.join(' ').includes(server.env[GM.TOKEN_ENV]), 'the token is nowhere on the command line');
+    const configFile = listAfter(askRun.argv, '--mcp-config')[0];
+    assert.equal(path.dirname(configFile), path.join(h.sb.home, 'tmp', 'mcp'));
+    assert.ok(!fs.existsSync(configFile), 'the config file is gone after the run');
+    assert.ok(listAfter(askRun.argv, '--disallowedTools').some(r => r.startsWith('Read(') && r.endsWith('/tmp/mcp/**)')), 'the agent may not read the config folder');
     assert.equal(server.alwaysLoad, true);
     assert.ok(path.isAbsolute(server.command), server.command);
     const runId = server.args[server.args.indexOf('--run') + 1];
@@ -63,7 +68,7 @@ test('an in-game ask run gets the wowgoals server for that run only; its calls w
     const allowed = listAfter(askRun.argv, '--allowedTools');
     for (const rule of GM.RUN_RULES) assert.ok(allowed.includes(rule), `${rule} is a run-only rule`);
     assert.deepEqual(listAfter(askRun.argv, '--disallowedTools').filter(r => r.startsWith('mcp__wowgoals')), [...GM.DENIED_WITH_TOOLS]);
-    const previous = JSON.parse(listAfter(runs[runs.length - 2].argv, '--mcp-config')[0]).mcpServers.wowgoals;
+    const previous = runs[runs.length - 2].mcpConfig.mcpServers.wowgoals;
     assert.notEqual(previous.env[GM.TOKEN_ENV], server.env[GM.TOKEN_ENV], 'every run gets its own grant');
     const replay = await callServer(server, 'order_issue', { text: 'skin 20' });
     assert.equal(replay.isError, true);
@@ -79,5 +84,38 @@ test('an in-game ask run gets the wowgoals server for that run only; its calls w
     assert.ok(listAfter(codingRun.argv, '--disallowedTools').includes('mcp__wowgoals'));
     assert.ok(!listAfter(codingRun.argv, '--allowedTools').some(r => r.startsWith('mcp__wowgoals')));
     assert.ok(!/wowgoals/.test(fs.readFileSync(h.sb.config, 'utf8')), 'no rule is ever saved');
+  });
+});
+
+const termCalls = h => {
+  try { return fs.readFileSync(path.join(h.sb.agentState, 'term-calls.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l)); } catch { return []; }
+};
+
+test('while a run is live its token is refused from a process outside the run, and a cancel revokes the grant before the process ends', async () => {
+  await withGame({ plugin: 'ask' }, async h => {
+    await h.client.say('hello');
+    await h.bridge.waitForLine(/game context updated: Character: Testchar/);
+    h.client.send('[[mcp-term wowgoals order_issue {"text":"skin 20"}]]');
+    const first = await h.client.waitFor(() => termCalls(h).find(c => c.phase === 'first'), { timeoutMs: 30000, label: 'the run\'s own first call' });
+    assert.equal(first.isError, false, `a server under the run's agent is accepted: ${first.text}`);
+
+    const run = h.agentCalls().at(-1);
+    const configFile = listAfter(run.argv, '--mcp-config')[0];
+    assert.ok(fs.existsSync(configFile), 'the config file exists while the run is live');
+    if (process.platform !== 'win32') assert.equal(fs.statSync(configFile).mode & 0o777, 0o600);
+    const server = JSON.parse(fs.readFileSync(configFile, 'utf8')).mcpServers.wowgoals;
+    const replay = await callServer(server, 'order_issue', { text: 'skin 30' });
+    assert.equal(replay.isError, true);
+    await h.bridge.waitForLine(/refused an in-game run connection without a valid run grant \(.*does not run under the run's agent pid/);
+    const ordersFile = path.join(h.sb.home, 'goals', CHARACTER, 'goals.json');
+    assert.ok(!fs.existsSync(ordersFile), 'the replay wrote nothing');
+
+    h.client.slash('/claude cancel');
+    const term = await h.client.waitFor(() => termCalls(h).find(c => c.phase === 'term'), { timeoutMs: 30000, label: 'the call the run made after the cancel' });
+    assert.equal(term.isError, true, term.text);
+    await h.bridge.waitForLine(/wowgoals grant revoked before the run is ended/);
+    assert.ok(!fs.existsSync(ordersFile), 'a call after the cancel wrote nothing');
+    await h.client.waitFor(() => !isAlive(run.pid), { timeoutMs: 15000, label: 'the agent process to end' });
+    await h.client.waitFor(() => !fs.existsSync(configFile), { timeoutMs: 15000, label: 'the config file to be removed' });
   });
 });
