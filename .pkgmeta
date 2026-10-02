@@ -1,0 +1,24 @@
+package-as: ClaudeWoW
+
+move-folders:
+  ClaudeWoW/addon/ClaudeWoW: ClaudeWoW
+
+ignore:
+  - bridge
+  - build
+  - build.js
+  - dev
+  - docs
+  - homebrew
+  - tests
+  - install.sh
+  - install.ps1
+  - setup.js
+  - package.json
+  - package-lock.json
+  - CONTRIBUTING.md
+  - README.md
+
+manual-changelog:
+  filename: CHANGELOG.md
+  markup-type: markdown
