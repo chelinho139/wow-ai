@@ -24,6 +24,7 @@ const plugin = {
   aliases: ['claude', 'code'],
   tools: '',
   surfaces: ['map', 'macro', 'ui'],
+  searchesFiles: true,
   handle(job, core) {
     const cwd = P.resolveCwd(job.cwd, core.defaultCwd);
     job.cwd = cwd;

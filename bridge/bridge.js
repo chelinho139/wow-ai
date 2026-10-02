@@ -1144,12 +1144,16 @@ function inGameGrantable(rules, denied) {
   const blocked = neverOffered(denied);
   return P.withoutRules(rules, IN_GAME_NEVER_GRANTED).filter(r => !blocked(r));
 }
-function inGameDeniedTools(askRun, withRunTools) {
+function homeReadDenies(plugin) {
+  const homeReads = homeDirs().map(dir => P.absolutePathRule('Read', path.join(dir, '**')));
+  return plugin.searchesFiles === true ? homeReads : [...GM.FILE_SEARCH_TOOLS, ...homeReads];
+}
+function inGameDeniedTools({ claudeRun, plugin, withRunTools }) {
   return [
     ...LP.GOAL_WRITE_TOOLS,
     ...(withRunTools ? GM.DENIED_WITH_TOOLS : GM.DENIED_WITHOUT_TOOLS),
     ...homeGuardRules(),
-    ...(askRun ? [...GM.ASK_DENIED_TOOLS, ...homeDirs().map(dir => P.absolutePathRule('Read', path.join(dir, '**')))] : []),
+    ...(claudeRun ? homeReadDenies(plugin) : []),
   ];
 }
 
@@ -1215,9 +1219,9 @@ function runAgent(job, opts = {}) {
   job.agent = agentId;
   const agent = A.AGENTS[agentId];
   const chosen = chatSettings(job);
-  const askRun = !!opts.runTools && agentId === 'claude';
-  const runToolSocket = askRun ? runToolsSocket(tag) : '';
-  const runDenied = inGameDeniedTools(askRun, !!runToolSocket);
+  const claudeRun = agentId === 'claude';
+  const runToolSocket = claudeRun && opts.runTools ? runToolsSocket(tag) : '';
+  const runDenied = inGameDeniedTools({ claudeRun, plugin, withRunTools: !!runToolSocket });
   const grantForGood = P.splitGrants(inGameGrantable(job.allow, runDenied));
   const grantOnce = P.splitGrants(inGameGrantable(job.allowOnce, runDenied));
   if (grantForGood.rules.length) {

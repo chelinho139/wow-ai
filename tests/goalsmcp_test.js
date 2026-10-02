@@ -47,7 +47,7 @@ test('in-game runs get goals, orders, campaigns and routes, never the vote tools
     assert.ok(GM.DENIED_WITH_TOOLS.includes(`mcp__wowgoals__${vote}`), `${vote} is denied even when the server is there`);
   }
   assert.ok(GM.DENIED_WITH_TOOLS.includes('Bash'), 'one rule denies every shell command');
-  assert.deepEqual([...GM.ASK_DENIED_TOOLS], ['Grep', 'Glob', 'LS', 'NotebookRead']);
+  assert.deepEqual([...GM.FILE_SEARCH_TOOLS], ['Grep', 'Glob', 'LS', 'NotebookRead']);
   for (const rule of ['Bash(cat:*)', 'Bash', ' Bash(node -e x) ', 'Grep', 'Grep(path=/x)']) assert.ok(GM.deniedBy(['Bash', 'Grep'], rule), rule);
   for (const rule of ['WebFetch', 'Read(//x)', 'Bashful']) assert.ok(!GM.deniedBy(['Bash', 'Grep'], rule), rule);
   assert.ok(GM.deniedBy(['Read(//h/.claude-wow/**)'], 'Read(//h/.claude-wow/live.token)'));
