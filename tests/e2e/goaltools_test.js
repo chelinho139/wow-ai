@@ -38,7 +38,10 @@ function callServer(server, tool, args) {
 }
 
 test('an in-game ask run gets the wowgoals server for that run only; its calls write through the bridge with the same checks; coding runs and config.json never get it', async () => {
-  await withGame({ plugin: 'ask' }, async h => {
+  const stale = { file: '' };
+  const beforeLaunch = async sb => { stale.file = path.join(sb.home, 'tmp', 'mcp', 'mcp-1-stale.json'); fs.mkdirSync(path.dirname(stale.file), { recursive: true }); fs.writeFileSync(stale.file, '{}'); };
+  await withGame({ plugin: 'ask', beforeLaunch }, async h => {
+    assert.ok(!fs.existsSync(stale.file), 'a config file left by a crashed bridge is removed at startup');
     await h.client.say('hello');
     await h.bridge.waitForLine(/game context updated: Character: Testchar/);
 
@@ -67,12 +70,15 @@ test('an in-game ask run gets the wowgoals server for that run only; its calls w
     assert.match(server.env[GM.TOKEN_ENV], /^[0-9a-f]{64}$/);
     const allowed = listAfter(askRun.argv, '--allowedTools');
     for (const rule of GM.RUN_RULES) assert.ok(allowed.includes(rule), `${rule} is a run-only rule`);
-    assert.deepEqual(listAfter(askRun.argv, '--disallowedTools').filter(r => r.startsWith('mcp__wowgoals')), [...GM.DENIED_WITH_TOOLS]);
+    const denied = listAfter(askRun.argv, '--disallowedTools');
+    assert.deepEqual(denied.filter(r => r.startsWith('mcp__wowgoals')), GM.DENIED_WITH_TOOLS.filter(r => r.startsWith('mcp__wowgoals')));
+    for (const rule of GM.TOKEN_READER_RULES) assert.ok(denied.includes(rule), `${rule} is denied while the run holds a token`);
+    assert.ok(allowed.includes('Bash(node:*)'), 'the sandbox config allows node, so the deny is what holds');
     const previous = runs[runs.length - 2].mcpConfig.mcpServers.wowgoals;
     assert.notEqual(previous.env[GM.TOKEN_ENV], server.env[GM.TOKEN_ENV], 'every run gets its own grant');
     const replay = await callServer(server, 'order_issue', { text: 'skin 20' });
     assert.equal(replay.isError, true);
-    assert.match(replay.content[0].text, /bridge closed the connection/);
+    assert.match(replay.content[0].text, /claude-wow bridge closed/);
     await h.bridge.waitForLine(/refused an in-game run connection without a valid run grant/);
     assert.equal(JSON.parse(fs.readFileSync(ordersFile, 'utf8')).orders.current.text, 'skin 10', 'an ended run\'s grant writes nothing');
 
@@ -82,6 +88,7 @@ test('an in-game ask run gets the wowgoals server for that run only; its calls w
     const codingRun = h.agentCalls().at(-1);
     assert.ok(!codingRun.argv.includes('--mcp-config'), 'the coding plugin runs without it');
     assert.ok(listAfter(codingRun.argv, '--disallowedTools').includes('mcp__wowgoals'));
+    assert.ok(!listAfter(codingRun.argv, '--disallowedTools').includes('Bash(node:*)'), 'coding runs keep their interpreters');
     assert.ok(!listAfter(codingRun.argv, '--allowedTools').some(r => r.startsWith('mcp__wowgoals')));
     assert.ok(!/wowgoals/.test(fs.readFileSync(h.sb.config, 'utf8')), 'no rule is ever saved');
   });
@@ -91,8 +98,13 @@ const termCalls = h => {
   try { return fs.readFileSync(path.join(h.sb.agentState, 'term-calls.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l)); } catch { return []; }
 };
 
-test('while a run is live its token is refused from a process outside the run, and a cancel revokes the grant before the process ends', async () => {
-  await withGame({ plugin: 'ask' }, async h => {
+test('while a run is live a second connection with its token is refused, and a cancel revokes the grant before the process ends', async () => {
+  const beforeLaunch = async sb => {
+    const cfg = JSON.parse(fs.readFileSync(sb.config, 'utf8'));
+    cfg.agents.claude.allowedTools = [...(cfg.agents.claude.allowedTools || []), 'Bash(*)'];
+    fs.writeFileSync(sb.config, JSON.stringify(cfg, null, 2));
+  };
+  await withGame({ plugin: 'ask', beforeLaunch }, async h => {
     await h.client.say('hello');
     await h.bridge.waitForLine(/game context updated: Character: Testchar/);
     h.client.send('[[mcp-term wowgoals order_issue {"text":"skin 20"}]]');
@@ -100,13 +112,15 @@ test('while a run is live its token is refused from a process outside the run, a
     assert.equal(first.isError, false, `a server under the run's agent is accepted: ${first.text}`);
 
     const run = h.agentCalls().at(-1);
+    assert.ok(listAfter(run.argv, '--allowedTools').includes('Bash(*)'));
+    assert.ok(listAfter(run.argv, '--disallowedTools').includes('Bash(*)'), 'a broad Bash rule is denied while the run holds a token');
     const configFile = listAfter(run.argv, '--mcp-config')[0];
     assert.ok(fs.existsSync(configFile), 'the config file exists while the run is live');
     if (process.platform !== 'win32') assert.equal(fs.statSync(configFile).mode & 0o777, 0o600);
     const server = JSON.parse(fs.readFileSync(configFile, 'utf8')).mcpServers.wowgoals;
     const replay = await callServer(server, 'order_issue', { text: 'skin 30' });
     assert.equal(replay.isError, true);
-    await h.bridge.waitForLine(/refused an in-game run connection without a valid run grant \(.*does not run under the run's agent pid/);
+    await h.bridge.waitForLine(/refused an in-game run connection without a valid run grant \(.*already had its one connection/);
     const ordersFile = path.join(h.sb.home, 'goals', CHARACTER, 'goals.json');
     assert.ok(!fs.existsSync(ordersFile), 'the replay wrote nothing');
 

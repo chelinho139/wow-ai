@@ -38,7 +38,7 @@ function fakeStdout() {
   };
 }
 
-test('in-game runs get goals, orders, campaigns and routes, never the vote tools', () => {
+test('in-game runs get goals, orders, campaigns and routes, never the vote tools; token readers are denied next to them', () => {
   assert.deepEqual([...GM.TOOL_NAMES], IN_GAME_TOOLS);
   assert.deepEqual(GM.toolSchemas().map(t => t.name), IN_GAME_TOOLS);
   assert.deepEqual([...GM.RUN_RULES], IN_GAME_TOOLS.map(t => `mcp__wowgoals__${t}`));
@@ -46,7 +46,9 @@ test('in-game runs get goals, orders, campaigns and routes, never the vote tools
     assert.ok(!GM.RUN_RULES.includes(`mcp__wowgoals__${vote}`), vote);
     assert.ok(GM.DENIED_WITH_TOOLS.includes(`mcp__wowgoals__${vote}`), `${vote} is denied even when the server is there`);
   }
-  for (const rule of ['mcp__wowgoals', 'mcp__wowgoals__*', ...GM.RUN_RULES, ...GM.DENIED_WITH_TOOLS]) assert.ok(GM.NEVER_SAVED.includes(rule), `${rule} is never saved by a roll`);
+  for (const cmd of ['node', 'python', 'python3', 'ruby', 'perl', 'osascript', 'ps']) assert.ok(GM.DENIED_WITH_TOOLS.includes(`Bash(${cmd}:*)`), cmd);
+  for (const rule of ['Bash', 'Bash(*)', 'Bash(*:*)', ' Bash(:*) ']) assert.ok(GM.isBroadBashRule(rule), rule);
+  for (const rule of ['Bash(git:*)', 'Bash(npm test)', 'WebFetch']) assert.ok(!GM.isBroadBashRule(rule), rule);
   assert.deepEqual([...GM.DENIED_WITHOUT_TOOLS], ['mcp__wowgoals']);
   assert.match(GM.INSTRUCTIONS, /\{item:ID\}, \{skill:ID\}, \{map:ID,x,y\}/);
 });
@@ -55,9 +57,7 @@ test('launch config: the bridge\'s own command, the run id in the server args, t
   const checkout = { compiled: false, execPath: '/usr/local/bin/node', root: '/opt/claude-wow' };
   const runId = 'a'.repeat(32);
   const launch = GM.launchConfig({ runId, token: 'secret-token', socket: '/h/live.sock', runtime: checkout });
-  assert.deepEqual(launch.rules, [...GM.RUN_RULES]);
-  assert.deepEqual(launch.server, { type: 'stdio', command: '/usr/local/bin/node', args: [path.join('/opt/claude-wow', 'bridge', 'goalsmcp.js'), '--socket', '/h/live.sock', '--run', runId], env: { CLAUDE_WOW_RUN_TOKEN: 'secret-token' }, alwaysLoad: true });
-  assert.ok(!launch.server.args.includes('secret-token'));
+  assert.deepEqual(launch, { server: { type: 'stdio', command: '/usr/local/bin/node', args: [path.join('/opt/claude-wow', 'bridge', 'goalsmcp.js'), '--socket', '/h/live.sock', '--run', runId], env: { CLAUDE_WOW_RUN_TOKEN: 'secret-token' }, alwaysLoad: true } });
   const binary = { compiled: true, execPath: '/home/p/.local/bin/claude-wow', root: '/$bunfs/root' };
   assert.deepEqual(GM.launchConfig({ runId, token: 't', socket: '/s', runtime: binary }).server.args, ['goals-mcp', '--socket', '/s', '--run', runId]);
   assert.equal(GM.mcpConfig({ wowdata: null, wowgoals: null }), '');
@@ -65,67 +65,70 @@ test('launch config: the bridge\'s own command, the run id in the server args, t
   assert.throws(() => GM.parseArgs(['--token', 'x']), /unknown option/);
 });
 
-test('Claude args for an ask run: the run-only wowgoals rules next to the user rules, the vote tools denied, nothing for config.json', () => {
+test('Claude args for an ask run: the run-only wowgoals rules next to the user rules, the vote tools and token readers denied; a roll never keeps a wowgoals rule', () => {
   const launch = GM.launchConfig({ runId: 'b'.repeat(32), token: 't', socket: '/s' });
-  const cfg = P.withRunDeniedRules(P.withRunOnlyRules({ allowedTools: ['WebSearch'] }, launch.rules), GM.DENIED_WITH_TOOLS);
+  const cfg = P.withRunDeniedRules(P.withRunOnlyRules({ allowedTools: ['WebSearch'] }, GM.RUN_RULES), GM.DENIED_WITH_TOOLS);
   const mcpConfig = GM.mcpConfig({ wowgoals: launch.server });
   const args = A.AGENTS.claude.args({ cfg, resume: '', system: '', cwd: 'x', mcpConfig });
   assert.deepEqual(args, ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits',
     '--allowedTools', 'WebSearch', ...GM.RUN_RULES, '--disallowedTools', ...GM.DENIED_WITH_TOOLS, '--mcp-config', mcpConfig]);
-  assert.deepEqual(P.withoutRules(['WebFetch', ...GM.RUN_RULES, 'mcp__wowgoals'], GM.NEVER_SAVED), ['WebFetch']);
-  for (const rule of ['mcp__wowgoals__goal_set(*)', 'mcp__wowgoals*', ' mcp__wowgoals__new_tool', 'mcp__wowgoals']) assert.ok(GM.isRunToolRule(rule), rule);
+  for (const rule of ['mcp__wowgoals__goal_set(*)', 'mcp__wowgoals*', ' mcp__wowgoals__new_tool', 'mcp__wowgoals', ...GM.RUN_RULES]) assert.ok(GM.isRunToolRule(rule), rule);
   assert.ok(!GM.isRunToolRule('mcp__wowdata') && !GM.isRunToolRule('WebFetch'));
 });
 
-const TREE = { 4242: 900, 900: 777, 777: 1, 5555: 1 };
-const parentOf = async pid => TREE[pid] || null;
 const fakeConn = () => ({ destroyed: false, destroy() { this.destroyed = true; } });
-const helloFor = (id, token, pid = 4242, nonce = 'n1') => ({ type: GM.HELLO, run: id, pid, nonce, proof: LP.proof(token, 'client', nonce) });
+const helloFor = (id, token, nonce = 'n1', extra = {}) => ({ type: GM.HELLO, run: id, nonce, proof: LP.proof(token, 'client', nonce), ...extra });
 
-test('run grants: a hello needs the run\'s own proof and a pid under the run\'s agent; a vote tool, an ended run and an unknown run are refused before the store', async () => {
+test('run grants: one hello ever, with the run\'s own proof; a spoofed pid gives nothing; a vote tool, an ended run and an unknown run are refused before the store', () => {
   const calls = [];
-  const grants = GM.createRunGrants({ call: async (tool, args) => { calls.push([tool, args]); return { ok: true, text: 'done' }; }, character: () => 'Bone-Forever', parentOf });
+  const logs = [];
+  const grants = GM.createRunGrants({ call: async (tool, args) => { calls.push([tool, args]); return { ok: true, text: 'done' }; }, character: () => 'Bone-Forever', log: l => logs.push(l) });
   const one = grants.grant('#1');
   const two = grants.grant('#2');
   assert.match(one.id, /^[0-9a-f]{32}$/);
   assert.notEqual(one.token, two.token);
-  assert.match((await grants.hello(helloFor(one.id, one.token), fakeConn())).why, /no agent process yet/, 'no hello before the agent is spawned');
-  grants.attachPid(one.id, 777);
-  assert.equal((await grants.hello(helloFor(one.id, two.token), fakeConn())).run, undefined, 'another run\'s token does not open this run');
-  assert.equal((await grants.hello(helloFor('c'.repeat(32), one.token), fakeConn())).run, undefined);
-  assert.equal((await grants.hello({ ...helloFor(one.id, one.token), nonce: '' }, fakeConn())).run, undefined);
-  assert.match((await grants.hello(helloFor(one.id, one.token, 5555), fakeConn())).why, /pid 5555 does not run under the run's agent pid 777/, 'the right token from outside the run is refused');
-  assert.match((await grants.hello(helloFor(one.id, one.token, 0), fakeConn())).why, /did not name its pid/);
+  assert.equal(grants.hello(helloFor(one.id, two.token), fakeConn()).run, undefined, 'another run\'s token does not open this run');
+  assert.equal(grants.hello(helloFor(one.id, two.token, 'n9', { pid: process.pid }), fakeConn()).run, undefined, 'a pid field does not stand in for the token');
+  assert.equal(grants.hello(helloFor('c'.repeat(32), one.token), fakeConn()).run, undefined);
+  assert.equal(grants.hello({ ...helloFor(one.id, one.token), nonce: '' }, fakeConn()).run, undefined);
   const conn = fakeConn();
-  const ok = await grants.hello(helloFor(one.id, one.token), conn);
+  const ok = grants.hello(helloFor(one.id, one.token), conn);
   assert.deepEqual(ok.welcome, { type: 'welcome', proof: LP.proof(one.token, 'bridge', 'n1') });
-  assert.match((await grants.hello(helloFor(one.id, one.token, 4242, 'n2'), fakeConn())).why, /already has a connection/, 'one connection per grant');
+  assert.match(grants.hello(helloFor(one.id, one.token, 'n2', { pid: process.pid }), fakeConn()).why, /already had its one connection/, 'a second hello is refused whatever pid it names');
+  return (async () => {
+    const vote = await grants.onCall(ok.run, { call: 1, tool: 'goal_vote_open', args: {} });
+    assert.deepEqual(vote, { type: GM.RESULT, call: 1, ok: false, text: 'goal_vote_open is not given to in-game runs.' });
+    const list = await grants.onCall(ok.run, { call: 2, tool: 'goal_list', args: [1] });
+    assert.deepEqual(list, { type: GM.RESULT, call: 2, ok: true, text: 'done' });
+    assert.deepEqual(calls, [['goal_list', {}]]);
 
-  const vote = await grants.onCall(ok.run, { call: 1, tool: 'goal_vote_open', args: {} });
-  assert.deepEqual(vote, { type: GM.RESULT, call: 1, ok: false, text: 'goal_vote_open is not given to in-game runs.' });
-  const list = await grants.onCall(ok.run, { call: 2, tool: 'goal_list', args: [1] });
-  assert.deepEqual(list, { type: GM.RESULT, call: 2, ok: true, text: 'done' });
-  assert.deepEqual(calls, [['goal_list', {}]]);
+    conn.destroy();
+    grants.detach(ok.run, conn);
+    assert.ok(logs.some(l => /connection dropped; the run's goal tools are off/.test(l)), logs.join('\n'));
+    assert.match(grants.hello(helloFor(one.id, one.token, 'n3'), fakeConn()).why, /already had its one connection/, 'a dropped connection is never replaced');
 
-  assert.equal(grants.revoke(one.id), true);
-  assert.equal(conn.destroyed, true, 'revoking closes the run\'s connection');
-  const ended = await grants.onCall(ok.run, { call: 3, tool: 'goal_list', args: {} });
-  assert.equal(ended.ok, false);
-  assert.match(ended.text, /the in-game run that held it has ended/);
-  assert.equal((await grants.hello(helloFor(one.id, one.token, 4242, 'n3'), fakeConn())).run, undefined, 'an ended run cannot connect again');
-  assert.equal(calls.length, 1);
-  assert.equal(grants.size, 1);
-  grants.revokeAll();
-  assert.equal(grants.size, 0);
+    assert.equal(grants.revoke(one.id), true);
+    const ended = await grants.onCall(ok.run, { call: 3, tool: 'goal_list', args: {} });
+    assert.equal(ended.ok, false);
+    assert.match(ended.text, /the in-game run that held it has ended/);
+    assert.equal(grants.hello(helloFor(one.id, one.token, 'n4'), fakeConn()).run, undefined, 'an ended run cannot connect again');
+    const live = fakeConn();
+    assert.ok(grants.hello(helloFor(two.id, two.token), live).run);
+    grants.revoke(two.id);
+    assert.equal(live.destroyed, true, 'revoking closes the run\'s connection');
+    assert.equal(calls.length, 1);
+    grants.grant('#3');
+    grants.revokeAll();
+    assert.equal(grants.size, 0);
+  })();
 });
 
 test('run grants are bound to the character the game reported when the run started', async () => {
   let character = 'Bone-Forever';
   const calls = [];
-  const grants = GM.createRunGrants({ call: async tool => { calls.push(tool); return { ok: true, text: 'done' }; }, character: () => character, parentOf });
+  const grants = GM.createRunGrants({ call: async tool => { calls.push(tool); return { ok: true, text: 'done' }; }, character: () => character });
   const g = grants.grant('#3');
-  grants.attachPid(g.id, 777);
-  const { run } = await grants.hello(helloFor(g.id, g.token), fakeConn());
+  const { run } = grants.hello(helloFor(g.id, g.token), fakeConn());
   assert.equal((await grants.onCall(run, { call: 1, tool: 'goal_list' })).ok, true);
   character = 'Alt-Forever';
   const alt = await grants.onCall(run, { call: 2, tool: 'order_issue', args: { text: 'skin 10' } });
@@ -133,10 +136,9 @@ test('run grants are bound to the character the game reported when the run start
   assert.match(alt.text, /started for Bone-Forever, and the game now reports Alt-Forever/);
   character = '';
   assert.equal((await grants.onCall(run, { call: 3, tool: 'goal_list' })).ok, false, 'no reported character, no write');
-  const late = GM.createRunGrants({ call: async () => ({ ok: true }), character: () => '', parentOf });
+  const late = GM.createRunGrants({ call: async () => ({ ok: true }), character: () => '' });
   const none = late.grant('#5');
-  late.attachPid(none.id, 777);
-  const noneRun = (await late.hello(helloFor(none.id, none.token), fakeConn())).run;
+  const noneRun = late.hello(helloFor(none.id, none.token), fakeConn()).run;
   assert.equal((await late.onCall(noneRun, { call: 4, tool: 'goal_list' })).ok, false, 'a grant made with no character never writes');
   assert.deepEqual(calls, ['goal_list']);
 });
@@ -151,16 +153,16 @@ async function socketRig() {
   const ctx = { text: CONTEXT, at: Date.now() };
   const store = G.createGoals({ dir: path.join(home, 'goals'), context: () => ctx, streamOptions: () => ({ url: 'http://127.0.0.1:9' }), post: async (url, command) => { posts.push(command); return { ok: true, status: 200 }; } });
   const storeCalls = [];
-  const grants = GM.createRunGrants({ call: (tool, args) => { storeCalls.push(tool); return store.call(tool, args); }, character: () => 'Bone-Forever', parentOf });
   const logs = [];
+  const grants = GM.createRunGrants({ call: (tool, args) => { storeCalls.push(tool); return store.call(tool, args); }, character: () => 'Bone-Forever', log: l => logs.push(l) });
   const core = { home, timeoutMs: 60000, options: () => ({}), log: l => logs.push(l), tag: j => `#${j.id}`, publish: () => {}, runGrants: grants };
   const live = createLive({ commandLine: () => '', parentOf: async () => null, pickedUp: () => false });
   live.start(core);
-  await until(() => live.runEndpoint());
+  await until(() => !POSIX || fs.existsSync(live.runEndpoint()));
   const servers = [];
-  const serve = (runId, token, pid = 4242) => {
+  const serve = (runId, token) => {
     const out = fakeStdout();
-    const srv = GM.createServer({ stdout: out, socket: live.runEndpoint(), runId, token, pid, timeoutMs: 3000 });
+    const srv = GM.createServer({ stdout: out, socket: live.runEndpoint(), runId, token, timeoutMs: 3000 });
     servers.push(srv);
     let id = 1;
     const call = async (name, args) => {
@@ -174,12 +176,30 @@ async function socketRig() {
   return { home, grants, live, logs, posts, storeCalls, serve, cleanup };
 }
 
+test('live.runEndpoint names the socket as soon as the server exists, and drops it when listening fails', { skip: !POSIX }, async () => {
+  const home = tmpHome();
+  const core = { home, timeoutMs: 60000, options: () => ({}), log: () => {}, tag: j => `#${j.id}`, publish: () => {} };
+  const live = createLive({ commandLine: () => '', parentOf: async () => null, pickedUp: () => false });
+  live.start(core);
+  assert.equal(live.runEndpoint(), LP.endpoint(home), 'a job queued before the listen event still gets the tools');
+  live.stop();
+  const blocked = LP.endpoint(home);
+  fs.mkdirSync(blocked, { recursive: true });
+  fs.writeFileSync(path.join(blocked, 'keep'), 'x');
+  const logs = [];
+  const broken = createLive({ commandLine: () => '', parentOf: async () => null, pickedUp: () => false });
+  broken.start({ ...core, log: l => logs.push(l) });
+  await until(() => logs.some(l => /cannot listen/.test(l)));
+  assert.equal(broken.runEndpoint(), '', 'no socket, no tools');
+  broken.stop();
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
 test('an ask run\'s wowgoals server writes through the bridge socket with the same checks; an unbacked name is refused and nothing is written', async () => {
   const r = await socketRig();
   try {
     assert.ok(!POSIX || fs.statSync(r.live.runEndpoint()).isSocket());
     const grant = r.grants.grant('#7');
-    r.grants.attachPid(grant.id, 777);
     const s = r.serve(grant.id, grant.token);
     s.srv.handle({ jsonrpc: '2.0', id: 100, method: 'tools/list' });
     assert.deepEqual((await until(() => s.out.lines.find(l => l.id === 100))).result.tools.map(t => t.name), IN_GAME_TOOLS);
@@ -207,20 +227,39 @@ test('an ask run\'s wowgoals server writes through the bridge socket with the sa
     assert.match(vote.content[0].text, /Unknown tool/);
     assert.deepEqual(r.storeCalls, ['goal_set', 'order_issue', 'order_issue']);
     assert.deepEqual(r.live.sessions(), [], 'a run connection is not a live session');
-
     assert.equal(r.live._state.runSockets.size, 1, 'the bridge tracks the run connection');
-    const second = r.serve(grant.id, grant.token, 900);
-    const twice = await second.call('goal_list', {});
-    assert.equal(twice.isError, true, 'a second connection for an attached grant is refused');
-    assert.ok(r.logs.some(l => /already has a connection/.test(l)), r.logs.join('\n'));
-    assert.deepEqual(r.storeCalls, ['goal_set', 'order_issue', 'order_issue']);
 
     r.grants.revoke(grant.id);
     await until(() => r.live._state.runSockets.size === 0);
     const late = await s.call('goal_list', {});
     assert.equal(late.isError, true);
-    assert.match(late.content[0].text, /closed the connection/);
+    assert.match(late.content[0].text, /goal tools are off for the rest of this run/);
     assert.deepEqual(r.storeCalls, ['goal_set', 'order_issue', 'order_issue']);
+  } finally { r.cleanup(); }
+});
+
+test('the run\'s server connects at startup and holds the one slot: a token holder is refused, and a dropped connection is never replaced', async () => {
+  const r = await socketRig();
+  try {
+    const grant = r.grants.grant('#10');
+    const own = r.serve(grant.id, grant.token);
+    own.srv.connect();
+    await until(() => r.live._state.runSockets.size === 1);
+    const thief = r.serve(grant.id, grant.token);
+    const stolen = await thief.call('order_issue', { text: 'skin 10' });
+    assert.equal(stolen.isError, true, 'the same token from another process gets nothing');
+    assert.ok(r.logs.some(l => /already had its one connection/.test(l)), r.logs.join('\n'));
+    assert.equal((await own.call('goal_list', {})).isError, false, 'the run\'s own server still works');
+
+    const [sock] = [...r.live._state.runSockets];
+    sock.destroy();
+    await until(() => r.logs.some(l => /connection dropped; the run's goal tools are off/.test(l)));
+    const after = await own.call('goal_list', {});
+    assert.equal(after.isError, true);
+    assert.match(after.content[0].text, /goal tools are off for the rest of this run/);
+    const retry = r.serve(grant.id, grant.token);
+    assert.equal((await retry.call('goal_list', {})).isError, true, 'no new connection after a drop');
+    assert.deepEqual(r.storeCalls, ['goal_list']);
   } finally { r.cleanup(); }
 });
 
@@ -228,7 +267,6 @@ test('live.stop() closes the run connections it accepted', async () => {
   const r = await socketRig();
   try {
     const grant = r.grants.grant('#9');
-    r.grants.attachPid(grant.id, 777);
     const s = r.serve(grant.id, grant.token);
     assert.equal((await s.call('goal_list', {})).isError, false);
     const [sock] = [...r.live._state.runSockets];
@@ -242,14 +280,13 @@ test('a wowgoals server with a wrong token is refused at hello and reaches no st
   const r = await socketRig();
   try {
     const grant = r.grants.grant('#8');
-    r.grants.attachPid(grant.id, 777);
     const s = r.serve(grant.id, 'f'.repeat(64));
     const res = await s.call('goal_list', {});
     assert.equal(res.isError, true);
-    assert.match(res.content[0].text, /closed the connection/);
     assert.deepEqual(r.storeCalls, []);
     assert.ok(r.logs.some(l => /refused an in-game run connection without a valid run grant/.test(l)), r.logs.join('\n'));
     const none = GM.createServer({ stdout: fakeStdout(), socket: '', runId: '', token: '' });
+    assert.equal(none.connect(), false, 'no grant, no eager connection');
     const out = fakeStdout();
     const bare = GM.createServer({ stdout: out, socket: r.live.runEndpoint(), runId: '', token: '' });
     bare.handle({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'goal_list', arguments: {} } });

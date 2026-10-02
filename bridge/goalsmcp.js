@@ -16,6 +16,7 @@ const TOKEN_ENV = 'CLAUDE_WOW_RUN_TOKEN';
 const RUN_ID_RE = /^[0-9a-f]{32}$/;
 const PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const CALL_TIMEOUT_MS = 15000;
+const DROPPED_TEXT = 'The connection to the claude-wow bridge closed, so the goal tools are off for the rest of this run; the call did nothing.';
 
 const ALL_TOOL_NAMES = Object.freeze([...G.TOOL_NAMES, ...OT.TOOL_NAMES, ...C.TOOL_NAMES]);
 const LIVE_SESSION_ONLY = Object.freeze([G.TOOL.voteOpen, G.TOOL.voteClose]);
@@ -23,8 +24,10 @@ const TOOL_NAMES = Object.freeze(ALL_TOOL_NAMES.filter(t => !LIVE_SESSION_ONLY.i
 const fullToolName = tool => `mcp__${SERVER_NAME}__${tool}`;
 const SERVER_RULE = `mcp__${SERVER_NAME}`;
 const RUN_RULES = Object.freeze(TOOL_NAMES.map(fullToolName));
-const NEVER_SAVED = Object.freeze([SERVER_RULE, `${SERVER_RULE}__*`, ...ALL_TOOL_NAMES.map(fullToolName)]);
-const DENIED_WITH_TOOLS = Object.freeze(LIVE_SESSION_ONLY.map(fullToolName));
+const TOKEN_READERS = Object.freeze(['node', 'python', 'python3', 'ruby', 'perl', 'osascript', 'ps', 'bash', 'sh', 'zsh', 'env', 'printenv', 'cat', 'head', 'tail', 'less', 'more', 'git', 'npm', 'npx', 'pip', 'pytest']);
+const TOKEN_READER_RULES = Object.freeze(TOKEN_READERS.map(cmd => `Bash(${cmd}:*)`));
+const DENIED_WITH_TOOLS = Object.freeze([...LIVE_SESSION_ONLY.map(fullToolName), ...TOKEN_READER_RULES]);
+const BROAD_BASH_RE = /^Bash(?:\((?:\*|\*:\*|:\*|\s*)\))?$/;
 const DENIED_WITHOUT_TOOLS = Object.freeze([SERVER_RULE]);
 
 const INSTRUCTIONS = [
@@ -45,25 +48,22 @@ function version() {
   try { return require('../package.json').version; } catch { return '0.0.0'; }
 }
 
-const ANCESTRY_DEPTH_MAX = 64;
-
 function isRunToolRule(rule) {
   return String(rule || '').trim().startsWith(SERVER_RULE);
 }
 
-function createRunGrants({ call, character = () => '', parentOf = pid => LP.parentPid(pid), log = () => {} } = {}) {
+function isBroadBashRule(rule) {
+  return BROAD_BASH_RE.test(String(rule || '').trim());
+}
+
+function createRunGrants({ call, character = () => '', log = () => {} } = {}) {
   const runs = new Map();
 
   function grant(label) {
     const id = crypto.randomBytes(16).toString('hex');
     const token = crypto.randomBytes(32).toString('hex');
-    runs.set(id, { id, token, label: String(label || ''), character: String(character() || ''), pid: 0, conn: null });
+    runs.set(id, { id, token, label: String(label || ''), character: String(character() || ''), used: false, conn: null });
     return { id, token };
-  }
-
-  function attachPid(id, pid) {
-    const run = runs.get(id);
-    if (run && Number.isInteger(pid) && pid > 0) run.pid = pid;
   }
 
   function revoke(id) {
@@ -79,35 +79,21 @@ function createRunGrants({ call, character = () => '', parentOf = pid => LP.pare
     for (const id of [...runs.keys()]) revoke(id);
   }
 
-  const attached = run => !!(run.conn && !run.conn.destroyed);
-
-  async function descends(pid, ancestor) {
-    let p = pid;
-    for (let depth = 0; p > 1 && depth < ANCESTRY_DEPTH_MAX; depth++) {
-      if (p === ancestor) return true;
-      try { p = await parentOf(p); } catch { return false; }
-      if (!p) return false;
-    }
-    return false;
-  }
-
-  async function hello(msg, conn) {
+  function hello(msg, conn) {
     const id = String((msg && msg.run) || '');
     const run = RUN_ID_RE.test(id) ? runs.get(id) : null;
     const nonce = msg && typeof msg.nonce === 'string' ? msg.nonce : '';
     if (!run || !nonce || !LP.sameProof(msg.proof, LP.proof(run.token, 'client', nonce))) return { why: 'no valid run grant' };
-    const pid = Number(msg.pid);
-    if (!run.pid) return { why: `${run.label} has no agent process yet` };
-    if (!Number.isInteger(pid) || pid <= 0) return { why: `${run.label}: the server did not name its pid` };
-    if (!(await descends(pid, run.pid))) return { why: `${run.label}: pid ${pid} does not run under the run's agent pid ${run.pid}` };
-    if (runs.get(run.id) !== run) return { why: `${run.label} ended during the hello` };
-    if (attached(run)) return { why: `${run.label} already has a connection` };
+    if (run.used) return { why: `${run.label} already had its one connection; the run's goal tools stay off` };
+    run.used = true;
     run.conn = conn || null;
     return { run, welcome: { type: 'welcome', proof: LP.proof(run.token, 'bridge', nonce) } };
   }
 
   function detach(run, conn) {
-    if (run && run.conn === conn) run.conn = null;
+    if (!run || run.conn !== conn) return;
+    run.conn = null;
+    if (runs.get(run.id) === run) log(`${run.label} ${SERVER_NAME} connection dropped; the run's goal tools are off until it ends`);
   }
 
   async function onCall(run, msg) {
@@ -134,16 +120,13 @@ function createRunGrants({ call, character = () => '', parentOf = pid => LP.pare
     return answer(ok, String((result && result.text) || ''));
   }
 
-  return { grant, attachPid, revoke, revokeAll, hello, detach, onCall, get size() { return runs.size; } };
+  return { grant, revoke, revokeAll, hello, detach, onCall, get size() { return runs.size; } };
 }
 
 function launchConfig({ runId, token, socket, runtime } = {}) {
   const R = require('./runtime');
   const [command, args] = R.scriptCommand(SCRIPT, ['--socket', socket, '--run', runId], runtime);
-  return {
-    rules: [...RUN_RULES],
-    server: { type: 'stdio', command, args, env: { [TOKEN_ENV]: token }, alwaysLoad: true },
-  };
+  return { server: { type: 'stdio', command, args, env: { [TOKEN_ENV]: token }, alwaysLoad: true } };
 }
 
 function mcpConfig(servers) {
@@ -159,13 +142,14 @@ function createServer(opts) {
   const platform = opts.platform || process.platform;
   const connectTo = opts.connect || (addr => net.connect(addr));
   const timeoutMs = opts.timeoutMs || CALL_TIMEOUT_MS;
-  const ownPid = opts.pid || process.pid;
   const log = opts.log || (() => {});
   const calls = new Map();
   let nextCall = 1;
   let sock = null;
   let verified = false;
   let myNonce = '';
+  let dropped = false;
+  const granted = () => !!socket && RUN_ID_RE.test(runId) && !!token;
 
   function send(msg) { out.write(JSON.stringify(msg) + '\n'); }
 
@@ -205,24 +189,31 @@ function createServer(opts) {
 
   function open() {
     if (sock) return true;
+    if (dropped || !granted()) return false;
     if (platform !== 'win32' && !opts.skipPermissionCheck && !LP.socketOwnerOnly(socket)) return false;
     const s = connectTo(socket);
     sock = s;
     verified = false;
     myNonce = LP.nonce();
-    s.on('connect', () => s.write(LP.encode({ type: HELLO, run: runId, pid: ownPid, nonce: myNonce, proof: LP.proof(token, 'client', myNonce) })));
+    s.on('connect', () => s.write(LP.encode({ type: HELLO, run: runId, nonce: myNonce, proof: LP.proof(token, 'client', myNonce) })));
     s.on('data', LP.lineReader(onBridge, () => s.destroy()));
     s.on('error', () => {});
     s.on('close', () => {
       if (sock === s) sock = null;
       verified = false;
-      failAll('The claude-wow bridge closed the connection, so the call did nothing.');
+      dropped = true;
+      failAll(DROPPED_TEXT);
     });
     return true;
   }
 
+  function connect() {
+    return open();
+  }
+
   function askBridge(tool, args) {
-    if (!socket || !RUN_ID_RE.test(runId) || !token) return Promise.resolve({ ok: false, text: `${SERVER_NAME} was started without a run grant from the bridge, so ${tool} did nothing.` });
+    if (!granted()) return Promise.resolve({ ok: false, text: `${SERVER_NAME} was started without a run grant from the bridge, so ${tool} did nothing.` });
+    if (dropped) return Promise.resolve({ ok: false, text: DROPPED_TEXT });
     const id = nextCall++;
     return new Promise(resolve => {
       const timer = setTimeout(() => settle(id, { ok: false, text: `The claude-wow bridge did not answer ${tool} in time.` }), timeoutMs);
@@ -266,7 +257,7 @@ function createServer(opts) {
     if (sock) sock.destroy();
   }
 
-  return { handle, feed: LP.lineReader(handle), stop };
+  return { handle, feed: LP.lineReader(handle), stop, connect };
 }
 
 function parseArgs(argv) {
@@ -289,6 +280,7 @@ function main(argv, deps = {}) {
   try { opts = parseArgs(argv); } catch (e) { log(e.message); process.exitCode = 2; return null; }
   const token = String(env[TOKEN_ENV] || '');
   const server = createServer({ stdout, socket: opts.socket, runId: opts.runId, token, log });
+  server.connect();
   stdin.on('data', server.feed);
   stdin.on('end', () => { server.stop(); if (!deps.stdin) process.exit(0); });
   return server;
@@ -296,8 +288,8 @@ function main(argv, deps = {}) {
 
 module.exports = {
   SERVER_NAME, SCRIPT, HELLO, CALL, RESULT, TOKEN_ENV, INSTRUCTIONS,
-  TOOL_NAMES, LIVE_SESSION_ONLY, RUN_RULES, SERVER_RULE, NEVER_SAVED, DENIED_WITH_TOOLS, DENIED_WITHOUT_TOOLS,
-  fullToolName, isRunToolRule, toolSchemas, createRunGrants, launchConfig, mcpConfig, createServer, parseArgs, main,
+  TOOL_NAMES, LIVE_SESSION_ONLY, RUN_RULES, SERVER_RULE, DENIED_WITH_TOOLS, DENIED_WITHOUT_TOOLS, TOKEN_READER_RULES,
+  fullToolName, isRunToolRule, isBroadBashRule, toolSchemas, createRunGrants, launchConfig, mcpConfig, createServer, parseArgs, main,
 };
 
 if (require.main === module) main(process.argv.slice(2));

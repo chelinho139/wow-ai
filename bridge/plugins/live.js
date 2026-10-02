@@ -355,7 +355,7 @@ function createLive(overrides = {}) {
   }
 
   function runEndpoint() {
-    return server && server.listening ? address : '';
+    return server ? address : '';
   }
 
   async function detectListening(s) {
@@ -437,7 +437,8 @@ function createLive(overrides = {}) {
     address = LP.endpoint(core.home, platform);
     if (platform !== 'win32') { try { fs.rmSync(address, { force: true }); } catch {} }
     server = net.createServer(onConnection);
-    server.on('error', e => log(`cannot listen on ${address}: ${e.message}`));
+    const listener = server;
+    listener.on('error', e => { log(`cannot listen on ${address}: ${e.message}`); if (server === listener) server = null; });
     const umask = platform !== 'win32' ? process.umask(0o177) : null;
     server.listen(address, () => {
       if (platform !== 'win32') { try { fs.chmodSync(address, 0o600); } catch {} }

@@ -1056,7 +1056,7 @@ const core = {
 
 const runGrants = GM.createRunGrants({
   call: (tool, args) => core.goals(tool, args),
-  character: () => (GOALS.characterOf((state.context && state.context.text) || '') || {}).key || '',
+  character: () => runGrantCharacter(),
   log,
 });
 
@@ -1135,26 +1135,35 @@ function stopPlugins() {
 // resuming (the coding plugin: the folder changed). The plugin's own
 // instructions (tools) go into the system prompt; its surfaces say whether the
 // run may mark the map and whether macro blocks in the reply become buttons.
-const IN_GAME_NEVER_GRANTED = Object.freeze([...LP.GOAL_WRITE_TOOLS, ...GM.NEVER_SAVED]);
+const IN_GAME_NEVER_GRANTED = LP.GOAL_WRITE_TOOLS;
 function inGameGrantable(rules) {
   return P.withoutRules(rules, IN_GAME_NEVER_GRANTED).filter(r => !GM.isRunToolRule(r));
 }
-function inGameDeniedTools(withRunTools) {
-  return [...LP.GOAL_WRITE_TOOLS, ...(withRunTools ? GM.DENIED_WITH_TOOLS : GM.DENIED_WITHOUT_TOOLS), ...homeGuardRules()];
+function inGameDeniedTools(withRunTools, allowed) {
+  const broadBash = withRunTools ? (allowed || []).filter(GM.isBroadBashRule) : [];
+  return [...LP.GOAL_WRITE_TOOLS, ...(withRunTools ? GM.DENIED_WITH_TOOLS : GM.DENIED_WITHOUT_TOOLS), ...broadBash, ...homeGuardRules()];
 }
 
-let loggedNoRunTools = false;
+const loggedNoRunTools = new Set();
+function noRunTools(tag, why) {
+  if (loggedNoRunTools.has(why)) return '';
+  loggedNoRunTools.add(why);
+  log(`${tag} ${GM.SERVER_NAME}: ${why}, so in-game runs go without the goal, order and campaign tools`);
+  return '';
+}
 function runToolsSocket(tag) {
   const lp = livePlugin();
   const socket = lp && typeof lp.runEndpoint === 'function' ? lp.runEndpoint() : '';
-  if (!socket && !loggedNoRunTools) {
-    loggedNoRunTools = true;
-    log(`${tag} ${GM.SERVER_NAME}: the live socket is not listening (plugins.live.enabled, or --once), so in-game runs go without the goal, order and campaign tools`);
-  }
+  if (!socket) return noRunTools(tag, 'the live socket is not listening (plugins.live.enabled, or --once)');
+  if (!runGrantCharacter()) return noRunTools(tag, 'the game context names no character');
   return socket;
+}
+function runGrantCharacter() {
+  return (GOALS.characterOf((state.context && state.context.text) || '') || {}).key || '';
 }
 
 const MCP_CONFIG_DIR = path.join(TMP_DIR, 'mcp');
+try { fs.rmSync(MCP_CONFIG_DIR, { recursive: true, force: true }); } catch {}
 function writePrivateFile(file, content) {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   fs.writeFileSync(file, content, { mode: 0o600, flag: 'wx' });
@@ -1207,7 +1216,7 @@ function runAgent(job, opts = {}) {
   const runToolSocket = opts.runTools && agentId === 'claude' ? runToolsSocket(tag) : '';
   const runOnlyRules = [...grantOnce.rules, ...(dataServer ? dataServer.rules : []), ...(runToolSocket ? GM.RUN_RULES : [])];
   const baseCfg = A.withPluginSettings(A.agentConfig(cfg, agentId), agentId, core.options(plugin.id));
-  const acfg = A.withChatSettings(P.withRunDeniedRules(P.withRunOnlyRules(baseCfg, runOnlyRules), inGameDeniedTools(!!runToolSocket)), agentId, chosen);
+  const acfg = A.withChatSettings(P.withRunDeniedRules(P.withRunOnlyRules(baseCfg, runOnlyRules), inGameDeniedTools(!!runToolSocket, [...(baseCfg.allowedTools || []), ...runOnlyRules])), agentId, chosen);
   const runDirs = [...grantForGood.dirs, ...grantOnce.dirs].map(d => P.resolveCwd(d, DEFAULT_CWD));
   if (runDirs.length) {
     acfg.addDirs = [...new Set([...A.addDirs(acfg), ...runDirs])];
@@ -1313,7 +1322,6 @@ function runAgent(job, opts = {}) {
   const startedAt = Date.now(); // a fresh session's clock starts here (the footer's elapsed time)
   const child = PR.spawnChild(cmd.file, args, { cwd, env, windowsHide: true, stdio: [input.stdin !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
   running.set(key, { job, child });
-  if (runGrant) runGrants.attachPid(runGrant.id, child.pid);
   noteInflight(key, job, child, agent.name, path.basename(args.find(a => /\.[cm]?js$/.test(String(a))) || cmd.file));
   publish(key, { chat: job.chat, id: job.id, status: 'working', text: resume ? 'thinking...' : 'starting a new session...', cwd: job.cwd, session: resume, agent: agentId, plugin: plugin.id }, true);
   if (input.stdin !== undefined) { child.stdin.on('error', () => {}); child.stdin.end(input.stdin); }
