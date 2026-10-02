@@ -221,7 +221,9 @@ test('a frame of [message, gs rider] from the real addon and a frame of [gs, mes
       assert.equal(ridden.id, messageId);
       await h.bridge.waitForLine(new RegExp(`telemetry: gs #\\d+@${session} for ${CHARACTER}: money`), { from: mark });
       const after = h.bridge.output.slice(mark).split('\n');
-      const frameAt = after.findIndex(l => new RegExp(`strip #${ridden.id % 65536} \\(screenshot `).test(l));
+      const firstJobLine = after.findIndex(l => l.includes(`#${ridden.id}@${session} `));
+      assert.ok(firstJobLine >= 0, 'the bridge logged the message');
+      const frameAt = after.slice(0, firstJobLine).map(l => /strip #\d+ \(screenshot /.test(l)).lastIndexOf(true);
       assert.ok(frameAt >= 0, 'the message went out on a screenshot frame');
       const nextFrame = after.findIndex((l, i) => i > frameAt && /strip #\d+ \(screenshot /.test(l));
       const frameLines = after.slice(frameAt, nextFrame < 0 ? undefined : nextFrame);
