@@ -318,9 +318,10 @@ C_AddOns = {
 }
 C_Texture = { GetAtlasExists = function() return true end }
 function PlaySound() end
+STUB.signalRoot = "ClaudeWoW_Runtime"
 function STUB.SignalFile(path)
 	if type(path) ~= "string" then return false end
-	local rel = path:match("\\ClaudeWoW\\(.+)$")
+	local rel = path:match("^Interface\\AddOns\\" .. STUB.signalRoot .. "\\(.+)$")
 	if not rel then return false end
 	return (rel:match("^ack\\%d%d%d%.wav$") or rel:match("^sig\\%d%d%d%.wav$") or rel:match("^act\\%d%d%d\\%d%d%.wav$") or rel:match("^presence\\[ab]\\%d%d%d%d%.wav$")) and true or false
 end

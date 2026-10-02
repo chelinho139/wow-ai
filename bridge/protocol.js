@@ -12,6 +12,8 @@ const path = require('path');
 // The names it had before (wow-claude, then wow-ai) are what setup.js migrates
 // from and what an older config.json may still name.
 const ADDON = 'ClaudeWoW';
+const RUNTIME_ADDON = ADDON + '_Runtime';
+const SHIPPED_INBOX_PATH = new RegExp('(^|[\\\\/])' + ADDON + '[\\\\/]Inbox\\.lua$');
 const OLD_ADDONS = ['WoWAI', 'WoWClaude']; // newest first
 const OLD_ADDON_PATH = new RegExp('(^|[\\\\/])(' + OLD_ADDONS.join('|') + ')([\\\\/]|$)');
 const OLD_SAVED_FILE = new RegExp('(' + OLD_ADDONS.join('|') + ')\\.lua$');
@@ -1211,7 +1213,7 @@ function luaWidgets(set) {
 }
 
 module.exports = {
-  ADDON, OLD_ADDONS, OLD_ADDON_PATH, OLD_SAVED_FILE, TOC_INTERFACE, OLD_TOC_INTERFACES,
+  ADDON, RUNTIME_ADDON, SHIPPED_INBOX_PATH, OLD_ADDONS, OLD_ADDON_PATH, OLD_SAVED_FILE, TOC_INTERFACE, OLD_TOC_INTERFACES,
   fromHex, pad3, slotNumber, SIGNAL_CLEAR_AHEAD, slotsToClearAhead, PRESENCE_TEST_RESULTS, LATE_CREATE_RESULTS, chatKey, sessKey,
   alreadyHandled, markHandled, pruneStale, MONTH_MS, noteAck, recentAcks, RECENT_ACKS_MAX, RECENT_ACK_MS,
   noteUsage, usageFields, tokensLabel,

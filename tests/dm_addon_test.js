@@ -51,7 +51,7 @@ function CreateFrame(kind, name, parent, template)
 end
 `;
 
-const ARMED_SIGNALS = 'STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW\\\\ctl\\\\valid.wav"] = true; STUB.armed = true';
+const ARMED_SIGNALS = 'STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW_Runtime\\\\ctl\\\\valid.wav"] = true; STUB.armed = true';
 
 const FAILING_STUB = `
 STUB.failDm = true
@@ -174,7 +174,7 @@ function stripRecords(vm) {
 const dmRecords = vm => stripRecords(vm).filter(r => r.flags.split(';').includes(`kind=${C.MANUAL_KIND}`));
 
 function ack(vm, id) {
-  vm.run(`STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW\\\\ack\\\\${String(id).padStart(3, "0")}.wav"] = false`);
+  vm.run(`STUB.sounds["Interface\\\\AddOns\\\\ClaudeWoW_Runtime\\\\ack\\\\${String(id).padStart(3, "0")}.wav"] = false`);
 }
 
 test('dm frame: appears on the natural slot load that carries a beat, drawn like the quest detail parchment', () => {

@@ -129,7 +129,21 @@ ClaudeWoW_SlotData = {
 
 The addon loads a fresh slot on a schedule after each send (5, 10, 16, 24, 34, 46, 60, 80, 100, 130, 160, 200, 240, 300 s, then every 60 s) or immediately when the readiness signal fires. A slot poll matches replies by `(chat, id)` against each chat's pending message. `now` lets the addon know when the bridge last wrote anything (the two clocks are the same machine).
 
-The same content is written to `ClaudeWoW/Inbox.lua`, which the game reads on `/reload` — the fallback path and the only path in `mode reload`.
+The same content is written to `ClaudeWoW_Runtime/Inbox.lua`, which the game reads on `/reload` — the fallback path and the only path in `mode reload`.
+
+## What ships and what the bridge writes
+
+`ClaudeWoW/` holds only shipped files; an addon update (CurseForge replaces the whole folder) may overwrite or delete anything in it. Everything the bridge writes while it runs lives in `ClaudeWoW_Runtime/` (the name is `P.RUNTIME_ADDON` in `bridge/protocol.js` and `Presence.ROOT` in the addon), plus the 200 slot folders:
+
+| Folder | Written by | Holds |
+|---|---|---|
+| `ClaudeWoW/` | setup (copy of `addon/ClaudeWoW`) | the addon; `Inbox.lua` there is a placeholder, `ClaudeWoW_Inbox = ClaudeWoW_Inbox or { … }` |
+| `ClaudeWoW_Runtime/` | setup, `npm run slots`, the bridge | `ClaudeWoW_Runtime.toc` (`## Dependencies: ClaudeWoW`, not load-on-demand, so it loads after the addon), `Inbox.lua` (the reload path), and the signal folders `ack/`, `sig/`, `act/`, `ctl/`, `presence/` |
+| `ClaudeWoW_S001` … `ClaudeWoW_S200` | `npm run slots`, the bridge | one slot `Inbox.lua` each (above) |
+
+The addon reads `ClaudeWoW_Inbox` at `PLAYER_LOGIN`, after every addon loaded, so only the order of the two `Inbox.lua` files matters: the bridge's loads last and wins, and the placeholder keeps whatever already loaded. An `inboxFile` in `config.json` that names `ClaudeWoW/Inbox.lua` is read as the runtime one.
+
+Installs from before this layout kept the signal folders in `ClaudeWoW/`. `install-slots.js` (and setup, which runs it) builds `ClaudeWoW_Runtime/` from the presence ring in `state.json`, then removes the old folders and says to restart the game once. A bridge started on such an install builds `ClaudeWoW_Runtime/` the same way and logs it once (`migrate: created …`), but leaves the old folders: deleting them under a running game would read as every signal firing at once. At login the addon probes `ClaudeWoW_Runtime\ctl\valid.wav`; when it does not read valid and `ClaudeWoW\ctl\valid.wav` does (an older bridge, or no restart since the move), it uses the old folders for the session. `/claude diag` names the folder in use (`files: …`), and `npm run doctor` warns about old folders left in `ClaudeWoW/`.
 
 ## Signals: armed files, deleted to signal
 
@@ -138,6 +152,8 @@ The same content is written to `ClaudeWoW/Inbox.lua`, which the game reads on `/
 Measured on 2026-09-29, before this scheme: the bridge created `presence/NNNN.wav` every 30 s (the files reached 1981 on disk), the game had launched at about file 1962-1965, and `/claude diag` said `presence: head at 1965, beats seen: 0` and `sound checks: 469, valid hits: 9`. No file created after launch was ever seen, so the light went red 5 minutes after every reply. Every ack, readiness signal and heartbeat the bridge created mid-session was invisible the same way; the addon only got replies from its scheduled slot polls. The headless client now models this (`dev/wow/client.js` snapshots the AddOns tree at launch), and `tests/e2e/presence_test.js` reproduces the old behaviour: 20 presence files created after launch, 0 seen.
 
 So every signal is a file that exists before the game starts ("armed"), and "on" is the bridge **deleting** it (present -> missing). Nothing is ever created mid-session for the game to see.
+
+All paths are under `Interface/AddOns/ClaudeWoW_Runtime/`.
 
 | Files | Armed by | Deleted (fired) when |
 |---|---|---|

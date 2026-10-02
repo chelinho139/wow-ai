@@ -2,7 +2,7 @@
 const path = require('path');
 const Service = require('../../bridge/service');
 const Screens = require('../../bridge/screenshots');
-const { slotNumber, pad3 } = require('../../bridge/protocol');
+const { slotNumber, pad3, ADDON, RUNTIME_ADDON } = require('../../bridge/protocol');
 const GameFs = require('../../bridge/gamefs');
 const SIG = require('../../bridge/signals');
 
@@ -335,10 +335,16 @@ function checkSignals(ctx) {
   const addonDir = ctx.config.addonDir;
   if (!addonDir) return finish('signals', 'Signal files', 'no addonDir in config', [warn('config.json has no addonDir.', 'The bridge cannot write reply slots or signal files without it.', 'Run "claude-wow setup".')]);
   const slots = Number(ctx.config.slots) || 200;
-  const ack = wavSlots(ctx, path.join(addonDir, 'ClaudeWoW', 'ack'));
-  const sig = wavSlots(ctx, path.join(addonDir, 'ClaudeWoW', 'sig'));
+  const ack = wavSlots(ctx, path.join(SIG.runtimeRoot(addonDir), 'ack'));
+  const sig = wavSlots(ctx, path.join(SIG.runtimeRoot(addonDir), 'sig'));
   const lastSeq = parseLastSeq(ctx.sys.readText(ctx.config.savedVariablesFile || ''));
   const issues = [];
+  const legacy = (ctx.sys.listDir(path.join(addonDir, ADDON)) || []).filter(name => SIG.RUNTIME_FOLDERS.includes(name));
+  if (legacy.length) {
+    issues.push(warn(`Old signal folder(s) sit in the shipped ${ADDON} folder: ${legacy.join(', ')}.`,
+      `The signal files now live in ${RUNTIME_ADDON}; an addon update replaces the whole ${ADDON} folder.`,
+      'Run "npm run slots" or "claude-wow setup" (it removes them), then fully restart WoW.'));
+  }
   const armed = `ack ${ack ? ack.length : 'missing'} armed .wav, sig ${sig ? sig.length : 'missing'} armed .wav`;
   if (lastSeq === null) {
     issues.push(warn(`Cannot read db.lastSeq from ${ctx.config.savedVariablesFile || '(no savedVariablesFile)'}.`, 'Without it the slots ahead of the next message cannot be judged.', 'Log in once and /reload so WoW writes the SavedVariables file.'));
@@ -358,7 +364,7 @@ function checkSignals(ctx) {
 }
 
 function signalFilesWithTimes(ctx, addonDir) {
-  const root = path.join(addonDir, 'ClaudeWoW');
+  const root = SIG.runtimeRoot(addonDir);
   const out = [];
   const add = rel => {
     const st = ctx.sys.stat(path.join(root, rel));
@@ -455,6 +461,11 @@ function checkInterface(ctx) {
   const issues = [];
   if (!main) issues.push(fail('ClaudeWoW.toc is missing or has no ## Interface line.', 'WoW does not load an addon without a readable toc.', 'Run "claude-wow setup" to reinstall the addon.'));
   if (!slot) issues.push(warn('ClaudeWoW_S001.toc is missing or has no ## Interface line.', 'Replies land in the slot addons; a missing slot 001 means the slots are not installed.', 'Run "npm run slots" or "claude-wow setup".'));
+  const runtime = tocInterface(ctx.sys.readText(SIG.runtimeToc(addonDir)));
+  if (slot && !runtime) issues.push(warn(`${RUNTIME_ADDON}.toc is missing or has no ## Interface line.`, 'Without it the game never loads the Inbox.lua the bridge writes there (the reload path).', 'Run "npm run slots" or "claude-wow setup", then fully restart WoW.'));
+  if (main && runtime && !runtime.some(v => main.includes(v))) {
+    issues.push(warn(`ClaudeWoW.toc says ${main.join(',')}, ${RUNTIME_ADDON}.toc says ${runtime.join(',')}.`, 'An out-of-date runtime toc keeps the reload path from loading.', 'Run "npm run slots" so it matches tocInterface.'));
+  }
   if (main && slot && !slot.some(v => main.includes(v))) {
     issues.push(warn(`ClaudeWoW.toc says ${main.join(',')}, slot 001 says ${slot.join(',')}.`, 'Slots with another interface show as out of date, and WoW may refuse to load them.', 'Run "npm run slots" so the slots match tocInterface.'));
   }
@@ -525,7 +536,7 @@ function checkDisk(ctx) {
     const strips = names.filter(Screens.isScreenshotFile);
     parts.push(`screenshots ${strips.length} strip-sized leftover(s) of ${names.length}`);
     if (strips.length > LIMITS.screenshotLeftovers) issues.push(warn(`${strips.length} WoWScrnShot files sit in ${shotsDir}.`, 'The bridge deletes strips after it decodes them; leftovers are strips it could not read.', `Check the log for "unreadable", then delete the old WoWScrnShot files in ${shotsDir}.`));
-    const presenceDir = path.join(ctx.config.addonDir, 'ClaudeWoW', 'presence');
+    const presenceDir = SIG.presenceDir(ctx.config.addonDir);
     const presence = ctx.sys.listDir(presenceDir);
     const wavs = dir => (ctx.sys.listDir(dir) || []).filter(n => /\.wav$/i.test(n)).length;
     parts.push(`presence ${presence ? wavs(presenceDir) + SIG.RINGS.reduce((n, r) => n + wavs(path.join(presenceDir, r)), 0) : 'missing'} file(s)`);

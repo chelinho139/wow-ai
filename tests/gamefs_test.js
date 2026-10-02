@@ -63,9 +63,11 @@ test('writeFile and copyFile leave the target 0777', posixOnly, () => {
 
 test('repair sets every file and folder under the ClaudeWoW addon folders to 0777 and nothing else', posixOnly, () => {
   const addons = scratch('repair');
-  const presence = path.join(addons, 'ClaudeWoW', 'presence');
+  const presence = path.join(addons, 'ClaudeWoW_Runtime', 'presence');
   fs.mkdirSync(presence, { recursive: true, mode: 0o755 });
   fs.writeFileSync(path.join(presence, '0007.wav'), 'RIFF', { mode: 0o644 });
+  fs.mkdirSync(path.join(addons, 'ClaudeWoW'), { mode: 0o755 });
+  fs.mkdirSync(path.join(addons, 'ClaudeWoW_Runtimes'), { mode: 0o755 });
   fs.mkdirSync(path.join(addons, 'ClaudeWoW_S001'), { mode: 0o755 });
   fs.writeFileSync(path.join(addons, 'ClaudeWoW_S001', 'Inbox.lua'), 'x', { mode: 0o644 });
   fs.mkdirSync(path.join(addons, 'SomeOtherAddon'), { mode: 0o755 });
@@ -74,9 +76,10 @@ test('repair sets every file and folder under the ClaudeWoW addon folders to 077
   assert.equal(first.fixed, first.checked);
   assert.ok(first.fixed >= 5);
   assert.deepEqual(first.failed, []);
-  for (const f of [path.join(addons, 'ClaudeWoW'), presence, path.join(presence, '0007.wav'), path.join(addons, 'ClaudeWoW_S001'), path.join(addons, 'ClaudeWoW_S001', 'Inbox.lua')]) {
+  for (const f of [path.join(addons, 'ClaudeWoW'), path.join(addons, 'ClaudeWoW_Runtime'), presence, path.join(presence, '0007.wav'), path.join(addons, 'ClaudeWoW_S001'), path.join(addons, 'ClaudeWoW_S001', 'Inbox.lua')]) {
     assert.equal(modeOf(f), 0o777, f);
   }
+  assert.equal(modeOf(path.join(addons, 'ClaudeWoW_Runtimes')), 0o755, 'only the exact runtime folder name counts');
   assert.equal(modeOf(path.join(addons, 'SomeOtherAddon', 'a.lua')), 0o644, 'another addon is not touched');
   const again = G.repair(addons);
   assert.equal(again.fixed, 0);

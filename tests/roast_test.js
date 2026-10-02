@@ -559,13 +559,13 @@ test('roast overlay: a bridge that exits when idle (--inject) skips the hook and
   try {
     const home = path.join(dir, 'home');
     const addons = path.join(dir, 'client', 'Interface', 'AddOns');
-    for (const d of ['sig', 'ack', 'act', 'presence']) fs.mkdirSync(path.join(addons, 'ClaudeWoW', d), { recursive: true });
+    for (const d of ['sig', 'ack', 'act', 'presence']) fs.mkdirSync(path.join(addons, 'ClaudeWoW_Runtime', d), { recursive: true });
     fs.mkdirSync(home, { recursive: true });
     const agent = path.join(dir, 'fake-claude.js');
     const result = { type: 'result', subtype: 'success', is_error: false, result: 'Hogger again.\n\nTL;DR: Hogger sends his regards.', session_id: 'roast-inject' };
     fs.writeFileSync(agent, `process.stdin.resume(); process.stdin.on('end', () => { process.stdout.write(${JSON.stringify(JSON.stringify(result) + '\n')}); });`);
     fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({
-      addonDir: addons, savedVariablesFile: path.join(dir, 'ClaudeWoW.lua'), inboxFile: path.join(addons, 'ClaudeWoW', 'Inbox.lua'),
+      addonDir: addons, savedVariablesFile: path.join(dir, 'ClaudeWoW.lua'), inboxFile: path.join(addons, 'ClaudeWoW_Runtime', 'Inbox.lua'),
       defaultCwd: dir, slots: 1, agent: 'claude', agents: { claude: { path: agent } }, titleModel: false,
       plugins: { default: 'roast', roast: { cwd: path.join(dir, 'scratch') }, stream: { url: svc.url } },
       gameContext: false, primerFile: '', capture: { enabled: false }, timeoutMs: 60000,

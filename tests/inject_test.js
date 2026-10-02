@@ -47,7 +47,7 @@ fs.writeFileSync(path.join(ADDONS, 'ClaudeWoW', 'ClaudeWoW.toc'), '## Interface:
 
 const cfg = JSON.parse(fs.readFileSync(path.join(SRC, 'config.example.json'), 'utf8'));
 cfg.addonDir = ADDONS;
-cfg.inboxFile = path.join(ADDONS, 'ClaudeWoW', 'Inbox.lua');
+cfg.inboxFile = path.join(ADDONS, 'ClaudeWoW_Runtime', 'Inbox.lua');
 cfg.savedVariablesFile = path.join(S, 'wow', 'WTF', 'nope.lua');
 cfg.defaultCwd = path.join(S, 'proj');
 cfg.capture = { ...cfg.capture, enabled: false, screenshotDir: path.join(S, 'wow', 'Screenshots') };
@@ -84,7 +84,7 @@ function readLua(file, globalName) {
 // that block (the summary the game chat prints is split off as `summary`).
 const pong = text => /^PONG\b/.test(String(text || ''));
 // A signal is a valid .wav; "off" is no file at all.
-const size = f => { try { return fs.statSync(path.join(ADDONS, 'ClaudeWoW', f)).size; } catch { return -1; } };
+const size = f => { try { return fs.statSync(path.join(ADDONS, 'ClaudeWoW_Runtime', f)).size; } catch { return -1; } };
 const pad = n => String(n).padStart(3, '0');
 console.log(`agent: ${agent}`);
 

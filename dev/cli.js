@@ -6,6 +6,7 @@ const path = require('path');
 const readline = require('readline');
 const H = require('./harness');
 const SB = require('./sandbox');
+const SIG = require('../bridge/signals');
 
 const HELP = `
   type a message          send it from the active chat
@@ -111,7 +112,7 @@ async function main() {
         console.log(bridge.output.trim().split('\n').slice(-n).join('\n'));
       }
       else if (t === ':files') {
-        const dir = kind => { try { return fs.readdirSync(path.join(sb.addons, 'ClaudeWoW', kind)).filter(f => f.endsWith('.wav')); } catch { return []; } };
+        const dir = kind => { try { return fs.readdirSync(path.join(SIG.runtimeRoot(sb.addons), kind)).filter(f => f.endsWith('.wav')); } catch { return []; } };
         console.log({ ack: dir('ack'), sig: dir('sig'), screenshots: h.screenshots() });
       }
       else if (t.startsWith('/')) client.slash(t);
