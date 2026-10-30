@@ -507,6 +507,7 @@ const RETAIL_STUBS = `
     GetMountInfoByID = function(id) local m = MOUNTS[id]; return m[1], 100 + id, 0, false, true, m[2], false, false, nil, m[3], m[4], id end,
   }
   local LOG = {
+    { title = "Dragonflight", isHeader = true }, -- a group header with no quest under it
     { title = "Bosque Canción Eterna", isHeader = true },
     { title = "Lobos hambrientos", questID = 101 },
     { title = "Entrega del correo", questID = 49930 },
@@ -595,6 +596,7 @@ test('/ai equipo, /ai monturas and /ai misiones attach gear, the mount collectio
     '  - Habla con Lana (done)',
     '49930 Entrega del correo - ready to turn in',
   ].join('\n')), rec.text);
+  assert.ok(!rec.text.includes('Dragonflight'), 'a header with no quest under it is left out');
 });
 
 test('the context lists quests with their titles while they fit, then ids only, never over the cap', () => {

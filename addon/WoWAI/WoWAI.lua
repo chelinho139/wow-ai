@@ -1475,7 +1475,7 @@ function WoWAI.QuestsText()
 	local lines = {}
 	local n = Try(C_QuestLog and C_QuestLog.GetNumQuestLogEntries) or Try(GetNumQuestLogEntries)
 	if type(n) ~= "number" or n == 0 then return nil, "the quest log is empty" end
-	local used = 0
+	local used, pendingHeader = 0, nil
 	for i = 1, n do
 		local title, id, header, hidden, complete
 		local info = Try(C_QuestLog and C_QuestLog.GetInfo, i)
@@ -1488,7 +1488,9 @@ function WoWAI.QuestsText()
 		end
 		local line
 		if header then
-			line = "== " .. tostring(title)
+			-- Held until a quest follows: a header with none under it (an
+			-- expansion group, a placeholder) says nothing.
+			pendingHeader = "== " .. tostring(title)
 		elseif not hidden and type(title) == "string" then
 			line = tostring(id) .. " " .. title .. (complete and " - ready to turn in" or "")
 			local objectives = id and Try(C_QuestLog and C_QuestLog.GetQuestObjectives, id)
@@ -1506,6 +1508,7 @@ function WoWAI.QuestsText()
 			end
 		end
 		if line then
+			if pendingHeader then line = pendingHeader .. "\n" .. line; pendingHeader = nil end
 			if used + #line > ATTACH_MAX - 40 then
 				table.insert(lines, "(more quests left out)")
 				break
