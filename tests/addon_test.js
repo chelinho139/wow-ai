@@ -580,8 +580,8 @@ test('/ai equipo, /ai monturas and /ai misiones attach gear, the mount collectio
   assert.ok(rec.text.endsWith([
     'Mount collection, read from the game:',
     'Mounts: 1 collected of 4 this character can see; 3 missing',
-    'Missing, Vendedor (2): Raptor, Zancudo',
-    'Missing, Tienda (1)',
+    'Missing by source: Vendedor 2, Tienda 1',
+    'Examples, Vendedor: Raptor, Zancudo',
   ].join('\n')), rec.text);
 
   vm.run('WoWAI.NewChat("q"); SlashCmdList.WOWAI("misiones")');
@@ -614,6 +614,21 @@ test('the context lists quests with their titles while they fit, then ids only, 
   assert.ok(line.includes('1001 Una mision con un titulo bastant;'), 'early quests keep a title, cut to 32 characters');
   for (let i = 1; i <= 35; i++) assert.ok(line.includes(String(1000 + i)), 'quest ' + (1000 + i) + ' is listed');
   assert.ok(line.endsWith('; 1035'), 'the last ones are ids only');
+});
+
+test('a big mount collection keeps every source count and stays within the attachment budget', () => {
+  const vm = newVM();
+  vm.run(RETAIL_STUBS);
+  vm.run(`
+    for i = 1, 12 do _G["BATTLE_PET_SOURCE_" .. i] = "Origen" .. i end
+    C_MountJournal.GetMountIDs = function() local t = {} for i = 1, 1000 do t[i] = i end return t end
+    C_MountJournal.GetMountInfoByID = function(id) return "Montura de nombre largo " .. id, id, 0, false, true, (id % 12) + 1, false, false, nil, false, id <= 50, id end
+  `);
+  const text = vm.evaluate('WoWAI.MountsText()');
+  assert.ok(text.length <= 2000, `${text.length} bytes`);
+  const counts = text.split('\n')[1];
+  for (let i = 1; i <= 12; i++) assert.ok(counts.includes('Origen' + i + ' '), 'source ' + i + ' counted');
+  assert.ok(text.includes('Examples, Origen'), 'some names as examples');
 });
 
 test('an attachment the client cannot provide is explained in the chat and nothing is sent', () => {

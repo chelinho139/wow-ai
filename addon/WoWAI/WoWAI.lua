@@ -1410,19 +1410,23 @@ function WoWAI.MountsText()
 		end
 	end
 	table.sort(order, function(a, b) return #missing[a] > #missing[b] end)
+	-- Every source's count first, so none is cut off; then a few names per
+	-- source as examples (an alphabetical list of hundreds says little).
 	local lines = { "Mounts: " .. owned .. " collected of " .. total .. " this character can see; " .. (total - owned) .. " missing" }
-	local budget = ATTACH_MAX - 200
+	local counts = {}
 	for _, src in ipairs(order) do
-		local label = _G["BATTLE_PET_SOURCE_" .. src] or ("source " .. src)
-		local list = missing[src]
-		table.sort(list)
-		local line = "Missing, " .. label .. " (" .. #list .. ")"
-		if MOUNT_SOURCES_NAMED[src] and budget > 100 then
-			local names = NameList(list, math.min(budget - 50, 500))
-			line = line .. ": " .. names
-			budget = budget - #names
+		table.insert(counts, (_G["BATTLE_PET_SOURCE_" .. src] or ("source " .. src)) .. " " .. #missing[src])
+	end
+	table.insert(lines, "Missing by source: " .. table.concat(counts, ", "))
+	local budget = ATTACH_MAX - #table.concat(lines, "\n") - 100
+	for _, src in ipairs(order) do
+		if MOUNT_SOURCES_NAMED[src] and budget > 120 then
+			local list = missing[src]
+			table.sort(list)
+			local line = "Examples, " .. (_G["BATTLE_PET_SOURCE_" .. src] or ("source " .. src)) .. ": " .. NameList(list, math.min(budget - 60, 260))
+			table.insert(lines, line)
+			budget = budget - #line - 1
 		end
-		table.insert(lines, line)
 	end
 	return table.concat(lines, "\n")
 end
