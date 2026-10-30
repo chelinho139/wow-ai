@@ -921,6 +921,7 @@ end
 Finish = function(chat, role, text, denied, agent, summary, macros)
 	AddHistory(chat, role, text, chat.pendingId, denied, agent, macros)
 	chat.pendingId = nil
+	chat.pendingFlags = nil
 	chat.progress = nil
 	if run.act then run.act[chat.id] = nil end
 	NotedBridge()
@@ -955,10 +956,13 @@ local LINK_LINES_MAX = 30 -- tooltip lines kept per link
 local LINK_BYTES_MAX = 900 -- bytes kept per link
 
 -- Call a game API that may not exist or may throw, and get its returns or nothing.
+-- Every return value comes through (C_MountJournal.GetMountInfoByID has twelve).
+local function TryResults(ok, ...)
+	if ok then return ... end
+end
 local function Try(fn, ...)
 	if type(fn) ~= "function" then return nil end
-	local ok, a, b, c, d, e, f, g = pcall(fn, ...)
-	if ok then return a, b, c, d, e, f, g end
+	return TryResults(pcall(fn, ...))
 end
 
 local function Money(copper)
@@ -1130,30 +1134,310 @@ function WoWAI.GameContext()
 	if #parts > 0 then table.insert(lines, "Professions: " .. table.concat(parts, ", ")) end
 
 	-- Quest log ids (what is accepted, and which are done), so route planning can
-	-- skip pickups and turn-ins that no longer apply.
+	-- skip pickups and turn-ins that no longer apply, with titles while they fit:
+	-- on a private server the agent can't look an id up reliably.
 	local quests = {}
 	local qn = Try(C_QuestLog and C_QuestLog.GetNumQuestLogEntries) or Try(GetNumQuestLogEntries)
 	if type(qn) == "number" then
 		for i = 1, math.min(qn, 40) do
-			local id, header, complete
+			local id, header, complete, title, hidden
 			local info = Try(C_QuestLog and C_QuestLog.GetInfo, i)
 			if type(info) == "table" then
-				id, header = info.questID, info.isHeader
+				id, header, title, hidden = info.questID, info.isHeader, info.title, info.isHidden
 				complete = Try(C_QuestLog.IsComplete, id)
 			else
-				local _, _, _, isHeader, _, isComplete, _, qid = Try(GetQuestLogTitle, i)
-				id, header, complete = qid, isHeader, isComplete == 1 or isComplete == true
+				local t, _, _, isHeader, _, isComplete, _, qid = Try(GetQuestLogTitle, i)
+				id, header, complete, title = qid, isHeader, isComplete == 1 or isComplete == true, t
 			end
-			if not header and type(id) == "number" and id > 0 then
-				table.insert(quests, tostring(id) .. (complete and "*" or ""))
+			if not header and not hidden and type(id) == "number" and id > 0 then
+				table.insert(quests, { id = tostring(id) .. (complete and "*" or ""), title = type(title) == "string" and title:sub(1, 32) or nil })
 			end
 		end
 	end
-	if #quests > 0 then table.insert(lines, "Quest log (id, * = ready to turn in): " .. table.concat(quests, ",")) end
+	if #quests > 0 then
+		local head = "Quest log (id, * = ready to turn in, title): "
+		local room = CONTEXT_MAX - #table.concat(lines, "\n") - #head - 2
+		local parts = {}
+		for k, q in ipairs(quests) do
+			local entry = q.title and (q.id .. " " .. q.title) or q.id
+			-- Titles while they fit; past that, ids only, so every quest is still listed.
+			local left = 0
+			for j = k + 1, #quests do left = left + #quests[j].id + 2 end
+			if not q.title or #entry + 2 + left > room then entry = q.id end
+			table.insert(parts, entry)
+			room = room - #entry - 2
+		end
+		table.insert(lines, head .. table.concat(parts, "; "))
+	end
 
 	local s = table.concat(lines, "\n"):gsub("[\30\31]", " ")
 	if #s > CONTEXT_MAX then s = s:sub(1, CONTEXT_MAX) end
 	return s
+end
+
+---------------------------------------------------------------------------
+-- Attachments: game data the player sends with one message (/ai talents ...)
+---------------------------------------------------------------------------
+
+local ATTACH_MAX = 2000 -- bytes per attachment; the message and the context share the strip
+
+-- Joins names into lines no longer than the budget allows, with a "+N more" tail.
+local function NameList(names, cap)
+	local out, used = {}, 0
+	for i, n in ipairs(names) do
+		if used + #n > cap then
+			table.insert(out, "+" .. (#names - i + 1) .. " more")
+			break
+		end
+		table.insert(out, n)
+		used = used + #n + 2
+	end
+	return table.concat(out, ", ")
+end
+
+-- Spell name for a talent definition, retail or older API.
+local function SpellName(spellID)
+	if not spellID then return nil end
+	local n = Try(C_Spell and C_Spell.GetSpellName, spellID)
+	if type(n) ~= "string" then n = Try(GetSpellInfo, spellID) end
+	return type(n) == "string" and n ~= "" and n or nil
+end
+
+-- The talents in use, by name and rank. Retail: the active trait config (class,
+-- spec and hero trees). Older clients: talent tabs.
+function WoWAI.TalentsText()
+	local lines = {}
+	local spec = Try(GetSpecialization)
+	local specID, specName
+	if type(spec) == "number" and spec > 0 then specID, specName = Try(GetSpecializationInfo, spec) end
+	local configID = Try(C_ClassTalents and C_ClassTalents.GetActiveConfigID)
+	local config = configID and Try(C_Traits and C_Traits.GetConfigInfo, configID)
+	if type(config) == "table" and type(config.treeIDs) == "table" then
+		local picked, heroName, unspent = {}, nil, 0
+		for _, treeID in ipairs(config.treeIDs) do
+			for _, nodeID in ipairs(Try(C_Traits.GetTreeNodes, treeID) or {}) do
+				local node = Try(C_Traits.GetNodeInfo, configID, nodeID)
+				if type(node) == "table" and (node.currentRank or 0) > 0 and node.isVisible ~= false
+					and (not node.subTreeID or node.subTreeActive) then
+					local entryID = (node.activeEntry and node.activeEntry.entryID) or (node.entryIDs and node.entryIDs[1])
+					local entry = entryID and Try(C_Traits.GetEntryInfo, configID, entryID)
+					if type(entry) == "table" and entry.subTreeID then
+						-- The hero-tree choice node: its entry names the tree.
+						local sub = Try(C_Traits.GetSubTreeInfo, configID, entry.subTreeID)
+						if type(sub) == "table" and type(sub.name) == "string" then heroName = sub.name end
+					elseif type(entry) == "table" and entry.definitionID then
+						local def = Try(C_Traits.GetDefinitionInfo, entry.definitionID)
+						local name = type(def) == "table" and ((def.overrideName and def.overrideName ~= "" and def.overrideName) or SpellName(def.spellID))
+						if name then
+							if (node.maxRanks or 1) > 1 then name = name .. " " .. node.currentRank .. "/" .. node.maxRanks end
+							table.insert(picked, { name = name, hero = node.subTreeID ~= nil, y = node.posY or 0, x = node.posX or 0 })
+						end
+					end
+				end
+			end
+			for _, cur in ipairs(Try(C_Traits.GetTreeCurrencyInfo, configID, treeID, false) or {}) do
+				if type(cur) == "table" and type(cur.quantity) == "number" then unspent = unspent + cur.quantity end
+			end
+		end
+		table.sort(picked, function(a, b) if a.y ~= b.y then return a.y < b.y end return a.x < b.x end)
+		local tree, hero = {}, {}
+		for _, p in ipairs(picked) do table.insert(p.hero and hero or tree, p.name) end
+		local savedID = specID and Try(C_ClassTalents.GetLastSelectedSavedConfigID, specID)
+		local loadout = savedID and Try(C_Traits.GetConfigInfo, savedID)
+		table.insert(lines, "Specialization: " .. tostring(specName or "?") .. ((type(loadout) == "table" and loadout.name and loadout.name ~= "") and (" (loadout " .. loadout.name .. ")") or ""))
+		table.insert(lines, "Class and spec talents, top to bottom (" .. #tree .. "): " .. (#tree > 0 and NameList(tree, ATTACH_MAX - 400) or "none"))
+		if heroName or #hero > 0 then table.insert(lines, "Hero talents" .. (heroName and (" (" .. heroName .. ")") or "") .. ": " .. (#hero > 0 and NameList(hero, 500) or "none yet")) end
+		if unspent > 0 then table.insert(lines, "Unspent talent points: " .. unspent) end
+		return table.concat(lines, "\n")
+	end
+	local tabs = Try(GetNumTalentTabs)
+	if type(tabs) == "number" and tabs > 0 then
+		for t = 1, tabs do
+			local tname, _, points = Try(GetTalentTabInfo, t)
+			local names = {}
+			for i = 1, (Try(GetNumTalents, t) or 0) do
+				local name, _, _, _, rank, maxRank = Try(GetTalentInfo, t, i)
+				if type(name) == "string" and (rank or 0) > 0 then table.insert(names, name .. " " .. rank .. "/" .. tostring(maxRank)) end
+			end
+			table.insert(lines, tostring(tname) .. " (" .. tostring(points or 0) .. "): " .. (#names > 0 and NameList(names, 600) or "none"))
+		end
+		return table.concat(lines, "\n")
+	end
+	return nil, "this client does not report talents to addons"
+end
+
+local GEAR_SLOTS = {
+	{ 1, "HEADSLOT", "Head" }, { 2, "NECKSLOT", "Neck" }, { 3, "SHOULDERSLOT", "Shoulder" }, { 15, "BACKSLOT", "Back" },
+	{ 5, "CHESTSLOT", "Chest" }, { 9, "WRISTSLOT", "Wrist" }, { 10, "HANDSSLOT", "Hands" }, { 6, "WAISTSLOT", "Waist" },
+	{ 7, "LEGSSLOT", "Legs" }, { 8, "FEETSLOT", "Feet" }, { 11, "FINGER0SLOT_UNIQUE", "Finger 1" }, { 12, "FINGER1SLOT_UNIQUE", "Finger 2" },
+	{ 13, "TRINKET0SLOT_UNIQUE", "Trinket 1" }, { 14, "TRINKET1SLOT_UNIQUE", "Trinket 2" }, { 16, "MAINHANDSLOT", "Main hand" }, { 17, "SECONDARYHANDSLOT", "Off hand" },
+}
+
+-- Equipped items with item level and quality, the average item level and the main stats.
+function WoWAI.GearText()
+	local lines = {}
+	local avg, equipped = Try(GetAverageItemLevel)
+	if type(equipped) == "number" then
+		table.insert(lines, string.format("Item level: %.1f equipped (%.1f best in bags)", equipped, avg or equipped))
+	end
+	for _, s in ipairs(GEAR_SLOTS) do
+		local label = _G[s[2]] or s[3]
+		local link = Try(GetInventoryItemLink, "player", s[1])
+		if type(link) == "string" then
+			local name = link:match("%[(.-)%]") or "?"
+			local ilvl = Try(C_Item and C_Item.GetDetailedItemLevelInfo, link) or Try(GetDetailedItemLevelInfo, link)
+			local quality = select(3, Try(C_Item and C_Item.GetItemInfo, link))
+			local qname = quality and _G["ITEM_QUALITY" .. quality .. "_DESC"]
+			local extra = {}
+			if type(ilvl) == "number" then table.insert(extra, "ilvl " .. ilvl) end
+			if type(qname) == "string" then table.insert(extra, qname) end
+			table.insert(lines, label .. ": " .. name .. (#extra > 0 and (" (" .. table.concat(extra, ", ") .. ")") or ""))
+		elseif s[1] ~= 17 then
+			table.insert(lines, label .. ": (empty)")
+		end
+	end
+	local stats = {}
+	for i = 1, 4 do
+		local _, value = Try(UnitStat, "player", i)
+		if type(value) == "number" then table.insert(stats, (_G["SPELL_STAT" .. i .. "_NAME"] or ("stat " .. i)) .. " " .. value) end
+	end
+	local crit = math.max(Try(GetCritChance) or 0, Try(GetSpellCritChance, 2) or 0, Try(GetRangedCritChance) or 0)
+	if crit > 0 then table.insert(stats, string.format("crit %.1f%%", crit)) end
+	local haste = Try(GetHaste)
+	if type(haste) == "number" then table.insert(stats, string.format("haste %.1f%%", haste)) end
+	local mastery = Try(GetMasteryEffect)
+	if type(mastery) == "number" then table.insert(stats, string.format("mastery %.1f%%", mastery)) end
+	local vers = CR_VERSATILITY_DAMAGE_DONE and Try(GetCombatRatingBonus, CR_VERSATILITY_DAMAGE_DONE)
+	if type(vers) == "number" then table.insert(stats, string.format("versatility %.1f%%", vers)) end
+	if #stats > 0 then table.insert(lines, "Stats: " .. table.concat(stats, ", ")) end
+	if #lines == 0 then return nil, "no equipment information" end
+	return table.concat(lines, "\n")
+end
+
+-- Mount sources whose missing mounts are listed by name; the rest only counted.
+local MOUNT_SOURCES_NAMED = { [1] = true, [2] = true, [3] = true, [4] = true, [6] = true, [7] = true, [11] = true, [12] = true }
+
+-- Owned and missing mounts this character could see in the journal, by source.
+function WoWAI.MountsText()
+	if not C_MountJournal then return nil, "this client has no mount journal" end
+	local ids = Try(C_MountJournal.GetMountIDs)
+	if type(ids) ~= "table" then return nil, "the mount journal did not answer" end
+	local owned, total, missing, order = 0, 0, {}, {}
+	for _, id in ipairs(ids) do
+		-- name, spellID, icon, isActive, isUsable, sourceType, isFavorite, isFactionSpecific, faction, shouldHideOnChar, isCollected
+		local name, _, _, _, _, sourceType, _, _, _, hide, collected = Try(C_MountJournal.GetMountInfoByID, id)
+		if type(name) == "string" and not hide then
+			total = total + 1
+			if collected then
+				owned = owned + 1
+			else
+				local src = sourceType or 0
+				if not missing[src] then missing[src] = {}; table.insert(order, src) end
+				table.insert(missing[src], name)
+			end
+		end
+	end
+	table.sort(order, function(a, b) return #missing[a] > #missing[b] end)
+	local lines = { "Mounts: " .. owned .. " collected of " .. total .. " this character can see; " .. (total - owned) .. " missing" }
+	local budget = ATTACH_MAX - 200
+	for _, src in ipairs(order) do
+		local label = _G["BATTLE_PET_SOURCE_" .. src] or ("source " .. src)
+		local list = missing[src]
+		table.sort(list)
+		local line = "Missing, " .. label .. " (" .. #list .. ")"
+		if MOUNT_SOURCES_NAMED[src] and budget > 100 then
+			local names = NameList(list, math.min(budget - 50, 500))
+			line = line .. ": " .. names
+			budget = budget - #names
+		end
+		table.insert(lines, line)
+	end
+	return table.concat(lines, "\n")
+end
+
+-- The quest log with titles, zones and objective progress.
+function WoWAI.QuestsText()
+	local lines = {}
+	local n = Try(C_QuestLog and C_QuestLog.GetNumQuestLogEntries) or Try(GetNumQuestLogEntries)
+	if type(n) ~= "number" or n == 0 then return nil, "the quest log is empty" end
+	local used = 0
+	for i = 1, n do
+		local title, id, header, hidden, complete
+		local info = Try(C_QuestLog and C_QuestLog.GetInfo, i)
+		if type(info) == "table" then
+			title, id, header, hidden = info.title, info.questID, info.isHeader, info.isHidden
+			if not header and id then complete = Try(C_QuestLog.IsComplete, id) end
+		else
+			local t, _, _, isHeader, _, isComplete, _, qid = Try(GetQuestLogTitle, i)
+			title, id, header, complete = t, qid, isHeader, isComplete == 1 or isComplete == true
+		end
+		local line
+		if header then
+			line = "== " .. tostring(title)
+		elseif not hidden and type(title) == "string" then
+			line = tostring(id) .. " " .. title .. (complete and " - ready to turn in" or "")
+			local objectives = id and Try(C_QuestLog and C_QuestLog.GetQuestObjectives, id)
+			if type(objectives) == "table" then
+				for _, o in ipairs(objectives) do
+					if type(o) == "table" and type(o.text) == "string" and o.text ~= "" then
+						line = line .. "\n  - " .. o.text .. (o.finished and " (done)" or "")
+					end
+				end
+			else
+				for j = 1, (Try(GetNumQuestLeaderBoards, i) or 0) do
+					local text, _, done = Try(GetQuestLogLeaderBoard, j, i)
+					if type(text) == "string" then line = line .. "\n  - " .. text .. (done and " (done)" or "") end
+				end
+			end
+		end
+		if line then
+			if used + #line > ATTACH_MAX - 40 then
+				table.insert(lines, "(more quests left out)")
+				break
+			end
+			table.insert(lines, line)
+			used = used + #line + 1
+		end
+	end
+	return table.concat(lines, "\n")
+end
+
+-- /ai talents|gear|mounts|quests [question]: the question plus the data, in one message.
+local ATTACHMENTS = {
+	talents = { fn = "TalentsText", label = "Talents", ask = "Review my talents." },
+	gear = { fn = "GearText", label = "Equipped gear", ask = "Review my gear: what should I upgrade first?" },
+	mounts = { fn = "MountsText", label = "Mount collection", ask = "Which of the mounts I am missing can I get, and how?" },
+	quests = { fn = "QuestsText", label = "Quest log", ask = "Help me with my quests: what should I do first?" },
+}
+-- The question sent when none is typed, in the client's language where we have it.
+local ATTACH_ASK_ES = {
+	talents = "Revisa mis talentos.", gear = "Revisa mi equipo: ¿qué debería mejorar primero?",
+	mounts = "¿Qué monturas de las que me faltan puedo conseguir, y cómo?", quests = "Ayúdame con mis misiones: ¿qué hago primero?",
+}
+for kind, a in pairs(ATTACHMENTS) do a.kind = kind end
+ATTACHMENTS.talentos, ATTACHMENTS.equipo, ATTACHMENTS.monturas, ATTACHMENTS.misiones =
+	ATTACHMENTS.talents, ATTACHMENTS.gear, ATTACHMENTS.mounts, ATTACHMENTS.quests
+WoWAI.ATTACHMENTS = ATTACHMENTS
+
+function WoWAI.SendWithAttachment(kind, question)
+	local a = ATTACHMENTS[kind]
+	if not a then return end
+	local data, why = WoWAI[a.fn]()
+	if not data then
+		AddHistory(ActiveChat(), "system", "Could not read " .. a.label:lower() .. ": " .. tostring(why))
+		WoWAI.Render()
+		WoWAI.Toggle(true)
+		return
+	end
+	data = data:gsub("[\30\31]", " ")
+	if #data > ATTACH_MAX then data = data:sub(1, ATTACH_MAX) .. "..." end
+	question = Trim(question or "")
+	if question == "" then
+		local locale = Try(GetLocale)
+		question = (type(locale) == "string" and locale:sub(1, 2) == "es" and ATTACH_ASK_ES[a.kind]) or a.ask
+	end
+	WoWAI.Send(question .. "\n\n" .. a.label .. ", read from the game:\n" .. data)
+	WoWAI.Toggle(true)
 end
 
 -- The context to put on the next record, or nil when the bridge already has
@@ -1301,6 +1585,7 @@ function WoWAI.Send(text, allow, allowOnce)
 		t = time(),
 	}
 	c.pendingId = id
+	c.pendingFlags = flags
 	c.draft = nil
 	c.progress = nil
 	AddHistory(c, "user", text, id)
@@ -1390,7 +1675,9 @@ function WoWAI.Resend()
 		end
 	end
 	if not text then return end
-	run.outbound[c.pendingId] = { chat = c.id, cwd = c.cwd, flags = (c.agent and c.agent ~= "") and ("agent=" .. c.agent) or "", name = c.name, text = text, sentAt = GetTime() }
+	-- The flags it went out with ("n" after /wow-ai reset, allow rules), not just the agent.
+	local flags = c.pendingFlags or ((c.agent and c.agent ~= "") and ("agent=" .. c.agent) or "")
+	run.outbound[c.pendingId] = { chat = c.id, cwd = c.cwd, flags = flags, name = c.name, text = text, sentAt = GetTime() }
 	run.sentAt = GetTime()
 	run.polls = 0
 	ScheduleNextPoll()
@@ -2899,6 +3186,10 @@ local HELP = table.concat({
 	"/wow-ai cd <folder>            folder this chat's agent works in (relative to the bridge's folder; no folder = back to default). Right-clicking the chat in the left panel and picking Folder does the same",
 	"/wow-ai agent [name]           which agent this chat talks to (no name = show; default = the bridge's). Right-clicking the chat and picking Agent does the same",
 	"/wow-ai reset                  next message in this chat starts a fresh agent session",
+	"/ai talents [question]         send a question with your talent build read from the game (also /ai talentos)",
+	"/ai gear [question]            ... with your equipped items, item level and stats (also /ai equipo)",
+	"/ai mounts [question]          ... with your mount collection: owned and missing by source (also /ai monturas)",
+	"/ai quests [question]          ... with your quest log: titles and objectives (also /ai misiones)",
 	"/wow-ai context [on|off]       what the agent is told about your character and where you are (no argument = show it)",
 	"/wow-ai map [...]              map layers the agent drew, the route navigator and herb/ore nodes (no argument = status and subcommands; /aimap is the same)",
 	"/wow-ai mode pixel             no-reload transport (default)",
@@ -2946,6 +3237,9 @@ local COMMAND_ARGS = {
 	map = true, -- /wow-ai map ...: Map.lua (layers, navigator, herb/ore nodes)
 	macro = { undo = true }, -- /wow-ai macro undo; "/ai macro for my warrior" still goes to the agent
 }
+-- /ai talents|gear|mounts|quests [question] (and the Spanish names): always a
+-- command, since attaching the data to whatever follows is what it is for.
+for kind in pairs(ATTACHMENTS) do COMMAND_ARGS[kind] = true end
 
 local function IsCommand(cmd, rest)
 	local spec = COMMAND_ARGS[cmd]
@@ -3021,6 +3315,8 @@ SlashCmdList["WOWAI"] = function(msg)
 		WoWAI.Toggle(true)
 	elseif cmd == "map" then
 		if WoWAIMap then WoWAIMap.Command(rest) else print("|cff66ccff[WoW AI]|r the map module did not load") end
+	elseif ATTACHMENTS[cmd] then
+		WoWAI.SendWithAttachment(cmd, rest)
 	elseif cmd == "agent" then
 		WoWAI.SetAgent(rest, c)
 		WoWAI.Toggle(true)
@@ -3146,6 +3442,7 @@ SlashCmdList["WOWAI"] = function(msg)
 			run.outbound[c.pendingId] = nil
 			if run.act then run.act[c.id] = nil end
 			c.pendingId = nil
+			c.pendingFlags = nil
 			c.progress = nil
 			RefreshStrip()
 			if not AnyPending() then keyCatcher:Hide() end

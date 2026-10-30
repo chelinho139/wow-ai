@@ -126,6 +126,10 @@ Right-clicking a chat in the left panel opens a small menu with **Rename...**, *
 | `/wow-ai agent [claude\|codex\|grok\|agy\|hermes]` | which agent this chat talks to; no name shows the current one and the bridge's default, `default` goes back to the bridge's. A chat that changes agent starts a fresh session with it |
 | `/wow-ai cd <folder>` | folder this chat's agent works in (**Folder...** after right-clicking the chat opens the same thing as a dialog). Relative to the bridge's folder (`/wow-ai cd realms`, `/wow-ai cd ../other`), `~` works, a full path too; `/wow-ai cd` alone goes back to the bridge's default. A chat that changes folder starts a fresh session there |
 | `/wow-ai reset` | wipe this chat's agent memory, keep the transcript |
+| `/ai talents [question]` | send the question with your talent build read from the game: names and ranks, hero tree, unspent points (`/ai talentos`) |
+| `/ai gear [question]` | ... with your equipped items, item levels and main stats (`/ai equipo`) |
+| `/ai mounts [question]` | ... with your mount collection, owned and missing by source (`/ai monturas`) |
+| `/ai quests [question]` | ... with your quest log: titles and objective progress (`/ai misiones`) |
 | `/wow-ai context [on\|off]` | show what the agent is told about your character and location, or turn it on/off |
 | `/wow-ai rename`, `/wow-ai delete`, `/wow-ai clear` | manage the current chat |
 | `/wow-ai echo summary\|full\|short\|off\|<chars>` | how much of each reply to print into the game chat. `summary` (the default) prints only the agent's closing TL;DR lines, the full reply is in the window behind `[open]`; `full` prints up to 4000 chars, `short` one preview line |

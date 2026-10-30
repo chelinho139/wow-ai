@@ -243,6 +243,8 @@ function systemPrompt(ctx, primer, opts = {}) {
       '',
       'Use this when the request is about the game or the character (questions, macros, addon code, gear advice); ignore it when the task is unrelated. Items, spells or quests the player shift-clicked into a message appear as [Name] in the text, with their tooltip in a "Linked from the game" block at the end of the message.',
       '',
+      'The addon can attach more, read straight from the game, when the player sends a message with one of these commands: "/ai talents <question>" (the talent build in use, by name and rank, the hero tree and unspent points), "/ai gear <question>" (equipped items with item level and quality, average item level, main stats), "/ai mounts <question>" (collected and missing mounts by source), "/ai quests <question>" (the quest log with titles and objective progress). Spanish names work too: /ai talentos, /ai equipo, /ai monturas, /ai misiones. The data arrives in a block such as "Talents, read from the game:". When you need one of these and it is not in the message, ask the player to resend with the command instead of asking for an export string, a screenshot or a list typed by hand; it matches their client exactly, which online databases may not.',
+      '',
       ...MAP_HINT,
       '',
       ...MACRO_HINT);
