@@ -1431,31 +1431,43 @@ function WoWAI.MountsText(question)
 				table.insert(missing[src], name)
 			end
 			-- A mount the question names: one of its significant words is in the
-			-- name ("¿tengo el raptor o el lobo?" asks about two). Best matches first.
+			-- name ("¿tengo el raptor o el lobo?" asks about two). Grouped under
+			-- the first word it matches, so each word asked about gets its share.
 			if #words > 0 then
-				local lname, hits = name:lower(), 0
-				for _, w in ipairs(words) do if lname:find(w, 1, true) then hits = hits + 1 end end
-				if hits > 0 then
-					table.insert(matches, { hits = hits, name = name, text = name .. (collected and " (collected)" or (" (missing; " .. SourceName(src) .. ")")) })
+				local lname = name:lower()
+				for k, w in ipairs(words) do
+					if lname:find(w, 1, true) then
+						matches[k] = matches[k] or {}
+						table.insert(matches[k], name .. (collected and " (have)" or (" (missing, " .. SourceName(src) .. ")")))
+						break
+					end
 				end
 			end
 		end
 	end
 	table.sort(order, function(a, b) return #missing[a] > #missing[b] end)
 	table.sort(have)
-	table.sort(matches, function(a, b) if a.hits ~= b.hits then return a.hits > b.hits end return a.name < b.name end)
-	for i, m in ipairs(matches) do matches[i] = m.text end
-	-- In order of use: what the question asked about, what the player owns (so
-	-- nothing owned gets recommended), every source's count, then examples.
+	-- In order of use: what the question asked about (most of the room when
+	-- there is a question), what the player owns (so nothing owned gets
+	-- recommended), every source's count, then examples.
 	local lines = { "Mounts: " .. #have .. " collected of " .. total .. " this character can see; " .. (total - #have) .. " missing" }
-	if #words > 0 then
-		table.insert(lines, "Matching the question (" .. #matches .. "): " .. (#matches > 0 and NameList(matches, 500) or "none; the journal has no mount with those words in its name"))
-	end
 	local counts = {}
 	for _, src in ipairs(order) do table.insert(counts, SourceName(src) .. " " .. #missing[src]) end
 	local countLine = "Missing by source: " .. table.concat(counts, ", ")
+	if #words > 0 then
+		local groups = {}
+		for k = 1, #words do if matches[k] then table.insert(groups, k) end end
+		if #groups == 0 then
+			table.insert(lines, "Matching the question: none; the journal has no mount with those words in its name")
+		end
+		local share = math.floor((ATTACH_MAX - #countLine - 500) / math.max(#groups, 1))
+		for _, k in ipairs(groups) do
+			table.sort(matches[k])
+			table.insert(lines, "Matching \"" .. words[k] .. "\" (" .. #matches[k] .. "): " .. NameList(matches[k], share - 30))
+		end
+	end
 	local budget = ATTACH_MAX - #table.concat(lines, "\n") - #countLine - 100
-	table.insert(lines, "Collected (" .. #have .. "): " .. (#have > 0 and NameList(have, math.max(budget - 300, 200)) or "none"))
+	table.insert(lines, "Collected (" .. #have .. "): " .. (#have > 0 and NameList(have, math.max(budget - 150, 120)) or "none"))
 	table.insert(lines, countLine)
 	budget = ATTACH_MAX - #table.concat(lines, "\n") - 60
 	for _, src in ipairs(order) do

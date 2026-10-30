@@ -643,12 +643,30 @@ test('/ai monturas with a question says, for each mount it names, whether it is 
   vm.run('SlashCmdList.WOWAI("monturas ¿tengo el raptor o el lobo?")');
   const rec = sentStartingWith(vm, '¿tengo el raptor o el lobo?');
   assert.ok(rec);
-  assert.ok(rec.text.includes('\nMatching the question (2): Lobo (collected), Raptor (missing; Vendedor)\n'), rec.text);
+  assert.ok(rec.text.includes('\nMatching "raptor" (1): Raptor (missing, Vendedor)\nMatching "lobo" (1): Lobo (have)\n'), rec.text);
   // A name the journal doesn't have is said so, not guessed.
   const none = vm.evaluate('WoWAI.MountsText("tengo el grifo dorado")');
-  assert.ok(none.includes('Matching the question (0): none;'), none);
+  assert.ok(none.includes('Matching the question: none;'), none);
   // Accented words survive the split ("á" shares a byte with "¡").
-  assert.ok(vm.evaluate('WoWAI.MountsText("¡Dragón de tienda!")').includes('Dragón de tienda (missing; Tienda)'));
+  assert.ok(vm.evaluate('WoWAI.MountsText("¡Dragón de tienda!")').includes('Dragón de tienda (missing, Tienda)'));
+});
+
+test('a mount question naming several kinds gives each kind its share of the room', () => {
+  const vm = newVM();
+  vm.run(RETAIL_STUBS);
+  vm.run(`
+    local kinds = { "Halcón zancudo", "Kodo", "Lobo", "Raptor" }
+    C_MountJournal.GetMountIDs = function() local t = {} for i = 1, 400 do t[i] = i end return t end
+    C_MountJournal.GetMountInfoByID = function(id)
+      return kinds[(id % 4) + 1] .. " de color numero " .. id, id, 0, false, true, 3, false, false, nil, false, id % 10 == 0, id
+    end
+  `);
+  const text = vm.evaluate('WoWAI.MountsText("halcón zancudo kodo lobo raptor")');
+  assert.ok(text.length <= 2000, `${text.length} bytes`);
+  for (const w of ['halcón', 'kodo', 'lobo', 'raptor']) {
+    assert.ok(new RegExp(`\\nMatching "${w}" \\(100\\): \\S`).test(text), w + ' has its own line with names: ' + text);
+  }
+  assert.ok(!text.includes('Matching "zancudo"'), 'a word already matched by an earlier one adds no empty group');
 });
 
 test('an attachment the client cannot provide is explained in the chat and nothing is sent', () => {
