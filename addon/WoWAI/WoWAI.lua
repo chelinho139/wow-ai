@@ -1389,41 +1389,80 @@ end
 -- Mount sources whose missing mounts are listed by name; the rest only counted.
 local MOUNT_SOURCES_NAMED = { [1] = true, [2] = true, [3] = true, [4] = true, [6] = true, [7] = true, [11] = true, [12] = true }
 
+local function SourceName(src)
+	return _G["BATTLE_PET_SOURCE_" .. src] or (src == 0 and "Other" or ("source " .. src))
+end
+
+-- Words of a question that can pick out a mount by name (not "tengo", "mount"...).
+local MOUNT_QUERY_SKIP = {
+	tengo = true, tienes = true, quiero = true, puedo = true, como = true, donde = true, cual = true, cuales = true,
+	montura = true, monturas = true, conseguir = true, falta = true, faltan = true, este = true, esta = true, para = true,
+	have = true, mount = true, mounts = true, which = true, where = true, what = true, could = true, with = true, from = true,
+}
+local function QueryWords(question)
+	local words = {}
+	-- "¿" and "¡" are two bytes each (the second shared with letters like "á"),
+	-- so they are replaced whole rather than put in a byte-wise character class.
+	local q = tostring(question or ""):lower():gsub("\194\191", " "):gsub("\194\161", " ")
+	for w in q:gmatch("[^%s%p]+") do
+		if #w >= 4 and not MOUNT_QUERY_SKIP[w] then table.insert(words, w) end
+	end
+	return words
+end
+
 -- Owned and missing mounts this character could see in the journal, by source.
-function WoWAI.MountsText()
+-- With a question, the mounts it names come first, each marked owned or not.
+function WoWAI.MountsText(question)
 	if not C_MountJournal then return nil, "this client has no mount journal" end
 	local ids = Try(C_MountJournal.GetMountIDs)
 	if type(ids) ~= "table" then return nil, "the mount journal did not answer" end
-	local owned, total, missing, order = 0, 0, {}, {}
+	local words = QueryWords(question)
+	local total, have, missing, order, matches = 0, {}, {}, {}, {}
 	for _, id in ipairs(ids) do
 		-- name, spellID, icon, isActive, isUsable, sourceType, isFavorite, isFactionSpecific, faction, shouldHideOnChar, isCollected
 		local name, _, _, _, _, sourceType, _, _, _, hide, collected = Try(C_MountJournal.GetMountInfoByID, id)
 		if type(name) == "string" and not hide then
 			total = total + 1
+			local src = sourceType or 0
 			if collected then
-				owned = owned + 1
+				table.insert(have, name)
 			else
-				local src = sourceType or 0
 				if not missing[src] then missing[src] = {}; table.insert(order, src) end
 				table.insert(missing[src], name)
+			end
+			-- A mount the question names: one of its significant words is in the
+			-- name ("¿tengo el raptor o el lobo?" asks about two). Best matches first.
+			if #words > 0 then
+				local lname, hits = name:lower(), 0
+				for _, w in ipairs(words) do if lname:find(w, 1, true) then hits = hits + 1 end end
+				if hits > 0 then
+					table.insert(matches, { hits = hits, name = name, text = name .. (collected and " (collected)" or (" (missing; " .. SourceName(src) .. ")")) })
+				end
 			end
 		end
 	end
 	table.sort(order, function(a, b) return #missing[a] > #missing[b] end)
-	-- Every source's count first, so none is cut off; then a few names per
-	-- source as examples (an alphabetical list of hundreds says little).
-	local lines = { "Mounts: " .. owned .. " collected of " .. total .. " this character can see; " .. (total - owned) .. " missing" }
-	local counts = {}
-	for _, src in ipairs(order) do
-		table.insert(counts, (_G["BATTLE_PET_SOURCE_" .. src] or ("source " .. src)) .. " " .. #missing[src])
+	table.sort(have)
+	table.sort(matches, function(a, b) if a.hits ~= b.hits then return a.hits > b.hits end return a.name < b.name end)
+	for i, m in ipairs(matches) do matches[i] = m.text end
+	-- In order of use: what the question asked about, what the player owns (so
+	-- nothing owned gets recommended), every source's count, then examples.
+	local lines = { "Mounts: " .. #have .. " collected of " .. total .. " this character can see; " .. (total - #have) .. " missing" }
+	if #words > 0 then
+		table.insert(lines, "Matching the question (" .. #matches .. "): " .. (#matches > 0 and NameList(matches, 500) or "none; the journal has no mount with those words in its name"))
 	end
-	table.insert(lines, "Missing by source: " .. table.concat(counts, ", "))
-	local budget = ATTACH_MAX - #table.concat(lines, "\n") - 100
+	local counts = {}
+	for _, src in ipairs(order) do table.insert(counts, SourceName(src) .. " " .. #missing[src]) end
+	local countLine = "Missing by source: " .. table.concat(counts, ", ")
+	local budget = ATTACH_MAX - #table.concat(lines, "\n") - #countLine - 100
+	table.insert(lines, "Collected (" .. #have .. "): " .. (#have > 0 and NameList(have, math.max(budget - 300, 200)) or "none"))
+	table.insert(lines, countLine)
+	budget = ATTACH_MAX - #table.concat(lines, "\n") - 60
 	for _, src in ipairs(order) do
 		if MOUNT_SOURCES_NAMED[src] and budget > 120 then
 			local list = missing[src]
 			table.sort(list)
-			local line = "Examples, " .. (_G["BATTLE_PET_SOURCE_" .. src] or ("source " .. src)) .. ": " .. NameList(list, math.min(budget - 60, 260))
+			local line = "Examples missing, " .. SourceName(src) .. ": " .. NameList(list, math.min(budget - 60, 200))
 			table.insert(lines, line)
 			budget = budget - #line - 1
 		end
@@ -1498,7 +1537,7 @@ WoWAI.ATTACHMENTS = ATTACHMENTS
 function WoWAI.SendWithAttachment(kind, question)
 	local a = ATTACHMENTS[kind]
 	if not a then return end
-	local data, why = WoWAI[a.fn]()
+	local data, why = WoWAI[a.fn](question)
 	if not data then
 		AddHistory(ActiveChat(), "system", "Could not read " .. a.label:lower() .. ": " .. tostring(why))
 		WoWAI.Render()

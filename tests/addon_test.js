@@ -580,8 +580,9 @@ test('/ai equipo, /ai monturas and /ai misiones attach gear, the mount collectio
   assert.ok(rec.text.endsWith([
     'Mount collection, read from the game:',
     'Mounts: 1 collected of 4 this character can see; 3 missing',
+    'Collected (1): Lobo',
     'Missing by source: Vendedor 2, Tienda 1',
-    'Examples, Vendedor: Raptor, Zancudo',
+    'Examples missing, Vendedor: Raptor, Zancudo',
   ].join('\n')), rec.text);
 
   vm.run('WoWAI.NewChat("q"); SlashCmdList.WOWAI("misiones")');
@@ -626,9 +627,26 @@ test('a big mount collection keeps every source count and stays within the attac
   `);
   const text = vm.evaluate('WoWAI.MountsText()');
   assert.ok(text.length <= 2000, `${text.length} bytes`);
-  const counts = text.split('\n')[1];
+  const counts = text.split('\n').find(l => l.startsWith('Missing by source: '));
   for (let i = 1; i <= 12; i++) assert.ok(counts.includes('Origen' + i + ' '), 'source ' + i + ' counted');
-  assert.ok(text.includes('Examples, Origen'), 'some names as examples');
+  assert.ok(text.includes('Collected (50): Montura de nombre largo 1, '), 'owned mounts by name');
+  assert.ok(text.includes('Examples missing, Origen'), 'some names as examples');
+});
+
+test('/ai monturas with a question says, for each mount it names, whether it is collected', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run(RETAIL_STUBS);
+  vm.run('SlashCmdList.WOWAI("monturas ¿tengo el raptor o el lobo?")');
+  const rec = sentStartingWith(vm, '¿tengo el raptor o el lobo?');
+  assert.ok(rec);
+  assert.ok(rec.text.includes('\nMatching the question (2): Lobo (collected), Raptor (missing; Vendedor)\n'), rec.text);
+  // A name the journal doesn't have is said so, not guessed.
+  const none = vm.evaluate('WoWAI.MountsText("tengo el grifo dorado")');
+  assert.ok(none.includes('Matching the question (0): none;'), none);
+  // Accented words survive the split ("á" shares a byte with "¡").
+  assert.ok(vm.evaluate('WoWAI.MountsText("¡Dragón de tienda!")').includes('Dragón de tienda (missing; Tienda)'));
 });
 
 test('an attachment the client cannot provide is explained in the chat and nothing is sent', () => {
