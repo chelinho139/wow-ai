@@ -27,7 +27,7 @@ WoW addons are sandboxed: no network, no file reads at runtime. Two doors remain
 
 The bridge drives whichever of these you have installed; each chat can use a different one.
 
-| Agent | CLI the bridge runs | Permissions | Allow & retry |
+| Agent | CLI the bridge runs | Permissions | Allow once / Always |
 |---|---|---|---|
 | **Claude Code** (`claude`) | `claude -p --output-format stream-json`, resumed with `--resume` | `permissionMode` + `allowedTools` rules | yes |
 | **Codex** (`codex`) | `codex exec --json`, resumed with `codex exec resume` | a sandbox chosen from `permissionMode` (read-only, workspace-write, or none) | no: a command the sandbox declined is reported in the reply |
@@ -40,7 +40,7 @@ The bridge drives whichever of these you have installed; each chat can use a dif
 ## Requirements
 
 - Windows (NTFS), or Linux with the game under Wine on an **X11** session and python3 (see [docs/INSTALL-LINUX.md](docs/INSTALL-LINUX.md)), or macOS with a native client and python3
-- World of Warcraft: Forever (tested on 1.60.1.69913 and 1.60.1.69977, TOC 16001), **windowed or borderless** (exclusive fullscreen blocks screen capture). Retail clients on The War Within (TOC 110205, 11.2.5) are supported too, untested so far: see "Retail clients" in [docs/INSTALL-WINDOWS.md](docs/INSTALL-WINDOWS.md)
+- World of Warcraft: Forever (tested on 1.60.1.69913 and 1.60.1.69977, TOC 16001), **windowed or borderless** (exclusive fullscreen blocks screen capture). Retail clients on The War Within (TOC 110205, 11.2.5) are supported too, tested on a Firestorm 11.2.5 client (63704): see "Retail clients" in [docs/INSTALL-WINDOWS.md](docs/INSTALL-WINDOWS.md)
 - [Node.js](https://nodejs.org) 22.2 or newer
 - At least one agent CLI, installed and logged in:
   - [Claude Code](https://claude.com/claude-code): `claude --version` works
