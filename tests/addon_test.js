@@ -178,6 +178,27 @@ test('the game context describes the character and rides on the hello, then only
   assert.ok(vm.evaluate('WoWAIDB.chats[2].history[#WoWAIDB.chats[2].history].text').includes('Game context is ON'));
 });
 
+test('on a retail client the context names the specialization, loadout and professions instead of talent tabs and skill lines', () => {
+  const vm = newVM();
+  vm.run(`
+    function GetBuildInfo() return "11.2.5", "63906", "Oct 7 2025", 110205 end
+    function GetLocale() return "esES" end
+    GetNumTalentTabs, GetTalentTabInfo, GetNumSkillLines, GetSkillLineInfo = nil, nil, nil, nil
+    function GetSpecialization() return 2 end
+    function GetSpecializationInfo(i) if i == 2 then return 254, "Puntería", "", 0, "DAMAGER" end end
+    C_ClassTalents = { GetLastSelectedSavedConfigID = function(specID) if specID == 254 then return 77 end end }
+    C_Traits = { GetConfigInfo = function(id) if id == 77 then return { ID = 77, name = "Raid ST" } end end }
+    function GetProfessions() return 3, nil, nil, 9, 10 end
+    local P = { [3] = { "Desuello", 100, 100 }, [9] = { "Pesca", 12, 300 }, [10] = { "Cocina", 5, 300 } }
+    function GetProfessionInfo(i) local p = P[i]; if p then return p[1], 0, p[2], p[3] end end
+  `);
+  const lines = vm.evaluate('WoWAI.GameContext()').split('\n');
+  assert.equal(lines[0], 'Game: World of Warcraft (retail) (client 11.2.5.63906, interface 110205, locale esES)');
+  assert.ok(lines.includes('Specialization: Puntería (loadout: Raid ST)'), lines.join('\n'));
+  assert.ok(lines.includes('Professions: Desuello 100/100, Pesca 12/300, Cocina 5/300'), lines.join('\n'));
+  assert.ok(!lines.some(l => l.startsWith('Talents:')));
+});
+
 test('a shift-clicked link lands in the focused input and is sent as its name plus tooltip', () => {
   const vm = newVM();
   login(vm);
@@ -322,6 +343,22 @@ test('without the sound channel, the light stays green between idle slot polls',
   assert.equal(vm.evaluate('WoWAI.BridgeState()'), 'down');
 });
 
+test('without the sound channel the first minute after a send is polled every 4 s; with it, on the usual schedule', () => {
+  const loadsInFirstMinute = (sound) => {
+    const vm = newVM();
+    if (sound) vm.run('STUB.sounds["Interface\\\\AddOns\\\\WoWAI\\\\ctl\\\\valid.wav"] = true');
+    login(vm);
+    connect(vm);
+    vm.run('WoWAI.Send("hello world")');
+    vm.run('STUB.loadCount = 0; STUB.onLoadAddOn = function(name) STUB.loadCount = STUB.loadCount + 1; WoWAI_SlotData = { now = time(), cwd = "", replies = {} } end');
+    for (let t = 0; t < 60; t += 2) vm.run('STUB.now = STUB.now + 2; STUB.Tick()');
+    assert.notEqual(vm.evaluate('WoWAIDB.chats[1].pendingId'), null, 'still waiting');
+    return vm.num('STUB.loadCount');
+  };
+  assert.equal(loadsInFirstMinute(false), 15, 'every 4 s, 4..60');
+  assert.equal(loadsInFirstMinute(true), 7, '5, 10, 16, 24, 34, 46, 60');
+});
+
 test('the Folder... menu item (right-click a chat) opens a prompt that sets the chat folder like /wow-ai cd', () => {
   const vm = newVM();
   login(vm);
@@ -376,21 +413,48 @@ test('a sent message is encoded on the strip with the chat folder, then a slot r
   assert.ok(vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history].text').includes('C:\\proj'));
 });
 
-test('a denied reply shows Allow, and Allow resends with the rules as flags', () => {
+test('a denied reply shows Allow once and Always; once resends the rules flagged for one run, Always without the flag', () => {
   const vm = newVM();
   login(vm);
   connect(vm);
-  vm.run('WoWAI.Send("search for it")');
-  const chatId = vm.evaluate('WoWAIDB.chats[1].id');
-  const id = vm.num('WoWAIDB.chats[1].pendingId');
-  nextSlot(vm, `{ now = time(), cwd = "", replies = { { chat = "${chatId}", id = ${id}, status = "done", text = "need permission", denied = { "WebSearch", "Bash(cargo:*)" } } } }`);
-  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
-  assert.equal(vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history].denied[2]'), 'Bash(cargo:*)');
-  vm.run(`WoWAI.Allow("${chatId}", { "WebSearch", "Bash(cargo:*)" })`);
-  const rec = stripRecords(vm).find(r => r.flags.includes('allow='));
+  const deny = (n) => {
+    vm.run(`WoWAI.Send("search for it ${n}")`);
+    const chatId = vm.evaluate('WoWAIDB.chats[1].id');
+    const id = vm.num('WoWAIDB.chats[1].pendingId');
+    nextSlot(vm, `{ now = time(), cwd = "", replies = { { chat = "${chatId}", id = ${id}, status = "done", text = "need permission", denied = { "WebSearch", "Bash(cargo:*)" } } } }`);
+    vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+    assert.equal(vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history].denied[2]'), 'Bash(cargo:*)');
+    return { chatId, id };
+  };
+  let { chatId, id } = deny(1);
+  vm.run(`WoWAI.Allow("${chatId}", { "WebSearch", "Bash(cargo:*)" }, false)`);
+  let rec = stripRecords(vm).find(r => r.flags.includes('allow='));
   assert.ok(rec, 'allow record on the strip');
-  assert.equal(rec.flags, 'allow=WebSearch,Bash(cargo:*)');
+  assert.equal(rec.flags, 'allow=WebSearch,Bash(cargo:*);once');
   assert.equal(rec.id, id + 1);
+  assert.equal(vm.evaluate('WoWAIDB.outbox.allowOnce'), 'true', 'the reload path says "once" too');
+  assert.ok(vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history - 1].text').startsWith('Allowed once: '));
+
+  // Answer the retry, get refused again, and this time save the rules.
+  nextSlot(vm, `{ now = time(), cwd = "", replies = { { chat = "${chatId}", id = ${id + 1}, status = "done", text = "ok" } } }`);
+  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+  ({ chatId, id } = deny(2));
+  vm.run(`WoWAI.Allow("${chatId}", { "WebSearch", "Bash(cargo:*)" }, true)`);
+  rec = stripRecords(vm).find(r => r.id === id + 1);
+  assert.equal(rec.flags, 'allow=WebSearch,Bash(cargo:*)');
+  assert.equal(vm.evaluate('WoWAIDB.outbox.allowOnce'), null);
+});
+
+test('the addon\'s own commands typed in its input box run locally instead of going to the agent', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run('WoWAIInput:SetText("/wow-ai new Second"); WoWAI.SendFromInput()');
+  assert.equal(vm.evaluate('WoWAIDB.chats[#WoWAIDB.chats].name'), 'Second', 'ran as a command');
+  assert.equal(vm.evaluate('WoWAIDB.outbox'), null, 'nothing sent');
+  // Other slash lines are messages: the player may be asking about a macro.
+  vm.run('WoWAIInput:SetText("/cast [@mouseover] Inmolar is this right?"); WoWAI.SendFromInput()');
+  assert.ok(stripRecords(vm).some(r => r.text === '/cast [@mouseover] Inmolar is this right?'));
 });
 
 test('a chat can pick its agent: the strip says so, replies are labelled by their writer, unknown names are refused', () => {

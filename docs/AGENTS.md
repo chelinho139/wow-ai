@@ -19,7 +19,7 @@ Every agent's block in `config.json` has the same keys, and the bridge maps them
 | Key | Meaning |
 |---|---|
 | `permissionMode` | `acceptEdits` (default): edits inside the project are fine, commands need a rule. `default`: nothing is pre-approved beyond reading. `bypassPermissions`: everything is allowed. |
-| `allowedTools` | Rules in Claude Code's syntax: `WebSearch` allows a tool, `Bash(git:*)` any command starting with `git`, `Bash(npm test)` that exact command. The **Allow & retry** button appends to this list. Ignored by Codex. |
+| `allowedTools` | Rules in Claude Code's syntax: `WebSearch` allows a tool, `Bash(git:*)` any command starting with `git`, `Bash(npm test)` that exact command. The **Always** button appends to this list; **Allow once** passes the rules to the retry only. Ignored by Codex. |
 | `deniedTools` | Rules the agent may never use, same syntax. Claude gets them as `--disallowedTools`, Grok as `--deny` (which wins over everything, `bypassPermissions` included). Ignored by Codex. |
 | `model` | Passed through to the CLI when non-empty. |
 | `path` | The executable, when the bridge can't find it on its own. A `.js` path is run with the bridge's own Node; a Windows `.cmd` npm shim is unwrapped. |
@@ -33,7 +33,7 @@ Codex also checks `CODEX_BIN` before searching `PATH`, so a newer launcher can o
 
 - **Install:** [claude.com/claude-code](https://claude.com/claude-code). Run `claude` once and log in. `claude --version` must work in a terminal.
 - **Command line:** `claude -p --output-format stream-json --verbose --permission-mode <mode> --allowedTools <rules…> [--model <m>] [--resume <session>] [--append-system-prompt <context>]`, prompt on stdin. The `CLAUDECODE` variable is removed from the environment so a bridge started from inside a Claude Code session can still launch it.
-- **Permissions:** `permissionMode` and `allowedTools` are Claude's own concepts, passed as they are. Denied tools come back in the result as `permission_denials`; the bridge turns them into rules (`Bash(cargo:*)`, `WebSearch`) for the **Allow & retry** button.
+- **Permissions:** `permissionMode` and `allowedTools` are Claude's own concepts, passed as they are. Denied tools come back in the result as `permission_denials`; the bridge turns them into rules (`Bash(cargo:*)`, `WebSearch`; a leading `cd dir &&` is skipped) for the **Allow once** / **Always** buttons. A rule the run already had is not offered again: that refusal means the action reached outside the folders Claude may touch, and the reply says so. Claude also gets `--add-dir bridge/tmp/scratch`, with `TEMP`/`TMP` pointing there, and the system prompt sends temporary files to it; entries older than 7 days are deleted when the bridge starts using it.
 - **Session:** the `session_id` on the stream; `--resume` on later runs. Claude keeps sessions per folder.
 - **Progress:** one line per `tool_use` block (`edit player.gd`, `$ npm test`, `search: …`) and each text block as a snippet.
 - **Context:** the game context and primer go in as a system prompt, on every run.

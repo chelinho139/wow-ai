@@ -111,13 +111,14 @@ function sameFolder(a, b) {
 // Flags field: ';'-separated tokens. "n" = fresh agent session, "h" = hello
 // (no prompt), "d" = the player deleted this chat: forget its transcript and
 // session (no prompt), "allow=Rule1,Rule2" = add these permission rules before
-// running, "c" = the record carries a game-context field before the text (an
+// running ("once" with it = for this run only, not saved), "c" = the record carries a game-context field before the text (an
 // empty one clears the context the bridge keeps), "agent=codex" = run this
 // chat with that agent instead of the bridge's default (see agents.js).
 function parseFlags(flags) {
-  const out = { newSession: false, hello: false, forget: false, context: false, allow: [], agent: '' };
+  const out = { newSession: false, hello: false, forget: false, context: false, allow: [], allowOnce: false, agent: '' };
   for (const tok of String(flags || '').split(';')) {
     if (tok === 'n') out.newSession = true;
+    else if (tok === 'once') out.allowOnce = true;
     else if (tok === 'h') out.hello = true;
     else if (tok === 'd') out.forget = true;
     else if (tok === 'c') out.context = true;
@@ -171,6 +172,7 @@ function parseOutbox(src) {
   if (agent && agent[1]) job.agent = agent[1].toLowerCase();
   const allow = b.match(/\["allow"\]\s*=\s*"([0-9a-fA-F]*)"/);
   if (allow && allow[1]) job.allow = fromHex(allow[1]).split('\x1F').filter(Boolean);
+  if (/\["allowOnce"\]\s*=\s*true/.test(b)) job.allowOnce = true;
   return job;
 }
 
@@ -214,8 +216,25 @@ const MACRO_HINT = [
   'The addon shows the player a button that creates the macro (or updates one with the same name) and puts it on their cursor. Explain outside the block what it does. Avoid /run and /script unless asked; the player is warned about them.',
 ];
 
-function systemPrompt(ctx, primer) {
+// Which primer goes with a context when config.json doesn't name one: the
+// "Game:" line carries the client's interface number, and retail (100000 and
+// up) has its own APIs, so it gets docs/WOW-ADDON-PRIMER-RETAIL.md. Configs
+// written by setup before this choice existed name the Forever primer only
+// because the example did; that value still means "pick by client".
+const PRIMERS = { forever: 'docs/WOW-ADDON-PRIMER.md', retail: 'docs/WOW-ADDON-PRIMER-RETAIL.md' };
+function primerFor(ctx, configured) {
+  if (configured !== undefined && configured !== PRIMERS.forever) return configured;
+  const m = /^Game:.*\binterface (\d+)/m.exec(String(ctx || ''));
+  return m && Number(m[1]) >= 100000 ? PRIMERS.retail : PRIMERS.forever;
+}
+
+function systemPrompt(ctx, primer, opts = {}) {
   const lines = [...REPLY_FORMAT];
+  // A folder the agent may write without asking (Claude gets it with --add-dir):
+  // the system temp folder is outside what it may touch, and Allow can't change that.
+  if (opts.scratch) {
+    lines.push('', `For temporary files (downloads, throwaway scripts, intermediate data) use the scratch folder ${opts.scratch}: it is writable without asking. Do not write to the system temp folder (%TEMP%, /tmp) or anywhere else outside the working folder; those writes are refused.`);
+  }
   const text = String(ctx || '').trim();
   if (text) {
     lines.push('',
@@ -259,12 +278,32 @@ function splitSummary(text) {
 function ruleFor(d) {
   const name = d.tool_name || 'Unknown';
   if (name === 'Bash') {
-    const cmd = String((d.tool_input && d.tool_input.command) || '').trim();
+    let cmd = String((d.tool_input && d.tool_input.command) || '').trim();
+    // "cd somewhere && curl ..." is refused for the curl: a Bash(cd:*) rule would allow nothing.
+    const CD = /^cd\s+("[^"]*"|'[^']*'|\S+)\s*(&&|;)\s*/;
+    while (CD.test(cmd)) cmd = cmd.replace(CD, '');
     const word = cmd.split(/\s+/)[0];
     if (word && /^[\w.\-]+$/.test(word)) return `Bash(${word}:*)`;
     return 'Bash';
   }
   return name;
+}
+
+// After a run: refused rules that the run already had cannot be fixed by Allow
+// (the agent reached outside the folders it may touch), so they come off the
+// list that drives the button and get an explanation instead. Returns the rules
+// still worth offering and the notes to append, with the agents' "use the Allow
+// button" hint dropped when nothing is left to allow.
+function sortDenials(denied, allowedTools, notes) {
+  const have = new Set(allowedTools || []);
+  const offer = [...new Set(denied || [])].filter(r => !have.has(r));
+  const stale = [...new Set(denied || [])].filter(r => have.has(r));
+  let out = [...(notes || [])];
+  if (!offer.length) out = out.map(n => n.replace(/\nUse the Allow button below to permit (them|it) and let it continue\.$/, ''));
+  if (stale.length) {
+    out.push(`Refused although already allowed: ${stale.join(', ')}. That usually means the action reached outside the chat's folder (another drive, the system temp folder); Allow can't change that. Ask for it to be done inside the folder, or in the scratch folder for temporary files.`);
+  }
+  return { denied: offer, notes: out };
 }
 
 // One progress line per Claude tool call, as shown in the game's "working"
@@ -549,8 +588,8 @@ module.exports = {
   fromHex, pad3, slotNumber, chatKey, sessKey,
   alreadyHandled, markHandled, pruneStale, MONTH_MS,
   resolveCwd, sameFolder, baseName,
-  parseFlags, jobsFromStrip, parseOutbox, systemPrompt, splitSummary,
-  ruleFor, describeToolUse,
+  parseFlags, jobsFromStrip, parseOutbox, systemPrompt, primerFor, splitSummary,
+  ruleFor, sortDenials, describeToolUse,
   luaStr, luaTable, SILENT_WAV,
   MAP_LIMITS, validateMapCommand, newMap, applyMapCommands, extractMapBlocks, parseMapFile, luaMap,
   MACRO_LIMITS, extractMacros, stripMacroBlocks, luaMacros,

@@ -13,7 +13,7 @@ test('luaStr escapes everything Lua 5.1 needs', () => {
 });
 
 test('parseFlags reads new-session, hello, forget, context, agent and allow lists', () => {
-  const none = { newSession: false, hello: false, forget: false, context: false, allow: [], agent: '' };
+  const none = { newSession: false, hello: false, forget: false, context: false, allow: [], allowOnce: false, agent: '' };
   assert.deepEqual(P.parseFlags(''), none);
   assert.deepEqual(P.parseFlags('n'), { ...none, newSession: true });
   assert.deepEqual(P.parseFlags('h'), { ...none, hello: true });
@@ -22,13 +22,56 @@ test('parseFlags reads new-session, hello, forget, context, agent and allow list
   assert.deepEqual(P.parseFlags('n;allow=WebSearch, Bash(git:*),'), { ...none, newSession: true, allow: ['WebSearch', 'Bash(git:*)'] });
   assert.deepEqual(P.parseFlags('agent=Codex'), { ...none, agent: 'codex' });
   assert.deepEqual(P.parseFlags('n;agent=grok;allow=WebSearch'), { ...none, newSession: true, agent: 'grok', allow: ['WebSearch'] });
+  assert.deepEqual(P.parseFlags('allow=WebSearch;once'), { ...none, allow: ['WebSearch'], allowOnce: true });
+});
+
+test('ruleFor looks past leading cd steps, so the rule names the command that was refused', () => {
+  const bash = (command) => P.ruleFor({ tool_name: 'Bash', tool_input: { command } });
+  assert.equal(bash('curl -sL -o x https://example.com'), 'Bash(curl:*)');
+  assert.equal(bash('cd /c/Users/x/tmp && node -e "1"'), 'Bash(node:*)');
+  assert.equal(bash('cd "C:/a b" ; cd sub && curl -o y z'), 'Bash(curl:*)');
+  assert.equal(bash('cd somewhere'), 'Bash(cd:*)', 'a bare cd is still a cd');
+  assert.equal(P.ruleFor({ tool_name: 'Write' }), 'Write');
+});
+
+test('sortDenials keeps only rules Allow can still grant, and explains the ones that were already allowed', () => {
+  const hint = 'Claude needed 2 action(s) that aren\'t allowed yet:\n  Write\n  Bash: curl x\nUse the Allow button below to permit them and let it continue.';
+  // Nothing allowed yet: everything is offered and the hint stays.
+  let r = P.sortDenials(['Write', 'Bash(curl:*)'], [], [hint]);
+  assert.deepEqual(r.denied, ['Write', 'Bash(curl:*)']);
+  assert.deepEqual(r.notes, [hint]);
+  // Both already allowed (writes outside the folder): no button, no hint, an explanation.
+  r = P.sortDenials(['Write', 'Bash(curl:*)'], ['Write', 'Bash(curl:*)'], [hint]);
+  assert.deepEqual(r.denied, []);
+  assert.ok(!r.notes[0].includes('Use the Allow button'));
+  assert.ok(r.notes[1].startsWith('Refused although already allowed: Write, Bash(curl:*).'));
+  // A mix: the new one is offered, the old one explained.
+  r = P.sortDenials(['Write', 'Bash(curl:*)'], ['Write'], [hint]);
+  assert.deepEqual(r.denied, ['Bash(curl:*)']);
+  assert.ok(r.notes[0].includes('Use the Allow button'));
+  assert.ok(r.notes[1].includes('already allowed: Write.'));
+});
+
+test('parseOutbox reads the allow-once mark of the reload path', () => {
+  const hex = (s) => Buffer.from(s, 'utf8').toString('hex');
+  const src = `WoWAIDB = {\n["outbox"] = {\n["id"] = 7,\n["text"] = "${hex('go on')}",\n["allow"] = "${hex('Write')}",\n["allowOnce"] = true,\n},\n}`;
+  const job = P.parseOutbox(src);
+  assert.deepEqual(job.allow, ['Write']);
+  assert.equal(job.allowOnce, true);
+});
+
+test('systemPrompt names the scratch folder when there is one', () => {
+  assert.ok(!P.systemPrompt('').includes('scratch folder'));
+  const s = P.systemPrompt('', '', { scratch: 'D:\\wow-ai\\bridge\\tmp\\scratch' });
+  assert.ok(s.includes('scratch folder D:\\wow-ai\\bridge\\tmp\\scratch'));
+  assert.ok(s.includes('Do not write to the system temp folder'));
 });
 
 test('jobsFromStrip parses the current record format and keeps separators inside text', () => {
   const rec = ['sess', 'chat1', '12', 'realms', 'allow=WebSearch', 'My chat', 'hello\x1Fworld'].join('\x1F');
   const jobs = P.jobsFromStrip(12, rec);
   assert.equal(jobs.length, 1);
-  assert.deepEqual(jobs[0], { session: 'sess', chat: 'chat1', id: 12, cwd: 'realms', newSession: false, hello: false, forget: false, context: false, allow: ['WebSearch'], agent: '', name: 'My chat', text: 'hello\x1Fworld', via: 'pixel' });
+  assert.deepEqual(jobs[0], { session: 'sess', chat: 'chat1', id: 12, cwd: 'realms', newSession: false, hello: false, forget: false, context: false, allow: ['WebSearch'], allowOnce: false, agent: '', name: 'My chat', text: 'hello\x1Fworld', via: 'pixel' });
   // A chat that picked its own agent says so in the flags.
   const codex = P.jobsFromStrip(13, ['sess', 'chat1', '13', '', 'agent=codex', 'My chat', 'hi'].join('\x1F'))[0];
   assert.equal(codex.agent, 'codex');
@@ -79,6 +122,16 @@ test('systemPrompt always asks for the TL;DR block, and wraps the game context a
   assert.ok(!P.systemPrompt('', '# Primer').includes('# Primer'));
 });
 
+test('primerFor picks the retail primer from the interface number, unless config.json names one', () => {
+  assert.equal(P.primerFor('Game: World of Warcraft: Forever (client 1.60.1.69913, interface 16001)'), 'docs/WOW-ADDON-PRIMER.md');
+  assert.equal(P.primerFor('Game: World of Warcraft (retail) (client 11.2.5.63906, interface 110205, locale esES)\nCharacter: X'), 'docs/WOW-ADDON-PRIMER-RETAIL.md');
+  assert.equal(P.primerFor(''), 'docs/WOW-ADDON-PRIMER.md', 'no context yet: the default one');
+  assert.equal(P.primerFor('Game: World of Warcraft (client 11.2.5, interface 110205)', 'my.md'), 'my.md');
+  assert.equal(P.primerFor('Game: World of Warcraft (client 11.2.5, interface 110205)', ''), '', '"" still turns it off');
+  // Older setups copied the Forever primer into config.json from the example: still chosen by client.
+  assert.equal(P.primerFor('Game: World of Warcraft (client 11.2.5, interface 110205)', 'docs/WOW-ADDON-PRIMER.md'), 'docs/WOW-ADDON-PRIMER-RETAIL.md');
+});
+
 test('splitSummary takes the last TL;DR block for the game chat and keeps the whole reply for the window', () => {
   const reply = 'Renamed the function.\n\nDetails:\n- foo.js\n- bar.js\n\n---\n**TL;DR:** Renamed doIt to run in foo.js and bar.js.\nTests pass.';
   const r = P.splitSummary(reply);
@@ -98,13 +151,15 @@ test('splitSummary takes the last TL;DR block for the game chat and keeps the wh
   assert.equal((lua.match(/summary = /g) || []).length, 1);
 });
 
-test('the shipped primer exists, mentions the essentials, and stays small enough to send on every run', () => {
+test('the shipped primers exist, mention the essentials, and stay small enough to send on every run', () => {
   const fs = require('fs');
-  const primer = fs.readFileSync(path.join(__dirname, '..', 'docs', 'WOW-ADDON-PRIMER.md'), 'utf8');
-  for (const must of ['## Interface: 16001', 'Gethe/wow-ui-source', 'InCombatLockdown', 'hooksecurefunc', 'SavedVariables', '/reload', '#showtooltip']) {
-    assert.ok(primer.includes(must), 'primer mentions ' + must);
+  for (const [file, iface] of [['WOW-ADDON-PRIMER.md', '16001'], ['WOW-ADDON-PRIMER-RETAIL.md', '110205']]) {
+    const primer = fs.readFileSync(path.join(__dirname, '..', 'docs', file), 'utf8');
+    for (const must of ['## Interface: ' + iface, 'Gethe/wow-ui-source', 'InCombatLockdown', 'hooksecurefunc', 'SavedVariables', '/reload', '#showtooltip']) {
+      assert.ok(primer.includes(must), file + ' mentions ' + must);
+    }
+    assert.ok(primer.length < 9000, `${file} is ${primer.length} chars; keep it under 9000 (it costs tokens on every message)`);
   }
-  assert.ok(primer.length < 9000, `primer is ${primer.length} chars; keep it under 9000 (it costs tokens on every message)`);
 });
 
 test('jobsFromStrip handles several records per frame and older formats', () => {

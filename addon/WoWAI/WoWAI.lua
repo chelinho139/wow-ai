@@ -33,6 +33,14 @@ local STRIP_TRIES = 3 -- re-show an unacknowledged message this many times befor
 local CELL, CELLS_PER_ROW, MAX_ROWS = 4, 200, 48
 local STRIP_SECONDS = 40 -- max per message; it leaves the strip as soon as the bridge acknowledges
 local POLL_SCHEDULE = { 5, 10, 16, 24, 34, 46, 60, 80, 100, 130, 160, 200, 240, 300 }
+-- Without the sound channel a slot load is the only way to see a reply, so the
+-- first minute, where most replies land, is checked every few seconds instead.
+local FAST_POLL_SECONDS, FAST_POLL_UNTIL = 4, 60
+local FAST_POLL_SCHEDULE = {}
+for t = FAST_POLL_SECONDS, FAST_POLL_UNTIL, FAST_POLL_SECONDS do table.insert(FAST_POLL_SCHEDULE, t) end
+for _, t in ipairs(POLL_SCHEDULE) do
+	if t > FAST_POLL_UNTIL then table.insert(FAST_POLL_SCHEDULE, t) end
+end
 local POLL_TAIL = 60
 local TICK_SECONDS = 2
 local CONNECT_WAIT = 15 -- seconds the Connect button waits for the bridge before giving up
@@ -429,6 +437,11 @@ local function SoundValid(path)
 	return willPlay and true or false
 end
 
+-- Whether readiness signals can tell us a reply is in (else only slot polls can).
+local function SignalWorks()
+	return signalAvailable and db.settings.signal and not run.signalUnreliable
+end
+
 local function CheckSignal(kind, id)
 	if run.signalUnreliable then return false end
 	return SoundValid(string.format("Interface\\AddOns\\WoWAI\\%s\\%03d.wav", kind, SlotNumber(id)))
@@ -675,9 +688,10 @@ end
 
 local function ScheduleNextPoll()
 	local idx = (run.polls or 0) + 1
-	local t = POLL_SCHEDULE[idx]
+	local schedule = SignalWorks() and POLL_SCHEDULE or FAST_POLL_SCHEDULE
+	local t = schedule[idx]
 	if not t then
-		t = POLL_SCHEDULE[#POLL_SCHEDULE] + POLL_TAIL * (idx - #POLL_SCHEDULE)
+		t = schedule[#schedule] + POLL_TAIL * (idx - #schedule)
 	end
 	run.nextPollAt = (run.sentAt or GetTime()) + t
 end
@@ -999,10 +1013,14 @@ function WoWAI.GameContext()
 	local version, build, _, toc = Try(GetBuildInfo)
 	toc = tonumber(toc)
 	local game = "World of Warcraft"
-	if toc and toc >= 16000 and toc < 20000 then game = "World of Warcraft: Forever" end
+	if toc and toc >= 16000 and toc < 20000 then game = "World of Warcraft: Forever"
+	elseif toc and toc >= 100000 then game = "World of Warcraft (retail)" end
 	local client = ""
 	if version then
-		client = " (client " .. tostring(version) .. (build and ("." .. tostring(build)) or "") .. (toc and (", interface " .. toc) or "") .. ")"
+		-- The locale matters for macros: spell and item names must match the client's language.
+		local locale = Try(GetLocale)
+		client = " (client " .. tostring(version) .. (build and ("." .. tostring(build)) or "") .. (toc and (", interface " .. toc) or "")
+			.. (type(locale) == "string" and (", locale " .. locale) or "") .. ")"
 	end
 	table.insert(lines, "Game: " .. game .. client)
 
@@ -1060,6 +1078,7 @@ function WoWAI.GameContext()
 	if #progress > 0 then table.insert(lines, table.concat(progress, "; ")) end
 
 	-- Classic-style talent tabs: name, icon, points spent.
+	local talents
 	local tabs = Try(GetNumTalentTabs)
 	if type(tabs) == "number" and tabs > 0 then
 		local parts = {}
@@ -1069,8 +1088,23 @@ function WoWAI.GameContext()
 				table.insert(parts, tname .. " " .. points)
 			end
 		end
-		if #parts > 0 then table.insert(lines, "Talents: " .. table.concat(parts, " / ")) end
+		if #parts > 0 then talents = "Talents: " .. table.concat(parts, " / ") end
 	end
+	-- Retail has no talent tabs: the specialization and its saved loadout instead.
+	if not talents then
+		local spec = Try(GetSpecialization)
+		local specID, specName
+		if type(spec) == "number" and spec > 0 then specID, specName = Try(GetSpecializationInfo, spec) end
+		if type(specName) == "string" and specName ~= "" then
+			talents = "Specialization: " .. specName
+			local configID = Try(C_ClassTalents and C_ClassTalents.GetLastSelectedSavedConfigID, specID)
+			local config = configID and Try(C_Traits and C_Traits.GetConfigInfo, configID)
+			if type(config) == "table" and type(config.name) == "string" and config.name ~= "" then
+				talents = talents .. " (loadout: " .. config.name .. ")"
+			end
+		end
+	end
+	if talents then table.insert(lines, talents) end
 
 	-- Skill lines under the Professions and Secondary Skills headers.
 	local header, parts = nil, {}
@@ -1080,6 +1114,17 @@ function WoWAI.GameContext()
 			header = sk.name
 		elseif (header and wanted[header]) or PROFESSION_SKILL_IDS[sk.skillID] then
 			table.insert(parts, sk.name .. (sk.rank and (" " .. tostring(sk.rank) .. (sk.maxRank and ("/" .. tostring(sk.maxRank)) or "")) or ""))
+		end
+	end
+	-- Retail has no skill lines; GetProfessions gives the slots (two primary,
+	-- archaeology, fishing, cooking), any of them nil when unlearned.
+	if #parts == 0 then
+		local slots = { Try(GetProfessions) }
+		for i = 1, 5 do
+			local pname, _, rank, maxRank = Try(GetProfessionInfo, slots[i])
+			if type(pname) == "string" and pname ~= "" then
+				table.insert(parts, pname .. (rank and (" " .. tostring(rank) .. (maxRank and ("/" .. tostring(maxRank)) or "")) or ""))
+			end
 		end
 	end
 	if #parts > 0 then table.insert(lines, "Professions: " .. table.concat(parts, ", ")) end
@@ -1189,7 +1234,7 @@ end
 ---------------------------------------------------------------------------
 
 -- allow: optional list of permission rules to grant before this message runs.
-function WoWAI.Send(text, allow)
+function WoWAI.Send(text, allow, allowOnce)
 	local c = ActiveChat()
 	if not c then return end
 	text = Trim(text or "")
@@ -1234,7 +1279,10 @@ function WoWAI.Send(text, allow)
 	local allowHex
 	if type(allow) == "table" and #allow > 0 then
 		table.insert(tokens, "allow=" .. table.concat(allow, ","))
+		if allowOnce then table.insert(tokens, "once") end
 		allowHex = ToHex(table.concat(allow, US))
+	else
+		allowOnce = nil
 	end
 	local flags = table.concat(tokens, ";")
 	local newSession = c.resetNext and true or nil
@@ -1248,6 +1296,7 @@ function WoWAI.Send(text, allow)
 		ctx = ctx and ToHex(ctx) or nil,
 		agent = (c.agent and c.agent ~= "") and c.agent or nil,
 		allow = allowHex,
+		allowOnce = allowOnce and true or nil,
 		newSession = newSession,
 		t = time(),
 	}
@@ -1354,17 +1403,29 @@ function WoWAI.SendFromInput()
 	local text = ui.input:GetText()
 	ui.input:SetText("")
 	ui.input:ClearFocus() -- hand the keyboard back to the game after sending
+	-- The addon's own commands typed here run like in the game chat instead of
+	-- going to the agent; any other "/..." (a macro line to ask about) is a message.
+	local cmd, rest = Trim(text):match("^/(%S+)%s*(.*)$")
+	cmd = cmd and cmd:lower()
+	if cmd == "wow-ai" or cmd == "wowai" or cmd == "ai" or cmd == "ask" or cmd == "wow-claude" then
+		SlashCmdList.WOWAI(rest)
+		return
+	elseif cmd == "reload" or cmd == "rl" then
+		SafeReload() -- Enter is a hardware event, so ReloadUI is allowed here
+		return
+	end
 	WoWAI.Send(text)
 end
 
--- The Allow button: grant the rules a reply asked for, then tell the agent to carry on.
-function WoWAI.Allow(chatId, rules)
+-- The Allow buttons: grant the rules a reply asked for, then tell the agent to carry
+-- on. "Allow once" lets only that retry use them; "Always" saves them on the bridge.
+function WoWAI.Allow(chatId, rules, always)
 	local c = FindChat(chatId)
 	if not c or c.pendingId or not rules or #rules == 0 then return end
 	if db.activeChat ~= c.id then WoWAI.SwitchChat(c.id) end
 	for _, m in ipairs(c.history) do m.denied = nil end
-	AddHistory(c, "system", "Allowed: " .. table.concat(rules, ", "))
-	WoWAI.Send("Those actions are allowed now. Continue from where you left off.", rules)
+	AddHistory(c, "system", (always and "Always allowed: " or "Allowed once: ") .. table.concat(rules, ", "))
+	WoWAI.Send("Those actions are allowed now. Continue from where you left off.", rules, not always)
 end
 
 ---------------------------------------------------------------------------
@@ -1883,9 +1944,24 @@ local function GetBubble(i)
 	b.allow:SetHeight(22)
 	b.allow:SetPoint("TOPLEFT", b.body, "BOTTOMLEFT", 0, -6)
 	b.allow:SetScript("OnClick", function(self)
-		WoWAI.Allow(self.chatId, self.rules)
+		WoWAI.Allow(self.chatId, self.rules, false)
 	end)
 	b.allow:Hide()
+	b.always = CreateFrame("Button", nil, b, "UIPanelButtonTemplate")
+	b.always:SetHeight(22)
+	b.always:SetPoint("LEFT", b.allow, "RIGHT", 6, 0)
+	b.always:SetText("Always")
+	b.always:SetWidth(80)
+	b.always:SetScript("OnClick", function(self)
+		WoWAI.Allow(self.chatId, self.rules, true)
+	end)
+	b.always:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_TOP")
+		GameTooltip:SetText("Allow these from now on, in every chat (saved in the bridge's config.json)")
+		GameTooltip:Show()
+	end)
+	b.always:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	b.always:Hide()
 	b.macroBtns = {}
 	-- FontStrings can't be selected, so a click opens the message in the copy box.
 	b:EnableMouse(true)
@@ -1924,15 +2000,17 @@ function WoWAI.Render()
 			if not h or h < 1 then h = 14 end
 			local extra = 0
 			if denied then
-				local label = "Allow " .. table.concat(denied, ", ") .. " & retry"
+				local label = "Allow once: " .. table.concat(denied, ", ") .. " & retry"
 				b.allow:SetText(label)
-				b.allow:SetWidth(math.min(width - 24, math.max(160, b.allow:GetFontString():GetStringWidth() + 30)))
-				b.allow.chatId = c.id
-				b.allow.rules = denied
+				b.allow:SetWidth(math.min(width - 24 - 86, math.max(160, b.allow:GetFontString():GetStringWidth() + 30)))
+				b.allow.chatId, b.always.chatId = c.id, c.id
+				b.allow.rules, b.always.rules = denied, denied
 				b.allow:Show()
+				b.always:Show()
 				extra = 28
 			else
 				b.allow:Hide()
+				b.always:Hide()
 			end
 			-- One button per macro the agent handed over.
 			local shownMacros = 0
@@ -3047,7 +3125,8 @@ SlashCmdList["WOWAI"] = function(msg)
 			"sound channel: " .. (signalAvailable and "usable" or "UNUSABLE") .. " (self-test: " .. tostring(signalStats.selftest) .. ")" .. (signalStats.error and (" error: " .. signalStats.error) or ""),
 			"signal setting: " .. tostring(s.signal) .. ", marked unreliable this session: " .. tostring(run.signalUnreliable or false),
 			"sound checks: " .. signalStats.checks .. ", valid hits: " .. signalStats.hits .. (signalStats.lastHit and (", last hit " .. FmtDur(GetTime() - signalStats.lastHit) .. " ago") or ""),
-			"slot polls this session: " .. (run.polls or 0) .. ", free slots: " .. free .. "/" .. SLOT_COUNT,
+			"slot polls this session: " .. (run.polls or 0) .. ", free slots: " .. free .. "/" .. SLOT_COUNT
+				.. (SignalWorks() and "" or (", polling every " .. FAST_POLL_SECONDS .. " s for the first " .. FAST_POLL_UNTIL .. " s (no sound channel)")),
 			"presence: head at " .. tostring(run.presence and run.presence.last or "?") .. ", beats seen: " .. tostring(run.presence and run.presence.beats or 0),
 			select(5, WoWAI.BridgeState()),
 			"mode: " .. s.mode .. ", session token: " .. tostring(db.session),
