@@ -206,6 +206,10 @@ test('quest stops move on with the quest, not on arrival, skipping several at on
   // A plain stop still moves on by arrival: the route ends there.
   vm.run('STUB.posX, STUB.posY = 0.55, 0.7; WoWAIMap.UpdateNavigator()');
   assert.equal(vm.evaluate('WoWAIMapDB.nav'), null, 'route finished');
+  assert.equal(vm.evaluate('WoWAIMapDB.hidden.quests'), 'true', 'a finished route leaves the map');
+  assert.ok(vm.evaluate('STUB.prints[#STUB.prints]').includes('/wow-ai map show quests brings it back'));
+  vm.run('WoWAIMap.Refresh()');
+  assert.deepEqual(shownPins(vm), [], 'no pins left on the map');
   // Done stops fade on the map.
   vm.run('STUB.posX, STUB.posY = 0.1, 0.1; WoWAIMap.Navigate("quests", 1)'); // all quest stops are done: starts at 4
   assert.equal(vm.evaluate('WoWAIMapDB.nav.index'), '4');

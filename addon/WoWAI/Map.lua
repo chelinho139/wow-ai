@@ -506,7 +506,10 @@ function M.Step(delta, arrived)
 	local nexti = i + delta
 	if nexti > #l.points then
 		if l.loop then nexti = 1 else
-			Print("route finished: " .. l.title)
+			-- A finished route leaves the map too; the bridge still has it, and a
+			-- new version of it (or /wow-ai map show) brings it back.
+			mdb.hidden[l.name] = true
+			Print(string.format("route finished: %s. Hidden from the map; /wow-ai map show %s brings it back.", l.title, l.name))
 			mdb.nav = nil
 			M.UpdateNavigator()
 			M.Refresh()
