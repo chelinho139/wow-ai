@@ -1399,11 +1399,21 @@ local MOUNT_QUERY_SKIP = {
 	montura = true, monturas = true, conseguir = true, falta = true, faltan = true, este = true, esta = true, para = true,
 	have = true, mount = true, mounts = true, which = true, where = true, what = true, could = true, with = true, from = true,
 }
+-- Lower case without accents, so "halcon" finds "Halcón" (string.lower only
+-- knows ASCII): the two-byte Latin-1 letters map to their plain vowel or n.
+local FOLD = {}
+for plain, chars in pairs({ a = "áàâäÁÀÂÄ", e = "éèêëÉÈÊË", i = "íìîïÍÌÎÏ", o = "óòôöÓÒÔÖ", u = "úùûüÚÙÛÜ", n = "ñÑ", c = "çÇ" }) do
+	for ch in chars:gmatch("\195[\128-\191]") do FOLD[ch] = plain end
+end
+local function Fold(s)
+	return (tostring(s or ""):gsub("\195[\128-\191]", FOLD):lower())
+end
+
 local function QueryWords(question)
 	local words = {}
 	-- "¿" and "¡" are two bytes each (the second shared with letters like "á"),
 	-- so they are replaced whole rather than put in a byte-wise character class.
-	local q = tostring(question or ""):lower():gsub("\194\191", " "):gsub("\194\161", " ")
+	local q = Fold(question):gsub("\194\191", " "):gsub("\194\161", " ")
 	for w in q:gmatch("[^%s%p]+") do
 		if #w >= 4 and not MOUNT_QUERY_SKIP[w] then table.insert(words, w) end
 	end
@@ -1434,7 +1444,7 @@ function WoWAI.MountsText(question)
 			-- name ("¿tengo el raptor o el lobo?" asks about two). Grouped under
 			-- the first word it matches, so each word asked about gets its share.
 			if #words > 0 then
-				local lname = name:lower()
+				local lname = Fold(name)
 				for k, w in ipairs(words) do
 					if lname:find(w, 1, true) then
 						matches[k] = matches[k] or {}

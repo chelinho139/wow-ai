@@ -647,8 +647,10 @@ test('/ai monturas with a question says, for each mount it names, whether it is 
   // A name the journal doesn't have is said so, not guessed.
   const none = vm.evaluate('WoWAI.MountsText("tengo el grifo dorado")');
   assert.ok(none.includes('Matching the question: none;'), none);
-  // Accented words survive the split ("á" shares a byte with "¡").
+  // Accented words survive the split ("á" shares a byte with "¡"), and accents don't matter either way.
   assert.ok(vm.evaluate('WoWAI.MountsText("¡Dragón de tienda!")').includes('Dragón de tienda (missing, Tienda)'));
+  assert.ok(vm.evaluate('WoWAI.MountsText("dragon")').includes('Matching "dragon" (1): Dragón de tienda (missing, Tienda)'));
+  assert.ok(vm.evaluate('WoWAI.MountsText("ZANCÚDO")').includes('Zancudo (missing, Vendedor)'));
 });
 
 test('a mount question naming several kinds gives each kind its share of the room', () => {
@@ -663,7 +665,7 @@ test('a mount question naming several kinds gives each kind its share of the roo
   `);
   const text = vm.evaluate('WoWAI.MountsText("halcón zancudo kodo lobo raptor")');
   assert.ok(text.length <= 2000, `${text.length} bytes`);
-  for (const w of ['halcón', 'kodo', 'lobo', 'raptor']) {
+  for (const w of ['halcon', 'kodo', 'lobo', 'raptor']) { // words are matched (and shown) without accents
     assert.ok(new RegExp(`\\nMatching "${w}" \\(100\\): \\S`).test(text), w + ' has its own line with names: ' + text);
   }
   assert.ok(!text.includes('Matching "zancudo"'), 'a word already matched by an earlier one adds no empty group');
