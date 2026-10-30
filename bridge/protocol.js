@@ -200,7 +200,7 @@ const REPLY_FORMAT = [
 // How the agent draws on the world map (see "Map layers" below and docs/MAP.md).
 // Sent with the game context, since marks only make sense in a game chat.
 const MAP_HINT = [
-  'You can mark the player\'s world map. Either append commands to the file named by the WOW_AI_MAP_FILE environment variable (one JSON object per line) or, for a few marks, end the reply with a fenced block whose language tag is wowmap containing them. Commands:',
+  'You can mark the player\'s world map. Put the commands, one JSON object per line, in a fenced block whose language tag is wowmap at the end of the reply: that always works and needs no tool or permission. Only a script that generates many points needs the other way, appending lines to the file named by the WOW_AI_MAP_FILE environment variable; do not reach for shell commands just to write a route you can put in the block. Commands:',
   '{"op":"set","layer":"<name>","title":"<shown title>","ordered":true,"loop":false,"points":[{"m":<uiMapID>,"x":<0-100>,"y":<0-100>,"label":"<text>","kind":"quest"}]}  replaces that layer; "ordered" draws a numbered route with a navigator, "loop" closes it.',
   '{"op":"clear","layer":"<name>"} removes a layer; {"op":"clearall"} removes them all.',
   'x and y are map percent on the map with that uiMapID (the context gives the player\'s current one). kind is one of ore, herb, quest, turnin, kill, loot, object, explore, npc, trainer, vendor, dungeon, flight, poi. Only mark the map when asked for a route, marks or locations; say in the reply what you drew.',
