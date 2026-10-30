@@ -69,6 +69,33 @@ if (!DEFAULT_AGENT) {
   process.exit(2);
 }
 
+// One bridge at a time: two would both read the strip, run every message twice
+// and fight over the slot files. The lock holds our pid and is touched every
+// 10 s; one whose process is gone, or that nobody touched for 30 s, is taken over.
+const LOCK_FILE = path.join(TMP_DIR, 'bridge.lock');
+const LOCK_STALE_MS = 30000;
+function lockHolder() {
+  try {
+    const pid = Number(fs.readFileSync(LOCK_FILE, 'utf8'));
+    if (!pid || pid === process.pid) return 0;
+    if (Date.now() - fs.statSync(LOCK_FILE).mtimeMs > LOCK_STALE_MS) return 0;
+    try { process.kill(pid, 0); return pid; } catch (e) { return e.code === 'EPERM' ? pid : 0; }
+  } catch { return 0; }
+}
+{
+  const other = lockHolder();
+  if (other) {
+    console.error(`Another bridge is already running (pid ${other}). Use that one, or stop it first (Ctrl+C or close its window).`);
+    process.exit(2);
+  }
+  fs.mkdirSync(TMP_DIR, { recursive: true });
+  fs.writeFileSync(LOCK_FILE, String(process.pid));
+  setInterval(() => { try { const t = new Date(); fs.utimesSync(LOCK_FILE, t, t); } catch {} }, 10000).unref();
+  process.on('exit', () => {
+    try { if (Number(fs.readFileSync(LOCK_FILE, 'utf8')) === process.pid) fs.rmSync(LOCK_FILE); } catch {}
+  });
+}
+
 // Default folder: --project, else the folder we were started from (unless that is
 // this repo, i.e. npm start), else the configured one.
 const REPO = path.dirname(HERE);
