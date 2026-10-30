@@ -1472,7 +1472,12 @@ function WoWAI.MountsText(question)
 		end
 		local share = math.floor((ATTACH_MAX - #countLine - 500) / math.max(#groups, 1))
 		for _, k in ipairs(groups) do
-			table.sort(matches[k])
+			-- The few the player has first: a cut list must still say which they own.
+			table.sort(matches[k], function(a, b)
+				local ha, hb = a:find("(have)", 1, true) ~= nil, b:find("(have)", 1, true) ~= nil
+				if ha ~= hb then return ha end
+				return a < b
+			end)
 			table.insert(lines, "Matching \"" .. words[k] .. "\" (" .. #matches[k] .. "): " .. NameList(matches[k], share - 30))
 		end
 	end

@@ -669,6 +669,22 @@ test('a mount question naming several kinds gives each kind its share of the roo
     assert.ok(new RegExp(`\\nMatching "${w}" \\(100\\): \\S`).test(text), w + ' has its own line with names: ' + text);
   }
   assert.ok(!text.includes('Matching "zancudo"'), 'a word already matched by an earlier one adds no empty group');
+  // Owned ones (every tenth id, so hawkstriders and wolves here) lead their group.
+  assert.match(text, /\nMatching "lobo" \(100\): Lobo de color numero 10 \(have\), Lobo de color numero 110 \(have\), /);
+});
+
+test('owned mounts lead a cut match list', () => {
+  const vm = newVM();
+  vm.run(RETAIL_STUBS);
+  vm.run(`
+    C_MountJournal.GetMountIDs = function() local t = {} for i = 1, 60 do t[i] = i end return t end
+    C_MountJournal.GetMountInfoByID = function(id)
+      return (id == 60 and "Zzz raptor viejo" or ("Raptor numero " .. id)), id, 0, false, true, 3, false, false, nil, false, id == 60, id
+    end
+  `);
+  const line = vm.evaluate('WoWAI.MountsText("raptor")').split('\n').find(l => l.startsWith('Matching'));
+  assert.ok(line.startsWith('Matching "raptor" (60): Zzz raptor viejo (have), '), line);
+  assert.match(line, /\+\d+ more$/, 'the list is cut, and the owned one is still in it');
 });
 
 test('an attachment the client cannot provide is explained in the chat and nothing is sent', () => {
