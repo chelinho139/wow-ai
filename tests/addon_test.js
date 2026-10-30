@@ -488,6 +488,9 @@ const RETAIL_STUBS = `
     if slot == 16 then return "|cffffffff|Hitem:99::::::::16:::::|h[Bastón viejo]|h|r" end
   end
   C_Item.GetDetailedItemLevelInfo = function(link) if link:find("item:2140") then return 47 end return 40 end
+  C_Item.GetItemInfoInstant = function(link)
+    if tostring(link):find("item:99") then return 99, "Arma", STUB.weaponType or "Bastones", STUB.weaponLoc or "INVTYPE_2HWEAPON" end
+  end
   -- The client takes a full link here; the shared stub only knows bare "item:" strings.
   C_Item.GetItemInfo = function(link) if tostring(link):find("item:2140") then return "Fine Longsword", link, 2 end end
   SPELL_STAT4_NAME = "Intelecto"
@@ -560,9 +563,15 @@ test('/ai equipo, /ai monturas and /ai misiones attach gear, the mount collectio
   assert.ok(gear[3].startsWith('Average item level equipped: 45.5; empty slots: 13 (Neck, Shoulder, '), gear[3]);
   assert.ok(!rec.text.includes('48.2'), 'the "overall" average is not passed on as gear in the bags');
   assert.ok(gear.includes('Cabeza: Fine Longsword (ilvl 47, Uncommon)'), rec.text);
-  assert.ok(gear.includes('Mano principal: Bastón viejo (ilvl 40)'), rec.text);
+  assert.ok(gear.includes('Mano principal: Bastón viejo (ilvl 40, Bastones, two-handed)'), rec.text);
   assert.ok(gear.includes('Neck: (empty)'), 'an empty slot is listed, by its English name when the client has no global for it');
-  assert.ok(!rec.text.includes('Off hand'), 'an empty off hand is left out');
+  assert.ok(!rec.text.includes('Off hand'), 'an empty off hand is left out behind a two-handed weapon');
+  // A one-handed weapon leaves the off hand free: that empty slot counts.
+  vm.run('STUB.weaponType, STUB.weaponLoc = "Dagas", "INVTYPE_WEAPON"');
+  const oneHand = vm.evaluate('WoWAI.GearText()').split('\n');
+  assert.ok(oneHand.includes('Mano principal: Bastón viejo (ilvl 40, Dagas)'), oneHand.join('\n'));
+  assert.ok(oneHand.includes('Off hand: (empty)'));
+  assert.ok(oneHand[0].includes('empty slots: 14 ('), oneHand[0]);
   assert.equal(gear[gear.length - 1], 'Stats: Intelecto 312, crit 12.3%, haste 8.0%');
 
   vm.run('WoWAI.NewChat("m"); SlashCmdList.WOWAI("monturas")');

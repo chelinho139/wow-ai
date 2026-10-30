@@ -1329,8 +1329,11 @@ local GEAR_SLOTS = {
 }
 
 -- Equipped items with item level and quality, the average item level and the main stats.
+local TWO_HANDED = { INVTYPE_2HWEAPON = true, INVTYPE_RANGED = true, INVTYPE_RANGEDRIGHT = true }
+
 function WoWAI.GearText()
 	local lines, empty = {}, {}
+	local twoHanded = false
 	for _, s in ipairs(GEAR_SLOTS) do
 		local label = _G[s[2]] or s[3]
 		local link = Try(GetInventoryItemLink, "player", s[1])
@@ -1342,8 +1345,17 @@ function WoWAI.GearText()
 			local extra = {}
 			if type(ilvl) == "number" then table.insert(extra, "ilvl " .. ilvl) end
 			if type(qname) == "string" then table.insert(extra, qname) end
+			if s[1] == 16 or s[1] == 17 then
+				-- The weapon type, and whether the off hand is free to fill.
+				local _, _, subType, equipLoc = Try(C_Item and C_Item.GetItemInfoInstant, link)
+				if type(subType) == "string" and subType ~= "" then table.insert(extra, subType) end
+				if s[1] == 16 and TWO_HANDED[equipLoc] then
+					twoHanded = true
+					table.insert(extra, "two-handed")
+				end
+			end
 			table.insert(lines, label .. ": " .. name .. (#extra > 0 and (" (" .. table.concat(extra, ", ") .. ")") or ""))
-		elseif s[1] ~= 17 then
+		elseif s[1] ~= 17 or not twoHanded then
 			table.insert(lines, label .. ": (empty)")
 			table.insert(empty, label)
 		end
