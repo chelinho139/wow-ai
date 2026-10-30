@@ -965,6 +965,23 @@ local function Try(fn, ...)
 	return TryResults(pcall(fn, ...))
 end
 
+-- At most n bytes of s, never ending inside a UTF-8 character (a cut "í" would
+-- reach the agent as a broken byte).
+local function Utf8Cut(s, n)
+	if #s <= n then return s end
+	s = s:sub(1, n)
+	local last = s:byte(-1)
+	if last and last >= 128 then
+		-- Back up to the lead byte of the last character; drop it unless complete.
+		local i = #s
+		while i > 1 and s:byte(i) >= 128 and s:byte(i) < 192 do i = i - 1 end
+		local lead = s:byte(i)
+		local need = lead >= 240 and 4 or lead >= 224 and 3 or lead >= 192 and 2 or 1
+		if #s - i + 1 < need then s = s:sub(1, i - 1) end
+	end
+	return s
+end
+
 local function Money(copper)
 	copper = tonumber(copper) or 0
 	local g, s, c = math.floor(copper / 10000), math.floor(copper / 100) % 100, copper % 100
@@ -1150,7 +1167,7 @@ function WoWAI.GameContext()
 				id, header, complete, title = qid, isHeader, isComplete == 1 or isComplete == true, t
 			end
 			if not header and not hidden and type(id) == "number" and id > 0 then
-				table.insert(quests, { id = tostring(id) .. (complete and "*" or ""), title = type(title) == "string" and title:sub(1, 32) or nil })
+				table.insert(quests, { id = tostring(id) .. (complete and "*" or ""), title = type(title) == "string" and Utf8Cut(title, 32) or nil })
 			end
 		end
 	end
@@ -1171,7 +1188,7 @@ function WoWAI.GameContext()
 	end
 
 	local s = table.concat(lines, "\n"):gsub("[\30\31]", " ")
-	if #s > CONTEXT_MAX then s = s:sub(1, CONTEXT_MAX) end
+	if #s > CONTEXT_MAX then s = Utf8Cut(s, CONTEXT_MAX) end
 	return s
 end
 
@@ -1180,6 +1197,7 @@ end
 ---------------------------------------------------------------------------
 
 local ATTACH_MAX = 2000 -- bytes per attachment; the message and the context share the strip
+local TALENTS_MAX = 2500 -- talents carry descriptions; the context waits for a later message if it doesn't fit
 
 -- Joins names into lines no longer than the budget allows, with a "+N more" tail.
 local function NameList(names, cap)
@@ -1201,6 +1219,21 @@ local function SpellName(spellID)
 	local n = Try(C_Spell and C_Spell.GetSpellName, spellID)
 	if type(n) ~= "string" then n = Try(GetSpellInfo, spellID) end
 	return type(n) == "string" and n ~= "" and n or nil
+end
+
+local DESC_MAX = 140 -- bytes of a talent's description
+
+-- A spell's tooltip text as the client words it, on one line, without markup.
+local function SpellDescription(spellID)
+	if not spellID then return nil end
+	local d = Try(C_Spell and C_Spell.GetSpellDescription, spellID)
+	if type(d) ~= "string" or d == "" then d = Try(GetSpellDescription, spellID) end
+	if type(d) ~= "string" or d == "" then return nil end
+	d = d:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""):gsub("|T.-|t", ""):gsub("|A.-|a", ""):gsub("%s+", " ")
+	d = Trim(d)
+	if d == "" then return nil end
+	if #d > DESC_MAX then d = Utf8Cut(d, DESC_MAX - 3) .. "..." end
+	return d
 end
 
 -- The talents in use, by name and rank. Retail: the active trait config (class,
@@ -1230,7 +1263,7 @@ function WoWAI.TalentsText()
 						local name = type(def) == "table" and ((def.overrideName and def.overrideName ~= "" and def.overrideName) or SpellName(def.spellID))
 						if name then
 							if (node.maxRanks or 1) > 1 then name = name .. " " .. node.currentRank .. "/" .. node.maxRanks end
-							table.insert(picked, { name = name, hero = node.subTreeID ~= nil, y = node.posY or 0, x = node.posX or 0 })
+							table.insert(picked, { name = name, spellID = def.spellID, hero = node.subTreeID ~= nil, y = node.posY or 0, x = node.posX or 0 })
 						end
 					end
 				end
@@ -1241,13 +1274,35 @@ function WoWAI.TalentsText()
 		end
 		table.sort(picked, function(a, b) if a.y ~= b.y then return a.y < b.y end return a.x < b.x end)
 		local tree, hero = {}, {}
-		for _, p in ipairs(picked) do table.insert(p.hero and hero or tree, p.name) end
+		for _, p in ipairs(picked) do table.insert(p.hero and hero or tree, p) end
 		local savedID = specID and Try(C_ClassTalents.GetLastSelectedSavedConfigID, specID)
 		local loadout = savedID and Try(C_Traits.GetConfigInfo, savedID)
 		table.insert(lines, "Specialization: " .. tostring(specName or "?") .. ((type(loadout) == "table" and loadout.name and loadout.name ~= "") and (" (loadout " .. loadout.name .. ")") or ""))
-		table.insert(lines, "Class and spec talents, top to bottom (" .. #tree .. "): " .. (#tree > 0 and NameList(tree, ATTACH_MAX - 400) or "none"))
-		if heroName or #hero > 0 then table.insert(lines, "Hero talents" .. (heroName and (" (" .. heroName .. ")") or "") .. ": " .. (#hero > 0 and NameList(hero, 500) or "none yet")) end
 		if unspent > 0 then table.insert(lines, "Unspent talent points: " .. unspent) end
+		-- One talent per line with the client's own description, so names that
+		-- differ between builds (or servers) need no guessing; once the budget
+		-- runs out, the rest are listed by name.
+		local budget = TALENTS_MAX - 200
+		local function Section(title, list)
+			table.insert(lines, title)
+			local rest = {}
+			for _, p in ipairs(list) do
+				local entry = "- " .. p.name
+				local desc = SpellDescription(p.spellID)
+				if desc and #entry + #desc + 2 <= budget then entry = entry .. ": " .. desc end
+				if #entry + 1 > budget then
+					table.insert(rest, p.name)
+				else
+					table.insert(lines, entry)
+					budget = budget - #entry - 1
+				end
+			end
+			if #rest > 0 then table.insert(lines, "- also: " .. NameList(rest, math.max(budget, 300))) end
+		end
+		Section("Class and spec talents, top to bottom (" .. #tree .. ")" .. (#tree == 0 and ": none" or ":"), tree)
+		if heroName or #hero > 0 then
+			Section("Hero talents" .. (heroName and (" (" .. heroName .. ")") or "") .. (#hero == 0 and ": none yet" or ":"), hero)
+		end
 		return table.concat(lines, "\n")
 	end
 	local tabs = Try(GetNumTalentTabs)
@@ -1275,11 +1330,7 @@ local GEAR_SLOTS = {
 
 -- Equipped items with item level and quality, the average item level and the main stats.
 function WoWAI.GearText()
-	local lines = {}
-	local avg, equipped = Try(GetAverageItemLevel)
-	if type(equipped) == "number" then
-		table.insert(lines, string.format("Item level: %.1f equipped (%.1f best in bags)", equipped, avg or equipped))
-	end
+	local lines, empty = {}, {}
 	for _, s in ipairs(GEAR_SLOTS) do
 		local label = _G[s[2]] or s[3]
 		local link = Try(GetInventoryItemLink, "player", s[1])
@@ -1294,7 +1345,16 @@ function WoWAI.GearText()
 			table.insert(lines, label .. ": " .. name .. (#extra > 0 and (" (" .. table.concat(extra, ", ") .. ")") or ""))
 		elseif s[1] ~= 17 then
 			table.insert(lines, label .. ": (empty)")
+			table.insert(empty, label)
 		end
+	end
+	-- Only the equipped average: GetAverageItemLevel's first value is an "overall"
+	-- figure that differs from it even with nothing in the bags, so it would
+	-- read as better gear the player doesn't have.
+	local _, equipped = Try(GetAverageItemLevel)
+	if type(equipped) == "number" then
+		table.insert(lines, 1, string.format("Average item level equipped: %.1f", equipped)
+			.. (#empty > 0 and ("; empty slots: " .. #empty .. " (" .. table.concat(empty, ", ") .. ")") or ""))
 	end
 	local stats = {}
 	for i = 1, 4 do
@@ -1404,7 +1464,7 @@ end
 
 -- /ai talents|gear|mounts|quests [question]: the question plus the data, in one message.
 local ATTACHMENTS = {
-	talents = { fn = "TalentsText", label = "Talents", ask = "Review my talents." },
+	talents = { fn = "TalentsText", label = "Talents", ask = "Review my talents.", max = TALENTS_MAX },
 	gear = { fn = "GearText", label = "Equipped gear", ask = "Review my gear: what should I upgrade first?" },
 	mounts = { fn = "MountsText", label = "Mount collection", ask = "Which of the mounts I am missing can I get, and how?" },
 	quests = { fn = "QuestsText", label = "Quest log", ask = "Help me with my quests: what should I do first?" },
@@ -1430,7 +1490,8 @@ function WoWAI.SendWithAttachment(kind, question)
 		return
 	end
 	data = data:gsub("[\30\31]", " ")
-	if #data > ATTACH_MAX then data = data:sub(1, ATTACH_MAX) .. "..." end
+	local max = a.max or ATTACH_MAX
+	if #data > max then data = Utf8Cut(data, max) .. "..." end
 	question = Trim(question or "")
 	if question == "" then
 		local locale = Try(GetLocale)

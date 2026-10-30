@@ -451,7 +451,14 @@ const RETAIL_STUBS = `
   GetNumTalentTabs, GetTalentTabInfo = nil, nil
   function GetSpecialization() return 3 end
   function GetSpecializationInfo(i) if i == 3 then return 267, "Destrucción" end end
-  C_Spell = { GetSpellName = function(id) return ({ [1] = "Inmolar", [2] = "Conflagrar" })[id] end }
+  C_Spell = {
+    GetSpellName = function(id) return ({ [1] = "Inmolar", [2] = "Conflagrar" })[id] end,
+    -- Markup and line breaks as tooltips have them; a long one made of 2-byte characters.
+    GetSpellDescription = function(id)
+      if id == 2 then return "|cffffffffQuema|r al\\nobjetivo." end
+      if id == 1 then return string.rep("á", 100) end
+    end,
+  }
   local NODES = {
     [10] = { ID = 10, currentRank = 1, maxRanks = 1, posX = 5, posY = 2, isVisible = true, activeEntry = { entryID = 100 } },
     [11] = { ID = 11, currentRank = 2, maxRanks = 2, posX = 1, posY = 2, isVisible = true, activeEntry = { entryID = 110 } },
@@ -515,7 +522,7 @@ function sentStartingWith(vm, start) {
   return stripRecords(vm).find(r => r.text.startsWith(start));
 }
 
-test('/ai talentos sends the build in use: names and ranks top to bottom, the hero tree, unspent points', () => {
+test('/ai talentos sends the build in use: names, ranks and descriptions top to bottom, the hero tree, unspent points', () => {
   const vm = newVM();
   login(vm);
   connect(vm);
@@ -528,9 +535,12 @@ test('/ai talentos sends the build in use: names and ranks top to bottom, the he
     '',
     'Talents, read from the game:',
     'Specialization: Destrucción (loadout Raid ST)',
-    'Class and spec talents, top to bottom (2): Conflagrar 2/2, Inmolar',
-    'Hero talents (Diabolista): Ritual diabólico',
     'Unspent talent points: 2',
+    'Class and spec talents, top to bottom (2):',
+    '- Conflagrar 2/2: Quema al objetivo.',
+    '- Inmolar: ' + 'á'.repeat(68) + '...',
+    'Hero talents (Diabolista):',
+    '- Ritual diabólico',
   ].join('\n'));
   // A question typed after the command replaces the default one.
   vm.run('STUB.now = STUB.now + 1; WoWAI.NewChat("Otro"); SlashCmdList.WOWAI("talents is Conflagrar worth it?")');
@@ -547,7 +557,8 @@ test('/ai equipo, /ai monturas and /ai misiones attach gear, the mount collectio
   assert.ok(rec);
   const gear = rec.text.split('\n');
   assert.equal(gear[2], 'Equipped gear, read from the game:');
-  assert.equal(gear[3], 'Item level: 45.5 equipped (48.2 best in bags)');
+  assert.ok(gear[3].startsWith('Average item level equipped: 45.5; empty slots: 13 (Neck, Shoulder, '), gear[3]);
+  assert.ok(!rec.text.includes('48.2'), 'the "overall" average is not passed on as gear in the bags');
   assert.ok(gear.includes('Cabeza: Fine Longsword (ilvl 47, Uncommon)'), rec.text);
   assert.ok(gear.includes('Mano principal: Bastón viejo (ilvl 40)'), rec.text);
   assert.ok(gear.includes('Neck: (empty)'), 'an empty slot is listed, by its English name when the client has no global for it');
