@@ -204,6 +204,7 @@ const MAP_HINT = [
   '{"op":"set","layer":"<name>","title":"<shown title>","ordered":true,"loop":false,"points":[{"m":<uiMapID>,"x":<0-100>,"y":<0-100>,"label":"<text>","kind":"quest"}]}  replaces that layer; "ordered" draws a numbered route with a navigator, "loop" closes it.',
   '{"op":"clear","layer":"<name>"} removes a layer; {"op":"clearall"} removes them all.',
   'x and y are map percent on the map with that uiMapID (the context gives the player\'s current one). kind is one of ore, herb, quest, turnin, kill, loot, object, explore, npc, trainer, vendor, dungeon, flight, poi. Only mark the map when asked for a route, marks or locations; say in the reply what you drew.',
+  'In a quest route, give every stop that belongs to a quest its quest id as "q" (the ids are in the context\'s quest log): {"m":94,"x":31,"y":70,"label":"Kill 5 thugs","kind":"kill","q":8892}. The navigator then moves on by itself as the quest progresses, wherever the player is: a "quest" stop (pick up) when the quest is accepted, a "turnin" stop when it is turned in, any other kind when its objectives are complete; it also shows the objective progress. A stop with "q" does not move on just by walking onto it, so do not add "q" to stops that are only places to go. Use one stop per step: a kill stop and a turnin stop for the same quest both carry its id.',
 ];
 
 // How the agent hands the player a ready-made macro (see "Macros" below).
@@ -428,10 +429,14 @@ function validateMapCommand(c, why = []) {
   for (const p of c.points.slice(0, MAP_LIMITS.pointsPerLayer)) {
     const m = Number(p && p.m), x = Number(p && p.x), y = Number(p && p.y);
     if (!Number.isInteger(m) || m <= 0 || m > 99999 || !Number.isFinite(x) || !Number.isFinite(y)) continue;
-    points.push({
+    const point = {
       m, x: Math.round(Math.min(100, Math.max(0, x)) * 100) / 100, y: Math.round(Math.min(100, Math.max(0, y)) * 100) / 100,
       label: cleanText(p.label, MAP_LIMITS.label), kind: MAP_KINDS.has(p.kind) ? p.kind : 'poi',
-    });
+    };
+    // The quest this stop is for: the addon's navigator moves on when it is done.
+    const q = Number(p.q);
+    if (Number.isInteger(q) && q > 0 && q < 1e7) point.q = q;
+    points.push(point);
   }
   if (c.points.length > MAP_LIMITS.pointsPerLayer) why.push(`layer ${layer}: kept the first ${MAP_LIMITS.pointsPerLayer} points`);
   if (points.length < c.points.slice(0, MAP_LIMITS.pointsPerLayer).length) why.push(`layer ${layer}: dropped invalid points`);
@@ -509,7 +514,7 @@ function luaMap(map) {
   const lines = ['\tmap = {', `\t\tepoch = ${luaStr(map.epoch)},`, `\t\tversion = ${Number(map.version) || 0},`, '\t\tlayers = {'];
   for (const [name, l] of Object.entries(map.layers || {})) {
     lines.push(`\t\t\t{ name = ${luaStr(name)}, title = ${luaStr(l.title)}, ordered = ${l.ordered ? 'true' : 'false'}, loop = ${l.loop ? 'true' : 'false'}, points = {`);
-    for (const p of l.points) lines.push(`\t\t\t\t{ ${p.m}, ${p.x}, ${p.y}, ${luaStr(p.label)}, ${luaStr(p.kind)} },`);
+    for (const p of l.points) lines.push(`\t\t\t\t{ ${p.m}, ${p.x}, ${p.y}, ${luaStr(p.label)}, ${luaStr(p.kind)}${p.q ? ', ' + p.q : ''} },`);
     lines.push('\t\t\t} },');
   }
   lines.push('\t\t},', '\t},');
