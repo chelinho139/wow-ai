@@ -34,12 +34,15 @@ local CELL, CELLS_PER_ROW, MAX_ROWS = 4, 200, 48
 local STRIP_SECONDS = 40 -- max per message; it leaves the strip as soon as the bridge acknowledges
 local POLL_SCHEDULE = { 5, 10, 16, 24, 34, 46, 60, 80, 100, 130, 160, 200, 240, 300 }
 -- Without the sound channel a slot load is the only way to see a reply, so the
--- first minute, where most replies land, is checked every few seconds instead.
+-- first minute, where most replies land, is checked every few seconds instead,
+-- and the next two (long answers that search the web) every ten.
 local FAST_POLL_SECONDS, FAST_POLL_UNTIL = 4, 60
+local SLOW_POLL_SECONDS, SLOW_POLL_UNTIL = 10, 180
 local FAST_POLL_SCHEDULE = {}
 for t = FAST_POLL_SECONDS, FAST_POLL_UNTIL, FAST_POLL_SECONDS do table.insert(FAST_POLL_SCHEDULE, t) end
+for t = FAST_POLL_UNTIL + SLOW_POLL_SECONDS, SLOW_POLL_UNTIL, SLOW_POLL_SECONDS do table.insert(FAST_POLL_SCHEDULE, t) end
 for _, t in ipairs(POLL_SCHEDULE) do
-	if t > FAST_POLL_UNTIL then table.insert(FAST_POLL_SCHEDULE, t) end
+	if t > SLOW_POLL_UNTIL then table.insert(FAST_POLL_SCHEDULE, t) end
 end
 local POLL_TAIL = 60
 local TICK_SECONDS = 2
@@ -1369,17 +1372,22 @@ end
 
 local DESC_MAX = 140 -- bytes of a talent's description
 
+-- Game text on one line, without color, icon or atlas markup, cut to max bytes.
+local function CleanText(d, max)
+	if type(d) ~= "string" then return nil end
+	d = d:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""):gsub("|T.-|t", ""):gsub("|A.-|a", ""):gsub("%s+", " ")
+	d = Trim(d)
+	if d == "" then return nil end
+	if max and #d > max then d = Utf8Cut(d, max - 3) .. "..." end
+	return d
+end
+
 -- A spell's tooltip text as the client words it, on one line, without markup.
 local function SpellDescription(spellID)
 	if not spellID then return nil end
 	local d = Try(C_Spell and C_Spell.GetSpellDescription, spellID)
 	if type(d) ~= "string" or d == "" then d = Try(GetSpellDescription, spellID) end
-	if type(d) ~= "string" or d == "" then return nil end
-	d = d:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""):gsub("|T.-|t", ""):gsub("|A.-|a", ""):gsub("%s+", " ")
-	d = Trim(d)
-	if d == "" then return nil end
-	if #d > DESC_MAX then d = Utf8Cut(d, DESC_MAX - 3) .. "..." end
-	return d
+	return CleanText(d, DESC_MAX)
 end
 
 -- The talents in use, by name and rank. Retail: the active trait config (class,
@@ -1716,34 +1724,239 @@ local function Remember(entry)
 	end
 end
 
-function WoWAI.OnCombatLog()
-	local info = CombatLogGetCurrentEventInfo or (C_CombatLog and C_CombatLog.GetCurrentEventInfo)
-	if not info then return end
-	local _, sub, _, srcGUID, srcName, _, _, dstGUID = info()
-	local me = Try(UnitGUID, "player")
-	if not me or (srcGUID ~= me and dstGUID ~= me) then return end
-	if dstGUID == me and DEATH_DAMAGE[sub] then
-		local spell, amount, overkill, absorbed, crit
-		if sub == "SWING_DAMAGE" then
-			local a, o, _, _, _, ab, c = select(12, info())
-			spell, amount, overkill, absorbed, crit = "melee", a, o, ab, c
-		elseif sub == "ENVIRONMENTAL_DAMAGE" then
-			local kind, a, o, _, _, _, ab, c = select(12, info())
-			spell, amount, overkill, absorbed, crit = tostring(kind):lower(), a, o, ab, c
-			srcName = "environment"
+do
+	-- Fight summary for /ai combat: from entering combat to the last action in it,
+	-- the damage the player and their pets did by ability and target, their casts,
+	-- the damage taken and the time spent with nothing being cast. Only totals are
+	-- kept: the fight in progress in memory, the last one in the saved data.
+	local FIGHT_MIN_SECONDS = 2
+	local FIGHT_DAMAGE = { SWING_DAMAGE = true, RANGE_DAMAGE = true, SPELL_DAMAGE = true, SPELL_PERIODIC_DAMAGE = true }
+	local MINE = COMBATLOG_OBJECT_AFFILIATION_MINE or 1
+	local fight
+
+	-- The player, their pet, or a guardian or totem of theirs.
+	local function IsMine(guid, flags, me)
+		if guid == me then return true end
+		if guid and guid == Try(UnitGUID, "pet") then return true end
+		return bit ~= nil and type(flags) == "number" and bit.band(flags, MINE) ~= 0
+	end
+
+	-- The global cooldown at the player's haste.
+	local function Gcd()
+		local haste = Try(GetHaste)
+		return math.max(0.75, 1.5 / (1 + (type(haste) == "number" and haste or 0) / 100))
+	end
+
+	local function StartFight(now)
+		fight = { start = now, last = now, when = time(), at = date("%H:%M"), zone = Try(GetRealZoneText) or "?", subzone = Try(GetSubZoneText) or "",
+			dmg = {}, casts = {}, targets = {}, done = 0, taken = 0, healed = 0, interrupts = 0, ncasts = 0,
+			idle = 0, busyUntil = now, casting = Try(UnitCastingInfo, "player") ~= nil }
+	end
+
+	-- Time with nothing cast: a cast keeps the player busy until it lands, an
+	-- instant spell for a global cooldown, a channel until it ends; the gaps
+	-- between are idle. An estimate: it can't tell moving from waiting.
+	local function Busy(now, kind)
+		local f = fight
+		if kind == "start" then
+			if not f.casting and now > f.busyUntil then f.idle = f.idle + now - f.busyUntil end
+			f.casting = true
+		elseif kind == "fail" then
+			if f.casting then f.casting, f.busyUntil = false, now end
 		else
-			local _, name, _, a, o, _, _, _, ab, c = select(12, info())
-			spell, amount, overkill, absorbed, crit = name, a, o, ab, c
+			if f.casting then
+				f.casting = false
+				f.busyUntil = math.max(f.busyUntil, now)
+			else
+				if now > f.busyUntil then f.idle = f.idle + now - f.busyUntil end
+				f.busyUntil = math.max(f.busyUntil, now + Gcd())
+			end
+			local _, _, _, _, endMs = Try(UnitChannelInfo, "player")
+			if type(endMs) == "number" then f.busyUntil = math.max(f.busyUntil, endMs / 1000) end
 		end
-		Remember({ kind = "hit", src = srcName or "?", spell = spell or "?", amount = tonumber(amount) or 0,
-			overkill = (tonumber(overkill) or 0) > 0 and overkill or nil, absorbed = (tonumber(absorbed) or 0) > 0 and absorbed or nil, crit = crit and true or nil })
-	elseif dstGUID == me and (sub == "SPELL_HEAL" or sub == "SPELL_PERIODIC_HEAL") then
-		local _, name, _, a, over = select(12, info())
-		local got = (tonumber(a) or 0) - (tonumber(over) or 0)
-		if got > 0 then Remember({ kind = "heal", src = srcGUID == me and "you" or (srcName or "?"), spell = name or "?", amount = got }) end
-	elseif srcGUID == me and sub == "SPELL_CAST_SUCCESS" then
-		local _, name = select(12, info())
-		Remember({ kind = "cast", spell = name or "?" })
+	end
+
+	local function TrackFight(info, sub, srcGUID, srcName, srcFlags, dstGUID, dstName, me)
+		local now = GetTime()
+		local mine = IsMine(srcGUID, srcFlags, me)
+		local hit = mine and FIGHT_DAMAGE[sub] and dstGUID ~= me
+		if not fight then
+			-- Combat starts with PLAYER_REGEN_DISABLED, but the first hit can come a moment before it.
+			if not hit then return end
+			StartFight(now)
+		end
+		local f = fight
+		if hit then
+			local spell, amount, crit
+			if sub == "SWING_DAMAGE" then
+				local a, _, _, _, _, _, c = select(12, info())
+				spell, amount, crit = "melee", a, c
+			else
+				local _, name, _, a, _, _, _, _, _, c = select(12, info())
+				spell, amount, crit = name or "?", a, c
+			end
+			if srcGUID ~= me then spell = spell .. " (" .. tostring(srcName or "pet") .. ")" end
+			amount = tonumber(amount) or 0
+			local d = f.dmg[spell] or { amount = 0, hits = 0, crits = 0 }
+			f.dmg[spell] = d
+			d.amount, d.hits = d.amount + amount, d.hits + 1
+			if crit then d.crits = d.crits + 1 end
+			f.done = f.done + amount
+			local target = dstName or "?"
+			f.targets[target] = (f.targets[target] or 0) + amount
+			f.last = now
+		elseif dstGUID == me and DEATH_DAMAGE[sub] then
+			local amount
+			if sub == "SWING_DAMAGE" then amount = select(12, info())
+			elseif sub == "ENVIRONMENTAL_DAMAGE" then amount = select(13, info())
+			else amount = select(15, info()) end
+			f.taken = f.taken + (tonumber(amount) or 0)
+			f.last = now
+		elseif mine and (sub == "SPELL_HEAL" or sub == "SPELL_PERIODIC_HEAL") then
+			local _, _, _, a, over = select(12, info())
+			f.healed = f.healed + math.max(0, (tonumber(a) or 0) - (tonumber(over) or 0))
+		elseif mine and sub == "SPELL_INTERRUPT" then
+			f.interrupts = f.interrupts + 1
+		elseif srcGUID == me and sub == "SPELL_CAST_SUCCESS" then
+			local _, name = select(12, info())
+			name = name or "?"
+			f.casts[name] = (f.casts[name] or 0) + 1
+			f.ncasts = f.ncasts + 1
+			Busy(now, "success")
+			f.last = now
+		elseif srcGUID == me and sub == "SPELL_CAST_START" then
+			Busy(now, "start")
+		elseif srcGUID == me and sub == "SPELL_CAST_FAILED" then
+			Busy(now, "fail")
+		end
+	end
+
+	function WoWAI.FightStarted()
+		if not fight then StartFight(GetTime()) end
+	end
+
+	-- Idle time up to the fight's last action (not the walk to the next pull).
+	local function FightIdle(f, upTo)
+		local idle = f.idle
+		if not f.casting and upTo > f.busyUntil then idle = idle + upTo - f.busyUntil end
+		return idle
+	end
+
+	function WoWAI.FightEnded()
+		local f = fight
+		fight = nil
+		if not f or not db then return end
+		f.dur = f.last - f.start
+		if f.dur < FIGHT_MIN_SECONDS and f.done == 0 then return end
+		f.idle = math.min(FightIdle(f, f.last), f.dur)
+		f.gcd = Gcd()
+		f.start, f.last, f.busyUntil, f.casting = nil, nil, nil, nil
+		db.lastFight = f
+	end
+
+	function WoWAI.FightDied()
+		if fight then fight.died = true end
+	end
+
+	-- A name-to-number table as a list, biggest first (ties by name, so it reads the same each time).
+	local function Biggest(t, field)
+		local list = {}
+		for k, v in pairs(t) do list[#list + 1] = { name = k, v = field and v[field] or v, data = v } end
+		table.sort(list, function(a, b) if a.v ~= b.v then return a.v > b.v end return a.name < b.name end)
+		return list
+	end
+
+	local function Where(f)
+		return f.zone .. (f.subzone ~= "" and (" - " .. f.subzone) or "")
+	end
+
+	-- The fight in progress, or else the last one.
+	function WoWAI.CombatText()
+		local f, live = fight, fight ~= nil
+		if not f then f = db.lastFight end
+		if not f then return nil, "no fight recorded yet (fights are recorded from now on)" end
+		local dur, idle, gcd
+		if live then
+			local now = GetTime()
+			dur, idle, gcd = now - f.start, math.min(FightIdle(f, now), now - f.start), Gcd()
+		else
+			dur, idle, gcd = f.dur, f.idle, f.gcd or Gcd()
+		end
+		local out = {}
+		if live then
+			table.insert(out, string.format("Fight in progress: %s so far, in %s.", FmtDur(dur), Where(f)))
+		else
+			table.insert(out, string.format("Last fight: ended %s ago (started %s) in %s, lasted %s%s.", FmtDur(math.max(0, time() - f.when - dur)), f.at,
+				Where(f), FmtDur(dur), f.died and "; you died in it" or ""))
+		end
+		local targets = {}
+		for _, t in ipairs(Biggest(f.targets)) do targets[#targets + 1] = string.format("%s %d", t.name, t.v) end
+		if #targets > 0 then table.insert(out, "Damage done to: " .. NameList(targets, 300)) end
+		table.insert(out, string.format("Damage done: %d (%d per second).", f.done, math.floor(f.done / math.max(dur, 1) + 0.5)))
+		local spells = {}
+		for _, c in ipairs(Biggest(f.casts)) do spells[#spells + 1] = c.name .. " " .. c.v end
+		if f.ncasts > 0 then
+			table.insert(out, string.format("Casts: %d, one every %.1f s: %s", f.ncasts, dur / f.ncasts, NameList(spells, 500)))
+		else
+			table.insert(out, "Casts: none recorded.")
+		end
+		table.insert(out, string.format("Time with nothing cast or channelled: %.1f s of %.1f s (%d%%), counting a %.2f s global cooldown after each instant (an estimate; moving and waiting count as idle).",
+			idle, dur, math.floor(idle / math.max(dur, 0.1) * 100 + 0.5), gcd))
+		local extra = { string.format("Damage taken: %d", f.taken) }
+		if f.healed > 0 then extra[#extra + 1] = string.format("healing done: %d", f.healed) end
+		if f.interrupts > 0 then extra[#extra + 1] = "interrupts: " .. f.interrupts end
+		table.insert(out, table.concat(extra, "; ") .. ".")
+		-- The abilities last, biggest first, while they fit.
+		table.insert(out, "Damage by ability (total, share, hits, crits):")
+		local used = 0
+		for _, l in ipairs(out) do used = used + #l + 1 end
+		local rest = {}
+		for _, d in ipairs(Biggest(f.dmg, "amount")) do
+			local l = string.format("- %s: %d (%d%%), %d hits, %d crits", d.name, d.v, math.floor(d.v / math.max(f.done, 1) * 100 + 0.5), d.data.hits, d.data.crits)
+			if used + #l + 1 > ATTACH_MAX - 200 then
+				rest[#rest + 1] = d.name
+			else
+				table.insert(out, l)
+				used = used + #l + 1
+			end
+		end
+		if #rest > 0 then table.insert(out, "- also: " .. NameList(rest, 150)) end
+		return table.concat(out, "\n")
+	end
+
+	function WoWAI.OnCombatLog()
+		local info = CombatLogGetCurrentEventInfo or (C_CombatLog and C_CombatLog.GetCurrentEventInfo)
+		if not info then return end
+		local _, sub, _, srcGUID, srcName, srcFlags, _, dstGUID, dstName = info()
+		local me = Try(UnitGUID, "player")
+		if not me then return end
+		if srcGUID == me or dstGUID == me or IsMine(srcGUID, srcFlags, me) then
+			TrackFight(info, sub, srcGUID, srcName, srcFlags, dstGUID, dstName, me)
+		end
+		if srcGUID ~= me and dstGUID ~= me then return end
+		if dstGUID == me and DEATH_DAMAGE[sub] then
+			local spell, amount, overkill, absorbed, crit
+			if sub == "SWING_DAMAGE" then
+				local a, o, _, _, _, ab, c = select(12, info())
+				spell, amount, overkill, absorbed, crit = "melee", a, o, ab, c
+			elseif sub == "ENVIRONMENTAL_DAMAGE" then
+				local kind, a, o, _, _, _, ab, c = select(12, info())
+				spell, amount, overkill, absorbed, crit = tostring(kind):lower(), a, o, ab, c
+				srcName = "environment"
+			else
+				local _, name, _, a, o, _, _, _, ab, c = select(12, info())
+				spell, amount, overkill, absorbed, crit = name, a, o, ab, c
+			end
+			Remember({ kind = "hit", src = srcName or "?", spell = spell or "?", amount = tonumber(amount) or 0,
+				overkill = (tonumber(overkill) or 0) > 0 and overkill or nil, absorbed = (tonumber(absorbed) or 0) > 0 and absorbed or nil, crit = crit and true or nil })
+		elseif dstGUID == me and (sub == "SPELL_HEAL" or sub == "SPELL_PERIODIC_HEAL") then
+			local _, name, _, a, over = select(12, info())
+			local got = (tonumber(a) or 0) - (tonumber(over) or 0)
+			if got > 0 then Remember({ kind = "heal", src = srcGUID == me and "you" or (srcName or "?"), spell = name or "?", amount = got }) end
+		elseif srcGUID == me and sub == "SPELL_CAST_SUCCESS" then
+			local _, name = select(12, info())
+			Remember({ kind = "cast", spell = name or "?" })
+		end
 	end
 end
 
@@ -1822,6 +2035,376 @@ function WoWAI.DeathText()
 	return table.concat(out, "\n")
 end
 
+do
+	-- Weekly progress for /ai weekly: the Great Vault rows, the keystone, Mythic+
+	-- rating and bests, this week's runs and affixes, and raid lockouts. The client
+	-- answers some of these only after a request, made at login and on each use.
+	local VAULT_ROWS = { { 3, "Raid" }, { 1, "Mythic+ and heroic dungeons" }, { 6, "World (delves and world activities)" }, { 2, "Rated PvP" } }
+
+	local function RequestWeekly()
+		Try(C_MythicPlus and C_MythicPlus.RequestMapInfo)
+		Try(C_MythicPlus and C_MythicPlus.RequestCurrentAffixes)
+		Try(C_MythicPlus and C_MythicPlus.RequestRewards)
+		Try(RequestRaidInfo)
+	end
+	WoWAI.RequestWeekly = RequestWeekly
+
+	local function DungeonName(mapID)
+		local name = Try(C_ChallengeMode and C_ChallengeMode.GetMapUIInfo, mapID)
+		return type(name) == "string" and name or ("dungeon " .. tostring(mapID))
+	end
+
+	local function ItemLevel(link)
+		if type(link) ~= "string" then return nil end
+		local l = Try(C_Item and C_Item.GetDetailedItemLevelInfo, link) or Try(GetDetailedItemLevelInfo, link)
+		return type(l) == "number" and l or nil
+	end
+
+	local function VaultSlot(kind, a)
+		if (a.progress or 0) < (a.threshold or 1) then
+			return string.format("slot %d %d/%d", a.index or 0, a.progress or 0, a.threshold or 0)
+		end
+		local at
+		if kind == 3 then
+			at = Try(GetDifficultyInfo, a.level)
+			at = type(at) == "string" and at or nil
+		elseif kind == 1 then
+			at = (a.level or 0) > 0 and ("+" .. a.level) or "heroic or mythic 0"
+		elseif kind == 6 then
+			at = (a.level or 0) > 0 and ("tier " .. a.level) or nil
+		end
+		local ilvl = ItemLevel(Try(C_WeeklyRewards.GetExampleRewardItemHyperlinks, a.id))
+		local extra = {}
+		if at then extra[#extra + 1] = at end
+		if ilvl then extra[#extra + 1] = "reward ilvl " .. ilvl end
+		return string.format("slot %d done%s", a.index or 0, #extra > 0 and (" (" .. table.concat(extra, ", ") .. ")") or "")
+	end
+
+	function WoWAI.WeeklyText()
+		local lines = {}
+		local level, maxLevel = Try(UnitLevel, "player"), Try(GetMaxLevelForPlayerExpansion)
+		if type(level) == "number" and type(maxLevel) == "number" and level < maxLevel then
+			table.insert(lines, "Level " .. level .. " of " .. maxLevel .. ": the Great Vault and Mythic+ open at the maximum level.")
+		end
+		local acts = C_WeeklyRewards and Try(C_WeeklyRewards.GetActivities)
+		if type(acts) == "table" and #acts > 0 then
+			table.insert(lines, "Great Vault this week (progress / needed per reward slot):")
+			for _, row in ipairs(VAULT_ROWS) do
+				local slots = {}
+				for _, a in ipairs(acts) do
+					if type(a) == "table" and a.type == row[1] then slots[#slots + 1] = a end
+				end
+				table.sort(slots, function(x, y) return (x.index or 0) < (y.index or 0) end)
+				local parts = {}
+				for _, a in ipairs(slots) do parts[#parts + 1] = VaultSlot(row[1], a) end
+				if #parts > 0 then table.insert(lines, "- " .. row[2] .. ": " .. table.concat(parts, "; ")) end
+			end
+			if Try(C_WeeklyRewards.HasAvailableRewards) then
+				table.insert(lines, "Last week's Great Vault rewards are waiting to be chosen.")
+			end
+		end
+		if C_MythicPlus then
+			local ksMap, ksLevel = Try(C_MythicPlus.GetOwnedKeystoneChallengeMapID), Try(C_MythicPlus.GetOwnedKeystoneLevel)
+			if type(ksMap) == "number" and ksMap > 0 then
+				table.insert(lines, "Keystone: " .. DungeonName(ksMap) .. " +" .. tostring(ksLevel or "?"))
+			elseif #lines > 0 or type(acts) == "table" then
+				table.insert(lines, "Keystone: none")
+			end
+			local score = C_ChallengeMode and Try(C_ChallengeMode.GetOverallDungeonScore)
+			if type(score) == "number" and score > 0 then table.insert(lines, "Mythic+ rating: " .. score) end
+			local runs = Try(C_MythicPlus.GetRunHistory, false, true)
+			if type(runs) == "table" then
+				local week = {}
+				for _, r in ipairs(runs) do
+					if type(r) == "table" and r.thisWeek then week[#week + 1] = r end
+				end
+				table.sort(week, function(x, y) return (x.level or 0) > (y.level or 0) end)
+				local parts = {}
+				for _, r in ipairs(week) do
+					parts[#parts + 1] = DungeonName(r.mapChallengeModeID) .. " +" .. tostring(r.level) .. (r.completed and " in time" or " over time")
+				end
+				if #parts > 0 then table.insert(lines, "This week's Mythic+ runs (" .. #parts .. "): " .. NameList(parts, 400)) end
+			end
+			local maps = C_ChallengeMode and Try(C_ChallengeMode.GetMapTable)
+			if type(maps) == "table" and #maps > 0 then
+				local parts = {}
+				for _, m in ipairs(maps) do
+					local intime, overtime = Try(C_MythicPlus.GetSeasonBestForMap, m)
+					local best = (type(intime) == "table" and intime) or (type(overtime) == "table" and overtime) or nil
+					if best and type(overtime) == "table" and (overtime.level or 0) > (best.level or 0) then best = overtime end
+					parts[#parts + 1] = DungeonName(m) .. (best and (" +" .. tostring(best.level) .. (best == intime and " in time" or " over time")) or " not done")
+				end
+				table.insert(lines, "Season best per dungeon: " .. table.concat(parts, ", "))
+			end
+			local affixes = Try(C_MythicPlus.GetCurrentAffixes)
+			if type(affixes) == "table" and #affixes > 0 then
+				local parts = {}
+				for _, a in ipairs(affixes) do
+					local name, desc = Try(C_ChallengeMode and C_ChallengeMode.GetAffixInfo, type(a) == "table" and a.id or a)
+					if type(name) == "string" then parts[#parts + 1] = name .. (CleanText(desc, 120) and (" (" .. CleanText(desc, 120) .. ")") or "") end
+				end
+				if #parts > 0 then table.insert(lines, "Affixes this week: " .. table.concat(parts, "; ")) end
+			end
+		end
+		local saved = {}
+		for i = 1, (Try(GetNumSavedInstances) or 0) do
+			local name, _, reset, _, locked, _, _, _, _, diffName, numEnc, progress = Try(GetSavedInstanceInfo, i)
+			if type(name) == "string" and locked then
+				saved[#saved + 1] = string.format("%s (%s) %d/%d, resets in %s", name, tostring(diffName or "?"), progress or 0, numEnc or 0, FmtDur(reset or 0))
+			end
+		end
+		if #saved > 0 then table.insert(lines, "Lockouts: " .. table.concat(saved, "; ")) end
+		RequestWeekly() -- fresher answers for the next time
+		if #lines == 0 then return nil, "the game reported no weekly data (it can take a few seconds after login: try again)" end
+		return table.concat(lines, "\n")
+	end
+end
+
+do
+	-- Boss help for /ai boss: the target (or the first boss frame), and its entry in
+	-- the game's encounter journal with every ability section for this difficulty.
+	-- Without a target inside an instance, the question can name the boss, or the
+	-- instance's bosses are listed.
+	local BOSS_MAX = 2500
+	local SECTION_DESC_MAX = 200
+
+	local function SameName(a, b)
+		a, b = Fold(a), Fold(b)
+		if a == "" or b == "" then return false end
+		return a == b or (#b >= 4 and a:find(b, 1, true) ~= nil) or (#a >= 4 and b:find(a, 1, true) ~= nil)
+	end
+
+	-- The journal's instance for where the player stands, and its encounters.
+	local function JournalEncounters()
+		if not EJ_GetInstanceForMap then return nil end
+		local mapID = Try(C_Map and C_Map.GetBestMapForUnit, "player")
+		local inst = mapID and Try(EJ_GetInstanceForMap, mapID)
+		if type(inst) ~= "number" or inst == 0 then return nil end
+		Try(EJ_SelectInstance, inst)
+		local _, _, difficulty = Try(GetInstanceInfo)
+		if type(difficulty) == "number" and difficulty > 0 then Try(EJ_SetDifficulty, difficulty) end
+		local list = {}
+		for i = 1, 40 do
+			local name, desc, id, root = Try(EJ_GetEncounterInfoByIndex, i, inst)
+			if type(name) ~= "string" then break end
+			local creatures = {}
+			for c = 1, 9 do
+				local _, cname = Try(EJ_GetCreatureInfo, c, id)
+				if type(cname) ~= "string" then break end
+				creatures[#creatures + 1] = cname
+			end
+			list[#list + 1] = { name = name, desc = desc, id = id, root = root, creatures = creatures }
+		end
+		return inst, list
+	end
+
+	-- The encounter's ability sections in journal order, nested, while they fit.
+	local function SectionLines(rootID, budget)
+		local out, rest, seen, count = {}, {}, {}, 0
+		local function Walk(id, depth)
+			while type(id) == "number" and id > 0 and not seen[id] and count < 200 do
+				seen[id] = true
+				count = count + 1
+				local s = Try(C_EncounterJournal and C_EncounterJournal.GetSectionInfo, id)
+				if type(s) ~= "table" then return end
+				local title = CleanText(s.title)
+				if title and not s.filteredByDifficulty then
+					local line = string.rep("  ", depth) .. "- " .. title
+					local desc = CleanText(s.description, SECTION_DESC_MAX)
+					if desc then line = line .. ": " .. desc end
+					if #line + 1 <= budget - 200 then
+						out[#out + 1] = line
+						budget = budget - #line - 1
+					else
+						rest[#rest + 1] = title
+					end
+					Walk(s.firstChildSectionID, depth + 1)
+				end
+				id = s.siblingSectionID
+			end
+		end
+		Walk(rootID, 0)
+		if #rest > 0 then out[#out + 1] = "- also: " .. NameList(rest, 180) end
+		return out
+	end
+
+	local function UnitLine(unit)
+		local name = Try(UnitName, unit)
+		if type(name) ~= "string" then return nil end
+		local parts = {}
+		local level = Try(UnitLevel, unit)
+		if type(level) == "number" then parts[#parts + 1] = level < 0 and "level ?? (far above yours)" or ("level " .. level) end
+		local class = Try(UnitClassification, unit)
+		if type(class) == "string" and class ~= "normal" then parts[#parts + 1] = class end
+		local kind = Try(UnitCreatureType, unit)
+		if type(kind) == "string" then parts[#parts + 1] = kind end
+		local hp = Try(UnitHealthMax, unit)
+		if type(hp) == "number" and hp > 0 then parts[#parts + 1] = "health " .. hp end
+		local casting = Try(UnitCastingInfo, unit) or Try(UnitChannelInfo, unit)
+		if type(casting) == "string" then parts[#parts + 1] = "casting " .. casting end
+		return "Target: " .. name .. (#parts > 0 and (" (" .. table.concat(parts, ", ") .. ")") or "")
+	end
+
+	function WoWAI.BossText(question)
+		local unit = (Try(UnitExists, "target") and "target") or (Try(UnitExists, "boss1") and "boss1") or nil
+		local name = unit and Try(UnitName, unit)
+		local inst, list = JournalEncounters()
+		if not unit and not list then return nil, "target the boss or enemy first, or ask from inside a dungeon or raid" end
+		local lines = {}
+		if unit then lines[#lines + 1] = UnitLine(unit) end
+		local enc
+		for _, e in ipairs(list or {}) do
+			if type(name) == "string" then
+				if SameName(e.name, name) then enc = e end
+				for _, c in ipairs(e.creatures) do if SameName(c, name) then enc = e end end
+			end
+			if enc then break end
+		end
+		if not enc and list then
+			-- "/ai boss how do I do Ovi'nax?" names the boss.
+			for _, w in ipairs(QueryWords(question)) do
+				for _, e in ipairs(list) do
+					if Fold(e.name):find(w, 1, true) then enc = e break end
+				end
+				if enc then break end
+			end
+		end
+		local instName = inst and Try(EJ_GetInstanceInfo, inst)
+		local _, _, _, diffName = Try(GetInstanceInfo)
+		local where = (type(instName) == "string" and instName or "?") .. ((type(diffName) == "string" and diffName ~= "") and (", " .. diffName) or "")
+		if enc then
+			lines[#lines + 1] = "Encounter journal: " .. enc.name .. " (" .. where .. ")"
+			local desc = CleanText(enc.desc, 400)
+			if desc then lines[#lines + 1] = desc end
+			if #enc.creatures > 1 then lines[#lines + 1] = "Creatures: " .. table.concat(enc.creatures, ", ") end
+			lines[#lines + 1] = "Abilities, as the journal nests them:"
+			local used = #table.concat(lines, "\n")
+			for _, l in ipairs(SectionLines(enc.root, BOSS_MAX - used)) do lines[#lines + 1] = l end
+		elseif list then
+			if name then lines[#lines + 1] = name .. " is not one of the bosses the journal lists for " .. where .. "." end
+			lines[#lines + 1] = "Bosses in " .. where .. ":"
+			local used = #table.concat(lines, "\n")
+			for i, e in ipairs(list) do
+				local l = i .. ". " .. e.name .. (CleanText(e.desc, 160) and (": " .. CleanText(e.desc, 160)) or "")
+				if used + #l + 1 > BOSS_MAX - 40 then lines[#lines + 1] = "(more left out)" break end
+				lines[#lines + 1] = l
+				used = used + #l + 1
+			end
+		else
+			lines[#lines + 1] = "Not in the game's encounter journal here (an open-world enemy, or a boss the journal has no entry for)."
+		end
+		return table.concat(lines, "\n")
+	end
+end
+
+do
+	-- Action bars for /ai bars: every button's spell, macro or item with the key
+	-- bound to it, and the known spells that are on no bar.
+	local ACTION_BARS = {
+		{ "Action Bar 1", 1, "ACTIONBUTTON" },
+		{ "Action Bar 2", 61, "MULTIACTIONBAR1BUTTON", "MultiBarBottomLeft" },
+		{ "Action Bar 3", 49, "MULTIACTIONBAR2BUTTON", "MultiBarBottomRight" },
+		{ "Action Bar 4", 25, "MULTIACTIONBAR3BUTTON", "MultiBarRight" },
+		{ "Action Bar 5", 37, "MULTIACTIONBAR4BUTTON", "MultiBarLeft" },
+		{ "Action Bar 6", 145, "MULTIACTIONBAR5BUTTON", "MultiBar5" },
+		{ "Action Bar 7", 157, "MULTIACTIONBAR6BUTTON", "MultiBar6" },
+		{ "Action Bar 8", 169, "MULTIACTIONBAR7BUTTON", "MultiBar7" },
+	}
+	local BARS_MAX = 2500
+
+	-- What a button holds, for reading, and the spell behind it (a macro's too).
+	local function ActionLabel(slot)
+		local kind, id = Try(GetActionInfo, slot)
+		if not kind then return nil end
+		if kind == "spell" then
+			local n = SpellName(id)
+			return n or ("spell " .. tostring(id)), n, id
+		elseif kind == "macro" then
+			local n = Try(GetActionText, slot) or (Try(GetMacroInfo, id))
+			local spellID = Try(GetMacroSpell, id)
+			local spell = SpellName(spellID)
+			return tostring(n or "?") .. " (macro" .. (spell and (": " .. spell) or "") .. ")", spell, spellID
+		elseif kind == "item" then
+			local n = Try(C_Item and C_Item.GetItemNameByID, id) or (Try(GetItemInfo, id))
+			return tostring(n or ("item " .. tostring(id))) .. " (item)"
+		elseif kind == "summonmount" then
+			local n = C_MountJournal and Try(C_MountJournal.GetMountInfoByID, id)
+			return tostring(n or "a mount") .. " (mount)"
+		elseif kind == "flyout" then
+			local n = Try(GetFlyoutInfo, id)
+			return tostring(n or "a flyout") .. " (flyout)", n
+		end
+		return kind .. " " .. tostring(id)
+	end
+
+	local function BoundKeys(command)
+		local k1, k2 = Try(GetBindingKey, command)
+		local keys = {}
+		if type(k1) == "string" then keys[#keys + 1] = k1 end
+		if type(k2) == "string" then keys[#keys + 1] = k2 end
+		return #keys > 0 and table.concat(keys, " or ") or "no key"
+	end
+
+	-- Active spells in the spellbook (current spec and general), retail API.
+	local function KnownSpells()
+		local SB = C_SpellBook
+		if not (SB and SB.GetNumSpellBookSkillLines) then return nil end
+		local bank = Enum and Enum.SpellBookSpellBank and Enum.SpellBookSpellBank.Player or 0
+		local types = Enum and Enum.SpellBookItemType
+		local SPELL, FLYOUT = types and types.Spell or 1, types and types.Flyout or 4
+		local list = {}
+		for l = 1, (Try(SB.GetNumSpellBookSkillLines) or 0) do
+			local line = Try(SB.GetSpellBookSkillLineInfo, l)
+			if type(line) == "table" and not line.shouldHide and (line.offSpecID or 0) == 0 then
+				for j = 1, (line.numSpellBookItems or 0) do
+					local it = Try(SB.GetSpellBookItemInfo, (line.itemIndexOffset or 0) + j, bank)
+					if type(it) == "table" and not it.isPassive and not it.isOffSpec and (it.itemType == SPELL or it.itemType == FLYOUT) and type(it.name) == "string" then
+						list[#list + 1] = it
+					end
+				end
+			end
+		end
+		return list
+	end
+
+	function WoWAI.BarsText()
+		if not GetActionInfo then return nil, "this client does not report action bars to addons" end
+		local bars, onBar, emptyBars = {}, {}, {}
+		for _, bar in ipairs(ACTION_BARS) do
+			local items, empty = {}, 0
+			for i = 1, 12 do
+				local label, spell, spellID = ActionLabel(bar[2] + i - 1)
+				if label then
+					items[#items + 1] = "[" .. BoundKeys(bar[3] .. i) .. "] " .. label
+					if spell then onBar[spell] = true end
+					if spellID then onBar[spellID] = true end
+				else
+					empty = empty + 1
+				end
+			end
+			local frame = bar[4] and _G[bar[4]]
+			local hidden = type(frame) == "table" and frame.IsShown and not frame:IsShown()
+			if #items > 0 then
+				bars[#bars + 1] = bar[1] .. (hidden and " (hidden)" or "") .. ": " .. table.concat(items, ", ") .. (empty > 0 and ("; " .. empty .. " empty") or "")
+			else
+				emptyBars[#emptyBars + 1] = bar[1]:match("%d+$")
+			end
+		end
+		local lines = { "Buttons as [key] name; Action Bar 1 is the main bar." }
+		local known = KnownSpells()
+		if known then
+			local off = {}
+			for _, it in ipairs(known) do
+				if not onBar[it.name] and not (it.spellID and onBar[it.spellID]) then off[#off + 1] = it.name end
+			end
+			lines[#lines + 1] = "Known active spells on no bar (" .. #off .. "): " .. (#off > 0 and NameList(off, 500) or "none")
+		end
+		for _, l in ipairs(bars) do lines[#lines + 1] = l end
+		if #emptyBars > 0 then lines[#lines + 1] = "Empty bars: " .. table.concat(emptyBars, ", ") end
+		return table.concat(lines, "\n")
+	end
+end
+
 -- /ai talents|gear|mounts|quests|death [question]: the question plus the data, in one message.
 local ATTACHMENTS = {
 	talents = { fn = "TalentsText", label = "Talents", ask = "Review my talents.", max = TALENTS_MAX },
@@ -1829,16 +2412,26 @@ local ATTACHMENTS = {
 	mounts = { fn = "MountsText", label = "Mount collection", ask = "Which of the mounts I am missing can I get, and how?" },
 	quests = { fn = "QuestsText", label = "Quest log", ask = "Help me with my quests: what should I do first?" },
 	death = { fn = "DeathText", label = "Last death", ask = "Why did I die, and what should I do differently?" },
+	combat = { fn = "CombatText", label = "Fight summary", ask = "How did that fight go, and how can I improve my rotation?" },
+	weekly = { fn = "WeeklyText", label = "Weekly progress", ask = "What should I do this week to get the best Great Vault rewards?", max = 2500 },
+	boss = { fn = "BossText", label = "Boss", ask = "How do I do this fight? Explain the tactics for my role.", max = 2500 },
+	bars = { fn = "BarsText", label = "Action bars and key bindings", ask = "Review my action bars and key bindings: what would you change?", max = 2500 },
 }
 -- The question sent when none is typed, in the client's language where we have it.
 local ATTACH_ASK_ES = {
 	talents = "Revisa mis talentos.", gear = "Revisa mi equipo: ¿qué debería mejorar primero?",
 	mounts = "¿Qué monturas de las que me faltan puedo conseguir, y cómo?", quests = "Ayúdame con mis misiones: ¿qué hago primero?",
 	death = "¿Por qué he muerto y qué debería hacer distinto?",
+	combat = "¿Qué tal ha ido el combate y cómo mejoro mi rotación?",
+	weekly = "¿Qué hago esta semana para sacar las mejores recompensas de la Gran Cámara?",
+	boss = "¿Cómo se hace este jefe? Explícame la táctica para mi rol.",
+	bars = "Revisa mis barras de acción y mis teclas: ¿qué cambiarías?",
 }
 for kind, a in pairs(ATTACHMENTS) do a.kind = kind end
 ATTACHMENTS.talentos, ATTACHMENTS.equipo, ATTACHMENTS.monturas, ATTACHMENTS.misiones, ATTACHMENTS.muerte =
 	ATTACHMENTS.talents, ATTACHMENTS.gear, ATTACHMENTS.mounts, ATTACHMENTS.quests, ATTACHMENTS.death
+ATTACHMENTS.combate, ATTACHMENTS.semanal, ATTACHMENTS.jefe, ATTACHMENTS.barras =
+	ATTACHMENTS.combat, ATTACHMENTS.weekly, ATTACHMENTS.boss, ATTACHMENTS.bars
 WoWAI.ATTACHMENTS = ATTACHMENTS
 
 function WoWAI.SendWithAttachment(kind, question)
@@ -1861,6 +2454,38 @@ function WoWAI.SendWithAttachment(kind, question)
 	end
 	WoWAI.Send(question .. "\n\n" .. a.label .. ", read from the game:\n" .. data)
 	WoWAI.Toggle(true)
+end
+
+-- After a death, a button offers the recap so nobody has to remember /ai death.
+-- It goes when the player is back on their feet, on a click, or after a while.
+local DEATH_PROMPT_SECONDS = 120
+
+function WoWAI.ShowDeathPrompt(show)
+	local b = ui.deathPrompt
+	if not show then
+		if b then b:Hide() end
+		return
+	end
+	if db.settings.deathPrompt == false then return end
+	if not b then
+		b = CreateFrame("Button", "WoWAIDeathPrompt", UIParent, "UIPanelButtonTemplate")
+		b:SetSize(260, 26)
+		b:SetPoint("TOP", UIParent, "TOP", 0, -250)
+		b:SetFrameStrata("DIALOG")
+		b:SetScript("OnClick", function(self)
+			self:Hide()
+			WoWAI.SendWithAttachment("death")
+		end)
+		ui.deathPrompt = b
+	end
+	local locale = Try(GetLocale)
+	b:SetText((type(locale) == "string" and locale:sub(1, 2) == "es") and "¿Por qué he muerto? (WoW AI)" or "Why did I die? (WoW AI)")
+	b:Show()
+	local shownAt = GetTime()
+	b.shownAt = shownAt
+	C_Timer.After(DEATH_PROMPT_SECONDS, function()
+		if b.shownAt == shownAt then b:Hide() end
+	end)
 end
 
 -- /ai screenshot [question]: the bridge saves a picture of the game window as the
@@ -3654,6 +4279,11 @@ local HELP = table.concat({
 	"/ai quests [question]          ... with your quest log: titles and objectives (also /ai misiones)",
 	"/ai screenshot [question]      ... with a picture of your game window (this window steps aside for a moment; also /ai foto, /ai captura)",
 	"/ai death [question]           ... with your last death: what hit you, heals and your casts in its last 15 s (also /ai muerte)",
+	"/ai combat [question]          ... with your last fight (or the one in progress): damage by ability and target, casts, idle time (also /ai combate)",
+	"/ai weekly [question]          ... with your Great Vault, keystone, Mythic+ rating and runs, affixes and lockouts (also /ai semanal)",
+	"/ai boss [question]            ... with your target (or a boss named in the question, inside an instance) and its encounter journal abilities (also /ai jefe)",
+	"/ai bars [question]            ... with your action bars, their key bindings and the spells on no bar (also /ai barras)",
+	"/wow-ai deathbutton on|off     the \"Why did I die?\" button after a death (on by default)",
 	"/wow-ai context [on|off]       what the agent is told about your character and where you are (no argument = show it)",
 	"/wow-ai map [...]              map layers the agent drew, the route navigator and herb/ore nodes (no argument = status and subcommands; /aimap is the same)",
 	"/wow-ai mode pixel             no-reload transport (default)",
@@ -3694,6 +4324,7 @@ local COMMAND_ARGS = {
 	context = { [""] = true, on = true, off = true }, ctx = { [""] = true, on = true, off = true },
 	mode = { [""] = true, pixel = true, reload = true },
 	signal = { [""] = true, on = true, off = true }, longchat = { [""] = true, on = true, off = true },
+	deathbutton = { [""] = true, on = true, off = true },
 	auto = OnOffOrNumber,
 	echo = function(rest) return rest == "" or rest == "summary" or rest == "full" or rest == "short" or rest == "off" or tonumber(rest) ~= nil end,
 	bind = 1, agent = 1,
@@ -3859,6 +4490,12 @@ SlashCmdList["WOWAI"] = function(msg)
 		ApplyLongChat()
 		AddHistory(c, "system", "game chat box limit: " .. (s.longchat and "4000 characters (fine for /ai; real chat over 255 may be rejected by the server)" or "255 (default)"))
 		WoWAI.Render()
+	elseif cmd == "deathbutton" then
+		if rest == "on" then s.deathPrompt = true elseif rest == "off" then s.deathPrompt = false end
+		if s.deathPrompt == false then WoWAI.ShowDeathPrompt(false) end
+		AddHistory(c, "system", "button after a death: " .. (s.deathPrompt == false and "off" or "on"))
+		WoWAI.Render()
+		WoWAI.Toggle(true)
 	elseif cmd == "signal" then
 		if rest == "on" then s.signal = true elseif rest == "off" then s.signal = false end
 		AddHistory(c, "system", "signal check is " .. (s.signal and "on" or "off"))
@@ -3892,7 +4529,8 @@ SlashCmdList["WOWAI"] = function(msg)
 			"signal setting: " .. tostring(s.signal) .. ", marked unreliable this session: " .. tostring(run.signalUnreliable or false),
 			"sound checks: " .. signalStats.checks .. ", valid hits: " .. signalStats.hits .. (signalStats.lastHit and (", last hit " .. FmtDur(GetTime() - signalStats.lastHit) .. " ago") or ""),
 			"slot polls this session: " .. (run.polls or 0) .. ", free slots: " .. free .. "/" .. SLOT_COUNT
-				.. (SignalWorks() and "" or (", polling every " .. FAST_POLL_SECONDS .. " s for the first " .. FAST_POLL_UNTIL .. " s (no sound channel)")),
+				.. (SignalWorks() and "" or (", polling every " .. FAST_POLL_SECONDS .. " s for the first " .. FAST_POLL_UNTIL .. " s, then every "
+					.. SLOW_POLL_SECONDS .. " s until " .. SLOW_POLL_UNTIL .. " s (no sound channel)")),
 			"presence: head at " .. tostring(run.presence and run.presence.last or "?") .. ", beats seen: " .. tostring(run.presence and run.presence.beats or 0),
 			select(5, WoWAI.BridgeState()),
 			"mode: " .. s.mode .. ", session token: " .. tostring(db.session),
@@ -3945,6 +4583,9 @@ ev:RegisterEvent("UPDATE_MACROS")
 ev:RegisterEvent("CHAT_MSG_WHISPER")
 ev:RegisterEvent("CHAT_MSG_BN_WHISPER")
 ev:RegisterEvent("PLAYER_DEAD")
+ev:RegisterEvent("PLAYER_ALIVE")
+ev:RegisterEvent("PLAYER_UNGHOST")
+ev:RegisterEvent("PLAYER_REGEN_DISABLED")
 pcall(ev.RegisterEvent, ev, "COMBAT_LOG_EVENT_UNFILTERED")
 ev:SetScript("OnEvent", function(self, event, arg1)
 	if event == "ADDON_LOADED" then
@@ -3954,7 +4595,16 @@ ev:SetScript("OnEvent", function(self, event, arg1)
 	elseif event == "COMBAT_LOG_EVENT_UNFILTERED" then
 		WoWAI.OnCombatLog()
 	elseif event == "PLAYER_DEAD" then
-		if db then WoWAI.RecordDeath() end
+		WoWAI.FightDied()
+		if db then
+			WoWAI.RecordDeath()
+			WoWAI.ShowDeathPrompt(true)
+		end
+	elseif event == "PLAYER_ALIVE" or event == "PLAYER_UNGHOST" then
+		-- PLAYER_ALIVE also comes on releasing the spirit: the button stays for the ghost.
+		if not Try(UnitIsGhost, "player") then WoWAI.ShowDeathPrompt(false) end
+	elseif event == "PLAYER_REGEN_DISABLED" then
+		WoWAI.FightStarted()
 	elseif event == "CHAT_MSG_WHISPER" or event == "CHAT_MSG_BN_WHISPER" then
 		-- A real person whispered: /r belongs to them again.
 		run.lastMessenger = "player"
@@ -3996,10 +4646,12 @@ ev:SetScript("OnEvent", function(self, event, arg1)
 		HookReplyCommand()
 		C_Timer.NewTicker(TICK_SECONDS, Tick)
 		C_Timer.After(3, WoWAI.SayHello)
+		C_Timer.After(5, WoWAI.RequestWeekly)
 	elseif event == "UPDATE_MACROS" then
 		-- "Create" / "Update" on the macro buttons follows what exists now.
 		if ui.frame and ui.frame:IsShown() then WoWAI.Render() end
 	elseif event == "PLAYER_REGEN_ENABLED" then
+		WoWAI.FightEnded()
 		if WoWAI.reloadAfterCombat then
 			WoWAI.reloadAfterCombat = nil
 			ReloadUI()

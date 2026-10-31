@@ -132,11 +132,16 @@ Right-clicking a chat in the left panel opens a small menu with **Rename...**, *
 | `/ai quests [question]` | ... with your quest log: titles and objective progress (`/ai misiones`) |
 | `/ai screenshot [question]` | ... with a picture of your game window, taken by the bridge as the message arrives; the addon's window steps aside for a moment (`/ai foto`, `/ai captura`; Windows only) |
 | `/ai death [question]` | ... with your last death: damage taken by source, heals and your own casts in its last 15 s, with health after each (`/ai muerte`) |
+| `/ai combat [question]` | ... with your last fight (or the one in progress): damage by ability and target, pets included, casts, damage taken, interrupts and the time spent with nothing cast (`/ai combate`) |
+| `/ai weekly [question]` | ... with your Great Vault progress and reward item levels, keystone, Mythic+ rating, this week's runs, season bests, affixes and raid lockouts (`/ai semanal`) |
+| `/ai boss [question]` | ... with your target and its encounter journal abilities for the difficulty you are on; with no target, the boss the question names or the instance's bosses (`/ai jefe`) |
+| `/ai bars [question]` | ... with your action bars, the keys bound to each button, what your macros cast and the spells on no bar (`/ai barras`) |
 | `/wow-ai context [on\|off]` | show what the agent is told about your character and location, or turn it on/off |
 | `/wow-ai rename`, `/wow-ai delete`, `/wow-ai clear` | manage the current chat |
 | `/wow-ai echo summary\|full\|short\|off\|<chars>` | how much of each reply to print into the game chat. `summary` (the default) prints only the agent's closing TL;DR lines, the full reply is in the window behind `[open]`; `full` prints up to 4000 chars, `short` one preview line |
 | `/wow-ai longchat on` | let the game chat box take 4000 characters, for long `/ai` messages |
 | `/wow-ai bind <key>` | hotkey: checks for a reply while waiting, otherwise toggles the window |
+| `/wow-ai deathbutton on\|off` | the **Why did I die?** button that offers `/ai death` after a death (on by default) |
 | `/wow-ai cancel` | stop waiting on this chat's reply |
 | `/wow-ai resend` | show the strip again if the bridge missed it |
 | `/wow-ai reload` | reload the UI now (also frees the slot pool) |

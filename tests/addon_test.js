@@ -682,6 +682,247 @@ test('/ai muerte attaches the last death from the combat log: biggest damage, th
   assert.ok(sentStartingWith(vm, 'death knight tank build?'));
 });
 
+test('a death brings up the "Why did I die?" button: a click sends the recap, it stays for the ghost and goes once alive', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run(RETAIL_STUBS);
+  vm.run('STUB.ghost = false; function UnitIsGhost() return STUB.ghost end');
+  vm.run('STUB.FireEvent("PLAYER_DEAD")');
+  assert.equal(vm.evaluate('WoWAIDeathPrompt:IsShown()'), 'true');
+  assert.equal(vm.evaluate('WoWAIDeathPrompt:GetText()'), '¿Por qué he muerto? (WoW AI)');
+  vm.run('STUB.ghost = true; STUB.FireEvent("PLAYER_ALIVE")');
+  assert.equal(vm.evaluate('WoWAIDeathPrompt:IsShown()'), 'true', 'releasing the spirit keeps it');
+  vm.run('WoWAIDeathPrompt.scripts.OnClick(WoWAIDeathPrompt)');
+  assert.equal(vm.evaluate('WoWAIDeathPrompt:IsShown()'), 'false');
+  assert.ok(sentStartingWith(vm, '¿Por qué he muerto y qué debería hacer distinto?\n\nLast death, read from the game:\nDied 0s ago'));
+  vm.run('STUB.FireEvent("PLAYER_DEAD")');
+  assert.equal(vm.evaluate('WoWAIDeathPrompt:IsShown()'), 'true');
+  vm.run('STUB.ghost = false; STUB.FireEvent("PLAYER_UNGHOST")');
+  assert.equal(vm.evaluate('WoWAIDeathPrompt:IsShown()'), 'false', 'back on their feet');
+  vm.run('SlashCmdList.WOWAI("deathbutton off"); STUB.FireEvent("PLAYER_DEAD")');
+  assert.equal(vm.evaluate('WoWAIDeathPrompt:IsShown()'), 'false', 'switched off');
+  assert.equal(vm.evaluate('WoWAIDB.settings.deathPrompt'), 'false');
+});
+
+test('/ai combate sends the last fight: damage by ability and target, casts, idle time; the fight in progress while it lasts', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run(RETAIL_STUBS);
+  vm.run(`
+    function UnitGUID(u) if u == "player" then return "Player-1" elseif u == "pet" then return "Pet-1" end end
+    function GetRealZoneText() return "Bosque de Elwynn" end
+    function GetHaste() return 0 end
+    function CombatLogGetCurrentEventInfo() return (table.unpack or unpack)(STUB.cleu, 1, 30) end
+    function Log(dt, ...) STUB.now = STUB.now + dt; STUB.cleu = { 0, ... }; STUB.FireEvent("COMBAT_LOG_EVENT_UNFILTERED") end`);
+  vm.run('SlashCmdList.WOWAI("combate")');
+  assert.match(vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history].text'), /no fight recorded yet/);
+  vm.run(`
+    Log(0, "SPELL_DAMAGE", false, "Creature-7", "Ogro", 0, 0, "Player-2", "Otro", 0, 0, 1, "Golpe", 1, 900, -1)
+    STUB.FireEvent("PLAYER_REGEN_DISABLED")
+    Log(0, "SPELL_CAST_START", false, "Player-1", "Testchar", 0, 0, "", nil, 0, 0, 29722, "Incinerar", 4)
+    Log(2, "SPELL_CAST_SUCCESS", false, "Player-1", "Testchar", 0, 0, "Creature-1", "Lobo", 0, 0, 29722, "Incinerar", 4)
+    Log(0.1, "SPELL_DAMAGE", false, "Player-1", "Testchar", 0, 0, "Creature-1", "Lobo", 0, 0, 29722, "Incinerar", 4, 300, -1, 4, 0, 0, 0, true)
+    Log(0.4, "SPELL_CAST_SUCCESS", false, "Player-1", "Testchar", 0, 0, "Creature-1", "Lobo", 0, 0, 17962, "Conflagrar", 4)
+    Log(0, "SPELL_DAMAGE", false, "Player-1", "Testchar", 0, 0, "Creature-1", "Lobo", 0, 0, 17962, "Conflagrar", 4, 200, -1, 4, 0, 0, 0, false)
+    Log(0.5, "SPELL_DAMAGE", false, "Pet-1", "Karmir", 0, 0, "Creature-1", "Lobo", 0, 0, 3110, "Descarga de fuego", 4, 100, -1, 4, 0, 0, 0, false)
+    Log(3, "SPELL_CAST_SUCCESS", false, "Player-1", "Testchar", 0, 0, "Creature-2", "Ogro", 0, 0, 17962, "Conflagrar", 4)
+    Log(0, "SPELL_DAMAGE", false, "Player-1", "Testchar", 0, 0, "Creature-2", "Ogro", 0, 0, 17962, "Conflagrar", 4, 200, -1, 4, 0, 0, 0, false)
+    Log(1, "SWING_DAMAGE", false, "Creature-1", "Lobo", 0, 0, "Player-1", "Testchar", 0, 0, 50, -1, 1, 0, 0, 0, nil)
+    Log(0, "SPELL_INTERRUPT", false, "Pet-1", "Karmir", 0, 0, "Creature-2", "Ogro", 0, 0, 19647, "Bloqueo de hechizo", 32)
+    Log(1, "SPELL_HEAL", false, "Player-1", "Testchar", 0, 0, "Player-1", "Testchar", 0, 0, 1, "Drenar", 32, 80, 30, 0, false)`);
+  const live = vm.evaluate('WoWAI.CombatText()').split('\n');
+  assert.equal(live[0], 'Fight in progress: 8s so far, in Bosque de Elwynn - Darkshire.');
+  assert.ok(live.some(l => l.startsWith('Time with nothing cast or channelled: 3.0 s of 8.0 s (38%)')), live.join('\n'));
+  vm.run('STUB.now = STUB.now + 12; STUB.FireEvent("PLAYER_REGEN_ENABLED")');
+  // A blip of combat with nothing done keeps the last real fight.
+  vm.run('STUB.FireEvent("PLAYER_REGEN_DISABLED"); STUB.now = STUB.now + 1; STUB.FireEvent("PLAYER_REGEN_ENABLED")');
+  vm.run('WoWAI.NewChat("c"); STUB.now = STUB.now + 30; SlashCmdList.WOWAI("combate")');
+  const rec = sentStartingWith(vm, '¿Qué tal ha ido el combate y cómo mejoro mi rotación?');
+  assert.ok(rec);
+  const lines = rec.text.split('\n');
+  const at = lines.indexOf('Fight summary, read from the game:');
+  assert.ok(at > 0, rec.text);
+  assert.match(lines[at + 1], /^Last fight: ended \d+s ago \(started 12:00\) in Bosque de Elwynn - Darkshire, lasted 7s\.$/);
+  assert.deepEqual(lines.slice(at + 2), [
+    'Damage done to: Lobo 600, Ogro 200',
+    'Damage done: 800 (114 per second).',
+    'Casts: 3, one every 2.3 s: Conflagrar 2, Incinerar 1',
+    'Time with nothing cast or channelled: 2.5 s of 7.0 s (36%), counting a 1.50 s global cooldown after each instant (an estimate; moving and waiting count as idle).',
+    'Damage taken: 50; healing done: 50; interrupts: 1.',
+    'Damage by ability (total, share, hits, crits):',
+    '- Conflagrar: 400 (50%), 2 hits, 0 crits',
+    '- Incinerar: 300 (38%), 1 hits, 1 crits',
+    '- Descarga de fuego (Karmir): 100 (13%), 1 hits, 0 crits',
+  ]);
+});
+
+test('/ai semanal sends the Great Vault, keystone, rating, runs, bests, affixes and lockouts', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run(RETAIL_STUBS);
+  vm.run(`
+    function GetMaxLevelForPlayerExpansion() return 80 end
+    C_WeeklyRewards = {
+      GetActivities = function() return {
+        { type = 1, index = 2, threshold = 4, progress = 3, level = 0, id = 12 },
+        { type = 3, index = 1, threshold = 2, progress = 2, level = 15, id = 31 },
+        { type = 3, index = 2, threshold = 4, progress = 2, level = 0, id = 32 },
+        { type = 1, index = 1, threshold = 1, progress = 3, level = 10, id = 11 },
+        { type = 6, index = 1, threshold = 2, progress = 0, level = 0, id = 61 },
+      } end,
+      GetExampleRewardItemHyperlinks = function(id) if id == 11 then return "|cffa335ee|Hitem:500::::::::80:::::|h[Botas]|h|r" end end,
+      HasAvailableRewards = function() return true end,
+    }
+    function GetDifficultyInfo(id) if id == 15 then return "Heroico" end end
+    C_Item.GetDetailedItemLevelInfo = function(link) if link:find("item:500") then return 636 end return 40 end
+    C_MythicPlus = {
+      GetOwnedKeystoneChallengeMapID = function() return 501 end,
+      GetOwnedKeystoneLevel = function() return 9 end,
+      GetRunHistory = function() return {
+        { mapChallengeModeID = 501, level = 10, thisWeek = true, completed = true },
+        { mapChallengeModeID = 502, level = 12, thisWeek = true, completed = false },
+        { mapChallengeModeID = 502, level = 15, thisWeek = false, completed = true },
+      } end,
+      GetSeasonBestForMap = function(m) if m == 501 then return { level = 10 }, { level = 11 } end if m == 502 then return nil, { level = 12 } end end,
+      GetCurrentAffixes = function() return { { id = 9 }, { id = 10 } } end,
+      RequestMapInfo = function() STUB.requested = (STUB.requested or 0) + 1 end,
+    }
+    C_ChallengeMode = {
+      GetMapUIInfo = function(m) return ({ [501] = "Piedra del Altar", [502] = "Cielo Oscuro", [503] = "Nido" })[m], m, 1800 end,
+      GetOverallDungeonScore = function() return 1450 end,
+      GetMapTable = function() return { 501, 502, 503 } end,
+      GetAffixInfo = function(id) if id == 9 then return "Tiránico", "Los jefes tienen |cffff0000más|r vida." end if id == 10 then return "Fortificado" end end,
+    }
+    function GetNumSavedInstances() return 2 end
+    function GetSavedInstanceInfo(i)
+      if i == 1 then return "Palacio", 1, 180000, 15, true, false, 0, true, 20, "Heroico", 8, 3 end
+      return "Viejo", 2, 0, 14, false
+    end`);
+  vm.run('SlashCmdList.WOWAI("semanal")');
+  const rec = sentStartingWith(vm, '¿Qué hago esta semana para sacar las mejores recompensas de la Gran Cámara?');
+  assert.ok(rec);
+  assert.ok(rec.text.endsWith([
+    'Weekly progress, read from the game:',
+    'Level 23 of 80: the Great Vault and Mythic+ open at the maximum level.',
+    'Great Vault this week (progress / needed per reward slot):',
+    '- Raid: slot 1 done (Heroico); slot 2 2/4',
+    '- Mythic+ and heroic dungeons: slot 1 done (+10, reward ilvl 636); slot 2 3/4',
+    '- World (delves and world activities): slot 1 0/2',
+    'Last week\'s Great Vault rewards are waiting to be chosen.',
+    'Keystone: Piedra del Altar +9',
+    'Mythic+ rating: 1450',
+    'This week\'s Mythic+ runs (2): Cielo Oscuro +12 over time, Piedra del Altar +10 in time',
+    'Season best per dungeon: Piedra del Altar +11 over time, Cielo Oscuro +12 over time, Nido not done',
+    'Affixes this week: Tiránico (Los jefes tienen más vida.); Fortificado',
+    'Lockouts: Palacio (Heroico) 3/8, resets in 50h00m',
+  ].join('\n')), rec.text);
+  assert.ok(vm.num('STUB.requested') >= 1, 'asks the client for fresh data');
+});
+
+test('/ai jefe sends the target\'s encounter journal entry, or the boss the question names, or the instance\'s bosses', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run(RETAIL_STUBS);
+  vm.run(`
+    STUB.ejMap = 2000
+    C_Map.GetBestMapForUnit = function() return STUB.ejMap end
+    function EJ_GetInstanceForMap(m) if m == 2000 then return 77 end return 0 end
+    function EJ_SelectInstance(i) STUB.ejInstance = i end
+    function EJ_SetDifficulty(d) STUB.ejDifficulty = d end
+    function GetInstanceInfo() return "Nido", "party", 23, "Mítica" end
+    function EJ_GetInstanceInfo(i) if i == 77 then return "Nido de Ara-Kara" end end
+    local ENC = { { "Avanoxx", "Una araña |cffffffffhambrienta|r.", 1, 100 }, { "Anub'zekt", "Un nerubiano.", 2, 200 } }
+    function EJ_GetEncounterInfoByIndex(i, inst) local e = ENC[i]; if e then return e[1], e[2], e[3], e[4] end end
+    local CREATURES = { [1] = { "Avanoxx" }, [2] = { "Anub'zekt", "Guardia de sangre" } }
+    function EJ_GetCreatureInfo(c, enc) local n = CREATURES[enc] and CREATURES[enc][c]; if n then return c, n end end
+    local SECTIONS = {
+      [100] = { title = "Fase 1", description = "", firstChildSectionID = 101, siblingSectionID = 110 },
+      [101] = { title = "Alimentar", description = "Avanoxx |cff00ff00devora|r a los |Tx|t aliados.", siblingSectionID = 102 },
+      [102] = { title = "Solo heroico", description = "No sale.", filteredByDifficulty = true },
+      [110] = { title = "Gritos", description = "Interrumpe." },
+    }
+    C_EncounterJournal = { GetSectionInfo = function(id) return SECTIONS[id] end }
+    STUB.target = "Avanoxx"
+    function UnitExists(u) return u == "target" and STUB.target ~= nil end
+    function UnitName(u) if u == "player" then return "Testchar" end if u == "target" then return STUB.target end end
+    function UnitClassification() return "elite" end
+    function UnitCreatureType() return "Alimaña" end
+    function UnitHealthMax() return 500000 end`);
+  vm.run('SlashCmdList.WOWAI("jefe")');
+  let rec = sentStartingWith(vm, '¿Cómo se hace este jefe? Explícame la táctica para mi rol.');
+  assert.ok(rec);
+  assert.ok(rec.text.endsWith([
+    'Boss, read from the game:',
+    'Target: Avanoxx (level 23, elite, Alimaña, health 500000)',
+    'Encounter journal: Avanoxx (Nido de Ara-Kara, Mítica)',
+    'Una araña hambrienta.',
+    'Abilities, as the journal nests them:',
+    '- Fase 1',
+    '  - Alimentar: Avanoxx devora a los aliados.',
+    '- Gritos: Interrumpe.',
+  ].join('\n')), rec.text);
+  assert.equal(vm.num('STUB.ejDifficulty'), 23, 'abilities for the difficulty in play');
+  // A creature of a council-style fight finds its encounter.
+  vm.run('WoWAI.NewChat("b"); STUB.target = "Guardia de sangre"; SlashCmdList.WOWAI("jefe")');
+  rec = stripRecords(vm).filter(r => r.text.startsWith('¿Cómo se hace')).pop();
+  assert.ok(rec.text.includes('\nEncounter journal: Anub\'zekt (Nido de Ara-Kara, Mítica)\nUn nerubiano.\nCreatures: Anub\'zekt, Guardia de sangre\n'), rec.text);
+  // No target: the question names the boss.
+  vm.run('WoWAI.NewChat("c"); STUB.target = nil; SlashCmdList.WOWAI("jefe cómo hago a Avanoxx")');
+  rec = sentStartingWith(vm, 'cómo hago a Avanoxx');
+  assert.ok(rec.text.includes('\nEncounter journal: Avanoxx (Nido de Ara-Kara, Mítica)\n'), rec.text);
+  // Nor that: the instance's bosses.
+  vm.run('WoWAI.NewChat("d"); SlashCmdList.WOWAI("jefe")');
+  rec = stripRecords(vm).filter(r => r.text.startsWith('¿Cómo se hace')).pop();
+  assert.ok(rec.text.endsWith('Bosses in Nido de Ara-Kara, Mítica:\n1. Avanoxx: Una araña hambrienta.\n2. Anub\'zekt: Un nerubiano.'), rec.text);
+  // Outside an instance with nothing targeted there is nothing to send.
+  vm.run('WoWAI.NewChat("e"); STUB.ejMap = 1; SlashCmdList.WOWAI("jefe")');
+  assert.match(vm.evaluate('WoWAIDB.chats[#WoWAIDB.chats].history[#WoWAIDB.chats[#WoWAIDB.chats].history].text'), /Could not read boss: target the boss/);
+});
+
+test('/ai barras sends every bar with its keys, macros with their spell, and the known spells on no bar', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run(RETAIL_STUBS);
+  vm.run(`
+    local ACTIONS = { [1] = { "spell", 1 }, [2] = { "macro", 5 }, [3] = { "item", 6948 }, [61] = { "spell", 2 } }
+    function GetActionInfo(slot) local a = ACTIONS[slot]; if a then return a[1], a[2] end end
+    function GetActionText(slot) if slot == 2 then return "Pet atk" end end
+    function GetMacroSpell(id) if id == 5 then return 2 end end
+    C_Item.GetItemNameByID = function(id) if id == 6948 then return "Piedra de hogar" end end
+    local KEYS = { ACTIONBUTTON1 = { "1" }, ACTIONBUTTON2 = { "2", "SHIFT-2" } }
+    function GetBindingKey(cmd) local k = KEYS[cmd]; if k then return k[1], k[2] end end
+    CreateFrame("Frame", "MultiBarBottomLeft"):Hide()
+    local BOOK = {
+      { name = "Inmolar", spellID = 1, itemType = 1 }, { name = "Drenar vida", spellID = 3, itemType = 1 },
+      { name = "Pasiva", spellID = 7, itemType = 1, isPassive = true }, { name = "Futuro", spellID = 8, itemType = 2 },
+      { name = "De otra spec", spellID = 9, itemType = 1 },
+    }
+    C_SpellBook = {
+      GetNumSpellBookSkillLines = function() return 2 end,
+      GetSpellBookSkillLineInfo = function(l)
+        if l == 1 then return { name = "Destrucción", itemIndexOffset = 0, numSpellBookItems = 4 } end
+        return { name = "Aflicción", itemIndexOffset = 4, numSpellBookItems = 1, offSpecID = 265 }
+      end,
+      GetSpellBookItemInfo = function(i) return BOOK[i] end,
+    }`);
+  vm.run('SlashCmdList.WOWAI("barras")');
+  const rec = sentStartingWith(vm, 'Revisa mis barras de acción y mis teclas');
+  assert.ok(rec);
+  assert.ok(rec.text.endsWith([
+    'Action bars and key bindings, read from the game:',
+    'Buttons as [key] name; Action Bar 1 is the main bar.',
+    'Known active spells on no bar (1): Drenar vida',
+    'Action Bar 1: [1] Inmolar, [2 or SHIFT-2] Pet atk (macro: Conflagrar), [no key] Piedra de hogar (item); 9 empty',
+    'Action Bar 2 (hidden): [no key] Conflagrar; 11 empty',
+    'Empty bars: 3, 4, 5, 6, 7, 8',
+  ].join('\n')), rec.text);
+});
+
 test('/ai foto sends the question flagged for a screenshot and steps the window aside for a moment', () => {
   const vm = newVM();
   login(vm);
