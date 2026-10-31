@@ -638,6 +638,50 @@ test('/ai equipo, /ai monturas and /ai misiones attach gear, the mount collectio
   assert.ok(!rec.text.includes('Dragonflight'), 'a header with no quest under it is left out');
 });
 
+test('/ai muerte attaches the last death from the combat log: biggest damage, then the last events with health', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run(RETAIL_STUBS);
+  vm.run(`
+    function UnitGUID(u) if u == "player" then return "Player-1" end end
+    function UnitHealthMax() return 1000 end
+    STUB.hp = 1000
+    function UnitHealth() return STUB.hp end
+    function GetRealZoneText() return "Bosque de Elwynn" end
+    function CombatLogGetCurrentEventInfo() return (table.unpack or unpack)(STUB.cleu, 1, 30) end
+    function Log(dt, hp, ...) STUB.now = STUB.now + dt; STUB.hp = hp; STUB.cleu = { 0, ... }; STUB.FireEvent("COMBAT_LOG_EVENT_UNFILTERED") end`);
+  vm.run('SlashCmdList.WOWAI("muerte")');
+  assert.match(vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history].text'), /no death recorded yet/);
+  vm.run(`
+    Log(0, 1000, "SWING_DAMAGE", false, "Creature-9", "Lobo viejo", 0, 0, "Player-1", "Testchar", 0, 0, 50, -1, 1, 0, 0, 0, nil)
+    Log(20, 1000, "SPELL_DAMAGE", false, "Creature-7", "Ogro", 0, 0, "Player-2", "Otro", 0, 0, 1, "Golpe", 1, 900, -1)
+    Log(1, 700, "SPELL_DAMAGE", false, "Creature-7", "Ogro", 0, 0, "Player-1", "Testchar", 0, 0, 133, "Golpe", 1, 300, -1, 1, 0, 0, 20, true)
+    Log(1, 700, "SPELL_CAST_SUCCESS", false, "Player-1", "Testchar", 0, 0, "", nil, 0, 0, 774, "Rejuvenecimiento", 8)
+    Log(0.5, 750, "SPELL_PERIODIC_HEAL", false, "Player-1", "Testchar", 0, 0, "Player-1", "Testchar", 0, 0, 774, "Rejuvenecimiento", 8, 60, 10, 0, false)
+    Log(1, 0, "SPELL_DAMAGE", false, "Creature-7", "Ogro", 0, 0, "Player-1", "Testchar", 0, 0, 133, "Golpe", 1, 800, 50, 1, 0, 0, 0, false)
+    STUB.FireEvent("PLAYER_DEAD")`);
+  vm.run('WoWAI.NewChat("d"); STUB.now = STUB.now + 30; SlashCmdList.WOWAI("muerte")');
+  const rec = sentStartingWith(vm, '¿Por qué he muerto');
+  assert.ok(rec);
+  const lines = rec.text.split('\n');
+  const at = lines.indexOf('Last death, read from the game:');
+  assert.ok(at > 0, rec.text);
+  assert.match(lines[at + 1], /^Died 30s ago \(12:00\) in Bosque de Elwynn - Darkshire, level 23\.$/);
+  assert.equal(lines[at + 2], 'Damage taken in the last 15 s: 1100. Biggest: Ogro: Golpe 1100 (100%).', 'the wolf bite 22 s earlier and a hit on someone else are left out');
+  assert.deepEqual(lines.slice(at + 3), [
+    'Events, seconds before death (health after):',
+    '-2.5s Ogro: Golpe 300 (crit, 20 absorbed) -> 70%',
+    '-1.5s you cast Rejuvenecimiento -> 70%',
+    '-1.0s healed by you: Rejuvenecimiento +50 -> 75%',
+    '-0.0s Ogro: Golpe 800 (killing blow, overkill 50) -> 0%',
+  ]);
+  assert.equal(vm.num('#WoWAIDB.deaths'), 1);
+  // "/ai death knight ..." is a question about the class, not the recap.
+  vm.run('WoWAI.NewChat("k"); SlashCmdList.WOWAI("death knight tank build?")');
+  assert.ok(sentStartingWith(vm, 'death knight tank build?'));
+});
+
 test('the context lists quests with their titles while they fit, then ids only, never over the cap', () => {
   const vm = newVM();
   vm.run(RETAIL_STUBS);

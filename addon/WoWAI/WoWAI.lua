@@ -1693,21 +1693,152 @@ function WoWAI.QuestsText()
 	return table.concat(lines, "\n")
 end
 
--- /ai talents|gear|mounts|quests [question]: the question plus the data, in one message.
+-- Death recap: what hit the player, the heals they got and the spells they cast
+-- over the last DEATH_WINDOW seconds, from the combat log. A death keeps a copy
+-- (the last DEATH_KEEP of them); nothing else is stored.
+local DEATH_WINDOW = 15
+local DEATH_KEEP = 3
+local DEATH_RING = 80
+local deathRing = {}
+local DEATH_DAMAGE = { SWING_DAMAGE = true, RANGE_DAMAGE = true, SPELL_DAMAGE = true, SPELL_PERIODIC_DAMAGE = true, ENVIRONMENTAL_DAMAGE = true }
+
+local function HealthPct()
+	local h, m = Try(UnitHealth, "player"), Try(UnitHealthMax, "player")
+	if type(h) == "number" and type(m) == "number" and m > 0 then return math.floor(h / m * 100 + 0.5) end
+end
+
+local function Remember(entry)
+	local now = GetTime()
+	entry.t, entry.hp = now, HealthPct()
+	table.insert(deathRing, entry)
+	while #deathRing > DEATH_RING or (deathRing[1] and deathRing[1].t < now - DEATH_WINDOW) do
+		table.remove(deathRing, 1)
+	end
+end
+
+function WoWAI.OnCombatLog()
+	local info = CombatLogGetCurrentEventInfo or (C_CombatLog and C_CombatLog.GetCurrentEventInfo)
+	if not info then return end
+	local _, sub, _, srcGUID, srcName, _, _, dstGUID = info()
+	local me = Try(UnitGUID, "player")
+	if not me or (srcGUID ~= me and dstGUID ~= me) then return end
+	if dstGUID == me and DEATH_DAMAGE[sub] then
+		local spell, amount, overkill, absorbed, crit
+		if sub == "SWING_DAMAGE" then
+			local a, o, _, _, _, ab, c = select(12, info())
+			spell, amount, overkill, absorbed, crit = "melee", a, o, ab, c
+		elseif sub == "ENVIRONMENTAL_DAMAGE" then
+			local kind, a, o, _, _, _, ab, c = select(12, info())
+			spell, amount, overkill, absorbed, crit = tostring(kind):lower(), a, o, ab, c
+			srcName = "environment"
+		else
+			local _, name, _, a, o, _, _, _, ab, c = select(12, info())
+			spell, amount, overkill, absorbed, crit = name, a, o, ab, c
+		end
+		Remember({ kind = "hit", src = srcName or "?", spell = spell or "?", amount = tonumber(amount) or 0,
+			overkill = (tonumber(overkill) or 0) > 0 and overkill or nil, absorbed = (tonumber(absorbed) or 0) > 0 and absorbed or nil, crit = crit and true or nil })
+	elseif dstGUID == me and (sub == "SPELL_HEAL" or sub == "SPELL_PERIODIC_HEAL") then
+		local _, name, _, a, over = select(12, info())
+		local got = (tonumber(a) or 0) - (tonumber(over) or 0)
+		if got > 0 then Remember({ kind = "heal", src = srcGUID == me and "you" or (srcName or "?"), spell = name or "?", amount = got }) end
+	elseif srcGUID == me and sub == "SPELL_CAST_SUCCESS" then
+		local _, name = select(12, info())
+		Remember({ kind = "cast", spell = name or "?" })
+	end
+end
+
+function WoWAI.RecordDeath()
+	local now = GetTime()
+	local d = { when = time(), at = date("%H:%M"), zone = Try(GetRealZoneText) or "?", subzone = Try(GetSubZoneText) or "",
+		level = Try(UnitLevel, "player"), events = {} }
+	for _, e in ipairs(deathRing) do
+		if e.t >= now - DEATH_WINDOW then
+			local copy = {}
+			for k, v in pairs(e) do copy[k] = v end
+			copy.ago = math.floor((now - e.t) * 10 + 0.5) / 10
+			copy.t = nil
+			table.insert(d.events, copy)
+		end
+	end
+	wipe(deathRing)
+	db.deaths = db.deaths or {}
+	table.insert(db.deaths, 1, d)
+	while #db.deaths > DEATH_KEEP do table.remove(db.deaths) end
+end
+
+local function DeathLine(e)
+	local hp = e.hp and (" -> " .. e.hp .. "%") or ""
+	if e.kind == "cast" then return string.format("-%.1fs you cast %s%s", e.ago, e.spell, hp) end
+	if e.kind == "heal" then return string.format("-%.1fs healed by %s: %s +%d%s", e.ago, e.src, e.spell, e.amount, hp) end
+	local extra = {}
+	if e.crit then extra[#extra + 1] = "crit" end
+	if e.absorbed then extra[#extra + 1] = e.absorbed .. " absorbed" end
+	if e.overkill then extra[#extra + 1] = "killing blow, overkill " .. e.overkill end
+	return string.format("-%.1fs %s: %s %d%s%s", e.ago, e.src, e.spell, e.amount, #extra > 0 and (" (" .. table.concat(extra, ", ") .. ")") or "", hp)
+end
+
+function WoWAI.DeathText()
+	local d = db.deaths and db.deaths[1]
+	if not d then return nil, "no death recorded yet (deaths are recorded from now on)" end
+	local out = { string.format("Died %s ago (%s) in %s%s, level %s.", FmtDur(time() - d.when), d.at, d.zone,
+		d.subzone ~= "" and (" - " .. d.subzone) or "", tostring(d.level or "?")) }
+	if #d.events == 0 then
+		table.insert(out, "The combat log recorded nothing in the last " .. DEATH_WINDOW .. " s (a fall, or the log was off).")
+		return table.concat(out, "\n")
+	end
+	-- Damage by source and spell, the biggest first.
+	local by, total, order = {}, 0, {}
+	for _, e in ipairs(d.events) do
+		if e.kind == "hit" then
+			local k = e.src .. ": " .. e.spell
+			if not by[k] then by[k] = 0; order[#order + 1] = k end
+			by[k] = by[k] + e.amount
+			total = total + e.amount
+		end
+	end
+	table.sort(order, function(a, b) return by[a] > by[b] end)
+	if total > 0 then
+		local parts = {}
+		for i = 1, math.min(5, #order) do
+			parts[i] = string.format("%s %d (%d%%)", order[i], by[order[i]], math.floor(by[order[i]] / total * 100 + 0.5))
+		end
+		table.insert(out, string.format("Damage taken in the last %d s: %d. Biggest: %s.", DEATH_WINDOW, total, table.concat(parts, "; ")))
+	end
+	table.insert(out, "Events, seconds before death (health after):")
+	-- The latest events matter most: fill the budget from the end.
+	local used = 0
+	for _, l in ipairs(out) do used = used + #l + 1 end
+	local lines = {}
+	for i = #d.events, 1, -1 do
+		local l = DeathLine(d.events[i])
+		if used + #l + 1 > ATTACH_MAX - 40 then
+			table.insert(lines, 1, "(earlier events left out)")
+			break
+		end
+		table.insert(lines, 1, l)
+		used = used + #l + 1
+	end
+	for _, l in ipairs(lines) do table.insert(out, l) end
+	return table.concat(out, "\n")
+end
+
+-- /ai talents|gear|mounts|quests|death [question]: the question plus the data, in one message.
 local ATTACHMENTS = {
 	talents = { fn = "TalentsText", label = "Talents", ask = "Review my talents.", max = TALENTS_MAX },
 	gear = { fn = "GearText", label = "Equipped gear", ask = "Review my gear: what should I upgrade first?" },
 	mounts = { fn = "MountsText", label = "Mount collection", ask = "Which of the mounts I am missing can I get, and how?" },
 	quests = { fn = "QuestsText", label = "Quest log", ask = "Help me with my quests: what should I do first?" },
+	death = { fn = "DeathText", label = "Last death", ask = "Why did I die, and what should I do differently?" },
 }
 -- The question sent when none is typed, in the client's language where we have it.
 local ATTACH_ASK_ES = {
 	talents = "Revisa mis talentos.", gear = "Revisa mi equipo: ¿qué debería mejorar primero?",
 	mounts = "¿Qué monturas de las que me faltan puedo conseguir, y cómo?", quests = "Ayúdame con mis misiones: ¿qué hago primero?",
+	death = "¿Por qué he muerto y qué debería hacer distinto?",
 }
 for kind, a in pairs(ATTACHMENTS) do a.kind = kind end
-ATTACHMENTS.talentos, ATTACHMENTS.equipo, ATTACHMENTS.monturas, ATTACHMENTS.misiones =
-	ATTACHMENTS.talents, ATTACHMENTS.gear, ATTACHMENTS.mounts, ATTACHMENTS.quests
+ATTACHMENTS.talentos, ATTACHMENTS.equipo, ATTACHMENTS.monturas, ATTACHMENTS.misiones, ATTACHMENTS.muerte =
+	ATTACHMENTS.talents, ATTACHMENTS.gear, ATTACHMENTS.mounts, ATTACHMENTS.quests, ATTACHMENTS.death
 WoWAI.ATTACHMENTS = ATTACHMENTS
 
 function WoWAI.SendWithAttachment(kind, question)
@@ -3482,6 +3613,7 @@ local HELP = table.concat({
 	"/ai gear [question]            ... with your equipped items, item level and stats (also /ai equipo)",
 	"/ai mounts [question]          ... with your mount collection: owned and missing by source (also /ai monturas)",
 	"/ai quests [question]          ... with your quest log: titles and objectives (also /ai misiones)",
+	"/ai death [question]           ... with your last death: what hit you, heals and your casts in its last 15 s (also /ai muerte)",
 	"/wow-ai context [on|off]       what the agent is told about your character and where you are (no argument = show it)",
 	"/wow-ai map [...]              map layers the agent drew, the route navigator and herb/ore nodes (no argument = status and subcommands; /aimap is the same)",
 	"/wow-ai mode pixel             no-reload transport (default)",
@@ -3533,6 +3665,8 @@ local COMMAND_ARGS = {
 -- /ai talents|gear|mounts|quests [question] (and the Spanish names): always a
 -- command, since attaching the data to whatever follows is what it is for.
 for kind in pairs(ATTACHMENTS) do COMMAND_ARGS[kind] = true end
+-- ...except "/ai death knight ...", a question about the class.
+COMMAND_ARGS.death = function(rest) return not rest:lower():find("^knight") end
 
 local function IsCommand(cmd, rest)
 	local spec = COMMAND_ARGS[cmd]
@@ -3767,11 +3901,17 @@ ev:RegisterEvent("PLAYER_REGEN_ENABLED")
 ev:RegisterEvent("UPDATE_MACROS")
 ev:RegisterEvent("CHAT_MSG_WHISPER")
 ev:RegisterEvent("CHAT_MSG_BN_WHISPER")
+ev:RegisterEvent("PLAYER_DEAD")
+pcall(ev.RegisterEvent, ev, "COMBAT_LOG_EVENT_UNFILTERED")
 ev:SetScript("OnEvent", function(self, event, arg1)
 	if event == "ADDON_LOADED" then
 		if arg1 == ADDON_NAME then
 			InitDB()
 		end
+	elseif event == "COMBAT_LOG_EVENT_UNFILTERED" then
+		WoWAI.OnCombatLog()
+	elseif event == "PLAYER_DEAD" then
+		if db then WoWAI.RecordDeath() end
 	elseif event == "CHAT_MSG_WHISPER" or event == "CHAT_MSG_BN_WHISPER" then
 		-- A real person whispered: /r belongs to them again.
 		run.lastMessenger = "player"
