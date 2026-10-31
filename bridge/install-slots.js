@@ -58,5 +58,14 @@ for (let k = 1; k <= PRESENCE; k++) {
 ensure(path.join(addons, 'WoWAI', 'ctl', 'empty.wav'), '');
 ensure(path.join(addons, 'WoWAI', 'ctl', 'valid.wav'), require('./protocol').SILENT_WAV);
 
+// Probe files for /wow-ai probe: per kind one empty, one valid, and a tick file
+// the running bridge flips every 5 s. (missing.* is checked too, and never made.)
+for (const [ext, valid] of Object.entries(require('./protocol').probeContents())) {
+  if (!valid) continue;
+  ensure(path.join(addons, 'WoWAI', 'ctl', 'probe', 'empty.' + ext), '');
+  ensure(path.join(addons, 'WoWAI', 'ctl', 'probe', 'valid.' + ext), valid);
+  ensure(path.join(addons, 'WoWAI', 'ctl', 'probe', 'tick.' + ext), '');
+}
+
 console.log(`slots: ${N}  files created: ${made}  already present: ${kept}`);
 if (made > 0) console.log('Now fully quit and relaunch WoW so it sees the new files.');

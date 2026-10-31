@@ -659,6 +659,152 @@ local function SelfTestSignals()
 	end
 end
 
+-- /wow-ai probe: on a client where the .wav trick fails, find another check that
+-- tells an empty file from a valid one and follows a file the bridge rewrites.
+-- ctl/probe/ holds empty.*, valid.* and tick.* (flipped every 5 s by a running
+-- bridge) per kind; missing.* never exists. Each variant gives "1", "0" or "e"
+-- (error); the static checks land in probe.static, the tick samples in a string.
+local PROBE_DIR = "Interface\\AddOns\\WoWAI\\ctl\\probe\\"
+local PROBE_SAMPLES = 25
+local PROBE_VARIANTS = { "wav sound", "mp3 sound", "font return", "font path", "font width", "texture return", "texture loaded", "texture path" }
+local probeUI
+
+local function B(v) return v and "1" or "0" end
+
+local function ProbeObjects(name)
+	if not probeUI then
+		local f = CreateFrame("Frame", nil, UIParent)
+		f:SetSize(1, 1)
+		f:SetPoint("TOPLEFT", UIParent, "TOPLEFT", -200, 200)
+		f:SetAlpha(0)
+		f:Show()
+		probeUI = { frame = f, fs = {}, tex = {}, h = 0 }
+	end
+	if not probeUI.fs[name] then
+		probeUI.fs[name] = probeUI.frame:CreateFontString(nil, "ARTWORK")
+		probeUI.fs[name]:SetPoint("TOPLEFT")
+		probeUI.tex[name] = probeUI.frame:CreateTexture(nil, "ARTWORK")
+		probeUI.tex[name]:SetSize(4, 4)
+		probeUI.tex[name]:SetPoint("TOPLEFT")
+	end
+	return probeUI.fs[name], probeUI.tex[name]
+end
+
+local function ProbeSound(path)
+	local ok, willPlay, handle = pcall(PlaySoundFile, path, "Master")
+	if not ok then return "e" end
+	if willPlay and handle then pcall(StopSound, handle) end
+	return B(willPlay)
+end
+
+-- Checks that answer at once; the texture's load state is read a step later.
+local function ProbeNow(name, out)
+	local fs, tex = ProbeObjects(name)
+	out["wav sound"] = ProbeSound(PROBE_DIR .. name .. ".wav")
+	out["mp3 sound"] = ProbeSound(PROBE_DIR .. name .. ".mp3")
+	-- Back to a game font, then the probe font at a size not used just before,
+	-- so neither the previous font nor a cached size can answer for the file.
+	local sample = "0123456789abcdefghijklmnopqrstuvwxyz"
+	pcall(fs.SetFont, fs, STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF", 7, "")
+	fs:SetText(sample)
+	local base = fs:GetStringWidth() or 0
+	probeUI.h = probeUI.h % 20 + 1
+	local path = PROBE_DIR .. name .. ".ttf"
+	local ok, ret = pcall(fs.SetFont, fs, path, 8 + probeUI.h, "")
+	if ok then
+		out["font return"] = B(ret)
+		local got = fs:GetFont()
+		out["font path"] = B(type(got) == "string" and got:gsub("/", "\\"):lower() == path:lower())
+		fs:SetText(sample)
+		local w = fs:GetStringWidth() or 0
+		out["font width"] = B(w > 0 and math.abs(w - base) > 0.5)
+	else
+		out["font return"], out["font path"], out["font width"] = "e", "e", "e"
+	end
+	pcall(tex.SetTexture, tex, nil)
+	local okT, retT = pcall(tex.SetTexture, tex, PROBE_DIR .. name .. ".tga")
+	out["texture return"] = okT and B(retT) or "e"
+end
+
+local function ProbeLater(name, out)
+	local _, tex = ProbeObjects(name)
+	local ok, loaded = pcall(function() return tex:IsObjectLoaded() end)
+	out["texture loaded"] = ok and B(loaded) or "e"
+	local okP, fp = pcall(function() return tex:GetTextureFilePath() end)
+	out["texture path"] = okP and B(fp ~= nil and fp ~= "" and fp ~= 0) or "e"
+end
+
+-- "useful": tells empty from valid and sees the tick file filled and emptied;
+-- "fill only": sees it filled but not emptied again (cached).
+local function ProbeVerdict(st, tick)
+	if st.empty ~= "0" or st.valid ~= "1" then return "no" end
+	local up, down = tick:find("01", 1, true), tick:find("10", 1, true)
+	if up and down then return "useful" end
+	if up then return "fill only" end
+	return "no"
+end
+
+local function ProbeReport(p)
+	local lines, best = {}, nil
+	for _, v in ipairs(PROBE_VARIANTS) do
+		local st = { empty = p.static.empty[v], valid = p.static.valid[v], missing = p.static.missing[v] }
+		local verdict = ProbeVerdict(st, p.tick[v])
+		p.verdict[v] = verdict
+		if verdict == "useful" and not best then best = v end
+		table.insert(lines, string.format("%s: empty %s, valid %s, missing %s, tick %s -> %s",
+			v, tostring(st.empty), tostring(st.valid), tostring(st.missing), p.tick[v], verdict))
+	end
+	p.best = best
+	local anyValid = false
+	for _, v in ipairs(PROBE_VARIANTS) do
+		if p.static.valid[v] == "1" then anyValid = true end
+	end
+	local head
+	if best then
+		head = "Probe: \"" .. best .. "\" works on this client. /reload so it is saved, and tell whoever set up the bridge."
+	elseif not anyValid then
+		head = "Probe: no check sees even the valid files. Were they installed before WoW started? Run setup again with the game closed, then start WoW."
+	else
+		head = "Probe: no check followed the tick file. Is the bridge running? If it was, nothing better than slot polling works here."
+	end
+	return head .. "\n" .. table.concat(lines, "\n")
+end
+
+function WoWAI.Probe(chat)
+	if run.probe and not run.probe.done then
+		AddHistory(chat, "system", "A probe is already running.")
+		return
+	end
+	local p = { static = { empty = {}, valid = {}, missing = {} }, tick = {}, verdict = {}, step = 0 }
+	for _, v in ipairs(PROBE_VARIANTS) do p.tick[v] = "" end
+	run.probe = p
+	AddHistory(chat, "system", "Probe: testing other ways to see a reply is ready. It takes " .. PROBE_SAMPLES .. " s; keep the bridge running.")
+	for name in pairs(p.static) do ProbeNow(name, p.static[name]) end
+	local function Step()
+		p.step = p.step + 1
+		if p.step == 1 then
+			for name in pairs(p.static) do ProbeLater(name, p.static[name]) end
+		else
+			local later = {}
+			ProbeLater("tick", later)
+			for _, v in ipairs({ "texture loaded", "texture path" }) do p.tick[v] = p.tick[v] .. later[v] end
+		end
+		if p.step > PROBE_SAMPLES then
+			p.done = true
+			local report = ProbeReport(p)
+			db.probe = { at = date("%Y-%m-%d %H:%M"), build = (GetBuildInfo and table.concat({ GetBuildInfo() }, " ", 1, 2)) or "?", best = p.best, verdict = p.verdict, report = report }
+			AddHistory(chat, "system", report)
+			WoWAI.Render()
+			return
+		end
+		local now = {}
+		ProbeNow("tick", now)
+		for v, val in pairs(now) do p.tick[v] = p.tick[v] .. val end
+		C_Timer.After(1, Step)
+	end
+	C_Timer.After(1, Step)
+end
+
 local function ActivityLine(chat)
 	local a = run.act and run.act[chat.id]
 	local now = GetTime()
@@ -3350,6 +3496,7 @@ local HELP = table.concat({
 	"/wow-ai signal on|off          the cheap sound-file readiness check (off if it spams errors)",
 	"/wow-ai slots                  how many reply slots are still free this session",
 	"/wow-ai diag                   transport diagnostics (is the cheap sound-file channel working?)",
+	"/wow-ai probe                  25 s test of other ways to see a reply is ready, for clients where the sound check fails",
 	"/wow-ai clear                  clear this chat's transcript",
 }, "\n")
 
@@ -3371,7 +3518,7 @@ end
 
 local COMMAND_ARGS = {
 	mini = 0, min = 0, hide = 0, quit = 0, help = 0, clear = 0, delete = 0, reset = 0, copy = 0,
-	cancel = 0, resend = 0, reload = 0, refresh = 0, slots = 0, diag = 0,
+	cancel = 0, resend = 0, reload = 0, refresh = 0, slots = 0, diag = 0, probe = 0,
 	context = { [""] = true, on = true, off = true }, ctx = { [""] = true, on = true, off = true },
 	mode = { [""] = true, pixel = true, reload = true },
 	signal = { [""] = true, on = true, off = true }, longchat = { [""] = true, on = true, off = true },
@@ -3572,6 +3719,7 @@ SlashCmdList["WOWAI"] = function(msg)
 			"presence: head at " .. tostring(run.presence and run.presence.last or "?") .. ", beats seen: " .. tostring(run.presence and run.presence.beats or 0),
 			select(5, WoWAI.BridgeState()),
 			"mode: " .. s.mode .. ", session token: " .. tostring(db.session),
+			"probe: " .. (db.probe and (db.probe.at .. ", " .. (db.probe.best and ("works: " .. db.probe.best) or "nothing better found")) or "not run (/wow-ai probe)"),
 		}
 		for _, ch in ipairs(db.chats) do
 			local a = run.act and run.act[ch.id]
@@ -3580,6 +3728,10 @@ SlashCmdList["WOWAI"] = function(msg)
 			end
 		end
 		AddHistory(c, "system", "Diagnostics:\n" .. table.concat(lines, "\n"))
+		WoWAI.Render()
+		WoWAI.Toggle(true)
+	elseif cmd == "probe" then
+		WoWAI.Probe(c)
 		WoWAI.Render()
 		WoWAI.Toggle(true)
 	elseif cmd == "cancel" then

@@ -397,6 +397,21 @@ function presenceBeat() {
   saveState();
 }
 
+// Probe: ctl/probe/tick.* are valid during odd 5-second periods and empty during
+// even ones, so /wow-ai probe can see which checks follow a file that changes.
+const PROBE_DIR = path.join(cfg.addonDir, 'WoWAI', 'ctl', 'probe');
+const PROBE_FILES = P.probeContents();
+let probePhase = null;
+function probeTick() {
+  const on = Math.floor(Date.now() / 5000) % 2 === 1;
+  if (on === probePhase || !fs.existsSync(PROBE_DIR)) return;
+  probePhase = on;
+  for (const [ext, valid] of Object.entries(PROBE_FILES)) {
+    const file = path.join(PROBE_DIR, 'tick.' + ext);
+    if (valid && fs.existsSync(file)) { try { atomicWrite(file, on ? valid : Buffer.alloc(0)); } catch {} }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Inputs
 // ---------------------------------------------------------------------------
@@ -874,6 +889,7 @@ if (inject !== null) {
     setInterval(pollSavedVariables, cfg.pollMs || 750);
     presenceBeat();
     setInterval(presenceBeat, cfg.presenceIntervalMs || 30000);
+    setInterval(probeTick, 1000);
     if (cap.enabled) startCapture();
   }
 }

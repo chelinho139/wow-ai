@@ -359,6 +359,45 @@ test('without the sound channel the first minute after a send is polled every 4 
   assert.equal(loadsInFirstMinute(true), 7, '5, 10, 16, 24, 34, 46, 60');
 });
 
+test('/wow-ai probe finds which check tells empty from valid and follows the tick file', () => {
+  const P = 'Interface\\\\AddOns\\\\WoWAI\\\\ctl\\\\probe\\\\';
+  const runProbe = (flip) => {
+    const vm = newVM();
+    login(vm);
+    // Like the Firestorm client: every existing .wav "plays", empty or not.
+    vm.run(`for _, n in ipairs({ "empty", "valid", "tick" }) do STUB.sounds["${P}" .. n .. ".wav"] = true end`);
+    vm.run(`STUB.files["${P}valid.ttf"] = true; STUB.files["${P}valid.tga"] = true; STUB.sounds["${P}valid.mp3"] = true`);
+    vm.run('SlashCmdList.WOWAI("probe")');
+    for (let step = 1; step <= 30; step++) {
+      if (flip) {
+        const on = Math.floor(step / 5) % 2 === 1;
+        vm.run(`STUB.files["${P}tick.ttf"] = ${on}`);
+        // The mp3 is seen filled once and then stays "valid": a cached file.
+        if (step === 7) vm.run(`STUB.sounds["${P}tick.mp3"] = true`);
+      }
+      vm.run('STUB.RunTimers()');
+    }
+    return vm;
+  };
+  const vm = runProbe(true);
+  assert.equal(vm.evaluate('WoWAIDB.probe.best'), 'font return');
+  assert.equal(vm.evaluate('WoWAIDB.probe.verdict["wav sound"]'), 'no', 'empty wav plays too');
+  assert.equal(vm.evaluate('WoWAIDB.probe.verdict["mp3 sound"]'), 'fill only');
+  for (const v of ['font path', 'font width']) assert.equal(vm.evaluate(`WoWAIDB.probe.verdict["${v}"]`), 'useful', v);
+  assert.equal(vm.evaluate('WoWAIDB.probe.verdict["texture loaded"]'), 'no', 'the tick texture never changed');
+  const report = vm.evaluate('WoWAIDB.probe.report');
+  assert.match(report, /"font return" works on this client/);
+  assert.match(report, /wav sound: empty 1, valid 1, missing 0, tick 1+ -> no/);
+  assert.match(vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history].text'), /^Probe: "font return"/);
+  vm.run('SlashCmdList.WOWAI("diag")');
+  assert.match(vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history].text'), /probe: 12:00, works: font return/);
+
+  // Nothing flips the tick files: no bridge, or nothing follows them.
+  const idle = runProbe(false);
+  assert.equal(idle.evaluate('WoWAIDB.probe.best'), null);
+  assert.match(idle.evaluate('WoWAIDB.probe.report'), /^Probe: no check followed the tick file/);
+});
+
 test('the Folder... menu item (right-click a chat) opens a prompt that sets the chat folder like /wow-ai cd', () => {
   const vm = newVM();
   login(vm);

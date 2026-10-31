@@ -150,10 +150,12 @@ The addon declares `## Interface: 16001, 110205`, so the same files load on Fore
 A client in a folder of its own, without `_retail_` (as some servers ship it), needs `--wow` pointing at the folder that holds `Interface` and the game exe:
 
 ```powershell
-node setup.js --wow "E:GamesThe War Within" --project "C:path	oproject"
+node setup.js --wow "E:\Games\The War Within" --project "C:\path\to\project"
 ```
 
-setup takes `capture.processName` from that exe's name (spaces included). Post-processing injectors (ReShade, HDR mods, frame generation) draw over the whole frame, the addon's strip included: if the light stays red while the strip is on screen, turn their effects off and check `bridgeridge.log` for `strip #N`.
+setup takes `capture.processName` from that exe's name (spaces included). Post-processing injectors (ReShade, HDR mods, frame generation) draw over the whole frame, the addon's strip included: if the light stays red while the strip is on screen, turn their effects off and check `bridge\bridge.log` for `strip #N`.
+
+On the 11.2.5 client tested, the sound self-test fails (an empty `.wav` reports as playable), so replies are found by slot polls only: every 4 s for the first minute after a send, with no live progress. `/wow-ai probe`, with the bridge running, spends 25 s trying other kinds of file (an `.mp3`, a font, a texture) and says whether any of them works on your client; setup makes the files it needs, and WoW must be restarted after they first appear.
 
 ## Troubleshooting
 

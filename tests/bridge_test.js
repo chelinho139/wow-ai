@@ -251,3 +251,18 @@ test('slotNumber wraps and SILENT_WAV is a valid RIFF header', () => {
   assert.equal(P.sessKey({ session: 's', chat: 'c' }), 'chat:c');
   assert.equal(P.sessKey({ session: 's', chat: '' }), 's:default');
 });
+
+test('the probe files: a silent MP3 of whole frames, a 4x4 TGA, and a font only where one is found', () => {
+  assert.equal(P.SILENT_MP3.length % 417, 0);
+  assert.deepEqual([...P.SILENT_MP3.subarray(0, 4)], [0xff, 0xfb, 0x90, 0xc0]);
+  assert.deepEqual([...P.SILENT_MP3.subarray(417, 421)], [0xff, 0xfb, 0x90, 0xc0]);
+  const t = P.TINY_TGA;
+  assert.equal(t[2], 2, 'uncompressed true-color');
+  assert.equal(t.readUInt16LE(12), 4); assert.equal(t.readUInt16LE(14), 4); assert.equal(t[16], 32);
+  assert.equal(t.length, 18 + 4 * 4 * 4);
+  assert.equal(P.probeFont(path.join(os.tmpdir(), 'no-such-fonts-dir')), null);
+  const c = P.probeContents(null);
+  assert.deepEqual(Object.keys(c).sort(), ['mp3', 'tga', 'ttf', 'wav']);
+  assert.equal(c.ttf, null);
+  assert.equal(c.wav, P.SILENT_WAV);
+});

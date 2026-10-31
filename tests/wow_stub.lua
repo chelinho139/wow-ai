@@ -8,7 +8,7 @@
 STUB = {
 	frames = {}, texts = {}, timers = {}, tickers = {}, prints = {}, bindings = {},
 	now = 1000, epoch = 1700000000, sounds = {}, loaded = {}, reloaded = false,
-	tooltips = {}, zone = "Duskwood", subzone = "Darkshire", level = 23, money = 12345,
+	tooltips = {}, files = {}, zone = "Duskwood", subzone = "Darkshire", level = 23, money = 12345,
 }
 
 local function noop() end
@@ -54,7 +54,20 @@ function Methods.SetWidth(self, w) self.width = w end
 function Methods.SetHeight(self, h) self.height = h end
 function Methods.GetSize(self) return self:GetWidth(), self:GetHeight() end
 function Methods.GetStringHeight(self) return 14 end
-function Methods.GetStringWidth(self) return 100 end
+function Methods.GetStringWidth(self) return self.fontH and self.fontH * 10 or 100 end
+-- Fonts and textures under the addon's folder load only if STUB.files[path] is set
+-- (what /wow-ai probe looks at); a failed SetFont keeps the previous font.
+local function FileOK(path)
+	return type(path) == "string" and (not path:find("AddOns\\WoWAI\\", 1, true) or STUB.files[path] == true)
+end
+function Methods.SetFont(self, path, h)
+	if not FileOK(path) then return false end
+	self.font, self.fontH = path, h
+	return true
+end
+function Methods.GetFont(self) return self.font, self.fontH end
+function Methods.IsObjectLoaded(self) return FileOK(self.texture) end
+function Methods.GetTextureFilePath(self) return self.texture end
 function Methods.GetFontString(self) return self end
 function Methods.GetPoint(self) return "CENTER", nil, "CENTER", 0, 0 end
 function Methods.SetPoint(self, point, rel, relPoint, x, y)

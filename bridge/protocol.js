@@ -3,6 +3,7 @@
 // small rules around folders, permissions and dedup. No I/O, no config, no
 // process state, so tests/bridge_test.js can exercise it directly.
 
+const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
@@ -533,6 +534,33 @@ const SILENT_WAV = (() => {
   return b;
 })();
 
+// Other files that may tell "empty" from "valid" where the .wav trick doesn't
+// (/wow-ai probe in game tries each). A silent MP3: ten MPEG-1 Layer III frames,
+// 128 kbit/s, 44.1 kHz, mono, all side info zero.
+const SILENT_MP3 = (() => {
+  const frame = Buffer.alloc(417);
+  frame.set([0xff, 0xfb, 0x90, 0xc0]);
+  return Buffer.concat(Array(10).fill(frame));
+})();
+
+// A 4x4 white, opaque, uncompressed 32-bit TGA.
+const TINY_TGA = (() => {
+  const b = Buffer.alloc(18 + 4 * 4 * 4, 0xff);
+  b.fill(0, 0, 18);
+  b[2] = 2; b[12] = 4; b[14] = 4; b[16] = 32; b[17] = 0x28;
+  return b;
+})();
+
+// The probe's valid font is a small one every Windows install has; null elsewhere.
+function probeFont(fontsDir = path.join(process.env.WINDIR || 'C:\\Windows', 'Fonts')) {
+  try { return fs.readFileSync(path.join(fontsDir, 'marlett.ttf')); } catch { return null; }
+}
+
+// What a valid probe file of each kind holds (null: this kind can't be probed here).
+function probeContents(font = probeFont()) {
+  return { wav: SILENT_WAV, mp3: SILENT_MP3, tga: TINY_TGA, ttf: font };
+}
+
 // ---------------------------------------------------------------------------
 // Macros
 // ---------------------------------------------------------------------------
@@ -597,7 +625,7 @@ module.exports = {
   resolveCwd, sameFolder, baseName,
   parseFlags, jobsFromStrip, parseOutbox, systemPrompt, primerFor, splitSummary,
   ruleFor, sortDenials, describeToolUse,
-  luaStr, luaTable, SILENT_WAV,
+  luaStr, luaTable, SILENT_WAV, SILENT_MP3, TINY_TGA, probeFont, probeContents,
   MAP_LIMITS, validateMapCommand, newMap, applyMapCommands, extractMapBlocks, parseMapFile, luaMap,
   MACRO_LIMITS, extractMacros, stripMacroBlocks, luaMacros,
 };
