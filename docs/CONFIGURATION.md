@@ -39,6 +39,7 @@ A `config.json` from before agents existed kept Claude's settings at the top lev
 | Key | Default | Meaning |
 |---|---|---|
 | `gameContext` | `true` | Put the character/zone context the addon sends into the agent's system prompt. `false` ignores it, for a bridge only ever used on unrelated projects. The addon has its own switch, `/wow-ai context off`, which also clears what the bridge holds. |
+| `screenshotMaxWidth` | `1600` | Width in pixels that `/ai screenshot` pictures are scaled down to (Windows only). Wider shows more detail and costs the agent more. |
 | `serverNote` | none | One line added to the game context as `Server: …`, for what the addon can't know: e.g. `"Firestorm, a private server on retail 11.2.5 (live is newer)"`, so the agent doesn't trust live-build data for an older client. |
 | `primerFile` | `docs/WOW-ADDON-PRIMER.md`, or `docs/WOW-ADDON-PRIMER-RETAIL.md` when the game context reports a retail client (interface 100000 and up) | A markdown file appended to the system prompt together with the game context, whatever folder the chat works in: how to write addons and macros for this client. Relative to the wow-ai folder, or absolute. Re-read on every run, so edits count at once. `""` sends none. Off whenever the context is off. |
 | `maxParallel` | `3` | How many chats may run an agent at the same time. Further messages queue per chat. |

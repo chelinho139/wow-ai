@@ -504,8 +504,43 @@ function allowRules(agentId, rules) {
 // Running an agent
 // ---------------------------------------------------------------------------
 
+// Screenshots (/ai screenshot): the game window, saved as the message arrives
+// (the addon steps its own window aside for a few seconds), go to the agent.
+const shooting = new Set();
+function takeShot(job, done) {
+  let finished = false;
+  const end = () => { if (!finished) { finished = true; done(); } };
+  if (process.platform !== 'win32') { job.shotError = 'screenshots are only supported on Windows so far'; return end(); }
+  const dir = ensureScratch() || TMP_DIR;
+  const file = path.join(dir, `shot-${job.id}-${Date.now().toString(36)}.png`);
+  let out = '';
+  const ps = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(HERE, 'screenshot.ps1'),
+    '-ProcessName', cap.processName, '-Out', file, '-MaxWidth', String(cfg.screenshotMaxWidth || 1600)], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  const timer = setTimeout(() => { try { ps.kill(); } catch {} }, 20000);
+  ps.stdout.on('data', (d) => { out += d; });
+  ps.stderr.on('data', (d) => { out += d; });
+  ps.on('error', (e) => { clearTimeout(timer); job.shotError = e.message; end(); });
+  ps.on('close', () => {
+    clearTimeout(timer);
+    if (fs.existsSync(file)) job.images = [file];
+    else job.shotError = (out.trim().split(/\r?\n/).pop() || 'no image was saved').slice(0, 200);
+    end();
+  });
+}
+
 function submit(job) {
   if (alreadyHandled(job)) return;
+  if (job.shot && !job.images && !job.shotError) {
+    const k = `${job.session}:${job.id}`;
+    if (shooting.has(k)) return;
+    shooting.add(k);
+    takeShot(job, () => {
+      shooting.delete(k);
+      log(`#${job.id} screenshot: ${job.images ? job.images[0] : 'failed - ' + job.shotError}`);
+      submit(job);
+    });
+    return;
+  }
   if (job.ctx !== undefined) setContext(job);
   if (job.forget) {
     // A deleted chat: forget it and ack. No agent run.
@@ -619,14 +654,16 @@ function runJob(job) {
   const system = P.systemPrompt(ctx, primer(ctx), { scratch });
   const systemShort = P.systemPrompt(ctx, '', { scratch });
   const promptFile = path.join(TMP_DIR, `prompt-${job.id}-${Date.now().toString(36)}.txt`);
-  const input = agent.input({ prompt: job.text, system, systemShort, resume, cfg: acfg });
+  const images = job.images || [];
+  const prompt = job.shotError ? `${job.text}\n\n(The player asked to attach a screenshot of the game, but it could not be taken: ${job.shotError}.)` : job.text;
+  const input = agent.input({ prompt, system, systemShort, resume, cfg: acfg, images });
   if (input.promptFile !== undefined) {
     try { fs.mkdirSync(TMP_DIR, { recursive: true }); fs.writeFileSync(promptFile, input.promptFile); }
     catch (e) { finish(job, 'error', `Could not write the prompt file ${promptFile}: ${e.message}`); return; }
   }
   const args = [...cmd.args, ...agent.args({
-    cfg: acfg, resume, cwd, system, systemShort, promptFile, scratch,
-    prompt: job.text, timeoutMs: cfg.timeoutMs,
+    cfg: acfg, resume, cwd, system, systemShort, promptFile, scratch, images,
+    prompt, timeoutMs: cfg.timeoutMs,
   })];
   const env = agent.env({ ...process.env });
   // "$TEMP/x" and "/tmp/x" in Claude's shell then land where it may write.

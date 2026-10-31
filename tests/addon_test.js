@@ -682,6 +682,28 @@ test('/ai muerte attaches the last death from the combat log: biggest damage, th
   assert.ok(sentStartingWith(vm, 'death knight tank build?'));
 });
 
+test('/ai foto sends the question flagged for a screenshot and steps the window aside for a moment', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run(RETAIL_STUBS);
+  vm.run('WoWAI.Toggle(true); STUB.timers = {}');
+  vm.run('SlashCmdList.WOWAI("foto")');
+  const rec = sentStartingWith(vm, '¿Qué ves en mi pantalla?');
+  assert.ok(rec);
+  assert.deepEqual(rec.flags.split(';').filter(f => f !== 'c'), ['shot']);
+  assert.equal(vm.evaluate('WoWAIFrame:IsShown()'), 'false', 'out of the picture');
+  assert.equal(vm.evaluate('WoWAIDB.settings.shown'), 'true', 'still counted as open');
+  vm.run('STUB.RunTimers()');
+  assert.equal(vm.evaluate('WoWAIFrame:IsShown()'), 'true', 'back after the pause');
+  // A chat still waiting can't take another message; the shot is not lost silently.
+  vm.run('SlashCmdList.WOWAI("screenshot what is this error?")');
+  assert.match(vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history].text'), /still waiting for a reply/);
+  // The flag goes with that one message only.
+  vm.run('WoWAI.NewChat("x"); WoWAI.Send("plain question")');
+  assert.ok(!sentStartingWith(vm, 'plain question').flags.includes('shot'));
+});
+
 test('the context lists quests with their titles while they fit, then ids only, never over the cap', () => {
   const vm = newVM();
   vm.run(RETAIL_STUBS);

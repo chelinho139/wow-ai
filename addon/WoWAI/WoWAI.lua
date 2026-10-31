@@ -1863,6 +1863,43 @@ function WoWAI.SendWithAttachment(kind, question)
 	WoWAI.Toggle(true)
 end
 
+-- /ai screenshot [question]: the bridge saves a picture of the game window as the
+-- message arrives and gives it to the agent. This window and its bar step aside
+-- for SHOT_HIDE_SECONDS so the picture shows the game rather than the chat.
+local SHOT_HIDE_SECONDS = 4
+local SHOT_ASK = "What do you see on my screen? Explain it and tell me what to do."
+local SHOT_ASK_ES = "¿Qué ves en mi pantalla? Explícamelo y dime qué hacer."
+
+function WoWAI.SendScreenshot(question)
+	local c = ActiveChat()
+	if not c then return end
+	if c.pendingId or not WoWAI.IsConnected() then
+		AddHistory(c, "system", c.pendingId
+			and "This chat is still waiting for a reply: send the screenshot from another chat (/wow-ai new) or once the reply is in."
+			or "Not connected to the bridge: connect first, then ask for the screenshot again.")
+		WoWAI.Render()
+		WoWAI.Toggle(true)
+		return
+	end
+	question = Trim(question or "")
+	if question == "" then
+		local locale = Try(GetLocale)
+		question = (type(locale) == "string" and locale:sub(1, 2) == "es") and SHOT_ASK_ES or SHOT_ASK
+	end
+	local wasShown = ui.frame and ui.frame:IsShown()
+	local wasMini = ui.mini and ui.mini:IsShown()
+	run.shotNext = true
+	WoWAI.Send(question)
+	run.shotNext = nil
+	ui.quitting = true -- no mini bar from OnHide
+	if ui.frame then ui.frame:Hide() end
+	ui.quitting = nil
+	if ui.mini then ui.mini:Hide() end
+	C_Timer.After(SHOT_HIDE_SECONDS, function()
+		if wasShown then WoWAI.Toggle(true) elseif wasMini then WoWAI.Minimize(true) end
+	end)
+end
+
 -- The context to put on the next record, or nil when the bridge already has
 -- it (or it wouldn't fit next to this message; it goes with a later one).
 -- "" when the setting is off, so the bridge drops what it had.
@@ -1983,6 +2020,7 @@ function WoWAI.Send(text, allow, allowOnce)
 	local tokens = {}
 	if c.resetNext then table.insert(tokens, "n") end
 	if c.agent and c.agent ~= "" then table.insert(tokens, "agent=" .. c.agent) end
+	if run.shotNext then table.insert(tokens, "shot") end
 	local allowHex
 	if type(allow) == "table" and #allow > 0 then
 		table.insert(tokens, "allow=" .. table.concat(allow, ","))
@@ -2004,6 +2042,7 @@ function WoWAI.Send(text, allow, allowOnce)
 		agent = (c.agent and c.agent ~= "") and c.agent or nil,
 		allow = allowHex,
 		allowOnce = allowOnce and true or nil,
+		shot = run.shotNext and true or nil,
 		newSession = newSession,
 		t = time(),
 	}
@@ -3613,6 +3652,7 @@ local HELP = table.concat({
 	"/ai gear [question]            ... with your equipped items, item level and stats (also /ai equipo)",
 	"/ai mounts [question]          ... with your mount collection: owned and missing by source (also /ai monturas)",
 	"/ai quests [question]          ... with your quest log: titles and objectives (also /ai misiones)",
+	"/ai screenshot [question]      ... with a picture of your game window (this window steps aside for a moment; also /ai foto, /ai captura)",
 	"/ai death [question]           ... with your last death: what hit you, heals and your casts in its last 15 s (also /ai muerte)",
 	"/wow-ai context [on|off]       what the agent is told about your character and where you are (no argument = show it)",
 	"/wow-ai map [...]              map layers the agent drew, the route navigator and herb/ore nodes (no argument = status and subcommands; /aimap is the same)",
@@ -3665,6 +3705,7 @@ local COMMAND_ARGS = {
 -- /ai talents|gear|mounts|quests [question] (and the Spanish names): always a
 -- command, since attaching the data to whatever follows is what it is for.
 for kind in pairs(ATTACHMENTS) do COMMAND_ARGS[kind] = true end
+COMMAND_ARGS.screenshot, COMMAND_ARGS.foto, COMMAND_ARGS.captura = true, true, true
 -- ...except "/ai death knight ...", a question about the class.
 COMMAND_ARGS.death = function(rest) return not rest:lower():find("^knight") end
 
@@ -3742,6 +3783,8 @@ SlashCmdList["WOWAI"] = function(msg)
 		WoWAI.Toggle(true)
 	elseif cmd == "map" then
 		if WoWAIMap then WoWAIMap.Command(rest) else print("|cff66ccff[WoW AI]|r the map module did not load") end
+	elseif cmd == "screenshot" or cmd == "foto" or cmd == "captura" then
+		WoWAI.SendScreenshot(rest)
 	elseif ATTACHMENTS[cmd] then
 		WoWAI.SendWithAttachment(cmd, rest)
 	elseif cmd == "agent" then

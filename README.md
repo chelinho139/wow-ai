@@ -130,6 +130,7 @@ Right-clicking a chat in the left panel opens a small menu with **Rename...**, *
 | `/ai gear [question]` | ... with your equipped items, item levels and main stats (`/ai equipo`) |
 | `/ai mounts [question]` | ... with your mount collection: the mounts you own by name, the missing ones counted by source, and for each mount your question names whether you have it (`/ai monturas ¿tengo el raptor?`) |
 | `/ai quests [question]` | ... with your quest log: titles and objective progress (`/ai misiones`) |
+| `/ai screenshot [question]` | ... with a picture of your game window, taken by the bridge as the message arrives; the addon's window steps aside for a moment (`/ai foto`, `/ai captura`; Windows only) |
 | `/ai death [question]` | ... with your last death: damage taken by source, heals and your own casts in its last 15 s, with health after each (`/ai muerte`) |
 | `/wow-ai context [on\|off]` | show what the agent is told about your character and location, or turn it on/off |
 | `/wow-ai rename`, `/wow-ai delete`, `/wow-ai clear` | manage the current chat |

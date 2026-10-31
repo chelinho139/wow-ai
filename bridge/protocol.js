@@ -116,10 +116,11 @@ function sameFolder(a, b) {
 // empty one clears the context the bridge keeps), "agent=codex" = run this
 // chat with that agent instead of the bridge's default (see agents.js).
 function parseFlags(flags) {
-  const out = { newSession: false, hello: false, forget: false, context: false, allow: [], allowOnce: false, agent: '' };
+  const out = { newSession: false, hello: false, forget: false, context: false, allow: [], allowOnce: false, agent: '', shot: false };
   for (const tok of String(flags || '').split(';')) {
     if (tok === 'n') out.newSession = true;
     else if (tok === 'once') out.allowOnce = true;
+    else if (tok === 'shot') out.shot = true;
     else if (tok === 'h') out.hello = true;
     else if (tok === 'd') out.forget = true;
     else if (tok === 'c') out.context = true;
@@ -167,6 +168,7 @@ function parseOutbox(src) {
   const chat = (b.match(/\["chat"\]\s*=\s*"([0-9a-zA-Z]*)"/) || [])[1] || '';
   const newSession = /\["newSession"\]\s*=\s*true/.test(b);
   const job = { id, session, chat, text, cwd, newSession, via: 'reload' };
+  if (/\["shot"\]\s*=\s*true/.test(b)) job.shot = true;
   const ctx = b.match(/\["ctx"\]\s*=\s*"([0-9a-fA-F]*)"/);
   if (ctx) job.ctx = fromHex(ctx[1]);
   const agent = b.match(/\["agent"\]\s*=\s*"([0-9a-zA-Z_-]*)"/);
@@ -245,7 +247,7 @@ function systemPrompt(ctx, primer, opts = {}) {
       '',
       'Use this when the request is about the game or the character (questions, macros, addon code, gear advice); ignore it when the task is unrelated. Items, spells or quests the player shift-clicked into a message appear as [Name] in the text, with their tooltip in a "Linked from the game" block at the end of the message.',
       '',
-      'The addon can attach more, read straight from the game, when the player sends a message with one of these commands: "/ai talents <question>" (the talent build in use, by name and rank, the hero tree and unspent points), "/ai gear <question>" (equipped items with item level and quality, average item level, main stats), "/ai mounts <question>" (the collected mounts by name, the missing ones counted by source with a few examples; and every mount whose name shares a word with the question, each marked collected or missing with its source, so "/ai mounts halcón zancudo kodo" settles exactly which of those the player has: ask for that rather than guessing from examples, since the full missing list does not fit in a message), "/ai quests <question>" (the quest log with titles and objective progress), "/ai death <question>" (the last death: damage taken by source and spell, heals received and the spells the player cast in its last 15 seconds, with health after each). Spanish names work too: /ai talentos, /ai equipo, /ai monturas, /ai misiones, /ai muerte. The data arrives in a block such as "Talents, read from the game:". When you need one of these and it is not in the message, ask the player to resend with the command instead of asking for an export string, a screenshot or a list typed by hand; it matches their client exactly, which online databases may not.',
+      'The addon can attach more, read straight from the game, when the player sends a message with one of these commands: "/ai talents <question>" (the talent build in use, by name and rank, the hero tree and unspent points), "/ai gear <question>" (equipped items with item level and quality, average item level, main stats), "/ai mounts <question>" (the collected mounts by name, the missing ones counted by source with a few examples; and every mount whose name shares a word with the question, each marked collected or missing with its source, so "/ai mounts halcón zancudo kodo" settles exactly which of those the player has: ask for that rather than guessing from examples, since the full missing list does not fit in a message), "/ai quests <question>" (the quest log with titles and objective progress), "/ai death <question>" (the last death: damage taken by source and spell, heals received and the spells the player cast in its last 15 seconds, with health after each), "/ai screenshot <question>" (a picture of the game window, attached as an image file: for what only the screen shows, such as an error, a tooltip or a part of the interface). Spanish names work too: /ai talentos, /ai equipo, /ai monturas, /ai misiones, /ai muerte, /ai foto. The data arrives in a block such as "Talents, read from the game:". When you need one of these and it is not in the message, ask the player to resend with the command instead of asking for an export string or a list typed by hand; it matches their client exactly, which online databases may not.',
       '',
       ...MAP_HINT,
       '',
