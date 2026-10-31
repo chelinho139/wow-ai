@@ -265,3 +265,36 @@ test('/wow-ai map hide, show, nav and stop', () => {
   assert.equal(vm.evaluate('WoWAINavigator.shown'), 'false');
   vm.run('SlashCmdList.WOWAIMAP("")'); // status never errors
 });
+
+test('on retail the current stop is also the game map pin, and only a pin the addon set is cleared', () => {
+  const vm = newVM();
+  vm.run(`
+    UiMapPoint = { CreateFromCoordinates = function(m, x, y) return { uiMapID = m, position = { x = x, y = y } } end }
+    C_Map.CanSetUserWaypointOnMap = function(m) return m == 1432 end
+    C_Map.SetUserWaypoint = function(p) STUB.wp = p; STUB.wpSets = (STUB.wpSets or 0) + 1 end
+    C_Map.GetUserWaypoint = function() return STUB.wp end
+    C_Map.ClearUserWaypoint = function() STUB.wp = nil end
+    C_SuperTrack = { SetSuperTrackedUserWaypoint = function(on) STUB.superTracked = on end }`);
+  vm.run(`WoWAIMap.Sync(${LAYER})`);
+  vm.run('STUB.posX, STUB.posY = 0.2, 0.2; WoWAIMap.UpdateNavigator(); WoWAIMap.UpdateNavigator()');
+  assert.equal(vm.evaluate('STUB.wp.uiMapID'), '1432');
+  assert.equal(vm.num('STUB.wp.position.x'), 0.5);
+  assert.equal(vm.num('STUB.wp.position.y'), 0.4);
+  assert.equal(vm.evaluate('STUB.superTracked'), 'true');
+  assert.equal(vm.num('STUB.wpSets'), 1, 'set once, not on every update');
+  vm.run('SlashCmdList.WOWAIMAP("next")');
+  assert.equal(vm.num('STUB.wp.position.x'), 0.6, 'follows the next stop');
+  // Stopping clears the addon's own pin.
+  vm.run('SlashCmdList.WOWAIMAP("stop")');
+  assert.equal(vm.evaluate('STUB.wp'), null);
+  // A pin the player placed meanwhile survives the route ending.
+  vm.run('SlashCmdList.WOWAIMAP("nav mining 1")');
+  vm.run('STUB.wp = { uiMapID = 1432, position = { x = 0.1, y = 0.9 } }');
+  vm.run('SlashCmdList.WOWAIMAP("stop")');
+  assert.equal(vm.num('STUB.wp.position.x'), 0.1);
+  // Turned off: no pin.
+  vm.run('STUB.wp = nil; SlashCmdList.WOWAIMAP("waypoint off"); SlashCmdList.WOWAIMAP("nav mining 2")');
+  assert.equal(vm.evaluate('STUB.wp'), null);
+  vm.run('SlashCmdList.WOWAIMAP("waypoint on")');
+  assert.equal(vm.num('STUB.wp.position.x'), 0.6);
+});

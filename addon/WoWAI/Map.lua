@@ -428,15 +428,47 @@ local function BuildNavigator()
 	nav:Hide()
 end
 
+-- Native waypoint (retail): the current stop is also the game's own map pin,
+-- super-tracked, so it shows on the map and in the world with its distance.
+-- Only a waypoint this file set is ever cleared; one the player placed stays.
+local function WaypointKey(m, x, y) return string.format("%d:%.3f:%.3f", m, x, y) end
+
+local function CurrentWaypointKey()
+	local wp = Try(C_Map.GetUserWaypoint)
+	if type(wp) ~= "table" or type(wp.position) ~= "table" then return nil end
+	return WaypointKey(wp.uiMapID, wp.position.x, wp.position.y)
+end
+
+local function SyncWaypoint(p)
+	if not (C_Map and C_Map.SetUserWaypoint and C_Map.GetUserWaypoint and UiMapPoint and UiMapPoint.CreateFromCoordinates) then return end
+	local db = DB()
+	local want
+	if p and db.waypoint ~= false and Try(C_Map.CanSetUserWaypointOnMap, p[1]) then
+		want = WaypointKey(p[1], p[2] / 100, p[3] / 100)
+	end
+	if want == db.wpTarget then return end
+	if db.wpKey and CurrentWaypointKey() == db.wpKey then Try(C_Map.ClearUserWaypoint) end
+	db.wpTarget, db.wpKey = nil, nil
+	if not want then return end
+	Try(C_Map.SetUserWaypoint, UiMapPoint.CreateFromCoordinates(p[1], p[2] / 100, p[3] / 100))
+	if C_SuperTrack and C_SuperTrack.SetSuperTrackedUserWaypoint then Try(C_SuperTrack.SetSuperTrackedUserWaypoint, true) end
+	db.wpTarget, db.wpKey = want, CurrentWaypointKey()
+end
+
 function M.UpdateNavigator()
 	local l, p, i = NavPoint()
-	if not l then if nav then nav:Hide() end return end
+	if not l then
+		SyncWaypoint(nil)
+		if nav then nav:Hide() end
+		return
+	end
 	-- A quest stop finished since the last look (objectives can complete away
 	-- from it, a turn-in happens at the NPC wherever the pin was): move on.
 	if PointDone(p) and not M.skipping then
 		M.SkipDone(true)
 		return
 	end
+	SyncWaypoint(p)
 	if not nav then BuildNavigator() end
 	nav:Show()
 	nav.title:SetText(string.format("%d/%d  %s", i, #l.points, p[4] ~= "" and p[4] or l.title))
@@ -584,7 +616,8 @@ local function Status()
 	end
 	local n = mdb.nodes
 	Print(string.format("nodes: ore %s, herb %s, filter %s%s", n.ore and "on" or "off", n.herb and "on" or "off", n.filter, WoWAINodes and "" or "  (WoWAI_Nodes data addon not installed)"))
-	Print("commands: /wow-ai map ore|herb [on|off], filter all|skill, show|hide <layer>, nav <layer> [n], next, prev, stop  (/aimap is the same)")
+	if C_Map and C_Map.SetUserWaypoint then Print("game map pin for the current stop: " .. (mdb.waypoint == false and "off" or "on")) end
+	Print("commands: /wow-ai map ore|herb [on|off], filter all|skill, show|hide <layer>, nav <layer> [n], next, prev, stop, waypoint on|off  (/aimap is the same)")
 end
 
 function M.Command(msg)
@@ -608,6 +641,10 @@ function M.Command(msg)
 	elseif cmd == "nav" then
 		local name, idx = rest:match("^(%S+)%s*(%d*)$")
 		M.Navigate(name, tonumber(idx))
+	elseif cmd == "waypoint" and (rest == "on" or rest == "off") then
+		mdb.waypoint = rest == "on"
+		Print(mdb.waypoint and "the current stop is also the game's map pin" or "no game map pin for route stops")
+		M.UpdateNavigator()
 	elseif cmd == "next" then M.Step(1)
 	elseif cmd == "prev" then M.Step(-1)
 	elseif cmd == "stop" then M.Stop()

@@ -20,6 +20,7 @@ The agent can mark your world map. What it draws are **layers**: a named list of
 
 - **World map:** pins for every visible layer on the map you are looking at, projected onto continent maps too. Hover for the label; click a pin to navigate to it.
 - **Navigator:** a small frame with an arrow and the distance in yards to the current stop of the route. It starts on a route as soon as one arrives (unless you are already following another one), advances when you get within 12 yards, and wraps around on loops. A stop tied to a quest (`q`) advances with the quest instead, wherever you are: a `quest` stop when you accept it, a `turnin` stop when you turn it in, any other kind when its objectives are complete; several finished stops are skipped at once, a route drawn late starts at the first stop left, the navigator shows the objective still to do ("Pelambre de garrágil: 2/6", "ready to turn in"), and finished stops fade on the map. When a route (not a loop) is finished, it is hidden from the map as well; `/wow-ai map show <layer>` brings it back, and a new version of it from the agent shows again by itself. Drag it to move it; right-click skips a stop. It shows "no position here" in instances, where the game gives addons no coordinates.
+- **Game map pin (retail):** the current stop is also the game's own map pin, tracked, so it shows on the map, on the minimap and in the world with its distance. The game has a single such pin, so a new stop replaces one you placed; the addon only clears its own (a pin you placed during a route stays when the route ends). `/wow-ai map waypoint off` turns it off.
 - **Herb and ore nodes:** with a `WoWAI_Nodes` data addon installed (see below), every herb and ore spawn point of the zone on the world map, filtered to what your skill can gather.
 
 | Command | Does |
@@ -29,6 +30,7 @@ The agent can mark your world map. What it draws are **layers**: a named list of
 | `/wow-ai map filter all\|skill` | Every node, or only those your skill can gather (default) |
 | `/wow-ai map hide <layer>`, `/wow-ai map show <layer>` | Hide or show a layer locally |
 | `/wow-ai map nav <layer> [n]`, `next`, `prev`, `stop` | Drive the navigator |
+| `/wow-ai map waypoint on\|off` | The game's map pin on the current stop (retail; on by default) |
 
 `/aimap` is a shorter alias for `/wow-ai map`. Everything here only reads positions and draws. Nothing moves, targets or acts for you.
 

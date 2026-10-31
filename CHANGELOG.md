@@ -26,6 +26,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 - `serverNote` in `config.json` adds a `Server:` line to the game context. The retail primer warns that Wowhead, Raidbots and other online data describe the live build, which a private-server client may not be on.
 - `/wow-ai …`, `/ai …` and `/reload` typed into the addon's own input box run as commands instead of being sent to the agent; other `/` lines (a macro to ask about) are still messages.
 - The `Game:` line of the context includes the client's locale (`GetLocale`), so the agent writes macros with spell names in the player's language.
+- On retail the navigator's current stop is also the game's own map pin (`C_Map.SetUserWaypoint`, super-tracked), so it shows in the world with its distance; it follows the route and is cleared when the route ends, unless the player replaced it. `/wow-ai map waypoint on|off`.
 - `/wow-ai probe`: a 25-second test, for clients where the sound self-test fails, of other ways to see that a file changed: `.wav` and `.mp3` through `PlaySoundFile`, a font through `SetFont` (its return, `GetFont`, the text width) and a texture (`SetTexture`, `IsObjectLoaded`, `GetTextureFilePath`). `install-slots.js` makes `ctl/probe/empty.*`, `valid.*` and `tick.*`; the running bridge flips the tick files every 5 s. The result goes to the chat, to `WoWAIDB.probe` and to `/wow-ai diag`.
 
 ### Fixed
