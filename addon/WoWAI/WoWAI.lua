@@ -970,6 +970,7 @@ local function Tick()
 	if not db then return end
 	local now = GetTime()
 	PollPresence()
+	if WoWAI.AttachTransmogButtons then WoWAI.AttachTransmogButtons() end
 	-- Without presence beats, the only evidence is a slot read; spend one every
 	-- IDLE_POLL_SECONDS while idle so the light still reflects reality (and stays
 	-- green while the bridge is up: BridgeState allows for this interval).
@@ -2819,6 +2820,277 @@ do
 	end
 end
 
+do
+	-- Transmog for /ai transmog (a set) and /ai appearance (one item): what is
+	-- collected, what is missing and where each missing piece comes from. A set
+	-- is the one selected in the collections window (Blizzard's or
+	-- BetterWardrobe's, whose extra sets come through its own API), or named in
+	-- the question; an item is a link shift-clicked into the question or an item id.
+	local SET_MAX = 2500
+	local focus -- the set the collections-window button was for
+	local SLOT_ORDER = { INVTYPE_HEAD = 1, INVTYPE_SHOULDER = 2, INVTYPE_CLOAK = 3, INVTYPE_CHEST = 4, INVTYPE_ROBE = 4, INVTYPE_BODY = 5,
+		INVTYPE_TABARD = 6, INVTYPE_WRIST = 7, INVTYPE_HAND = 8, INVTYPE_WAIST = 9, INVTYPE_LEGS = 10, INVTYPE_FEET = 11 }
+
+	local function BetterWardrobe()
+		local ace = type(LibStub) == "table" and Try(LibStub.GetLibrary, LibStub, "AceAddon-3.0", true)
+		return ace and Try(ace.GetAddon, ace, "BetterWardrobe", true) or nil
+	end
+
+	local function SourceTypeName(t)
+		return t and (_G["TRANSMOG_SOURCE_" .. t] or ("source type " .. t)) or "unknown source"
+	end
+
+	local function SlotOf(itemID)
+		local _, _, _, equipLoc = Try(C_Item and C_Item.GetItemInfoInstant, itemID)
+		return equipLoc, (equipLoc and _G[equipLoc]) or "?"
+	end
+
+	-- Where a source item comes from: its kind, and for drops the bosses and difficulties.
+	local function HowToGet(sourceID, sourceType)
+		local text = SourceTypeName(sourceType)
+		local drops = {}
+		for _, d in ipairs(Try(C_TransmogCollection.GetAppearanceSourceDrops, sourceID) or {}) do
+			if type(d) == "table" and d.encounter then
+				local diffs = type(d.difficulties) == "table" and #d.difficulties > 0 and (" (" .. table.concat(d.difficulties, ", ") .. ")") or ""
+				drops[#drops + 1] = tostring(d.encounter) .. " in " .. tostring(d.instance or "?") .. diffs
+			end
+		end
+		if #drops > 0 then text = text .. ": " .. table.concat(drops, "; ") end
+		return text
+	end
+
+	-- The set the collections window has selected: BetterWardrobe's tab 2 holds
+	-- the game's sets, 3 its extra ones and 4 saved ones (those through its API).
+	local function SelectedSet()
+		local bw = BetterWardrobeCollectionFrame
+		if type(bw) == "table" and bw.SetsCollectionFrame and bw.SetsCollectionFrame.GetSelectedSetID then
+			local tab = bw.selectedCollectionTab
+			local id = Try(bw.SetsCollectionFrame.GetSelectedSetID, bw.SetsCollectionFrame)
+			if type(id) == "number" then return id, (tab == 3 or tab == 4) end
+		end
+		local w = WardrobeCollectionFrame
+		if type(w) == "table" and w.SetsCollectionFrame and w.SetsCollectionFrame.GetSelectedSetID then
+			local id = Try(w.SetsCollectionFrame.GetSelectedSetID, w.SetsCollectionFrame)
+			if type(id) == "number" then return id, false end
+		end
+	end
+
+	-- Sets whose name has the question's words, best first; the game's sets, and
+	-- BetterWardrobe's extra ones when it is loaded.
+	local function SetsNamed(question)
+		local words = QueryWords(question)
+		local found = {}
+		local function Consider(id, info, extra)
+			if type(info) ~= "table" or type(info.name) ~= "string" then return end
+			local name, score = Fold(info.name .. " " .. tostring(info.label or "")), 0
+			for _, w in ipairs(words) do
+				if name:find(w, 1, true) then score = score + 1 end
+			end
+			if score > 0 then found[#found + 1] = { id = id, extra = extra, score = score, valid = info.validForCharacter ~= false, name = info.name } end
+		end
+		for num in tostring(question or ""):gmatch("%d+") do
+			local id = tonumber(num)
+			local info = Try(C_TransmogSets.GetSetInfo, id)
+			if type(info) == "table" then return { { id = id, extra = false, name = info.name } } end
+		end
+		if #words == 0 then return found end
+		for _, info in ipairs(Try(C_TransmogSets.GetAllSets) or {}) do Consider(info.setID, info, false) end
+		local bw = BetterWardrobe()
+		local all = bw and Try(bw.GetSets)
+		if type(all) == "table" then
+			for id, info in pairs(all) do
+				if not Try(C_TransmogSets.GetSetInfo, id) then Consider(id, info, true) end
+			end
+		end
+		table.sort(found, function(a, b)
+			if a.score ~= b.score then return a.score > b.score end
+			if a.valid ~= b.valid then return a.valid end
+			return a.id < b.id
+		end)
+		return found
+	end
+
+	-- A set's name, label and its pieces as { sourceID = collected }.
+	local function SetData(id, extra)
+		if not extra then
+			local info = Try(C_TransmogSets.GetSetInfo, id)
+			if type(info) == "table" then
+				local pieces = {}
+				for _, a in ipairs(Try(C_TransmogSets.GetSetPrimaryAppearances, id) or {}) do
+					if type(a) == "table" and a.appearanceID then pieces[a.appearanceID] = a.collected and true or false end
+				end
+				return info, pieces
+			end
+		end
+		local bw = BetterWardrobe()
+		local info = bw and Try(bw.GetSetInfo, id)
+		local pieces = bw and bw.C_TransmogSets and Try(bw.C_TransmogSets.GetSetSources, id)
+		if type(info) == "table" and type(pieces) == "table" then return info, pieces end
+	end
+
+	local function CountCollected(pieces)
+		local have, total = 0, 0
+		for _, c in pairs(pieces) do
+			total = total + 1
+			if c then have = have + 1 end
+		end
+		return have, total
+	end
+
+	function WoWAI.TransmogSetText(question)
+		if not (C_TransmogSets and C_TransmogCollection) then return nil, "this client has no transmog collection" end
+		local id, extra, others
+		if focus then
+			id, extra = focus.id, focus.extra
+			focus = nil
+		else
+			local named = SetsNamed(question)
+			if named[1] then
+				id, extra = named[1].id, named[1].extra
+				others = {}
+				for k = 2, math.min(#named, 7) do others[#others + 1] = named[k].name .. " (id " .. named[k].id .. ")" end
+			else
+				id, extra = SelectedSet()
+			end
+		end
+		if not id then return nil, "select a set in the collections window (Sets tab), or name it: /ai transmog <words of its name or its id>" end
+		local info, pieces = SetData(id, extra)
+		if not info then return nil, "set " .. tostring(id) .. " is not one the game or BetterWardrobe can describe" end
+		local have, total = CountCollected(pieces)
+		local about = { "set id " .. id }
+		if type(info.label) == "string" and info.label ~= "" then table.insert(about, 1, info.label) end
+		if type(info.description) == "string" and info.description ~= "" then table.insert(about, 1, info.description) end
+		if extra then about[#about + 1] = "a BetterWardrobe extra set" end
+		if info.limitedTimeSet then about[#about + 1] = "limited time" end
+		if info.validForCharacter == false then about[#about + 1] = "not for this character's class or faction" end
+		local lines = { "Set: " .. tostring(info.name) .. " (" .. table.concat(about, ", ") .. ")", string.format("Collected: %d of %d pieces.", have, total) }
+		-- The other difficulties or colors of the same set.
+		if not extra then
+			local base = Try(C_TransmogSets.GetBaseSetID, id) or id
+			local variants = Try(C_TransmogSets.GetVariantSets, base) or {}
+			local all = { Try(C_TransmogSets.GetSetInfo, base) }
+			for _, v in ipairs(variants) do all[#all + 1] = v end
+			if #all > 1 then
+				local parts = {}
+				for _, v in ipairs(all) do
+					if type(v) == "table" and v.setID then
+						local _, p = SetData(v.setID, false)
+						local h, t = CountCollected(p or {})
+						parts[#parts + 1] = tostring(v.description or v.name) .. " " .. h .. "/" .. t .. (v.setID == id and " (this one)" or "")
+					end
+				end
+				lines[#lines + 1] = "Versions: " .. table.concat(parts, ", ")
+			end
+		end
+		local missing, owned = {}, {}
+		for sourceID, collected in pairs(pieces) do
+			local s = Try(C_TransmogCollection.GetSourceInfo, sourceID)
+			if type(s) == "table" then
+				local loc, slot = SlotOf(s.itemID)
+				local entry = { order = SLOT_ORDER[loc] or 20, slot = slot, sourceID = sourceID, s = s }
+				table.insert(collected and owned or missing, entry)
+			end
+		end
+		local function BySlot(a, b) if a.order ~= b.order then return a.order < b.order end return a.sourceID < b.sourceID end
+		table.sort(missing, BySlot)
+		table.sort(owned, BySlot)
+		if #missing > 0 then
+			lines[#lines + 1] = "Missing:"
+			for _, m in ipairs(missing) do
+				lines[#lines + 1] = string.format("- %s: %s (item %s): %s", m.slot, tostring(m.s.name or "?"), tostring(m.s.itemID or "?"), HowToGet(m.sourceID, m.s.sourceType))
+			end
+		end
+		if #owned > 0 then
+			local names = {}
+			for _, o in ipairs(owned) do names[#names + 1] = o.slot .. " (" .. tostring(o.s.name or "?") .. ")" end
+			lines[#lines + 1] = "Collected: " .. NameList(names, 500)
+		end
+		if others and #others > 0 then lines[#lines + 1] = "Other sets matching the question: " .. table.concat(others, ", ") end
+		local text = table.concat(lines, "\n")
+		if #text > SET_MAX then text = Utf8Cut(text, SET_MAX - 20) .. "\n(more left out)" end
+		return text
+	end
+
+	function WoWAI.TransmogSetFocus(id, extra) focus = { id = id, extra = extra } end
+
+	-- One item's appearance: whether it is collected (from this item or another),
+	-- how to get it, the other items that share the look, and the sets using it.
+	function WoWAI.AppearanceText(question)
+		if not C_TransmogCollection then return nil, "this client has no transmog collection" end
+		question = tostring(question or "")
+		local item = question:match("|H(item:[^|]+)|h") or question:match("%d+")
+		local visual = tonumber(question:match("|Htransmogappearance:(%d+)"))
+		local appearanceID, sourceID
+		if visual then
+			appearanceID = visual
+			local sources = Try(C_TransmogCollection.GetAllAppearanceSources, visual) or {}
+			sourceID = sources[1]
+		elseif item then
+			appearanceID, sourceID = Try(C_TransmogCollection.GetItemInfo, tonumber(item) or item)
+		end
+		if not sourceID then return nil, "shift-click the item into the message (from your bags, a chat link or the collections window), or give its item id: /ai appearance <link>" end
+		local s = Try(C_TransmogCollection.GetSourceInfo, sourceID)
+		if type(s) ~= "table" then return nil, "the game has no appearance for that item" end
+		local _, slot = SlotOf(s.itemID)
+		local a = Try(C_TransmogCollection.GetAppearanceInfoBySource, sourceID)
+		local status
+		if s.isCollected then
+			status = "collected from this item"
+		elseif type(a) == "table" and a.appearanceIsCollected then
+			status = "this look is collected through another item, not this one"
+		else
+			status = "not collected"
+		end
+		local lines = {
+			string.format("Item: %s (item %s, %s), appearance %s: %s.", tostring(s.name or "?"), tostring(s.itemID or "?"), slot, tostring(appearanceID or s.visualID or "?"), status),
+			"How to get it: " .. HowToGet(sourceID, s.sourceType),
+		}
+		if s.playerCanCollect == false or s.isValidSourceForPlayer == false then lines[#lines + 1] = "This character cannot collect it (class or armor type)." end
+		local others = {}
+		for _, other in ipairs(Try(C_TransmogCollection.GetAllAppearanceSources, appearanceID or s.visualID) or {}) do
+			if other ~= sourceID then
+				local o = Try(C_TransmogCollection.GetSourceInfo, other)
+				if type(o) == "table" then
+					others[#others + 1] = string.format("%s (item %s, %s%s)", tostring(o.name or "?"), tostring(o.itemID or "?"), HowToGet(other, o.sourceType), o.isCollected and ", collected" or "")
+				end
+			end
+		end
+		if #others > 0 then lines[#lines + 1] = "Other items with the same look (" .. #others .. "): " .. NameList(others, 900) end
+		local sets = {}
+		for _, setID in ipairs(Try(C_TransmogSets and C_TransmogSets.GetSetsContainingSourceID, sourceID) or {}) do
+			local info = Try(C_TransmogSets.GetSetInfo, setID)
+			if type(info) == "table" then sets[#sets + 1] = tostring(info.name) .. (info.description and (" " .. info.description) or "") .. " (id " .. setID .. ")" end
+		end
+		if #sets > 0 then lines[#lines + 1] = "Sets that use it: " .. NameList(sets, 300) end
+		return table.concat(lines, "\n")
+	end
+
+	-- A button on the collections window's Sets tab (Blizzard's and
+	-- BetterWardrobe's) that asks about the selected set. The frames come and go
+	-- with their addons, so the tick tries until both that exist have one.
+	local attached = {}
+	function WoWAI.AttachTransmogButtons()
+		for _, name in ipairs({ "BetterWardrobeCollectionFrame", "WardrobeCollectionFrame" }) do
+			local owner = _G[name]
+			local frame = type(owner) == "table" and owner.SetsCollectionFrame
+			if frame and not attached[name] then
+				attached[name] = true
+				local b = CreateFrame("Button", name .. "WoWAIButton", frame, "UIPanelButtonTemplate")
+				b:SetSize(170, 22)
+				b:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -8, 8)
+				local locale = Try(GetLocale)
+				b:SetText((type(locale) == "string" and locale:sub(1, 2) == "es") and "Preguntar a WoW AI" or "Ask WoW AI")
+				b:SetScript("OnClick", function()
+					local id, extra = SelectedSet()
+					if not id then return end
+					WoWAI.TransmogSetFocus(id, extra)
+					WoWAI.SendWithAttachment("transmog")
+				end)
+			end
+		end
+	end
+end
+
 -- /ai talents|gear|mounts|quests|death [question]: the question plus the data, in one message.
 local ATTACHMENTS = {
 	talents = { fn = "TalentsText", label = "Talents", ask = "Review my talents.", max = TALENTS_MAX },
@@ -2834,6 +3106,8 @@ local ATTACHMENTS = {
 	quest = { fn = "QuestText", label = "Quest", ask = "How do I do this quest?" },
 	reputations = { fn = "ReputationsText", label = "Reputations", ask = "Which reputations should I raise, and what do they unlock?", max = 2500 },
 	professions = { fn = "ProfessionsText", label = "Professions", ask = "How should I level my professions, and what should I make?" },
+	transmog = { fn = "TransmogSetText", label = "Transmog set", ask = "Which pieces of this set am I missing, and how do I get each one?", max = 2500 },
+	appearance = { fn = "AppearanceText", label = "Transmog appearance", ask = "How do I get this appearance?" },
 }
 -- The question sent when none is typed, in the client's language where we have it.
 local ATTACH_ASK_ES = {
@@ -2848,6 +3122,8 @@ local ATTACH_ASK_ES = {
 	quest = "¿Cómo hago esta misión?",
 	reputations = "¿Qué reputaciones me conviene subir y qué desbloquean?",
 	professions = "¿Cómo subo mis profesiones y qué me conviene fabricar?",
+	transmog = "¿Qué piezas me faltan de este conjunto y cómo consigo cada una?",
+	appearance = "¿Cómo consigo esta apariencia?",
 }
 for kind, a in pairs(ATTACHMENTS) do a.kind = kind end
 ATTACHMENTS.talentos, ATTACHMENTS.equipo, ATTACHMENTS.monturas, ATTACHMENTS.misiones, ATTACHMENTS.muerte =
@@ -2856,6 +3132,7 @@ ATTACHMENTS.combate, ATTACHMENTS.semanal, ATTACHMENTS.jefe, ATTACHMENTS.barras =
 	ATTACHMENTS.combat, ATTACHMENTS.weekly, ATTACHMENTS.boss, ATTACHMENTS.bars
 ATTACHMENTS.bolsas, ATTACHMENTS.mision, ATTACHMENTS["misión"], ATTACHMENTS.reputaciones, ATTACHMENTS.profesiones =
 	ATTACHMENTS.bags, ATTACHMENTS.quest, ATTACHMENTS.quest, ATTACHMENTS.reputations, ATTACHMENTS.professions
+ATTACHMENTS.conjunto, ATTACHMENTS.pieza, ATTACHMENTS.apariencia = ATTACHMENTS.transmog, ATTACHMENTS.appearance, ATTACHMENTS.appearance
 WoWAI.ATTACHMENTS = ATTACHMENTS
 
 function WoWAI.SendWithAttachment(kind, question)
@@ -4751,6 +5028,8 @@ local HELP = table.concat({
 	"/ai quest [question]           ... with one quest: its text, objectives and map area; the question can name it by title words or id, else the one you follow (also /ai mision)",
 	"/ai reputations [question]     ... with your reputations, renown, friendships and paragon progress (also /ai reputaciones)",
 	"/ai professions [question]     ... with your professions, their skill and expansion tiers (also /ai profesiones)",
+	"/ai transmog [set]             ... with a transmog set: pieces collected and missing, and where each missing one comes from. The set selected in the collections window, or name it (words or id); its Sets tab also gets an Ask WoW AI button (also /ai conjunto)",
+	"/ai appearance <item link|id>  ... with one item's look: collected or not, how to get it, other items with the same look, sets using it (also /ai pieza, /ai apariencia)",
 	"/wow-ai deathbutton on|off     the \"Why did I die?\" button after a death (on by default)",
 	"/wow-ai questbutton on|off     the \"How do I do ...?\" button on accepting a quest (on by default)",
 	"/wow-ai context [on|off]       what the agent is told about your character and where you are (no argument = show it)",

@@ -140,6 +140,8 @@ Right-clicking a chat in the left panel opens a small menu with **Rename...**, *
 | `/ai quest [question]` | ... with one quest: its text, objectives and area on the map. Name it by words of its title or its id; otherwise the one you follow on the map. Accepting a quest also offers a **How do I do ...?** button (`/ai mision`) |
 | `/ai reputations [question]` | ... with your reputations under their headers, renown, friendships and paragon progress (`/ai reputaciones`) |
 | `/ai professions [question]` | ... with your professions, their skill and learned expansion tiers, and free primary slots (`/ai profesiones`) |
+| `/ai transmog [set]` | ... with a transmog set: pieces collected and missing, and for each missing one where it comes from (boss, instance and difficulty for drops). The set selected in the collections window, Blizzard's or BetterWardrobe's (its extra sets too), or one named by words or id. The Sets tab also gets an **Ask WoW AI** button (`/ai conjunto`) |
+| `/ai appearance <item>` | ... with one item's look (shift-click it into the message, or its id): collected from it or from another item, how to get it, other items with the same look, sets that use it (`/ai pieza`) |
 | `/wow-ai context [on\|off]` | show what the agent is told about your character and location, or turn it on/off |
 | `/wow-ai rename`, `/wow-ai delete`, `/wow-ai clear` | manage the current chat |
 | `/wow-ai echo summary\|full\|short\|off\|<chars>` | how much of each reply to print into the game chat. `summary` (the default) prints only the agent's closing TL;DR lines, the full reply is in the window behind `[open]`; `full` prints up to 4000 chars, `short` one preview line |

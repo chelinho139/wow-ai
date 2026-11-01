@@ -1157,6 +1157,119 @@ test('/ai profesiones sends each profession with its skill and learned expansion
   assert.ok(sentStartingWith(vm, 'cuál cojo?').text.endsWith('Professions, read from the game:\nNo professions learned: both primary slots are free, and no secondary ones (cooking, fishing) either.'));
 });
 
+const TRANSMOG_STUBS = `
+  TRANSMOG_SOURCE_1, TRANSMOG_SOURCE_3 = "Botín de jefe", "Vendedor"
+  INVTYPE_HEAD, INVTYPE_SHOULDER, INVTYPE_CHEST = "Cabeza", "Hombros", "Pecho"
+  local SETS = {
+    [10] = { setID = 10, name = "Atuendo del Vacío", description = "Normal", label = "Banda", validForCharacter = true },
+    [11] = { setID = 11, name = "Atuendo del Vacío", description = "Heroico", label = "Banda", validForCharacter = true, baseSetID = 10 },
+    [20] = { setID = 20, name = "Túnicas del Alba", validForCharacter = true },
+  }
+  local PIECES = {
+    [10] = { { appearanceID = 1001, collected = true }, { appearanceID = 1002, collected = false }, { appearanceID = 1003, collected = false } },
+    [11] = { { appearanceID = 1101, collected = false } },
+    [20] = { { appearanceID = 2001, collected = true } },
+  }
+  local SOURCES = {
+    [1001] = { name = "Capucha del Vacío", itemID = 501, sourceType = 1, visualID = 77 },
+    [1002] = { name = "Hombreras del Vacío", itemID = 502, sourceType = 1, visualID = 78 },
+    [1003] = { name = "Toga del Vacío", itemID = 503, sourceType = 3, visualID = 79 },
+    [1004] = { name = "Hombreras viejas", itemID = 504, sourceType = 3, isCollected = true, visualID = 78 },
+    [1101] = { name = "Capucha heroica", itemID = 511, sourceType = 1 },
+    [2001] = { name = "Túnica", itemID = 601, sourceType = 3 },
+  }
+  C_TransmogSets = {
+    GetAllSets = function() return { SETS[10], SETS[11], SETS[20] } end,
+    GetSetInfo = function(id) return SETS[id] end,
+    GetSetPrimaryAppearances = function(id) return PIECES[id] end,
+    GetBaseSetID = function(id) return SETS[id] and (SETS[id].baseSetID or id) end,
+    GetVariantSets = function(base) if base == 10 then return { SETS[11] } end return {} end,
+    GetSetsContainingSourceID = function(src) if src == 1002 then return { 10 } end return {} end,
+  }
+  local EQUIP = { [501] = "INVTYPE_HEAD", [502] = "INVTYPE_SHOULDER", [503] = "INVTYPE_CHEST", [504] = "INVTYPE_SHOULDER", [511] = "INVTYPE_HEAD", [601] = "INVTYPE_CHEST" }
+  C_Item.GetItemInfoInstant = function(id) local loc = EQUIP[tonumber(id)]; if loc then return id, "Armadura", "Tela", loc end end
+  C_TransmogCollection = {
+    GetSourceInfo = function(src) local s = SOURCES[src]; if s then s.sourceID = src; return s end end,
+    GetAppearanceSourceDrops = function(src)
+      if src == 1002 then return { { encounter = "Xal'atath", instance = "Nexo", difficulties = { "Normal", "Heroico" } } } end
+      return {}
+    end,
+    GetItemInfo = function(item) if tostring(item):find("502") then return 78, 1002 end end,
+    GetAppearanceInfoBySource = function(src) if src == 1002 then return { appearanceIsCollected = true } end end,
+    GetAllAppearanceSources = function(vis) if vis == 78 then return { 1002, 1004 } end return {} end,
+  }
+  -- BetterWardrobe: its collections window with a selected set, and its own API for extra sets.
+  BetterWardrobeCollectionFrame = CreateFrame("Frame", "BetterWardrobeCollectionFrame")
+  BetterWardrobeCollectionFrame.selectedCollectionTab = 2
+  BetterWardrobeCollectionFrame.SetsCollectionFrame = CreateFrame("Frame", nil, BetterWardrobeCollectionFrame)
+  STUB.selectedSet = 10
+  BetterWardrobeCollectionFrame.SetsCollectionFrame.GetSelectedSetID = function() return STUB.selectedSet end
+  local BW = {
+    GetSetInfo = function(id) if id == 9001 then return { name = "Conjunto extra" } end end,
+    GetSets = function() return { [9001] = { name = "Conjunto extra" } } end,
+    C_TransmogSets = { GetSetSources = function(id) if id == 9001 then return { [2001] = false } end end },
+  }
+  LibStub = { GetLibrary = function(self, name) return { GetAddon = function(_, n) if n == "BetterWardrobe" then return BW end end } end }
+`;
+
+test('/ai conjunto sends a set\'s missing pieces and where they drop: from the collections window\'s button, by name, or a BetterWardrobe extra set', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run(RETAIL_STUBS);
+  vm.run(TRANSMOG_STUBS);
+  vm.run('STUB.Tick()');
+  assert.equal(vm.evaluate('BetterWardrobeCollectionFrameWoWAIButton:GetText()'), 'Preguntar a WoW AI', 'the Sets tab gets a button');
+  vm.run('BetterWardrobeCollectionFrameWoWAIButton.scripts.OnClick(BetterWardrobeCollectionFrameWoWAIButton)');
+  let rec = sentStartingWith(vm, '¿Qué piezas me faltan de este conjunto y cómo consigo cada una?');
+  assert.ok(rec);
+  assert.ok(rec.text.endsWith([
+    'Transmog set, read from the game:',
+    'Set: Atuendo del Vacío (Normal, Banda, set id 10)',
+    'Collected: 1 of 3 pieces.',
+    'Versions: Normal 1/3 (this one), Heroico 0/1',
+    'Missing:',
+    '- Hombros: Hombreras del Vacío (item 502): Botín de jefe: Xal\'atath in Nexo (Normal, Heroico)',
+    '- Pecho: Toga del Vacío (item 503): Vendedor',
+    'Collected: Cabeza (Capucha del Vacío)',
+  ].join('\n')), rec.text);
+  // Named in the question, ahead of the selection.
+  vm.run('WoWAI.NewChat("n"); SlashCmdList.WOWAI("conjunto tunicas alba")');
+  rec = sentStartingWith(vm, 'tunicas alba');
+  assert.ok(rec.text.includes('\nSet: Túnicas del Alba (set id 20)\nCollected: 1 of 1 pieces.\n'), rec.text);
+  vm.run('WoWAI.NewChat("v"); SlashCmdList.WOWAI("conjunto vacío")');
+  rec = sentStartingWith(vm, 'vacío');
+  assert.ok(rec.text.includes('\nSet: Atuendo del Vacío (Normal, Banda, set id 10)\n'), rec.text);
+  assert.ok(rec.text.endsWith('\nOther sets matching the question: Atuendo del Vacío (id 11)'), 'the other sets of that name are named too');
+  // BetterWardrobe's extra sets tab: its own API.
+  vm.run('WoWAI.NewChat("x"); BetterWardrobeCollectionFrame.selectedCollectionTab = 3; STUB.selectedSet = 9001; SlashCmdList.WOWAI("conjunto")');
+  rec = stripRecords(vm).filter(r => r.text.startsWith('¿Qué piezas me faltan')).pop();
+  assert.ok(rec.text.endsWith('Set: Conjunto extra (set id 9001, a BetterWardrobe extra set)\nCollected: 0 of 1 pieces.\nMissing:\n- Pecho: Túnica (item 601): Vendedor'), rec.text);
+});
+
+test('/ai pieza sends one item\'s look: collected or not, how to get it, the other items with that look, the sets using it', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run(RETAIL_STUBS);
+  vm.run(TRANSMOG_STUBS);
+  vm.run('SlashCmdList.WOWAI("pieza")');
+  assert.match(vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history].text'), /shift-click the item into the message/);
+  vm.run('SlashCmdList.WOWAI("pieza |cffa335ee|Hitem:502::::::::24:::::|h[Hombreras del Vacío]|h|r")');
+  const rec = sentStartingWith(vm, '[Hombreras del Vacío]');
+  assert.ok(rec, 'the link becomes its name');
+  // The link's own block (its tooltip) follows, as for any shift-clicked link.
+  assert.ok(rec.text.includes([
+    'Transmog appearance, read from the game:',
+    'Item: Hombreras del Vacío (item 502, Hombros), appearance 78: this look is collected through another item, not this one.',
+    'How to get it: Botín de jefe: Xal\'atath in Nexo (Normal, Heroico)',
+    'Other items with the same look (1): Hombreras viejas (item 504, Vendedor, collected)',
+    'Sets that use it: Atuendo del Vacío Normal (id 10)',
+    '',
+    '--- Linked from the game ---',
+  ].join('\n')), rec.text);
+});
+
 test('/ai foto sends the question flagged for a screenshot and steps the window aside for a moment', () => {
   const vm = newVM();
   login(vm);
