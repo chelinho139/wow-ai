@@ -2,8 +2,8 @@
 -- bridge, plus herb and ore locations from the optional WoWAI_Nodes addon.
 --
 -- Layers arrive in slot files as { epoch, version, layers = { { name, title,
--- ordered, loop, points = { { uiMapID, x, y, label, kind }, ... } } } }; x/y are
--- map percent. The bridge owns them; a newer version (or another epoch) replaces
+-- ordered, loop, points = { { uiMapID, x, y, label, kind, questID }, ... } } } }; x/y
+-- are map percent, questID is optional (see PointDone). The bridge owns them; a newer version (or another epoch) replaces
 -- our copy wholesale. Everything here reads positions and draws; nothing moves,
 -- targets or acts for the player.
 
@@ -55,6 +55,42 @@ end
 local function FindLayer(name)
 	for i, l in ipairs(Layers()) do
 		if l.name == name then return l, i end
+	end
+end
+
+-- Quest-linked stops: a point's 6th field is a questID. Such a stop is done when
+-- the quest gets where the stop wants it, wherever the player is: accepted for a
+-- "quest" (pickup) stop, turned in for a "turnin" stop, objectives complete for
+-- the rest (kill, loot, object...). Walking onto it does not skip it.
+local function QuestState(q)
+	if Try(C_QuestLog and C_QuestLog.IsQuestFlaggedCompleted, q) then return "done" end
+	if not Try(C_QuestLog and C_QuestLog.GetLogIndexForQuestID, q) then return "none" end
+	if Try(C_QuestLog.IsComplete, q) then return "complete" end
+	return "active"
+end
+
+local function PointDone(p)
+	local q = p[6]
+	if not q then return false end
+	local s = QuestState(q)
+	if p[5] == "turnin" then return s == "done" end
+	if p[5] == "quest" then return s ~= "none" end
+	return s == "complete" or s == "done"
+end
+M.PointDone = PointDone
+
+-- What the navigator shows under a quest stop: the first unfinished objective
+-- ("Pelambre de garrágil: 2/6"), or that it only needs turning in.
+local function QuestProgress(p)
+	local q = p[6]
+	if not q then return nil end
+	local s = QuestState(q)
+	if s == "complete" then return "ready to turn in" end
+	if s == "none" and p[5] == "quest" then return "pick up the quest" end
+	local objs = Try(C_QuestLog and C_QuestLog.GetQuestObjectives, q)
+	if type(objs) ~= "table" then return nil end
+	for _, o in ipairs(objs) do
+		if type(o) == "table" and not o.finished and type(o.text) == "string" and o.text ~= "" then return o.text end
 	end
 end
 
@@ -290,11 +326,13 @@ function M.Refresh()
 					local b = pins[pinCount]
 					if not b then b = NewPin(PIN_SIZE); pins[pinCount] = b end
 					local current = nav and nav.layer == l.name and nav.index == i
-					b.dot:SetVertexColor(color[1], color[2], color[3], 1)
-					b.ring:SetVertexColor(current and 1 or 0, current and 1 or 0, current and 1 or 0, 0.9)
+					-- A stop whose quest is done fades, so what is left stands out.
+					local done = PointDone(p)
+					b.dot:SetVertexColor(color[1], color[2], color[3], done and 0.35 or 1)
+					b.ring:SetVertexColor(current and 1 or 0, current and 1 or 0, current and 1 or 0, done and 0.35 or 0.9)
 					b.num:SetText(l.ordered and tostring(i) or "")
 					b:SetFrameLevel(overlay:GetFrameLevel() + (current and 20 or 10))
-					b.info = { title = l.title, label = p[4] ~= "" and p[4] or l.name, layer = l.name, index = i, hint = "Click: navigate here" }
+					b.info = { title = l.title, label = (p[4] ~= "" and p[4] or l.name) .. (done and " (done)" or ""), layer = l.name, index = i, hint = "Click: navigate here" }
 					Place(b, x, y, scale)
 					prev = { x, y }
 					first = first or { x, y, color }
@@ -377,7 +415,7 @@ local function BuildNavigator()
 	nav:SetScript("OnEnter", function(self)
 		GameTooltip:SetOwner(self, "ANCHOR_BOTTOM")
 		GameTooltip:AddLine("Route")
-		GameTooltip:AddLine("Drag to move, right-click to skip this stop. /wow-ai map for options.", 1, 1, 1, true)
+		GameTooltip:AddLine("Drag to move, right-click to skip this stop. A stop tied to a quest moves on by itself when the quest is done. /wow-ai map for options.", 1, 1, 1, true)
 		GameTooltip:Show()
 	end)
 	nav:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -390,12 +428,51 @@ local function BuildNavigator()
 	nav:Hide()
 end
 
+-- Native waypoint (retail): the current stop is also the game's own map pin,
+-- super-tracked, so it shows on the map and in the world with its distance.
+-- Only a waypoint this file set is ever cleared; one the player placed stays.
+local function WaypointKey(m, x, y) return string.format("%d:%.3f:%.3f", m, x, y) end
+
+local function CurrentWaypointKey()
+	local wp = Try(C_Map.GetUserWaypoint)
+	if type(wp) ~= "table" or type(wp.position) ~= "table" then return nil end
+	return WaypointKey(wp.uiMapID, wp.position.x, wp.position.y)
+end
+
+local function SyncWaypoint(p)
+	if not (C_Map and C_Map.SetUserWaypoint and C_Map.GetUserWaypoint and UiMapPoint and UiMapPoint.CreateFromCoordinates) then return end
+	local db = DB()
+	local want
+	if p and db.waypoint ~= false and Try(C_Map.CanSetUserWaypointOnMap, p[1]) then
+		want = WaypointKey(p[1], p[2] / 100, p[3] / 100)
+	end
+	if want == db.wpTarget then return end
+	if db.wpKey and CurrentWaypointKey() == db.wpKey then Try(C_Map.ClearUserWaypoint) end
+	db.wpTarget, db.wpKey = nil, nil
+	if not want then return end
+	Try(C_Map.SetUserWaypoint, UiMapPoint.CreateFromCoordinates(p[1], p[2] / 100, p[3] / 100))
+	if C_SuperTrack and C_SuperTrack.SetSuperTrackedUserWaypoint then Try(C_SuperTrack.SetSuperTrackedUserWaypoint, true) end
+	db.wpTarget, db.wpKey = want, CurrentWaypointKey()
+end
+
 function M.UpdateNavigator()
 	local l, p, i = NavPoint()
-	if not l then if nav then nav:Hide() end return end
+	if not l then
+		SyncWaypoint(nil)
+		if nav then nav:Hide() end
+		return
+	end
+	-- A quest stop finished since the last look (objectives can complete away
+	-- from it, a turn-in happens at the NPC wherever the pin was): move on.
+	if PointDone(p) and not M.skipping then
+		M.SkipDone(true)
+		return
+	end
+	SyncWaypoint(p)
 	if not nav then BuildNavigator() end
 	nav:Show()
 	nav.title:SetText(string.format("%d/%d  %s", i, #l.points, p[4] ~= "" and p[4] or l.title))
+	local detail = QuestProgress(p) or l.title
 	local dist, bearing = Heading(p)
 	if not dist and type(bearing) == "string" then
 		nav.arrow:Hide()
@@ -406,14 +483,43 @@ function M.UpdateNavigator()
 	local facing = Try(GetPlayerFacing)
 	if facing and bearing then nav.arrow:SetRotation(bearing - facing) else nav.arrow:SetRotation(0) end
 	if dist then
-		nav.text:SetText(string.format("%d yd  |cff888888%s|r", math.floor(dist + 0.5), l.title))
-		if dist <= ARRIVE_YARDS then
+		nav.text:SetText(string.format("%d yd  |cff888888%s|r", math.floor(dist + 0.5), detail))
+		-- Arrival moves on only for stops without a quest; those wait for the quest.
+		if dist <= ARRIVE_YARDS and not p[6] then
 			Try(PlaySound, SOUNDKIT and SOUNDKIT.MAP_PING or 3175)
 			M.Step(1, true)
 		end
 	else
-		nav.text:SetText(l.title)
+		nav.text:SetText(detail)
 	end
+end
+
+-- Moves past every stop whose quest is already done (several at once after a
+-- turn-in that also finishes the next pickup, or a route drawn late), and says
+-- which stop is next. Quiet when nothing moves.
+function M.SkipDone(announce)
+	if M.skipping then return end
+	M.skipping = true
+	local moved = 0
+	local l = NavPoint()
+	local limit = l and #l.points or 0
+	while moved < limit do
+		local cur, p = NavPoint()
+		if not cur or cur ~= l or not PointDone(p) then break end
+		moved = moved + 1
+		M.Step(1, true) -- clears navigation after the last stop of a route
+	end
+	M.skipping = false
+	if moved > 0 then
+		Try(PlaySound, SOUNDKIT and SOUNDKIT.MAP_PING or 3175)
+		local nl, np, ni = NavPoint()
+		if announce and nl then
+			Print(string.format("quest stop done; next %d/%d: %s", ni, #nl.points, np[4] ~= "" and np[4] or nl.title))
+		end
+		M.UpdateNavigator()
+		M.Refresh()
+	end
+	return moved > 0
 end
 
 function M.Navigate(layer, index)
@@ -421,6 +527,7 @@ function M.Navigate(layer, index)
 	if not l then Print("no layer " .. tostring(layer)); return end
 	DB().nav = { layer = layer, index = math.max(1, math.min(index or 1, #l.points)) }
 	mdb.hidden[layer] = nil
+	M.SkipDone(false)
 	M.UpdateNavigator()
 	M.Refresh()
 end
@@ -431,7 +538,10 @@ function M.Step(delta, arrived)
 	local nexti = i + delta
 	if nexti > #l.points then
 		if l.loop then nexti = 1 else
-			Print("route finished: " .. l.title)
+			-- A finished route leaves the map too; the bridge still has it, and a
+			-- new version of it (or /wow-ai map show) brings it back.
+			mdb.hidden[l.name] = true
+			Print(string.format("route finished: %s. Hidden from the map; /wow-ai map show %s brings it back.", l.title, l.name))
 			mdb.nav = nil
 			M.UpdateNavigator()
 			M.Refresh()
@@ -488,6 +598,8 @@ function M.Sync(m)
 			mdb.nav = { layer = l.name, index = 1 }
 		end
 	end
+	-- A route drawn after some of its quests were done starts at the first stop left.
+	M.SkipDone(false)
 	M.UpdateNavigator()
 	M.Refresh()
 end
@@ -504,7 +616,8 @@ local function Status()
 	end
 	local n = mdb.nodes
 	Print(string.format("nodes: ore %s, herb %s, filter %s%s", n.ore and "on" or "off", n.herb and "on" or "off", n.filter, WoWAINodes and "" or "  (WoWAI_Nodes data addon not installed)"))
-	Print("commands: /wow-ai map ore|herb [on|off], filter all|skill, show|hide <layer>, nav <layer> [n], next, prev, stop  (/aimap is the same)")
+	if C_Map and C_Map.SetUserWaypoint then Print("game map pin for the current stop: " .. (mdb.waypoint == false and "off" or "on")) end
+	Print("commands: /wow-ai map ore|herb [on|off], filter all|skill, show|hide <layer>, nav <layer> [n], next, prev, stop, waypoint on|off  (/aimap is the same)")
 end
 
 function M.Command(msg)
@@ -528,6 +641,10 @@ function M.Command(msg)
 	elseif cmd == "nav" then
 		local name, idx = rest:match("^(%S+)%s*(%d*)$")
 		M.Navigate(name, tonumber(idx))
+	elseif cmd == "waypoint" and (rest == "on" or rest == "off") then
+		mdb.waypoint = rest == "on"
+		Print(mdb.waypoint and "the current stop is also the game's map pin" or "no game map pin for route stops")
+		M.UpdateNavigator()
 	elseif cmd == "next" then M.Step(1)
 	elseif cmd == "prev" then M.Step(-1)
 	elseif cmd == "stop" then M.Stop()
@@ -541,6 +658,10 @@ local ev = CreateFrame("Frame")
 ev:RegisterEvent("ADDON_LOADED")
 ev:RegisterEvent("PLAYER_LOGIN")
 ev:RegisterEvent("SKILL_LINES_CHANGED")
+-- Quest progress moves quest-linked route stops along (see PointDone).
+for _, e in ipairs({ "QUEST_LOG_UPDATE", "QUEST_TURNED_IN", "QUEST_ACCEPTED", "QUEST_REMOVED" }) do
+	pcall(ev.RegisterEvent, ev, e)
+end
 ev:SetScript("OnEvent", function(_, event, arg1)
 	if event == "ADDON_LOADED" and (arg1 == ADDON_NAME or arg1 == "Blizzard_WorldMap") then
 		DB()
@@ -551,5 +672,8 @@ ev:SetScript("OnEvent", function(_, event, arg1)
 		M.UpdateNavigator()
 	elseif event == "SKILL_LINES_CHANGED" then
 		M.Refresh()
+	elseif mdb then
+		-- A quest event: move past finished stops, and fade them on an open map.
+		if not M.SkipDone(true) then M.Refresh() end
 	end
 end)

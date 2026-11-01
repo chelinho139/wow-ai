@@ -12,7 +12,7 @@ const addons = cfg.addonDir;
 const N = cfg.slots || 200;
 const ACT = cfg.actMax || 60;
 const PRESENCE = cfg.presenceMax || 2000;
-const iface = cfg.tocInterface || '16001';
+const iface = cfg.tocInterface || '16001, 110205';
 
 if (!fs.existsSync(path.join(addons, 'WoWAI', 'WoWAI.toc'))) {
   console.error('WoWAI addon not found under ' + addons);
@@ -57,6 +57,15 @@ for (let k = 1; k <= PRESENCE; k++) {
 // Control files for the addon's self-test: one always empty, one always valid.
 ensure(path.join(addons, 'WoWAI', 'ctl', 'empty.wav'), '');
 ensure(path.join(addons, 'WoWAI', 'ctl', 'valid.wav'), require('./protocol').SILENT_WAV);
+
+// Probe files for /wow-ai probe: per kind one empty, one valid, and a tick file
+// the running bridge flips every 5 s. (missing.* is checked too, and never made.)
+for (const [ext, valid] of Object.entries(require('./protocol').probeContents())) {
+  if (!valid) continue;
+  ensure(path.join(addons, 'WoWAI', 'ctl', 'probe', 'empty.' + ext), '');
+  ensure(path.join(addons, 'WoWAI', 'ctl', 'probe', 'valid.' + ext), valid);
+  ensure(path.join(addons, 'WoWAI', 'ctl', 'probe', 'tick.' + ext), '');
+}
 
 console.log(`slots: ${N}  files created: ${made}  already present: ${kept}`);
 if (made > 0) console.log('Now fully quit and relaunch WoW so it sees the new files.');

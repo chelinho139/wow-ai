@@ -75,7 +75,7 @@ WoWAI_SlotData = {
 }
 ```
 
-The addon loads a fresh slot on a schedule after each send (5, 10, 16, 24, 34, 46, 60, 80, 100, 130, 160, 200, 240, 300 s, then every 60 s) or immediately when the readiness signal fires. A slot poll matches replies by `(chat, id)` against each chat's pending message. `now` lets the addon know when the bridge last wrote anything (the two clocks are the same machine).
+The addon loads a fresh slot on a schedule after each send (5, 10, 16, 24, 34, 46, 60, 80, 100, 130, 160, 200, 240, 300 s, then every 60 s) or immediately when the readiness signal fires. When the sound self-test fails (the retail 11.2.5 client reports an empty `.wav` as playable), there is no readiness signal, so the first minute is polled every 4 s (15 slots) before the usual schedule takes over from 80 s. A slot poll matches replies by `(chat, id)` against each chat's pending message. `now` lets the addon know when the bridge last wrote anything (the two clocks are the same machine).
 
 The same content is written to `WoWAI/Inbox.lua`, which the game reads on `/reload` — the fallback path and the only path in `mode reload`.
 
