@@ -25,6 +25,18 @@ test('validateMapCommand sanitizes points, labels, kinds and layer names', () =>
   assert.equal(P.validateMapCommand({ op: 'explode' }), null);
 });
 
+test('a point keeps a valid quest id as q, and the slot file carries it as the sixth field', () => {
+  const c = P.validateMapCommand({ op: 'set', layer: 'quests', ordered: true, points: [
+    pt(1, 1, { kind: 'kill', q: 8892 }), pt(2, 2, { kind: 'turnin', q: '9252' }), pt(3, 3, { q: -4 }), pt(4, 4, { q: 1.5 }), pt(5, 5),
+  ] });
+  assert.deepEqual(c.points.map(p => p.q), [8892, 9252, undefined, undefined, undefined]);
+  const map = P.newMap('e');
+  P.applyMapCommands(map, [{ op: 'set', layer: 'quests', ordered: true, points: [pt(1, 1, { kind: 'kill', q: 8892 }), pt(2, 2)] }]);
+  const got = runLua(P.luaTable('WoWAI_SlotData', [], { now: 1, map }),
+    `(function(m) local p = m.layers[1].points; return tostring(p[1][6]) .. "|" .. tostring(p[2][6]) end)(WoWAI_SlotData.map)`);
+  assert.equal(got, '8892|nil');
+});
+
 test('applyMapCommands bumps the version only on change and keeps the budget', () => {
   const map = P.newMap('e1');
   let r = P.applyMapCommands(map, [{ op: 'set', layer: 'a', points: [pt(1, 1)] }]);

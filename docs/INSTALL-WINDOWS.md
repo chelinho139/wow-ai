@@ -143,6 +143,20 @@ npm unlink -g wow-ai      # removes the command
 
 Delete `Interface\AddOns\WoWAI` and the `WoWAI_S001` … `WoWAI_S200` folders next to it, and the `wow-ai` folder. Your chats' saved data is in `WTF\Account\<account>\SavedVariables\WoWAI.lua`.
 
+### Retail clients (The War Within, 11.2.5)
+
+The addon declares `## Interface: 16001, 110205`, so the same files load on Forever and on a retail 11.2.5 client. On retail the game context names the specialization and its saved talent loadout instead of talent tabs, lists professions through `GetProfessions`, and includes the client's locale (spell names in macros must match it); the bridge sends `docs/WOW-ADDON-PRIMER-RETAIL.md` instead of the Forever primer. Herb and ore nodes on the map are vanilla data and do not apply.
+
+A client in a folder of its own, without `_retail_` (as some servers ship it), needs `--wow` pointing at the folder that holds `Interface` and the game exe:
+
+```powershell
+node setup.js --wow "E:\Games\The War Within" --project "C:\path\to\project"
+```
+
+setup takes `capture.processName` from that exe's name (spaces included). Post-processing injectors (ReShade, HDR mods, frame generation) draw over the whole frame, the addon's strip included: if the light stays red while the strip is on screen, turn their effects off and check `bridge\bridge.log` for `strip #N`.
+
+On the 11.2.5 client tested, the sound self-test fails (an empty `.wav` reports as playable), so replies are found by slot polls only: every 4 s for the first minute after a send, with no live progress. `/wow-ai probe`, with the bridge running, spends 25 s trying other kinds of file (an `.mp3`, a font, a texture) and says whether any of them works on your client; setup makes the files it needs, and WoW must be restarted after they first appear.
+
 ## Troubleshooting
 
 **`wow-ai` is not recognized.** Open a new terminal; `npm link` needs `%AppData%\npm` on the `PATH`, which the Node installer sets up but an already-open terminal doesn't see. Check with `npm prefix -g`: that folder must be in `$env:Path`.
@@ -163,7 +177,7 @@ or type `wow-ai.cmd` instead, which bypasses the policy.
 
 **A reply says the agent is not logged in, or the run ends in a timeout.** Run the CLI once by hand in a terminal on this PC (`claude`, `codex`, `grok login`) and finish the login; headless runs reuse it. Grok also stops for nothing else: the bridge passes `--no-auto-update`.
 
-**The light stays red / "no sign of the bridge".** The bridge can't see the strip in the top-left corner of the game window. In order of likelihood: the game is in exclusive fullscreen (switch to windowed or borderless); the game window is minimized or on a monitor the bridge can't capture; `capture.processName` in the config doesn't match your game exe (`WowB` for Forever; `setup.js` sets it from the exe it finds). `bridge\bridge.log` prints `attached to '...'` when it finds the window and `strip #N` when it decodes a message.
+**The light stays red / "no sign of the bridge".** The bridge can't see the strip in the top-left corner of the game window. In order of likelihood: the game is in exclusive fullscreen (switch to windowed or borderless); the game window is minimized or on a monitor the bridge can't capture; `capture.processName` in the config doesn't match your game exe (`WowB` for Forever, the exe name without `.exe` for others; `setup.js` sets it from the exe it finds). `bridge\bridge.log` prints `attached to '...'` when it finds the window and `strip #N` when it decodes a message.
 
 **Windows Defender or another antivirus complains about the slot files.** They are 15,000 empty or 124-byte files; nothing runs from them. Exclude `Interface\AddOns` if the scanner slows the bridge's writes down.
 

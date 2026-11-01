@@ -178,6 +178,27 @@ test('the game context describes the character and rides on the hello, then only
   assert.ok(vm.evaluate('WoWAIDB.chats[2].history[#WoWAIDB.chats[2].history].text').includes('Game context is ON'));
 });
 
+test('on a retail client the context names the specialization, loadout and professions instead of talent tabs and skill lines', () => {
+  const vm = newVM();
+  vm.run(`
+    function GetBuildInfo() return "11.2.5", "63906", "Oct 7 2025", 110205 end
+    function GetLocale() return "esES" end
+    GetNumTalentTabs, GetTalentTabInfo, GetNumSkillLines, GetSkillLineInfo = nil, nil, nil, nil
+    function GetSpecialization() return 2 end
+    function GetSpecializationInfo(i) if i == 2 then return 254, "Puntería", "", 0, "DAMAGER" end end
+    C_ClassTalents = { GetLastSelectedSavedConfigID = function(specID) if specID == 254 then return 77 end end }
+    C_Traits = { GetConfigInfo = function(id) if id == 77 then return { ID = 77, name = "Raid ST" } end end }
+    function GetProfessions() return 3, nil, nil, 9, 10 end
+    local P = { [3] = { "Desuello", 100, 100 }, [9] = { "Pesca", 12, 300 }, [10] = { "Cocina", 5, 300 } }
+    function GetProfessionInfo(i) local p = P[i]; if p then return p[1], 0, p[2], p[3] end end
+  `);
+  const lines = vm.evaluate('WoWAI.GameContext()').split('\n');
+  assert.equal(lines[0], 'Game: World of Warcraft (retail) (client 11.2.5.63906, interface 110205, locale esES)');
+  assert.ok(lines.includes('Specialization: Puntería (loadout: Raid ST)'), lines.join('\n'));
+  assert.ok(lines.includes('Professions: Desuello 100/100, Pesca 12/300, Cocina 5/300'), lines.join('\n'));
+  assert.ok(!lines.some(l => l.startsWith('Talents:')));
+});
+
 test('a shift-clicked link lands in the focused input and is sent as its name plus tooltip', () => {
   const vm = newVM();
   login(vm);
@@ -322,6 +343,61 @@ test('without the sound channel, the light stays green between idle slot polls',
   assert.equal(vm.evaluate('WoWAI.BridgeState()'), 'down');
 });
 
+test('without the sound channel the first minute after a send is polled every 4 s; with it, on the usual schedule', () => {
+  const loadsInFirstMinute = (sound) => {
+    const vm = newVM();
+    if (sound) vm.run('STUB.sounds["Interface\\\\AddOns\\\\WoWAI\\\\ctl\\\\valid.wav"] = true');
+    login(vm);
+    connect(vm);
+    vm.run('WoWAI.Send("hello world")');
+    vm.run('STUB.loadCount = 0; STUB.onLoadAddOn = function(name) STUB.loadCount = STUB.loadCount + 1; WoWAI_SlotData = { now = time(), cwd = "", replies = {} } end');
+    for (let t = 0; t < 60; t += 2) vm.run('STUB.now = STUB.now + 2; STUB.Tick()');
+    assert.notEqual(vm.evaluate('WoWAIDB.chats[1].pendingId'), null, 'still waiting');
+    return vm.num('STUB.loadCount');
+  };
+  assert.equal(loadsInFirstMinute(false), 15, 'every 4 s, 4..60');
+  assert.equal(loadsInFirstMinute(true), 7, '5, 10, 16, 24, 34, 46, 60');
+});
+
+test('/wow-ai probe finds which check tells empty from valid and follows the tick file', () => {
+  const P = 'Interface\\\\AddOns\\\\WoWAI\\\\ctl\\\\probe\\\\';
+  const runProbe = (flip) => {
+    const vm = newVM();
+    login(vm);
+    // Like the Firestorm client: every existing .wav "plays", empty or not.
+    vm.run(`for _, n in ipairs({ "empty", "valid", "tick" }) do STUB.sounds["${P}" .. n .. ".wav"] = true end`);
+    vm.run(`STUB.files["${P}valid.ttf"] = true; STUB.files["${P}valid.tga"] = true; STUB.sounds["${P}valid.mp3"] = true`);
+    vm.run('SlashCmdList.WOWAI("probe")');
+    for (let step = 1; step <= 30; step++) {
+      if (flip) {
+        const on = Math.floor(step / 5) % 2 === 1;
+        vm.run(`STUB.files["${P}tick.ttf"] = ${on}`);
+        // The mp3 is seen filled once and then stays "valid": a cached file.
+        if (step === 7) vm.run(`STUB.sounds["${P}tick.mp3"] = true`);
+      }
+      vm.run('STUB.RunTimers()');
+    }
+    return vm;
+  };
+  const vm = runProbe(true);
+  assert.equal(vm.evaluate('WoWAIDB.probe.best'), 'font return');
+  assert.equal(vm.evaluate('WoWAIDB.probe.verdict["wav sound"]'), 'no', 'empty wav plays too');
+  assert.equal(vm.evaluate('WoWAIDB.probe.verdict["mp3 sound"]'), 'fill only');
+  for (const v of ['font path', 'font width']) assert.equal(vm.evaluate(`WoWAIDB.probe.verdict["${v}"]`), 'useful', v);
+  assert.equal(vm.evaluate('WoWAIDB.probe.verdict["texture loaded"]'), 'no', 'the tick texture never changed');
+  const report = vm.evaluate('WoWAIDB.probe.report');
+  assert.match(report, /"font return" works on this client/);
+  assert.match(report, /wav sound: empty 1, valid 1, missing 0, tick 1+ -> no/);
+  assert.match(vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history].text'), /^Probe: "font return"/);
+  vm.run('SlashCmdList.WOWAI("diag")');
+  assert.match(vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history].text'), /probe: 12:00, works: font return/);
+
+  // Nothing flips the tick files: no bridge, or nothing follows them.
+  const idle = runProbe(false);
+  assert.equal(idle.evaluate('WoWAIDB.probe.best'), null);
+  assert.match(idle.evaluate('WoWAIDB.probe.report'), /^Probe: no check followed the tick file/);
+});
+
 test('the Folder... menu item (right-click a chat) opens a prompt that sets the chat folder like /wow-ai cd', () => {
   const vm = newVM();
   login(vm);
@@ -376,21 +452,963 @@ test('a sent message is encoded on the strip with the chat folder, then a slot r
   assert.ok(vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history].text').includes('C:\\proj'));
 });
 
-test('a denied reply shows Allow, and Allow resends with the rules as flags', () => {
+test('a denied reply shows Allow once and Always; once resends the rules flagged for one run, Always without the flag', () => {
   const vm = newVM();
   login(vm);
   connect(vm);
-  vm.run('WoWAI.Send("search for it")');
-  const chatId = vm.evaluate('WoWAIDB.chats[1].id');
-  const id = vm.num('WoWAIDB.chats[1].pendingId');
-  nextSlot(vm, `{ now = time(), cwd = "", replies = { { chat = "${chatId}", id = ${id}, status = "done", text = "need permission", denied = { "WebSearch", "Bash(cargo:*)" } } } }`);
-  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
-  assert.equal(vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history].denied[2]'), 'Bash(cargo:*)');
-  vm.run(`WoWAI.Allow("${chatId}", { "WebSearch", "Bash(cargo:*)" })`);
-  const rec = stripRecords(vm).find(r => r.flags.includes('allow='));
+  const deny = (n) => {
+    vm.run(`WoWAI.Send("search for it ${n}")`);
+    const chatId = vm.evaluate('WoWAIDB.chats[1].id');
+    const id = vm.num('WoWAIDB.chats[1].pendingId');
+    nextSlot(vm, `{ now = time(), cwd = "", replies = { { chat = "${chatId}", id = ${id}, status = "done", text = "need permission", denied = { "WebSearch", "Bash(cargo:*)" } } } }`);
+    vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+    assert.equal(vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history].denied[2]'), 'Bash(cargo:*)');
+    return { chatId, id };
+  };
+  let { chatId, id } = deny(1);
+  vm.run(`WoWAI.Allow("${chatId}", { "WebSearch", "Bash(cargo:*)" }, false)`);
+  let rec = stripRecords(vm).find(r => r.flags.includes('allow='));
   assert.ok(rec, 'allow record on the strip');
-  assert.equal(rec.flags, 'allow=WebSearch,Bash(cargo:*)');
+  assert.equal(rec.flags, 'allow=WebSearch,Bash(cargo:*);once');
   assert.equal(rec.id, id + 1);
+  assert.equal(vm.evaluate('WoWAIDB.outbox.allowOnce'), 'true', 'the reload path says "once" too');
+  assert.ok(vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history - 1].text').startsWith('Allowed once: '));
+
+  // Answer the retry, get refused again, and this time save the rules.
+  nextSlot(vm, `{ now = time(), cwd = "", replies = { { chat = "${chatId}", id = ${id + 1}, status = "done", text = "ok" } } }`);
+  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+  ({ chatId, id } = deny(2));
+  vm.run(`WoWAI.Allow("${chatId}", { "WebSearch", "Bash(cargo:*)" }, true)`);
+  rec = stripRecords(vm).find(r => r.id === id + 1);
+  assert.equal(rec.flags, 'allow=WebSearch,Bash(cargo:*)');
+  assert.equal(vm.evaluate('WoWAIDB.outbox.allowOnce'), null);
+});
+
+// A retail-looking client: trait trees, item levels, the mount journal and C_QuestLog.
+const RETAIL_STUBS = `
+  function GetLocale() return "esES" end
+  GetNumTalentTabs, GetTalentTabInfo = nil, nil
+  function GetSpecialization() return 3 end
+  function GetSpecializationInfo(i) if i == 3 then return 267, "Destrucción" end end
+  C_Spell = {
+    GetSpellName = function(id) return ({ [1] = "Inmolar", [2] = "Conflagrar" })[id] end,
+    -- Markup and line breaks as tooltips have them; a long one made of 2-byte characters.
+    GetSpellDescription = function(id)
+      if id == 2 then return "|cffffffffQuema|r al\\nobjetivo." end
+      if id == 1 then return string.rep("á", 100) end
+    end,
+  }
+  local NODES = {
+    [10] = { ID = 10, currentRank = 1, maxRanks = 1, posX = 5, posY = 2, isVisible = true, activeEntry = { entryID = 100 } },
+    [11] = { ID = 11, currentRank = 2, maxRanks = 2, posX = 1, posY = 2, isVisible = true, activeEntry = { entryID = 110 } },
+    [12] = { ID = 12, currentRank = 0, maxRanks = 1, posX = 1, posY = 1, isVisible = true, entryIDs = { 120 } },
+    [13] = { ID = 13, currentRank = 1, maxRanks = 1, posX = 9, posY = 0, isVisible = true, activeEntry = { entryID = 130 } },
+    [14] = { ID = 14, currentRank = 1, maxRanks = 1, posX = 9, posY = 1, isVisible = true, subTreeID = 7, subTreeActive = true, activeEntry = { entryID = 140 } },
+    [15] = { ID = 15, currentRank = 1, maxRanks = 1, posX = 9, posY = 1, isVisible = true, subTreeID = 8, subTreeActive = false, activeEntry = { entryID = 150 } },
+  }
+  local ENTRIES = { [100] = { definitionID = 1000 }, [110] = { definitionID = 1100 }, [120] = { definitionID = 1200 },
+    [130] = { subTreeID = 7 }, [140] = { definitionID = 1400 }, [150] = { definitionID = 1500 } }
+  local DEFS = { [1000] = { spellID = 1 }, [1100] = { spellID = 2 }, [1200] = { overrideName = "Nunca" },
+    [1400] = { overrideName = "Ritual diabólico" }, [1500] = { overrideName = "Otra rama" } }
+  C_ClassTalents = { GetActiveConfigID = function() return 5 end, GetLastSelectedSavedConfigID = function(specID) if specID == 267 then return 9 end end }
+  C_Traits = {
+    GetConfigInfo = function(id) if id == 5 then return { ID = 5, treeIDs = { 1 } } elseif id == 9 then return { ID = 9, name = "Raid ST" } end end,
+    GetTreeNodes = function(tree) return { 10, 11, 12, 13, 14, 15 } end,
+    GetNodeInfo = function(cfg, id) return NODES[id] end,
+    GetEntryInfo = function(cfg, id) return ENTRIES[id] end,
+    GetDefinitionInfo = function(id) return DEFS[id] end,
+    GetSubTreeInfo = function(cfg, id) if id == 7 then return { ID = 7, name = "Diabolista" } end end,
+    GetTreeCurrencyInfo = function(cfg, tree) return { { traitCurrencyID = 1, quantity = 2 }, { traitCurrencyID = 2, quantity = 0 } } end,
+  }
+  HEADSLOT, MAINHANDSLOT = "Cabeza", "Mano principal"
+  function GetAverageItemLevel() return 48.2, 45.5 end
+  function GetInventoryItemLink(unit, slot)
+    if slot == 1 then return "|cff1eff00|Hitem:2140::::::::16:::::|h[Fine Longsword]|h|r" end
+    if slot == 16 then return "|cffffffff|Hitem:99::::::::16:::::|h[Bastón viejo]|h|r" end
+  end
+  C_Item.GetDetailedItemLevelInfo = function(link) if link:find("item:2140") then return 47 end return 40 end
+  C_Item.GetItemInfoInstant = function(link)
+    if tostring(link):find("item:99") then return 99, "Arma", STUB.weaponType or "Bastones", STUB.weaponLoc or "INVTYPE_2HWEAPON" end
+  end
+  -- The client takes a full link here; the shared stub only knows bare "item:" strings.
+  C_Item.GetItemInfo = function(link) if tostring(link):find("item:2140") then return "Fine Longsword", link, 2 end end
+  SPELL_STAT4_NAME = "Intelecto"
+  function UnitStat(unit, i) if i == 4 then return 300, 312 end end
+  function GetSpellCritChance() return 12.34 end
+  function GetHaste() return 8 end
+  BATTLE_PET_SOURCE_3, BATTLE_PET_SOURCE_10 = "Vendedor", "Tienda"
+  local MOUNTS = {
+    [1] = { "Lobo", 3, false, true }, [2] = { "Raptor", 3, false, false }, [3] = { "Zancudo", 3, false, false },
+    [4] = { "Caballo de la Alianza", 3, true, false }, [5] = { "Dragón de tienda", 10, false, false },
+  }
+  C_MountJournal = {
+    GetMountIDs = function() return { 1, 2, 3, 4, 5 } end,
+    GetMountInfoByID = function(id) local m = MOUNTS[id]; return m[1], 100 + id, 0, false, true, m[2], false, false, nil, m[3], m[4], id end,
+  }
+  local LOG = {
+    { title = "Dragonflight", isHeader = true }, -- a group header with no quest under it
+    { title = "Bosque Canción Eterna", isHeader = true },
+    { title = "Lobos hambrientos", questID = 101 },
+    { title = "Entrega del correo", questID = 49930 },
+  }
+  local OBJ = { [101] = { { text = "Lobos sarnosos: 3/8", finished = false }, { text = "Habla con Lana", finished = true } }, [49930] = {} }
+  C_QuestLog = {
+    GetNumQuestLogEntries = function() return #LOG end,
+    GetInfo = function(i) return LOG[i] end,
+    IsComplete = function(id) return id == 49930 end,
+    GetQuestObjectives = function(id) return OBJ[id] end,
+  }
+`;
+
+// The record the last /ai <attachment> put on the strip, by the start of its text.
+function sentStartingWith(vm, start) {
+  return stripRecords(vm).find(r => r.text.startsWith(start));
+}
+
+test('/ai talentos sends the build in use: names, ranks and descriptions top to bottom, the hero tree, unspent points', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run(RETAIL_STUBS);
+  vm.run('SlashCmdList.WOWAI("talentos")');
+  const rec = sentStartingWith(vm, 'Revisa mis talentos.');
+  assert.ok(rec, 'sent with the Spanish default question');
+  assert.equal(rec.text, [
+    'Revisa mis talentos.',
+    '',
+    'Talents, read from the game:',
+    'Specialization: Destrucción (loadout Raid ST)',
+    'Unspent talent points: 2',
+    'Class and spec talents, top to bottom (2):',
+    '- Conflagrar 2/2: Quema al objetivo.',
+    '- Inmolar: ' + 'á'.repeat(68) + '...',
+    'Hero talents (Diabolista):',
+    '- Ritual diabólico',
+  ].join('\n'));
+  // A question typed after the command replaces the default one.
+  vm.run('STUB.now = STUB.now + 1; WoWAI.NewChat("Otro"); SlashCmdList.WOWAI("talents is Conflagrar worth it?")');
+  assert.ok(sentStartingWith(vm, 'is Conflagrar worth it?\n\nTalents, read from the game:\n'));
+});
+
+test('/ai equipo, /ai monturas and /ai misiones attach gear, the mount collection and the quest log', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run(RETAIL_STUBS);
+  vm.run('SlashCmdList.WOWAI("equipo que mejoro?")');
+  let rec = sentStartingWith(vm, 'que mejoro?');
+  assert.ok(rec);
+  const gear = rec.text.split('\n');
+  assert.equal(gear[2], 'Equipped gear, read from the game:');
+  assert.ok(gear[3].startsWith('Average item level equipped: 45.5; empty slots: 13 (Neck, Shoulder, '), gear[3]);
+  assert.ok(!rec.text.includes('48.2'), 'the "overall" average is not passed on as gear in the bags');
+  assert.ok(gear.includes('Cabeza: Fine Longsword (ilvl 47, Uncommon)'), rec.text);
+  assert.ok(gear.includes('Mano principal: Bastón viejo (ilvl 40, Bastones, two-handed)'), rec.text);
+  assert.ok(gear.includes('Neck: (empty)'), 'an empty slot is listed, by its English name when the client has no global for it');
+  assert.ok(!rec.text.includes('Off hand'), 'an empty off hand is left out behind a two-handed weapon');
+  // A one-handed weapon leaves the off hand free: that empty slot counts.
+  vm.run('STUB.weaponType, STUB.weaponLoc = "Dagas", "INVTYPE_WEAPON"');
+  const oneHand = vm.evaluate('WoWAI.GearText()').split('\n');
+  assert.ok(oneHand.includes('Mano principal: Bastón viejo (ilvl 40, Dagas)'), oneHand.join('\n'));
+  assert.ok(oneHand.includes('Off hand: (empty)'));
+  assert.ok(oneHand[0].includes('empty slots: 14 ('), oneHand[0]);
+  assert.equal(gear[gear.length - 1], 'Stats: Intelecto 312, crit 12.3%, haste 8.0%');
+
+  vm.run('WoWAI.NewChat("m"); SlashCmdList.WOWAI("monturas")');
+  rec = sentStartingWith(vm, '¿Qué monturas');
+  assert.ok(rec);
+  assert.ok(rec.text.endsWith([
+    'Mount collection, read from the game:',
+    'Mounts: 1 collected of 4 this character can see; 3 missing',
+    'Collected (1): Lobo',
+    'Missing by source: Vendedor 2, Tienda 1',
+    'Examples missing, Vendedor: Raptor, Zancudo',
+  ].join('\n')), rec.text);
+
+  vm.run('WoWAI.NewChat("q"); SlashCmdList.WOWAI("misiones")');
+  rec = sentStartingWith(vm, 'Ayúdame con mis misiones');
+  assert.ok(rec.text.endsWith([
+    'Quest log, read from the game:',
+    '== Bosque Canción Eterna',
+    '101 Lobos hambrientos',
+    '  - Lobos sarnosos: 3/8',
+    '  - Habla con Lana (done)',
+    '49930 Entrega del correo - ready to turn in',
+  ].join('\n')), rec.text);
+  assert.ok(!rec.text.includes('Dragonflight'), 'a header with no quest under it is left out');
+});
+
+test('/ai muerte attaches the last death from the combat log: biggest damage, then the last events with health', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run(RETAIL_STUBS);
+  vm.run(`
+    function UnitGUID(u) if u == "player" then return "Player-1" end end
+    function UnitHealthMax() return 1000 end
+    STUB.hp = 1000
+    function UnitHealth() return STUB.hp end
+    function GetRealZoneText() return "Bosque de Elwynn" end
+    function CombatLogGetCurrentEventInfo() return (table.unpack or unpack)(STUB.cleu, 1, 30) end
+    function Log(dt, hp, ...) STUB.now = STUB.now + dt; STUB.hp = hp; STUB.cleu = { 0, ... }; STUB.FireEvent("COMBAT_LOG_EVENT_UNFILTERED") end`);
+  vm.run('SlashCmdList.WOWAI("muerte")');
+  assert.match(vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history].text'), /no death recorded yet/);
+  vm.run(`
+    Log(0, 1000, "SWING_DAMAGE", false, "Creature-9", "Lobo viejo", 0, 0, "Player-1", "Testchar", 0, 0, 50, -1, 1, 0, 0, 0, nil)
+    Log(20, 1000, "SPELL_DAMAGE", false, "Creature-7", "Ogro", 0, 0, "Player-2", "Otro", 0, 0, 1, "Golpe", 1, 900, -1)
+    -- As in the client, UnitHealth doesn't include an event's change yet when the log reports it.
+    Log(1, 1000, "SPELL_DAMAGE", false, "Creature-7", "Ogro", 0, 0, "Player-1", "Testchar", 0, 0, 133, "Golpe", 1, 300, -1, 1, 0, 0, 20, true)
+    Log(1, 700, "SPELL_CAST_SUCCESS", false, "Player-1", "Testchar", 0, 0, "", nil, 0, 0, 774, "Rejuvenecimiento", 8)
+    Log(0.5, 700, "SPELL_PERIODIC_HEAL", false, "Player-1", "Testchar", 0, 0, "Player-1", "Testchar", 0, 0, 774, "Rejuvenecimiento", 8, 60, 10, 0, false)
+    Log(1, 750, "SPELL_DAMAGE", false, "Creature-7", "Ogro", 0, 0, "Player-1", "Testchar", 0, 0, 133, "Golpe", 1, 800, 50, 1, 0, 0, 0, false)
+    STUB.FireEvent("PLAYER_DEAD")`);
+  vm.run('WoWAI.NewChat("d"); STUB.now = STUB.now + 30; SlashCmdList.WOWAI("muerte")');
+  const rec = sentStartingWith(vm, '¿Por qué he muerto');
+  assert.ok(rec);
+  const lines = rec.text.split('\n');
+  const at = lines.indexOf('Last death, read from the game:');
+  assert.ok(at > 0, rec.text);
+  assert.match(lines[at + 1], /^Died 30s ago \(12:00\) in Bosque de Elwynn - Darkshire, level 23\.$/);
+  assert.equal(lines[at + 2], 'Damage taken in the last 15 s: 1100. Biggest: Ogro: Golpe 1100 (100%).', 'the wolf bite 22 s earlier and a hit on someone else are left out');
+  assert.deepEqual(lines.slice(at + 3), [
+    'Events, seconds before death (health after):',
+    '-2.5s Ogro: Golpe 300 (crit, 20 absorbed) -> 70%',
+    '-1.5s you cast Rejuvenecimiento -> 70%',
+    '-1.0s healed by you: Rejuvenecimiento +50 -> 75%',
+    '-0.0s Ogro: Golpe 800 (killing blow, overkill 50) -> 0%',
+  ]);
+  assert.equal(vm.num('#WoWAIDB.deaths'), 1);
+  // "/ai death knight ..." is a question about the class, not the recap.
+  vm.run('WoWAI.NewChat("k"); SlashCmdList.WOWAI("death knight tank build?")');
+  assert.ok(sentStartingWith(vm, 'death knight tank build?'));
+});
+
+test('a death brings up the "Why did I die?" button: a click sends the recap, it stays for the ghost and goes once alive', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run(RETAIL_STUBS);
+  vm.run('STUB.ghost = false; function UnitIsGhost() return STUB.ghost end');
+  vm.run('STUB.FireEvent("PLAYER_DEAD")');
+  assert.equal(vm.evaluate('WoWAIDeathPrompt:IsShown()'), 'true');
+  assert.equal(vm.evaluate('WoWAIDeathPrompt:GetText()'), '¿Por qué he muerto? (WoW AI)');
+  vm.run('STUB.ghost = true; STUB.FireEvent("PLAYER_ALIVE")');
+  assert.equal(vm.evaluate('WoWAIDeathPrompt:IsShown()'), 'true', 'releasing the spirit keeps it');
+  vm.run('WoWAIDeathPrompt.scripts.OnClick(WoWAIDeathPrompt)');
+  assert.equal(vm.evaluate('WoWAIDeathPrompt:IsShown()'), 'false');
+  assert.ok(sentStartingWith(vm, '¿Por qué he muerto y qué debería hacer distinto?\n\nLast death, read from the game:\nDied 0s ago'));
+  vm.run('STUB.FireEvent("PLAYER_DEAD")');
+  assert.equal(vm.evaluate('WoWAIDeathPrompt:IsShown()'), 'true');
+  vm.run('STUB.ghost = false; STUB.FireEvent("PLAYER_UNGHOST")');
+  assert.equal(vm.evaluate('WoWAIDeathPrompt:IsShown()'), 'false', 'back on their feet');
+  vm.run('SlashCmdList.WOWAI("deathbutton off"); STUB.FireEvent("PLAYER_DEAD")');
+  assert.equal(vm.evaluate('WoWAIDeathPrompt:IsShown()'), 'false', 'switched off');
+  assert.equal(vm.evaluate('WoWAIDB.settings.deathPrompt'), 'false');
+});
+
+test('/ai combate sends the last fight: damage by ability and target, casts, idle time; the fight in progress while it lasts', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run(RETAIL_STUBS);
+  vm.run(`
+    function UnitGUID(u) if u == "player" then return "Player-1" elseif u == "pet" then return "Pet-1" end end
+    function GetRealZoneText() return "Bosque de Elwynn" end
+    function GetHaste() return 0 end
+    function CombatLogGetCurrentEventInfo() return (table.unpack or unpack)(STUB.cleu, 1, 30) end
+    function Log(dt, ...) STUB.now = STUB.now + dt; STUB.cleu = { 0, ... }; STUB.FireEvent("COMBAT_LOG_EVENT_UNFILTERED") end`);
+  vm.run('SlashCmdList.WOWAI("combate")');
+  assert.match(vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history].text'), /no fight recorded yet/);
+  vm.run(`
+    Log(0, "SPELL_DAMAGE", false, "Creature-7", "Ogro", 0, 0, "Player-2", "Otro", 0, 0, 1, "Golpe", 1, 900, -1)
+    STUB.FireEvent("PLAYER_REGEN_DISABLED")
+    Log(0, "SPELL_CAST_START", false, "Player-1", "Testchar", 0, 0, "", nil, 0, 0, 29722, "Incinerar", 4)
+    Log(2, "SPELL_CAST_SUCCESS", false, "Player-1", "Testchar", 0, 0, "Creature-1", "Lobo", 0, 0, 29722, "Incinerar", 4)
+    Log(0.1, "SPELL_DAMAGE", false, "Player-1", "Testchar", 0, 0, "Creature-1", "Lobo", 0, 0, 29722, "Incinerar", 4, 300, -1, 4, 0, 0, 0, true)
+    Log(0.4, "SPELL_CAST_SUCCESS", false, "Player-1", "Testchar", 0, 0, "Creature-1", "Lobo", 0, 0, 17962, "Conflagrar", 4)
+    Log(0, "SPELL_DAMAGE", false, "Player-1", "Testchar", 0, 0, "Creature-1", "Lobo", 0, 0, 17962, "Conflagrar", 4, 200, -1, 4, 0, 0, 0, false)
+    Log(0.5, "SPELL_DAMAGE", false, "Pet-1", "Karmir", 0, 0, "Creature-1", "Lobo", 0, 0, 3110, "Descarga de fuego", 4, 100, -1, 4, 0, 0, 0, false)
+    Log(3, "SPELL_CAST_SUCCESS", false, "Player-1", "Testchar", 0, 0, "Creature-2", "Ogro", 0, 0, 17962, "Conflagrar", 4)
+    Log(0, "SPELL_DAMAGE", false, "Player-1", "Testchar", 0, 0, "Creature-2", "Ogro", 0, 0, 17962, "Conflagrar", 4, 200, -1, 4, 0, 0, 0, false)
+    Log(1, "SWING_DAMAGE", false, "Creature-1", "Lobo", 0, 0, "Player-1", "Testchar", 0, 0, 50, -1, 1, 0, 0, 0, nil)
+    Log(0, "SPELL_INTERRUPT", false, "Pet-1", "Karmir", 0, 0, "Creature-2", "Ogro", 0, 0, 19647, "Bloqueo de hechizo", 32)
+    Log(1, "SPELL_HEAL", false, "Player-1", "Testchar", 0, 0, "Player-1", "Testchar", 0, 0, 1, "Drenar", 32, 80, 30, 0, false)`);
+  const live = vm.evaluate('WoWAI.CombatText()').split('\n');
+  assert.equal(live[0], 'Fight in progress: 8s so far, in Bosque de Elwynn - Darkshire.');
+  assert.ok(live.some(l => l.startsWith('Time with nothing cast or channelled: 3.0 s of 8.0 s (38%)')), live.join('\n'));
+  vm.run('STUB.now = STUB.now + 12; STUB.FireEvent("PLAYER_REGEN_ENABLED")');
+  // A blip of combat with nothing done keeps the last real fight.
+  vm.run('STUB.FireEvent("PLAYER_REGEN_DISABLED"); STUB.now = STUB.now + 1; STUB.FireEvent("PLAYER_REGEN_ENABLED")');
+  vm.run('WoWAI.NewChat("c"); STUB.now = STUB.now + 30; SlashCmdList.WOWAI("combate")');
+  const rec = sentStartingWith(vm, '¿Qué tal ha ido el combate y cómo mejoro mi rotación?');
+  assert.ok(rec);
+  const lines = rec.text.split('\n');
+  const at = lines.indexOf('Fight summary, read from the game:');
+  assert.ok(at > 0, rec.text);
+  assert.match(lines[at + 1], /^Last fight: ended \d+s ago \(started 12:00\) in Bosque de Elwynn - Darkshire, lasted 7s\.$/);
+  assert.deepEqual(lines.slice(at + 2), [
+    'Damage done to: Lobo 600, Ogro 200',
+    'Damage done: 800 (114 per second).',
+    'Casts: 3, one every 2.3 s: Conflagrar 2, Incinerar 1',
+    'Time with nothing cast or channelled: 2.5 s of 7.0 s (36%), counting a 1.50 s global cooldown after each instant (an estimate; moving and waiting count as idle).',
+    'Damage taken: 50; healing done: 50; interrupts: 1.',
+    'Damage by ability (total, share, hits, crits):',
+    '- Conflagrar: 400 (50%), 2 hits, 0 crits',
+    '- Incinerar: 300 (38%), 1 hits, 1 crits',
+    '- Descarga de fuego (Karmir): 100 (13%), 1 hits, 0 crits',
+  ]);
+});
+
+test('/ai semanal sends the Great Vault, keystone, rating, runs, bests, affixes and lockouts', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run(RETAIL_STUBS);
+  vm.run(`
+    function GetMaxLevelForPlayerExpansion() return 80 end
+    C_WeeklyRewards = {
+      GetActivities = function() return {
+        { type = 1, index = 2, threshold = 4, progress = 3, level = 0, id = 12 },
+        { type = 3, index = 1, threshold = 2, progress = 2, level = 15, id = 31 },
+        { type = 3, index = 2, threshold = 4, progress = 2, level = 0, id = 32 },
+        { type = 1, index = 1, threshold = 1, progress = 3, level = 10, id = 11 },
+        { type = 6, index = 1, threshold = 2, progress = 0, level = 0, id = 61 },
+      } end,
+      GetExampleRewardItemHyperlinks = function(id) if id == 11 then return "|cffa335ee|Hitem:500::::::::80:::::|h[Botas]|h|r" end end,
+      HasAvailableRewards = function() return true end,
+    }
+    function GetDifficultyInfo(id) if id == 15 then return "Heroico" end end
+    C_Item.GetDetailedItemLevelInfo = function(link) if link:find("item:500") then return 636 end return 40 end
+    C_MythicPlus = {
+      GetOwnedKeystoneChallengeMapID = function() return 501 end,
+      GetOwnedKeystoneLevel = function() return 9 end,
+      GetRunHistory = function() return {
+        { mapChallengeModeID = 501, level = 10, thisWeek = true, completed = true },
+        { mapChallengeModeID = 502, level = 12, thisWeek = true, completed = false },
+        { mapChallengeModeID = 502, level = 15, thisWeek = false, completed = true },
+      } end,
+      GetSeasonBestForMap = function(m) if m == 501 then return { level = 10 }, { level = 11 } end if m == 502 then return nil, { level = 12 } end end,
+      GetCurrentAffixes = function() return { { id = 9 }, { id = 10 } } end,
+      RequestMapInfo = function() STUB.requested = (STUB.requested or 0) + 1 end,
+    }
+    C_ChallengeMode = {
+      GetMapUIInfo = function(m) return ({ [501] = "Piedra del Altar", [502] = "Cielo Oscuro", [503] = "Nido" })[m], m, 1800 end,
+      GetOverallDungeonScore = function() return 1450 end,
+      GetMapTable = function() return { 501, 502, 503 } end,
+      GetAffixInfo = function(id) if id == 9 then return "Tiránico", "Los jefes tienen |cffff0000más|r vida." end if id == 10 then return "Fortificado" end end,
+    }
+    function GetNumSavedInstances() return 2 end
+    function GetSavedInstanceInfo(i)
+      if i == 1 then return "Palacio", 1, 180000, 15, true, false, 0, true, 20, "Heroico", 8, 3 end
+      return "Viejo", 2, 0, 14, false
+    end`);
+  vm.run('SlashCmdList.WOWAI("semanal")');
+  const rec = sentStartingWith(vm, '¿Qué hago esta semana para sacar las mejores recompensas de la Gran Cámara?');
+  assert.ok(rec);
+  assert.ok(rec.text.endsWith([
+    'Weekly progress, read from the game:',
+    'Level 23 of 80: the Great Vault and Mythic+ open at the maximum level.',
+    'Great Vault this week (progress / needed per reward slot):',
+    '- Raid: slot 1 done (Heroico); slot 2 2/4',
+    '- Mythic+ and heroic dungeons: slot 1 done (+10, reward ilvl 636); slot 2 3/4',
+    '- World (delves and world activities): slot 1 0/2',
+    'Last week\'s Great Vault rewards are waiting to be chosen.',
+    'Keystone: Piedra del Altar +9',
+    'Mythic+ rating: 1450',
+    'This week\'s Mythic+ runs (2): Cielo Oscuro +12 over time, Piedra del Altar +10 in time',
+    'Season best per dungeon: Piedra del Altar +11 over time, Cielo Oscuro +12 over time, Nido not done',
+    'Affixes this week: Tiránico (Los jefes tienen más vida.); Fortificado',
+    'Lockouts: Palacio (Heroico) 3/8, resets in 50h00m',
+  ].join('\n')), rec.text);
+  assert.ok(vm.num('STUB.requested') >= 1, 'asks the client for fresh data');
+});
+
+test('/ai jefe sends the target\'s encounter journal entry, or the boss the question names, or the instance\'s bosses', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run(RETAIL_STUBS);
+  vm.run(`
+    STUB.ejMap = 2000
+    C_Map.GetBestMapForUnit = function() return STUB.ejMap end
+    function EJ_GetInstanceForMap(m) if m == 2000 then return 77 end return 0 end
+    function EJ_SelectInstance(i) STUB.ejInstance = i end
+    function EJ_SetDifficulty(d) STUB.ejDifficulty = d end
+    function GetInstanceInfo() return "Nido", "party", 23, "Mítica" end
+    function EJ_GetInstanceInfo(i) if i == 77 then return "Nido de Ara-Kara" end end
+    local ENC = { { "Avanoxx", "Una araña |cffffffffhambrienta|r.", 1, 100 }, { "Anub'zekt", "Un nerubiano.", 2, 200 } }
+    function EJ_GetEncounterInfoByIndex(i, inst)
+      local e = (inst == 77 and ENC[i]) or (inst == 88 and i == 1 and { "Jinete decapitado", "Sin cabeza.", 3, 300 })
+      if e then return e[1], e[2], e[3], e[4] end
+    end
+    -- The whole journal: two expansions, the second with the monastery as a dungeon.
+    STUB.tier = 2
+    function EJ_GetNumTiers() return 2 end
+    function EJ_GetCurrentTier() return STUB.tier end
+    function EJ_SelectTier(t) STUB.tier = t; STUB.tiersSeen = (STUB.tiersSeen or 0) + 1 end
+    function EJ_GetInstanceByIndex(i, raid)
+      if STUB.tier == 1 and not raid and i == 1 then return 77, "Nido de Ara-Kara" end
+      if STUB.tier == 2 and not raid and i == 1 then return 88, "Monasterio Escarlata" end
+    end
+    local CREATURES = { [1] = { "Avanoxx" }, [2] = { "Anub'zekt", "Guardia de sangre" } }
+    function EJ_GetCreatureInfo(c, enc) local n = CREATURES[enc] and CREATURES[enc][c]; if n then return c, n end end
+    local SECTIONS = {
+      [100] = { title = "Fase 1", description = "", firstChildSectionID = 101, siblingSectionID = 110 },
+      [101] = { title = "Alimentar", description = "Avanoxx |cff00ff00devora|r a los |Tx|t aliados.", siblingSectionID = 102 },
+      [102] = { title = "Solo heroico", description = "No sale.", filteredByDifficulty = true },
+      [110] = { title = "Gritos", description = "Interrumpe." },
+      [300] = { title = "Cabeza", description = "Lanza su cabeza." },
+    }
+    C_EncounterJournal = { GetSectionInfo = function(id) return SECTIONS[id] end }
+    STUB.target = "Avanoxx"
+    function UnitExists(u) return u == "target" and STUB.target ~= nil end
+    function UnitName(u) if u == "player" then return "Testchar" end if u == "target" then return STUB.target end end
+    function UnitClassification() return "elite" end
+    function UnitCreatureType() return "Alimaña" end
+    function UnitHealthMax() return 500000 end`);
+  vm.run('SlashCmdList.WOWAI("jefe")');
+  let rec = sentStartingWith(vm, '¿Cómo se hace este jefe? Explícame la táctica para mi rol.');
+  assert.ok(rec);
+  assert.ok(rec.text.endsWith([
+    'Boss, read from the game:',
+    'Target: Avanoxx (level 23, elite, Alimaña, health 500000)',
+    'Encounter journal: Avanoxx (Nido de Ara-Kara, Mítica)',
+    'Una araña hambrienta.',
+    'Abilities, as the journal nests them:',
+    '- Fase 1',
+    '  - Alimentar: Avanoxx devora a los aliados.',
+    '- Gritos: Interrumpe.',
+  ].join('\n')), rec.text);
+  assert.equal(vm.num('STUB.ejDifficulty'), 23, 'abilities for the difficulty in play');
+  // A creature of a council-style fight finds its encounter.
+  vm.run('WoWAI.NewChat("b"); STUB.target = "Guardia de sangre"; SlashCmdList.WOWAI("jefe")');
+  rec = stripRecords(vm).filter(r => r.text.startsWith('¿Cómo se hace')).pop();
+  assert.ok(rec.text.includes('\nEncounter journal: Anub\'zekt (Nido de Ara-Kara, Mítica)\nUn nerubiano.\nCreatures: Anub\'zekt, Guardia de sangre\n'), rec.text);
+  // A boss the instance's list doesn't have is looked up across the journal,
+  // which is left on the expansion it was showing.
+  vm.run('WoWAI.NewChat("h"); STUB.target = "El Jinete decapitado"; SlashCmdList.WOWAI("jefe")');
+  rec = stripRecords(vm).filter(r => r.text.startsWith('¿Cómo se hace')).pop();
+  assert.ok(rec.text.endsWith([
+    'Encounter journal: Jinete decapitado (Monasterio Escarlata, found by name across the journal)',
+    'Sin cabeza.',
+    'Abilities, as the journal nests them:',
+    '- Cabeza: Lanza su cabeza.',
+  ].join('\n')), rec.text);
+  assert.equal(vm.num('STUB.tier'), 2, 'the journal is back on its expansion');
+  // Not anywhere in the journal: the target, then the instance's bosses.
+  vm.run('WoWAI.NewChat("i"); STUB.target = "Lobo sarnoso"; STUB.tiersSeen = 0; SlashCmdList.WOWAI("jefe")');
+  rec = stripRecords(vm).filter(r => r.text.startsWith('¿Cómo se hace')).pop();
+  assert.ok(rec.text.includes('\nLobo sarnoso is not in the game\'s encounter journal; the bosses it lists for Nido de Ara-Kara, Mítica follow.\nBosses in Nido de Ara-Kara, Mítica:\n'), rec.text);
+  assert.equal(vm.num('STUB.tiersSeen'), 0, 'the journal is read across once per session');
+  // No target: the question names the boss.
+  vm.run('WoWAI.NewChat("c"); STUB.target = nil; SlashCmdList.WOWAI("jefe cómo hago a Avanoxx")');
+  rec = sentStartingWith(vm, 'cómo hago a Avanoxx');
+  assert.ok(rec.text.includes('\nEncounter journal: Avanoxx (Nido de Ara-Kara, Mítica)\n'), rec.text);
+  // Nor that: the instance's bosses.
+  vm.run('WoWAI.NewChat("d"); SlashCmdList.WOWAI("jefe")');
+  rec = stripRecords(vm).filter(r => r.text.startsWith('¿Cómo se hace')).pop();
+  assert.ok(rec.text.endsWith('Bosses in Nido de Ara-Kara, Mítica:\n1. Avanoxx: Una araña hambrienta.\n2. Anub\'zekt: Un nerubiano.'), rec.text);
+  // Outside an instance with nothing targeted there is nothing to send.
+  vm.run('WoWAI.NewChat("e"); STUB.ejMap = 1; SlashCmdList.WOWAI("jefe")');
+  assert.match(vm.evaluate('WoWAIDB.chats[#WoWAIDB.chats].history[#WoWAIDB.chats[#WoWAIDB.chats].history].text'), /Could not read boss: target the boss/);
+});
+
+test('/ai barras sends every bar with its keys, macros with their spell, and the known spells on no bar', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run(RETAIL_STUBS);
+  vm.run(`
+    local ACTIONS = { [1] = { "spell", 1 }, [2] = { "macro", 5 }, [3] = { "item", 6948 }, [61] = { "spell", 2 } }
+    function GetActionInfo(slot) local a = ACTIONS[slot]; if a then return a[1], a[2] end end
+    function GetActionText(slot) if slot == 2 then return "Pet atk" end end
+    function GetMacroSpell(id) if id == 5 then return 2 end end
+    C_Item.GetItemNameByID = function(id) if id == 6948 then return "Piedra de hogar" end end
+    local KEYS = { ACTIONBUTTON1 = { "1" }, ACTIONBUTTON2 = { "2", "SHIFT-2" } }
+    function GetBindingKey(cmd) local k = KEYS[cmd]; if k then return k[1], k[2] end end
+    CreateFrame("Frame", "MultiBarBottomLeft"):Hide()
+    local BOOK = {
+      { name = "Inmolar", spellID = 1, itemType = 1 }, { name = "Drenar vida", spellID = 3, itemType = 1 },
+      { name = "Pasiva", spellID = 7, itemType = 1, isPassive = true }, { name = "Futuro", spellID = 8, itemType = 2 },
+      { name = "De otra spec", spellID = 9, itemType = 1 },
+    }
+    C_SpellBook = {
+      GetNumSpellBookSkillLines = function() return 2 end,
+      GetSpellBookSkillLineInfo = function(l)
+        if l == 1 then return { name = "Destrucción", itemIndexOffset = 0, numSpellBookItems = 4 } end
+        return { name = "Aflicción", itemIndexOffset = 4, numSpellBookItems = 1, offSpecID = 265 }
+      end,
+      GetSpellBookItemInfo = function(i) return BOOK[i] end,
+    }`);
+  vm.run('SlashCmdList.WOWAI("barras")');
+  const rec = sentStartingWith(vm, 'Revisa mis barras de acción y mis teclas');
+  assert.ok(rec);
+  assert.ok(rec.text.endsWith([
+    'Action bars and key bindings, read from the game:',
+    'Buttons as [key] name; Action Bar 1 is the main bar.',
+    'Known active spells on no bar (1): Drenar vida',
+    'Action Bar 1: [1] Inmolar, [2 or SHIFT-2] Pet atk (macro: Conflagrar), [no key] Piedra de hogar (item); 9 empty',
+    'Action Bar 2 (hidden): [no key] Conflagrar; 11 empty',
+    'Empty bars: 3, 4, 5, 6, 7, 8',
+  ].join('\n')), rec.text);
+});
+
+test('/ai bolsas sends equippable items against what is worn, the junk and its value, and the rest by kind', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run(RETAIL_STUBS);
+  vm.run(`
+    NUM_BAG_SLOTS, NUM_REAGENTBAG_SLOTS = 1, 0
+    INVTYPE_HEAD, INVTYPE_FINGER = "Cabeza", "Dedo"
+    local BAGS = {
+      [0] = {
+        { hyperlink = "|cff1eff00|Hitem:300::::::::23:::::|h[Capucha de tela]|h|r", stackCount = 1, quality = 2 },
+        { hyperlink = "|cff9d9d9d|Hitem:301::::::::23:::::|h[Colmillo roto]|h|r", stackCount = 3, quality = 0 },
+        false,
+        { hyperlink = "|cffffffff|Hitem:302::::::::23:::::|h[Agua]|h|r", stackCount = 5, quality = 1 },
+      },
+      [1] = {
+        { hyperlink = "|cffffffff|Hitem:302::::::::23:::::|h[Agua]|h|r", stackCount = 2, quality = 1 },
+        { hyperlink = "|cff1eff00|Hitem:303::::::::23:::::|h[Anillo]|h|r", stackCount = 1, quality = 2, isBound = true },
+        { hyperlink = "|cff1eff00|Hitem:304::::::::23:::::|h[Orbe]|h|r", stackCount = 1, quality = 2 },
+      },
+    }
+    INVTYPE_HOLDABLE = "Mano izquierda"
+    C_Container = {
+      GetContainerNumSlots = function(bag) return BAGS[bag] and #BAGS[bag] or 0 end,
+      GetContainerItemInfo = function(bag, slot) return BAGS[bag] and BAGS[bag][slot] or nil end,
+    }
+    local KIND = { ["300"] = { "Armadura", "Tela", "INVTYPE_HEAD" }, ["301"] = { "Chatarra", "Basura", "" },
+      ["302"] = { "Consumible", "Comida", "" }, ["303"] = { "Armadura", "Miscelánea", "INVTYPE_FINGER" },
+      ["304"] = { "Armadura", "Miscelánea", "INVTYPE_HOLDABLE" }, ["99"] = { "Arma", "Bastones", "INVTYPE_2HWEAPON" } }
+    C_Item.GetItemInfoInstant = function(link)
+      local id = tostring(link):match("item:(%d+)")
+      local k = KIND[id]
+      if k then return tonumber(id), k[1], k[2], k[3] end
+    end
+    local SELL = { ["300"] = 150, ["301"] = 25, ["302"] = 1, ["303"] = 12000 }
+    local MINLEVEL = { ["303"] = 70 }
+    C_Item.GetItemInfo = function(link)
+      local id = tostring(link):match("item:(%d+)")
+      return "x", link, 2, 0, MINLEVEL[id] or 1, "", "", 0, "", 0, SELL[id]
+    end
+    local ILVL = { ["300"] = 30, ["303"] = 28, ["2140"] = 25 }
+    C_Item.GetDetailedItemLevelInfo = function(link) return ILVL[tostring(link):match("item:(%d+)")] or 20 end`);
+  vm.run('SlashCmdList.WOWAI("bolsas")');
+  const rec = sentStartingWith(vm, '¿Qué me equipo, uso, vendo o tiro de mis bolsas?');
+  assert.ok(rec);
+  assert.ok(rec.text.endsWith([
+    'Bags, read from the game:',
+    'Bags: 6 of 7 slots used, 1 free; everything would sell for 1g 22s 32c.',
+    'Equippable (item level against the lowest worn in that slot):',
+    '- Capucha de tela (Cabeza, Tela, ilvl 30, worn 25 (+5), Uncommon, sells 1s 50c)',
+    '- Anillo (Dedo, Miscelánea, REQUIRES LEVEL 70, you are 23, ilvl 28, that slot is empty, Uncommon, bound, sells 1g 20s)',
+    '- Orbe (Mano izquierda, Miscelánea, ilvl 20, that slot is empty, your two-handed weapon takes the off hand, Uncommon)',
+    'Junk (grey, 75c in all): Colmillo roto x3',
+    'Everything else, by kind:',
+    '- Consumible: Agua x7',
+  ].join('\n')), rec.text);
+});
+
+test('/ai mision sends one quest (by title words, the followed one, or the one just accepted from its button)', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run(RETAIL_STUBS);
+  vm.run(`
+    C_QuestLog.GetLogIndexForQuestID = function(id) if id == 101 then return 3 elseif id == 49930 then return 4 end end
+    C_QuestLog.GetQuestTagInfo = function(id) if id == 101 then return { tagName = "Élite" } end end
+    C_QuestLog.GetQuestsOnMap = function(m) return { { questID = 101, x = 0.452, y = 0.31 } } end
+    STUB.sel = 49930
+    C_QuestLog.GetSelectedQuest = function() return STUB.sel end
+    C_QuestLog.SetSelectedQuest = function(id) STUB.sel = id end
+    function GetQuestUiMapID(id) return 1431 end
+    function GetQuestLogQuestText()
+      if STUB.sel == 101 then return "Los lobos |cffffffffatacan|r la granja.", "Mata 8 lobos sarnosos." end
+      return "Lleva el correo.", "Entrega el correo."
+    end
+    C_SuperTrack = { GetSuperTrackedQuestID = function() return STUB.tracked or 0 end }`);
+  vm.run('SlashCmdList.WOWAI("mision lobos")');
+  let rec = sentStartingWith(vm, 'lobos');
+  assert.equal(rec.text, [
+    'lobos',
+    '',
+    'Quest, read from the game:',
+    'Quest 101: Lobos hambrientos, Élite',
+    'Map: Duskwood 45.2, 31.0 (the quest\'s area on the map; map id 1431)',
+    '- Lobos sarnosos: 3/8',
+    '- Habla con Lana (done)',
+    'Objective: Mata 8 lobos sarnosos.',
+    'Quest text: Los lobos atacan la granja.',
+  ].join('\n'));
+  assert.equal(vm.num('STUB.sel'), 49930, 'the log\'s selection is put back');
+  // Nothing named: the quest followed on the map.
+  vm.run('WoWAI.NewChat("t"); STUB.tracked = 49930; SlashCmdList.WOWAI("mision")');
+  rec = sentStartingWith(vm, '¿Cómo hago esta misión?');
+  assert.ok(rec.text.includes('\nQuest 49930: Entrega del correo, ready to turn in\n'), rec.text);
+  // Accepting a quest offers help with it; a click sends that one.
+  vm.run('WoWAI.NewChat("b"); STUB.FireEvent("QUEST_ACCEPTED", 101)');
+  assert.equal(vm.evaluate('WoWAIQuestPrompt:IsShown()'), 'true');
+  assert.equal(vm.evaluate('WoWAIQuestPrompt:GetText()'), '¿Cómo hago "Lobos hambrientos"? (WoW AI)');
+  vm.run('WoWAIQuestPrompt.scripts.OnClick(WoWAIQuestPrompt)');
+  assert.equal(vm.evaluate('WoWAIQuestPrompt:IsShown()'), 'false');
+  rec = stripRecords(vm).filter(r => r.text.startsWith('¿Cómo hago esta misión?')).pop();
+  assert.ok(rec.text.includes('\nQuest 101: Lobos hambrientos, Élite\n'), 'the accepted quest, not the followed one: ' + rec.text);
+  // Dismissed without asking: the X beside it, or a right-click.
+  const sent = stripRecords(vm).length;
+  vm.run('STUB.FireEvent("QUEST_ACCEPTED", 49930)');
+  assert.equal(vm.evaluate('WoWAIQuestPrompt:IsShown()'), 'true');
+  vm.run('WoWAIQuestPromptClose.scripts.OnClick(WoWAIQuestPromptClose)');
+  assert.equal(vm.evaluate('WoWAIQuestPrompt:IsShown()'), 'false');
+  vm.run('STUB.FireEvent("QUEST_ACCEPTED", 49930); WoWAIQuestPrompt.scripts.OnClick(WoWAIQuestPrompt, "RightButton")');
+  assert.equal(vm.evaluate('WoWAIQuestPrompt:IsShown()'), 'false');
+  assert.equal(stripRecords(vm).length, sent, 'nothing sent');
+  vm.run('STUB.RunTimers(); SlashCmdList.WOWAI("questbutton off"); STUB.FireEvent("QUEST_ACCEPTED", 49930)');
+  assert.equal(vm.evaluate('WoWAIQuestPrompt:IsShown()'), 'false', 'switched off');
+});
+
+test('/ai reputaciones sends standings under their headers (renown, friendship, paragon) and opens collapsed headers only to read them', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run(RETAIL_STUBS);
+  vm.run(`
+    local F = {
+      { name = "The War Within", isHeader = true, isCollapsed = false, factionID = 1 },
+      { name = "Consejo de Dornogal", factionID = 2590, reaction = 5 },
+      { name = "Bribones", factionID = 2600, reaction = 4 },
+      { name = "Clásicas", isHeader = true, isCollapsed = true, factionID = 3 },
+    }
+    local HIDDEN = {
+      { name = "Orgrimmar", factionID = 76, reaction = 8, currentReactionThreshold = 42000, nextReactionThreshold = 42000, currentStanding = 42999 },
+      { name = "Entrañas", factionID = 68, reaction = 6, currentReactionThreshold = 9000, nextReactionThreshold = 21000, currentStanding = 12000, isWatched = true },
+      { name = "Cenarion", factionID = 609, reaction = 8, currentReactionThreshold = 42000, nextReactionThreshold = 42000, currentStanding = 50000 },
+    }
+    STUB.factions = F
+    C_Reputation = {
+      GetNumFactions = function() return #F end,
+      GetFactionDataByIndex = function(i) return F[i] end,
+      ExpandFactionHeader = function(i) F[i].isCollapsed = false; for k = #HIDDEN, 1, -1 do table.insert(F, i + 1, HIDDEN[k]) end end,
+      CollapseFactionHeader = function(i) F[i].isCollapsed = true; for k = 1, #HIDDEN do table.remove(F, i + 1) end end,
+      IsMajorFaction = function(id) return id == 2590 end,
+      IsFactionParagon = function(id) return id == 609 end,
+      GetFactionParagonInfo = function(id) return 12500, 10000, 1, true end,
+    }
+    C_MajorFactions = {
+      GetMajorFactionData = function(id) return { renownLevel = 12, renownReputationEarned = 1500, renownLevelThreshold = 2500 } end,
+      HasMaximumRenown = function() return false end,
+    }
+    C_GossipInfo = { GetFriendshipReputation = function(id)
+      if id == 2600 then return { friendshipFactionID = 2600, reaction = "Conocido", standing = 300, reactionThreshold = 100, nextThreshold = 600 } end
+      return { friendshipFactionID = 0 }
+    end }
+    FACTION_STANDING_LABEL6, FACTION_STANDING_LABEL8 = "Honorable", "Exaltado"`);
+  vm.run('SlashCmdList.WOWAI("reputaciones")');
+  const rec = sentStartingWith(vm, '¿Qué reputaciones me conviene subir y qué desbloquean?');
+  assert.ok(rec);
+  assert.ok(rec.text.endsWith([
+    'Reputations, read from the game:',
+    '== The War Within',
+    '- Consejo de Dornogal: renown 12 (1500/2500)',
+    '- Bribones: Conocido 200/500',
+    '== Clásicas',
+    '- Entrañas: Honorable 3000/12000 (tracked)',
+    '- Cenarion: Exaltado, paragon 2500/10000, reward waiting',
+    'Maxed (1): Orgrimmar',
+  ].join('\n')), rec.text);
+  assert.equal(vm.num('#STUB.factions'), 4, 'the collapsed header is closed again');
+  assert.equal(vm.evaluate('STUB.factions[4].isCollapsed'), 'true');
+});
+
+test('/ai profesiones sends each profession with its skill and learned expansion tiers, and the free primary slots', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run(RETAIL_STUBS);
+  vm.run(`
+    function GetProfessions() return 1, nil, nil, 4, 5 end
+    function GetProfessionInfo(i)
+      if i == 1 then return "Alquimia", 0, 40, 100, 0, 0, 171, 5 end
+      if i == 4 then return "Pesca", 0, 10, 300, 0, 0, 356, 0 end
+      if i == 5 then return "Cocina", 0, 1, 300, 0, 0, 185, 0 end
+    end
+    C_TradeSkillUI = {
+      GetAllProfessionTradeSkillLines = function() return { 171, 2871, 2823, 356 } end,
+      GetProfessionInfoBySkillLineID = function(id)
+        if id == 2871 then return { professionName = "Alquimia de Khaz Algar", skillLevel = 25, maxSkillLevel = 100, parentProfessionID = 171 } end
+        if id == 2823 then return { professionName = "Alquimia de las Islas Dragón", skillLevel = 0, maxSkillLevel = 0, parentProfessionID = 171 } end
+        if id == 171 then return { professionName = "Alquimia", skillLevel = 40, maxSkillLevel = 100, parentProfessionID = 0 } end
+      end,
+    }`);
+  vm.run('SlashCmdList.WOWAI("profesiones")');
+  const rec = sentStartingWith(vm, '¿Cómo subo mis profesiones y qué me conviene fabricar?');
+  assert.ok(rec);
+  assert.ok(rec.text.endsWith([
+    'Professions, read from the game:',
+    'Primary professions: 1 of 2 (1 free)',
+    '- Alquimia 40/100 (+5 from bonuses)',
+    '  - Alquimia de Khaz Algar 25/100',
+    '- Pesca 10/300 (secondary)',
+    '- Cocina 1/300 (secondary)',
+  ].join('\n')), rec.text);
+  // None learned still goes out: what to pick is the question.
+  vm.run('WoWAI.NewChat("n"); function GetProfessions() end; GetNumSkillLines = nil; SlashCmdList.WOWAI("profesiones cuál cojo?")');
+  assert.ok(sentStartingWith(vm, 'cuál cojo?').text.endsWith('Professions, read from the game:\nNo professions learned: both primary slots are free, and no secondary ones (cooking, fishing) either.'));
+});
+
+const TRANSMOG_STUBS = `
+  TRANSMOG_SOURCE_1, TRANSMOG_SOURCE_3 = "Botín de jefe", "Vendedor"
+  INVTYPE_HEAD, INVTYPE_SHOULDER, INVTYPE_CHEST = "Cabeza", "Hombros", "Pecho"
+  local SETS = {
+    [10] = { setID = 10, name = "Atuendo del Vacío", description = "Normal", label = "Banda", validForCharacter = true },
+    [11] = { setID = 11, name = "Atuendo del Vacío", description = "Heroico", label = "Banda", validForCharacter = true, baseSetID = 10 },
+    [20] = { setID = 20, name = "Túnicas del Alba", validForCharacter = true },
+  }
+  local PIECES = {
+    [10] = { { appearanceID = 1001, collected = true }, { appearanceID = 1002, collected = false }, { appearanceID = 1003, collected = false } },
+    [11] = { { appearanceID = 1101, collected = false } },
+    [20] = { { appearanceID = 2001, collected = true } },
+  }
+  local SOURCES = {
+    [1001] = { name = "Capucha del Vacío", itemID = 501, sourceType = 1, visualID = 77 },
+    [1002] = { name = "Hombreras del Vacío", itemID = 502, sourceType = 1, visualID = 78 },
+    [1003] = { name = "Toga del Vacío", itemID = 503, sourceType = 3, visualID = 79 },
+    [1004] = { name = "Hombreras viejas", itemID = 504, sourceType = 3, isCollected = true, visualID = 78 },
+    [1101] = { name = "Capucha heroica", itemID = 511, sourceType = 1 },
+    [2001] = { name = "Túnica", itemID = 601, sourceType = 3 },
+  }
+  C_TransmogSets = {
+    GetAllSets = function() return { SETS[10], SETS[11], SETS[20] } end,
+    GetSetInfo = function(id) return SETS[id] end,
+    GetSetPrimaryAppearances = function(id) return PIECES[id] end,
+    GetBaseSetID = function(id) return SETS[id] and (SETS[id].baseSetID or id) end,
+    GetVariantSets = function(base) if base == 10 then return { SETS[11] } end return {} end,
+    GetSetsContainingSourceID = function(src) if src == 1002 then return { 10 } end return {} end,
+  }
+  local EQUIP = { [501] = "INVTYPE_HEAD", [502] = "INVTYPE_SHOULDER", [503] = "INVTYPE_CHEST", [504] = "INVTYPE_SHOULDER", [511] = "INVTYPE_HEAD", [601] = "INVTYPE_CHEST" }
+  C_Item.GetItemInfoInstant = function(id) local loc = EQUIP[tonumber(id)]; if loc then return id, "Armadura", "Tela", loc end end
+  C_TransmogCollection = {
+    GetSourceInfo = function(src) local s = SOURCES[src]; if s then s.sourceID = src; return s end end,
+    GetAppearanceSourceDrops = function(src)
+      if src == 1002 then return { { encounter = "Xal'atath", instance = "Nexo", difficulties = { "Normal", "Heroico" } } } end
+      return {}
+    end,
+    GetItemInfo = function(item) if tostring(item):find("502") then return 78, 1002 end end,
+    GetAppearanceInfoBySource = function(src) if src == 1002 then return { appearanceIsCollected = true } end end,
+    GetAllAppearanceSources = function(vis) if vis == 78 then return { 1002, 1004 } end return {} end,
+  }
+  -- BetterWardrobe: its collections window with a selected set, and its own API for extra sets.
+  BetterWardrobeCollectionFrame = CreateFrame("Frame", "BetterWardrobeCollectionFrame")
+  BetterWardrobeCollectionFrame.selectedCollectionTab = 2
+  BetterWardrobeCollectionFrame.SetsCollectionFrame = CreateFrame("Frame", nil, BetterWardrobeCollectionFrame)
+  STUB.selectedSet = 10
+  BetterWardrobeCollectionFrame.SetsCollectionFrame.GetSelectedSetID = function() return STUB.selectedSet end
+  local BW = {
+    GetSetInfo = function(id) if id == 9001 then return { name = "Conjunto extra" } end end,
+    GetSets = function() return { [9001] = { name = "Conjunto extra" } } end,
+    C_TransmogSets = { GetSetSources = function(id) if id == 9001 then return { [2001] = false } end end },
+  }
+  LibStub = { GetLibrary = function(self, name) return { GetAddon = function(_, n) if n == "BetterWardrobe" then return BW end end } end }
+`;
+
+test('/ai conjunto sends a set\'s missing pieces and where they drop: from the collections window\'s button, by name, or a BetterWardrobe extra set', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run(RETAIL_STUBS);
+  vm.run(TRANSMOG_STUBS);
+  vm.run('STUB.Tick()');
+  assert.equal(vm.evaluate('BetterWardrobeCollectionFrameWoWAIButton:GetText()'), 'Preguntar a WoW AI', 'the Sets tab gets a button');
+  vm.run('BetterWardrobeCollectionFrameWoWAIButton.scripts.OnClick(BetterWardrobeCollectionFrameWoWAIButton)');
+  let rec = sentStartingWith(vm, '¿Qué piezas me faltan de este conjunto y cómo consigo cada una?');
+  assert.ok(rec);
+  assert.ok(rec.text.endsWith([
+    'Transmog set, read from the game:',
+    'Set: Atuendo del Vacío (Normal, Banda, set id 10)',
+    'Collected: 1 of 3 pieces.',
+    'Versions: Normal 1/3 (this one), Heroico 0/1',
+    'Missing:',
+    '- Hombros: Hombreras del Vacío (item 502): Botín de jefe: Xal\'atath in Nexo (Normal, Heroico)',
+    '- Pecho: Toga del Vacío (item 503): Vendedor',
+    'Collected: Cabeza (Capucha del Vacío)',
+  ].join('\n')), rec.text);
+  // Named in the question, ahead of the selection.
+  vm.run('WoWAI.NewChat("n"); SlashCmdList.WOWAI("conjunto tunicas alba")');
+  rec = sentStartingWith(vm, 'tunicas alba');
+  assert.ok(rec.text.includes('\nSet: Túnicas del Alba (set id 20)\nCollected: 1 of 1 pieces.\n'), rec.text);
+  vm.run('WoWAI.NewChat("v"); SlashCmdList.WOWAI("conjunto vacío")');
+  rec = sentStartingWith(vm, 'vacío');
+  assert.ok(rec.text.includes('\nSet: Atuendo del Vacío (Normal, Banda, set id 10)\n'), rec.text);
+  assert.ok(rec.text.endsWith('\nOther sets matching the question: Atuendo del Vacío (id 11)'), 'the other sets of that name are named too');
+  // BetterWardrobe's extra sets tab: its own API.
+  vm.run('WoWAI.NewChat("x"); BetterWardrobeCollectionFrame.selectedCollectionTab = 3; STUB.selectedSet = 9001; SlashCmdList.WOWAI("conjunto")');
+  rec = stripRecords(vm).filter(r => r.text.startsWith('¿Qué piezas me faltan')).pop();
+  assert.ok(rec.text.endsWith('Set: Conjunto extra (set id 9001, a BetterWardrobe extra set)\nCollected: 0 of 1 pieces.\nMissing:\n- Pecho: Túnica (item 601): Vendedor'), rec.text);
+});
+
+test('/ai pieza sends one item\'s look: collected or not, how to get it, the other items with that look, the sets using it', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run(RETAIL_STUBS);
+  vm.run(TRANSMOG_STUBS);
+  vm.run('SlashCmdList.WOWAI("pieza")');
+  assert.match(vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history].text'), /shift-click the item into the message/);
+  vm.run('SlashCmdList.WOWAI("pieza |cffa335ee|Hitem:502::::::::24:::::|h[Hombreras del Vacío]|h|r")');
+  const rec = sentStartingWith(vm, '[Hombreras del Vacío]');
+  assert.ok(rec, 'the link becomes its name');
+  // The link's own block (its tooltip) follows, as for any shift-clicked link.
+  assert.ok(rec.text.includes([
+    'Transmog appearance, read from the game:',
+    'Item: Hombreras del Vacío (item 502, Hombros), appearance 78: this look is collected through another item, not this one.',
+    'How to get it: Botín de jefe: Xal\'atath in Nexo (Normal, Heroico)',
+    'Other items with the same look (1): Hombreras viejas (item 504, Vendedor, collected)',
+    'Sets that use it: Atuendo del Vacío Normal (id 10)',
+    '',
+    '--- Linked from the game ---',
+  ].join('\n')), rec.text);
+});
+
+test('/ai foto sends the question flagged for a screenshot and steps the window aside for a moment', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run(RETAIL_STUBS);
+  vm.run('WoWAI.Toggle(true); STUB.timers = {}');
+  vm.run('SlashCmdList.WOWAI("foto")');
+  const rec = sentStartingWith(vm, '¿Qué ves en mi pantalla?');
+  assert.ok(rec);
+  assert.deepEqual(rec.flags.split(';').filter(f => f !== 'c'), ['shot']);
+  assert.equal(vm.evaluate('WoWAIFrame:IsShown()'), 'false', 'out of the picture');
+  assert.equal(vm.evaluate('WoWAIDB.settings.shown'), 'true', 'still counted as open');
+  vm.run('STUB.RunTimers()');
+  assert.equal(vm.evaluate('WoWAIFrame:IsShown()'), 'true', 'back after the pause');
+  // A chat still waiting can't take another message; the shot is not lost silently.
+  vm.run('SlashCmdList.WOWAI("screenshot what is this error?")');
+  assert.match(vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history].text'), /still waiting for a reply/);
+  // The flag goes with that one message only.
+  vm.run('WoWAI.NewChat("x"); WoWAI.Send("plain question")');
+  assert.ok(!sentStartingWith(vm, 'plain question').flags.includes('shot'));
+});
+
+test('the context lists quests with their titles while they fit, then ids only, never over the cap', () => {
+  const vm = newVM();
+  vm.run(RETAIL_STUBS);
+  let ctx = vm.evaluate('WoWAI.GameContext()');
+  assert.ok(ctx.split('\n').includes('Quest log (id, * = ready to turn in, title): 101 Lobos hambrientos; 49930* Entrega del correo'), ctx);
+  // A full log of long titles: the first ones keep theirs, every id is still there.
+  vm.run(`
+    local log = {}
+    for i = 1, 35 do log[i] = { title = "Una mision con un titulo bastante largo " .. i, questID = 1000 + i } end
+    C_QuestLog.GetNumQuestLogEntries = function() return #log end
+    C_QuestLog.GetInfo = function(i) return log[i] end
+  `);
+  ctx = vm.evaluate('WoWAI.GameContext()');
+  assert.ok(ctx.length <= 900, `context is ${ctx.length} bytes`);
+  const line = ctx.split('\n').find(l => l.startsWith('Quest log'));
+  assert.ok(line.includes('1001 Una mision con un titulo bastant;'), 'early quests keep a title, cut to 32 characters');
+  for (let i = 1; i <= 35; i++) assert.ok(line.includes(String(1000 + i)), 'quest ' + (1000 + i) + ' is listed');
+  assert.ok(line.endsWith('; 1035'), 'the last ones are ids only');
+});
+
+test('a big mount collection keeps every source count and stays within the attachment budget', () => {
+  const vm = newVM();
+  vm.run(RETAIL_STUBS);
+  vm.run(`
+    for i = 1, 12 do _G["BATTLE_PET_SOURCE_" .. i] = "Origen" .. i end
+    C_MountJournal.GetMountIDs = function() local t = {} for i = 1, 1000 do t[i] = i end return t end
+    C_MountJournal.GetMountInfoByID = function(id) return "Montura de nombre largo " .. id, id, 0, false, true, (id % 12) + 1, false, false, nil, false, id <= 50, id end
+  `);
+  const text = vm.evaluate('WoWAI.MountsText()');
+  assert.ok(text.length <= 2000, `${text.length} bytes`);
+  const counts = text.split('\n').find(l => l.startsWith('Missing by source: '));
+  for (let i = 1; i <= 12; i++) assert.ok(counts.includes('Origen' + i + ' '), 'source ' + i + ' counted');
+  assert.ok(text.includes('Collected (50): Montura de nombre largo 1, '), 'owned mounts by name');
+  assert.ok(text.includes('Examples missing, Origen'), 'some names as examples');
+});
+
+test('/ai monturas with a question says, for each mount it names, whether it is collected', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run(RETAIL_STUBS);
+  vm.run('SlashCmdList.WOWAI("monturas ¿tengo el raptor o el lobo?")');
+  const rec = sentStartingWith(vm, '¿tengo el raptor o el lobo?');
+  assert.ok(rec);
+  assert.ok(rec.text.includes('\nMatching "raptor" (1): Raptor (missing, Vendedor)\nMatching "lobo" (1): Lobo (have)\n'), rec.text);
+  // A name the journal doesn't have is said so, not guessed.
+  const none = vm.evaluate('WoWAI.MountsText("tengo el grifo dorado")');
+  assert.ok(none.includes('Matching the question: none;'), none);
+  // Accented words survive the split ("á" shares a byte with "¡"), and accents don't matter either way.
+  assert.ok(vm.evaluate('WoWAI.MountsText("¡Dragón de tienda!")').includes('Dragón de tienda (missing, Tienda)'));
+  assert.ok(vm.evaluate('WoWAI.MountsText("dragon")').includes('Matching "dragon" (1): Dragón de tienda (missing, Tienda)'));
+  assert.ok(vm.evaluate('WoWAI.MountsText("ZANCÚDO")').includes('Zancudo (missing, Vendedor)'));
+});
+
+test('a mount question naming several kinds gives each kind its share of the room', () => {
+  const vm = newVM();
+  vm.run(RETAIL_STUBS);
+  vm.run(`
+    local kinds = { "Halcón zancudo", "Kodo", "Lobo", "Raptor" }
+    C_MountJournal.GetMountIDs = function() local t = {} for i = 1, 400 do t[i] = i end return t end
+    C_MountJournal.GetMountInfoByID = function(id)
+      return kinds[(id % 4) + 1] .. " de color numero " .. id, id, 0, false, true, 3, false, false, nil, false, id % 10 == 0, id
+    end
+  `);
+  const text = vm.evaluate('WoWAI.MountsText("halcón zancudo kodo lobo raptor")');
+  assert.ok(text.length <= 2000, `${text.length} bytes`);
+  for (const w of ['halcon', 'kodo', 'lobo', 'raptor']) { // words are matched (and shown) without accents
+    assert.ok(new RegExp(`\\nMatching "${w}" \\(100\\): \\S`).test(text), w + ' has its own line with names: ' + text);
+  }
+  assert.ok(!text.includes('Matching "zancudo"'), 'a word already matched by an earlier one adds no empty group');
+  // Owned ones (every tenth id, so hawkstriders and wolves here) lead their group.
+  assert.match(text, /\nMatching "lobo" \(100\): Lobo de color numero 10 \(have\), Lobo de color numero 110 \(have\), /);
+});
+
+test('owned mounts lead a cut match list', () => {
+  const vm = newVM();
+  vm.run(RETAIL_STUBS);
+  vm.run(`
+    C_MountJournal.GetMountIDs = function() local t = {} for i = 1, 60 do t[i] = i end return t end
+    C_MountJournal.GetMountInfoByID = function(id)
+      return (id == 60 and "Zzz raptor viejo" or ("Raptor numero " .. id)), id, 0, false, true, 3, false, false, nil, false, id == 60, id
+    end
+  `);
+  const line = vm.evaluate('WoWAI.MountsText("raptor")').split('\n').find(l => l.startsWith('Matching'));
+  assert.ok(line.startsWith('Matching "raptor" (60): Zzz raptor viejo (have), '), line);
+  assert.match(line, /\+\d+ more$/, 'the list is cut, and the owned one is still in it');
+});
+
+test('an attachment the client cannot provide is explained in the chat and nothing is sent', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run('C_MountJournal = nil; SlashCmdList.WOWAI("mounts")');
+  assert.equal(vm.evaluate('WoWAIDB.chats[1].pendingId'), null);
+  assert.equal(vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history].text'), 'Could not read mount collection: this client has no mount journal');
+});
+
+test('/wow-ai resend puts the message back with the flags it went out with', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run('SlashCmdList.WOWAI("agent grok"); SlashCmdList.WOWAI("reset"); WoWAI.Send("start over")');
+  assert.equal(sentStartingWith(vm, 'start over').flags, 'n;agent=grok');
+  vm.run('WoWAI.Resend()');
+  assert.equal(sentStartingWith(vm, 'start over').flags, 'n;agent=grok', 'the fresh-session mark survives a resend');
+});
+
+test('the addon\'s own commands typed in its input box run locally instead of going to the agent', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run('WoWAIInput:SetText("/wow-ai new Second"); WoWAI.SendFromInput()');
+  assert.equal(vm.evaluate('WoWAIDB.chats[#WoWAIDB.chats].name'), 'Second', 'ran as a command');
+  assert.equal(vm.evaluate('WoWAIDB.outbox'), null, 'nothing sent');
+  // Other slash lines are messages: the player may be asking about a macro.
+  vm.run('WoWAIInput:SetText("/cast [@mouseover] Inmolar is this right?"); WoWAI.SendFromInput()');
+  assert.ok(stripRecords(vm).some(r => r.text === '/cast [@mouseover] Inmolar is this right?'));
 });
 
 test('a chat can pick its agent: the strip says so, replies are labelled by their writer, unknown names are refused', () => {
