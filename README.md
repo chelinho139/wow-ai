@@ -136,12 +136,17 @@ Right-clicking a chat in the left panel opens a small menu with **Rename...**, *
 | `/ai weekly [question]` | ... with your Great Vault progress and reward item levels, keystone, Mythic+ rating, this week's runs, season bests, affixes and raid lockouts (`/ai semanal`) |
 | `/ai boss [question]` | ... with your target and its encounter journal abilities for the difficulty you are on; with no target, the boss the question names or the instance's bosses (`/ai jefe`) |
 | `/ai bars [question]` | ... with your action bars, the keys bound to each button, what your macros cast and the spells on no bar (`/ai barras`) |
+| `/ai bags [question]` | ... with your bags: equippable items against what you wear in that slot, the junk and its value, the rest by kind (`/ai bolsas`) |
+| `/ai quest [question]` | ... with one quest: its text, objectives and area on the map. Name it by words of its title or its id; otherwise the one you follow on the map. Accepting a quest also offers a **How do I do ...?** button (`/ai mision`) |
+| `/ai reputations [question]` | ... with your reputations under their headers, renown, friendships and paragon progress (`/ai reputaciones`) |
+| `/ai professions [question]` | ... with your professions, their skill and learned expansion tiers, and free primary slots (`/ai profesiones`) |
 | `/wow-ai context [on\|off]` | show what the agent is told about your character and location, or turn it on/off |
 | `/wow-ai rename`, `/wow-ai delete`, `/wow-ai clear` | manage the current chat |
 | `/wow-ai echo summary\|full\|short\|off\|<chars>` | how much of each reply to print into the game chat. `summary` (the default) prints only the agent's closing TL;DR lines, the full reply is in the window behind `[open]`; `full` prints up to 4000 chars, `short` one preview line |
 | `/wow-ai longchat on` | let the game chat box take 4000 characters, for long `/ai` messages |
 | `/wow-ai bind <key>` | hotkey: checks for a reply while waiting, otherwise toggles the window |
 | `/wow-ai deathbutton on\|off` | the **Why did I die?** button that offers `/ai death` after a death (on by default) |
+| `/wow-ai questbutton on\|off` | the **How do I do ...?** button that offers `/ai quest` on accepting a quest (on by default) |
 | `/wow-ai cancel` | stop waiting on this chat's reply |
 | `/wow-ai resend` | show the strip again if the bridge missed it |
 | `/wow-ai reload` | reload the UI now (also frees the slot pool) |

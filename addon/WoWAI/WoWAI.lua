@@ -2456,6 +2456,354 @@ do
 	end
 end
 
+-- Money in copper as the game shows it: 1g 20s 5c.
+local function Coins(copper)
+	copper = math.floor(copper or 0)
+	local parts = {}
+	if copper >= 10000 then parts[#parts + 1] = math.floor(copper / 10000) .. "g" end
+	if copper % 10000 >= 100 then parts[#parts + 1] = math.floor(copper % 10000 / 100) .. "s" end
+	if copper % 100 > 0 or #parts == 0 then parts[#parts + 1] = copper % 100 .. "c" end
+	return table.concat(parts, " ")
+end
+
+do
+	-- Bags for /ai bags: equippable items with their item level next to what is
+	-- worn in that slot, the grey junk and its value, and the rest by kind.
+	local EQUIP_SLOTS = {
+		INVTYPE_HEAD = { 1 }, INVTYPE_NECK = { 2 }, INVTYPE_SHOULDER = { 3 }, INVTYPE_BODY = { 4 }, INVTYPE_CHEST = { 5 }, INVTYPE_ROBE = { 5 },
+		INVTYPE_WAIST = { 6 }, INVTYPE_LEGS = { 7 }, INVTYPE_FEET = { 8 }, INVTYPE_WRIST = { 9 }, INVTYPE_HAND = { 10 },
+		INVTYPE_FINGER = { 11, 12 }, INVTYPE_TRINKET = { 13, 14 }, INVTYPE_CLOAK = { 15 }, INVTYPE_WEAPON = { 16, 17 },
+		INVTYPE_SHIELD = { 17 }, INVTYPE_2HWEAPON = { 16 }, INVTYPE_WEAPONMAINHAND = { 16 }, INVTYPE_WEAPONOFFHAND = { 17 },
+		INVTYPE_HOLDABLE = { 17 }, INVTYPE_RANGED = { 16 }, INVTYPE_RANGEDRIGHT = { 16 }, INVTYPE_TABARD = { 19 },
+	}
+
+	local function ItemLevelOf(link)
+		local l = Try(C_Item and C_Item.GetDetailedItemLevelInfo, link) or Try(GetDetailedItemLevelInfo, link)
+		return type(l) == "number" and l or nil
+	end
+
+	-- The lowest item level worn in the slots an item could go to, or nil if one is empty.
+	local function WornLevel(slots)
+		local low
+		for _, s in ipairs(slots) do
+			local link = Try(GetInventoryItemLink, "player", s)
+			local l = type(link) == "string" and ItemLevelOf(link)
+			if not l then return nil end
+			low = math.min(low or l, l)
+		end
+		return low
+	end
+
+	-- What a bag slot holds: link, count, quality and whether it is bound, either API.
+	local function BagItem(bag, slot)
+		if C_Container and C_Container.GetContainerItemInfo then
+			local info = Try(C_Container.GetContainerItemInfo, bag, slot)
+			if type(info) == "table" and info.hyperlink then return info.hyperlink, info.stackCount or 1, info.quality, info.isBound end
+			return nil
+		end
+		local _, count, _, quality, _, _, link = Try(GetContainerItemInfo, bag, slot)
+		if type(link) == "string" then return link, count or 1, quality end
+	end
+
+	function WoWAI.BagsText()
+		local numSlots = (C_Container and C_Container.GetContainerNumSlots) or GetContainerNumSlots
+		if not numSlots then return nil, "this client does not report bags to addons" end
+		local lastBag = (NUM_BAG_SLOTS or 4) + (NUM_REAGENTBAG_SLOTS or 0)
+		local total, free, worth = 0, 0, 0
+		local equip, junk, other, otherOrder, junkWorth = {}, {}, {}, {}, 0
+		for bag = 0, lastBag do
+			for slot = 1, (Try(numSlots, bag) or 0) do
+				total = total + 1
+				local link, count, quality, bound = BagItem(bag, slot)
+				if not link then
+					free = free + 1
+				else
+					local name = link:match("%[(.-)%]") or "?"
+					local itemID, itemType, subType, equipLoc = Try(C_Item and C_Item.GetItemInfoInstant, link)
+					if not itemID then itemID, itemType, subType, equipLoc = Try(GetItemInfoInstant, link) end
+					local sell = select(11, Try(C_Item and C_Item.GetItemInfo, link))
+					if type(sell) ~= "number" then sell = select(11, Try(GetItemInfo, link)) end
+					sell = (type(sell) == "number" and sell or 0) * count
+					worth = worth + sell
+					if quality == 0 then
+						junk[#junk + 1] = name .. (count > 1 and (" x" .. count) or "")
+						junkWorth = junkWorth + sell
+					elseif EQUIP_SLOTS[equipLoc] then
+						local extra = { _G[equipLoc] or equipLoc }
+						if type(subType) == "string" and subType ~= "" then extra[#extra + 1] = subType end
+						local l = ItemLevelOf(link)
+						if l then
+							local worn = WornLevel(EQUIP_SLOTS[equipLoc])
+							extra[#extra + 1] = "ilvl " .. l .. (worn and (", worn " .. worn .. string.format(" (%+d)", l - worn)) or ", that slot is empty")
+						end
+						local qname = quality and _G["ITEM_QUALITY" .. quality .. "_DESC"]
+						if type(qname) == "string" then extra[#extra + 1] = qname end
+						if bound then extra[#extra + 1] = "bound" end
+						if sell > 0 then extra[#extra + 1] = "sells " .. Coins(sell) end
+						equip[#equip + 1] = "- " .. name .. " (" .. table.concat(extra, ", ") .. ")"
+					else
+						local key = tostring(itemID or name)
+						local o = other[key]
+						if not o then
+							o = { name = name, count = 0, kind = type(itemType) == "string" and itemType or "?" }
+							other[key] = o
+							otherOrder[#otherOrder + 1] = o
+						end
+						o.count = o.count + count
+					end
+				end
+			end
+		end
+		if total == 0 then return nil, "the bags reported no slots" end
+		local lines = { string.format("Bags: %d of %d slots used, %d free; everything would sell for %s.", total - free, total, free, Coins(worth)) }
+		if #equip > 0 then
+			lines[#lines + 1] = "Equippable (item level against the lowest worn in that slot):"
+			for _, l in ipairs(equip) do lines[#lines + 1] = l end
+		end
+		if #junk > 0 then lines[#lines + 1] = "Junk (grey, " .. Coins(junkWorth) .. " in all): " .. NameList(junk, 300) end
+		if #otherOrder > 0 then
+			table.sort(otherOrder, function(a, b) if a.kind ~= b.kind then return a.kind < b.kind end return a.name < b.name end)
+			local kinds, order = {}, {}
+			for _, o in ipairs(otherOrder) do
+				if not kinds[o.kind] then kinds[o.kind] = {}; order[#order + 1] = o.kind end
+				table.insert(kinds[o.kind], o.name .. (o.count > 1 and (" x" .. o.count) or ""))
+			end
+			lines[#lines + 1] = "Everything else, by kind:"
+			for _, k in ipairs(order) do lines[#lines + 1] = "- " .. k .. ": " .. NameList(kinds[k], 400) end
+		end
+		return table.concat(lines, "\n")
+	end
+end
+
+do
+	-- One quest for /ai quest and the button shown on accepting one: its text,
+	-- objectives with progress, tags, and where the map puts it.
+	local focus -- the quest the button was for
+
+	local function QuestInLog(id)
+		local idx = Try(C_QuestLog.GetLogIndexForQuestID, id)
+		return idx and Try(C_QuestLog.GetInfo, idx)
+	end
+
+	-- The quest a question means: its id, words of its title, else the one the
+	-- player follows on the map, else the last one accepted.
+	local function PickQuest(question)
+		if focus then
+			local id = focus
+			focus = nil
+			return id
+		end
+		local n = Try(C_QuestLog.GetNumQuestLogEntries) or 0
+		local quests = {}
+		for i = 1, n do
+			local info = Try(C_QuestLog.GetInfo, i)
+			if type(info) == "table" and not info.isHeader and not info.isHidden and info.questID then quests[#quests + 1] = info end
+		end
+		for num in tostring(question or ""):gmatch("%d+") do
+			for _, q in ipairs(quests) do
+				if q.questID == tonumber(num) then return q.questID end
+			end
+		end
+		local best, bestScore = nil, 0
+		local words = QueryWords(question)
+		for _, q in ipairs(quests) do
+			local title, score = Fold(q.title), 0
+			for _, w in ipairs(words) do
+				if title:find(w, 1, true) then score = score + 1 end
+			end
+			if score > bestScore then best, bestScore = q.questID, score end
+		end
+		if best then return best end
+		local tracked = Try(C_SuperTrack and C_SuperTrack.GetSuperTrackedQuestID)
+		if type(tracked) == "number" and tracked > 0 then return tracked end
+		return WoWAI.lastQuest
+	end
+
+	function WoWAI.QuestText(question)
+		if not (C_QuestLog and C_QuestLog.GetInfo) then return nil, "this client does not report single quests to addons (use /ai quests)" end
+		local id = PickQuest(question)
+		if not id then return nil, "no quest picked: name it (words of its title or its id), or follow one on the map" end
+		local info = QuestInLog(id)
+		local title = (type(info) == "table" and info.title) or Try(C_QuestLog.GetTitleForQuestID, id) or "?"
+		local head = { "Quest " .. id .. ": " .. title }
+		if type(info) == "table" and info.level then head[#head + 1] = "level " .. info.level end
+		local tag = Try(C_QuestLog.GetQuestTagInfo, id)
+		if type(tag) == "table" and type(tag.tagName) == "string" then head[#head + 1] = tag.tagName end
+		if Try(C_QuestLog.IsComplete, id) then head[#head + 1] = "ready to turn in" end
+		if type(info) ~= "table" then head[#head + 1] = "not in the quest log" end
+		local lines = { table.concat(head, ", ") }
+		local mapID = Try(GetQuestUiMapID, id)
+		if type(mapID) == "number" and mapID > 0 then
+			local map = Try(C_Map.GetMapInfo, mapID)
+			local where = "Map: " .. ((type(map) == "table" and map.name) or ("map " .. mapID))
+			for _, q in ipairs(Try(C_QuestLog.GetQuestsOnMap, mapID) or {}) do
+				if type(q) == "table" and q.questID == id and q.x and q.y then
+					where = where .. string.format(" %.1f, %.1f (the quest's area on the map; map id %d)", q.x * 100, q.y * 100, mapID)
+				end
+			end
+			lines[#lines + 1] = where
+		end
+		for _, o in ipairs(Try(C_QuestLog.GetQuestObjectives, id) or {}) do
+			if type(o) == "table" and type(o.text) == "string" and o.text ~= "" then
+				lines[#lines + 1] = "- " .. o.text .. (o.finished and " (done)" or "")
+			end
+		end
+		-- The quest text: the log shows the selected quest's, so select it for a moment.
+		if type(info) == "table" then
+			local prev = Try(C_QuestLog.GetSelectedQuest)
+			Try(C_QuestLog.SetSelectedQuest, id)
+			local desc, objectives = Try(GetQuestLogQuestText)
+			if prev then Try(C_QuestLog.SetSelectedQuest, prev) end
+			objectives = CleanText(objectives, 400)
+			desc = CleanText(desc, ATTACH_MAX - #table.concat(lines, "\n") - (objectives and #objectives or 0) - 100)
+			if objectives then lines[#lines + 1] = "Objective: " .. objectives end
+			if desc then lines[#lines + 1] = "Quest text: " .. desc end
+		end
+		return table.concat(lines, "\n")
+	end
+
+	function WoWAI.QuestFocus(id) focus = id end
+end
+
+do
+	-- Reputations for /ai reputations: every faction with rep under its header,
+	-- with standing and progress (renown, friendship and paragon too), and the
+	-- maxed ones summed up at the end. Collapsed headers are opened to read them
+	-- and closed again.
+	local function Faction(i)
+		local R = C_Reputation
+		if R and R.GetFactionDataByIndex then
+			local d = Try(R.GetFactionDataByIndex, i)
+			return type(d) == "table" and d or nil
+		end
+		local name, _, standing, barMin, barMax, barValue, atWar, _, isHeader, isCollapsed, hasRep, isWatched, _, id = Try(GetFactionInfo, i)
+		if type(name) ~= "string" then return nil end
+		return { name = name, reaction = standing, currentReactionThreshold = barMin, nextReactionThreshold = barMax, currentStanding = barValue,
+			atWarWith = atWar, isHeader = isHeader, isCollapsed = isCollapsed, isHeaderWithRep = hasRep, isWatched = isWatched, factionID = id }
+	end
+
+	local function Count()
+		local R = C_Reputation
+		return (R and R.GetNumFactions and Try(R.GetNumFactions)) or Try(GetNumFactions) or 0
+	end
+
+	local function Expand(i) Try(C_Reputation and C_Reputation.ExpandFactionHeader or ExpandFactionHeader, i) end
+	local function Collapse(i) Try(C_Reputation and C_Reputation.CollapseFactionHeader or CollapseFactionHeader, i) end
+
+	-- "Honored 300/6000", "renown 12 (1500/2500)", ...; and whether nothing is left to gain.
+	local function Standing(d)
+		local id = d.factionID
+		local major = id and Try(C_Reputation and C_Reputation.IsMajorFaction, id) and Try(C_MajorFactions and C_MajorFactions.GetMajorFactionData, id)
+		if type(major) == "table" then
+			local maxed = Try(C_MajorFactions.HasMaximumRenown, id)
+			return "renown " .. tostring(major.renownLevel or 0) .. (maxed and " (max)" or string.format(" (%d/%d)", major.renownReputationEarned or 0, major.renownLevelThreshold or 0)), maxed
+		end
+		local friend = id and Try(C_GossipInfo and C_GossipInfo.GetFriendshipReputation, id)
+		if type(friend) == "table" and (friend.friendshipFactionID or 0) > 0 then
+			local text = tostring(friend.reaction or "?")
+			if friend.nextThreshold then
+				return text .. string.format(" %d/%d", (friend.standing or 0) - (friend.reactionThreshold or 0), friend.nextThreshold - (friend.reactionThreshold or 0)), false
+			end
+			return text .. " (max)", true
+		end
+		local label = _G["FACTION_STANDING_LABEL" .. tostring(d.reaction)] or ("standing " .. tostring(d.reaction))
+		if id and Try(C_Reputation and C_Reputation.IsFactionParagon, id) then
+			local cur, threshold, _, pending = Try(C_Reputation.GetFactionParagonInfo, id)
+			if type(cur) == "number" and type(threshold) == "number" and threshold > 0 then
+				return label .. string.format(", paragon %d/%d", cur % threshold, threshold) .. (pending and ", reward waiting" or ""), false
+			end
+		end
+		local low, high, cur = d.currentReactionThreshold or 0, d.nextReactionThreshold or 0, d.currentStanding or 0
+		if (d.reaction or 0) >= (MAX_REPUTATION_REACTION or 8) or high <= low then return label, true end
+		return label .. string.format(" %d/%d", cur - low, high - low), false
+	end
+
+	function WoWAI.ReputationsText()
+		if Count() == 0 then return nil, "this client reports no reputations" end
+		local opened = {}
+		local i = 1
+		while i <= Count() and i <= 500 do
+			local d = Faction(i)
+			if d and d.isHeader and d.isCollapsed then
+				opened[d.factionID or d.name] = true
+				Expand(i)
+			end
+			i = i + 1
+		end
+		local lines, maxed, header = {}, {}, nil
+		local used, cut = 0, false
+		for j = 1, Count() do
+			local d = Faction(j)
+			if d and d.isHeader and not d.isHeaderWithRep then
+				header = "== " .. d.name
+			elseif d and type(d.name) == "string" then
+				local text, done = Standing(d)
+				if done then
+					maxed[#maxed + 1] = d.name
+				else
+					local l = "- " .. d.name .. ": " .. text .. (d.isWatched and " (tracked)" or "") .. (d.atWarWith and " (at war)" or "")
+					if header then l = header .. "\n" .. l; header = nil end
+					if used + #l + 1 > 2500 - 400 then
+						cut = true
+					else
+						lines[#lines + 1] = l
+						used = used + #l + 1
+					end
+				end
+			end
+		end
+		-- Close what was opened, from the bottom so the indexes above stay put.
+		for j = Count(), 1, -1 do
+			local d = Faction(j)
+			if d and d.isHeader and not d.isCollapsed and opened[d.factionID or d.name] then Collapse(j) end
+		end
+		if cut then lines[#lines + 1] = "(more left out)" end
+		if #maxed > 0 then lines[#lines + 1] = "Maxed (" .. #maxed .. "): " .. NameList(maxed, 350) end
+		return table.concat(lines, "\n")
+	end
+end
+
+do
+	-- Professions for /ai professions: each with its skill, and on retail the
+	-- expansion tiers learned under it; free primary slots too.
+	function WoWAI.ProfessionsText()
+		local lines = {}
+		local slots = { Try(GetProfessions) }
+		local primaries = 0
+		for i = 1, 5 do
+			local name, _, rank, maxRank, _, _, skillLine, modifier = Try(GetProfessionInfo, slots[i])
+			if type(name) == "string" and name ~= "" then
+				if i <= 2 then primaries = primaries + 1 end
+				lines[#lines + 1] = "- " .. name .. " " .. tostring(rank or 0) .. "/" .. tostring(maxRank or 0)
+					.. ((modifier or 0) > 0 and (" (+" .. modifier .. " from bonuses)") or "") .. (i <= 2 and "" or " (secondary)")
+				-- Expansion tiers: every learned skill line whose parent is this one.
+				for _, lineID in ipairs(Try(C_TradeSkillUI and C_TradeSkillUI.GetAllProfessionTradeSkillLines) or {}) do
+					local p = Try(C_TradeSkillUI.GetProfessionInfoBySkillLineID, lineID)
+					if type(p) == "table" and skillLine and p.parentProfessionID == skillLine and (p.maxSkillLevel or 0) > 0 then
+						lines[#lines + 1] = "  - " .. tostring(p.professionName or p.expansionName or lineID) .. " " .. tostring(p.skillLevel or 0) .. "/" .. tostring(p.maxSkillLevel)
+					end
+				end
+			end
+		end
+		if #lines > 0 then
+			table.insert(lines, 1, "Primary professions: " .. primaries .. " of 2" .. (primaries < 2 and (" (" .. (2 - primaries) .. " free)") or ""))
+			return table.concat(lines, "\n")
+		end
+		-- Older clients: skill lines under the Professions and Secondary Skills headers.
+		local header
+		local wanted = { [TRADE_SKILLS or "Professions"] = true, [SECONDARY_SKILLS or "Secondary Skills"] = true }
+		for _, sk in ipairs(WoWAI.SkillLines()) do
+			if sk.isHeader then
+				header = sk.name
+			elseif (header and wanted[header]) or PROFESSION_SKILL_IDS[sk.skillID] then
+				lines[#lines + 1] = "- " .. sk.name .. " " .. tostring(sk.rank or 0) .. "/" .. tostring(sk.maxRank or 0)
+			end
+		end
+		if #lines == 0 then return nil, "no professions learned" end
+		return table.concat(lines, "\n")
+	end
+end
+
 -- /ai talents|gear|mounts|quests|death [question]: the question plus the data, in one message.
 local ATTACHMENTS = {
 	talents = { fn = "TalentsText", label = "Talents", ask = "Review my talents.", max = TALENTS_MAX },
@@ -2467,6 +2815,10 @@ local ATTACHMENTS = {
 	weekly = { fn = "WeeklyText", label = "Weekly progress", ask = "What should I do this week to get the best Great Vault rewards?", max = 2500 },
 	boss = { fn = "BossText", label = "Boss", ask = "How do I do this fight? Explain the tactics for my role.", max = 2500 },
 	bars = { fn = "BarsText", label = "Action bars and key bindings", ask = "Review my action bars and key bindings: what would you change?", max = 2500 },
+	bags = { fn = "BagsText", label = "Bags", ask = "What should I equip, use, sell or throw away from my bags?", max = 2500 },
+	quest = { fn = "QuestText", label = "Quest", ask = "How do I do this quest?" },
+	reputations = { fn = "ReputationsText", label = "Reputations", ask = "Which reputations should I raise, and what do they unlock?", max = 2500 },
+	professions = { fn = "ProfessionsText", label = "Professions", ask = "How should I level my professions, and what should I make?" },
 }
 -- The question sent when none is typed, in the client's language where we have it.
 local ATTACH_ASK_ES = {
@@ -2477,12 +2829,18 @@ local ATTACH_ASK_ES = {
 	weekly = "¿Qué hago esta semana para sacar las mejores recompensas de la Gran Cámara?",
 	boss = "¿Cómo se hace este jefe? Explícame la táctica para mi rol.",
 	bars = "Revisa mis barras de acción y mis teclas: ¿qué cambiarías?",
+	bags = "¿Qué me equipo, uso, vendo o tiro de mis bolsas?",
+	quest = "¿Cómo hago esta misión?",
+	reputations = "¿Qué reputaciones me conviene subir y qué desbloquean?",
+	professions = "¿Cómo subo mis profesiones y qué me conviene fabricar?",
 }
 for kind, a in pairs(ATTACHMENTS) do a.kind = kind end
 ATTACHMENTS.talentos, ATTACHMENTS.equipo, ATTACHMENTS.monturas, ATTACHMENTS.misiones, ATTACHMENTS.muerte =
 	ATTACHMENTS.talents, ATTACHMENTS.gear, ATTACHMENTS.mounts, ATTACHMENTS.quests, ATTACHMENTS.death
 ATTACHMENTS.combate, ATTACHMENTS.semanal, ATTACHMENTS.jefe, ATTACHMENTS.barras =
 	ATTACHMENTS.combat, ATTACHMENTS.weekly, ATTACHMENTS.boss, ATTACHMENTS.bars
+ATTACHMENTS.bolsas, ATTACHMENTS.mision, ATTACHMENTS["misión"], ATTACHMENTS.reputaciones, ATTACHMENTS.profesiones =
+	ATTACHMENTS.bags, ATTACHMENTS.quest, ATTACHMENTS.quest, ATTACHMENTS.reputations, ATTACHMENTS.professions
 WoWAI.ATTACHMENTS = ATTACHMENTS
 
 function WoWAI.SendWithAttachment(kind, question)
@@ -2507,36 +2865,70 @@ function WoWAI.SendWithAttachment(kind, question)
 	WoWAI.Toggle(true)
 end
 
--- After a death, a button offers the recap so nobody has to remember /ai death.
--- It goes when the player is back on their feet, on a click, or after a while.
-local DEATH_PROMPT_SECONDS = 120
+do
+	-- Buttons that offer a question at the right moment: after a death, the recap
+	-- (it stays for the ghost and goes once alive again); on accepting a quest, help
+	-- with it. Each goes on a click or after a while.
+	local DEATH_PROMPT_SECONDS, QUEST_PROMPT_SECONDS = 120, 30
+	local QUEST_TITLE_MAX = 34
 
-function WoWAI.ShowDeathPrompt(show)
-	local b = ui.deathPrompt
-	if not show then
-		if b then b:Hide() end
-		return
+	local function Spanish()
+		local locale = Try(GetLocale)
+		return type(locale) == "string" and locale:sub(1, 2) == "es"
 	end
-	if db.settings.deathPrompt == false then return end
-	if not b then
-		b = CreateFrame("Button", "WoWAIDeathPrompt", UIParent, "UIPanelButtonTemplate")
-		b:SetSize(260, 26)
-		b:SetPoint("TOP", UIParent, "TOP", 0, -250)
-		b:SetFrameStrata("DIALOG")
-		b:SetScript("OnClick", function(self)
-			self:Hide()
-			WoWAI.SendWithAttachment("death")
+
+	-- Shows (text) or hides (nil) one of the buttons, made on first use.
+	local function Prompt(key, frameName, y, text, seconds, onClick)
+		local b = ui[key]
+		if not text then
+			if b then b:Hide() end
+			return
+		end
+		if not b then
+			b = CreateFrame("Button", frameName, UIParent, "UIPanelButtonTemplate")
+			b:SetSize(300, 26)
+			b:SetPoint("TOP", UIParent, "TOP", 0, y)
+			b:SetFrameStrata("DIALOG")
+			b:SetScript("OnClick", function(self)
+				self:Hide()
+				if self.onClick then self.onClick() end
+			end)
+			ui[key] = b
+		end
+		b.onClick = onClick
+		b:SetText(text)
+		b:Show()
+		local shownAt = GetTime()
+		b.shownAt = shownAt
+		C_Timer.After(seconds, function()
+			if b.shownAt == shownAt then b:Hide() end
 		end)
-		ui.deathPrompt = b
 	end
-	local locale = Try(GetLocale)
-	b:SetText((type(locale) == "string" and locale:sub(1, 2) == "es") and "¿Por qué he muerto? (WoW AI)" or "Why did I die? (WoW AI)")
-	b:Show()
-	local shownAt = GetTime()
-	b.shownAt = shownAt
-	C_Timer.After(DEATH_PROMPT_SECONDS, function()
-		if b.shownAt == shownAt then b:Hide() end
-	end)
+
+	function WoWAI.ShowDeathPrompt(show)
+		if show and db.settings.deathPrompt == false then return end
+		Prompt("deathPrompt", "WoWAIDeathPrompt", -250, show and (Spanish() and "¿Por qué he muerto? (WoW AI)" or "Why did I die? (WoW AI)") or nil,
+			DEATH_PROMPT_SECONDS, function() WoWAI.SendWithAttachment("death") end)
+	end
+
+	-- QUEST_ACCEPTED: (questID) on retail, (logIndex, questID) before.
+	function WoWAI.QuestAccepted(a1, a2)
+		local id = tonumber(a2) or tonumber(a1)
+		if not id or not (C_QuestLog and C_QuestLog.GetInfo) then return end
+		WoWAI.lastQuest = id
+		if db.settings.questPrompt == false then return end
+		if Try(C_QuestLog.IsWorldQuest, id) or Try(C_QuestLog.IsQuestTask, id) then return end
+		local idx = Try(C_QuestLog.GetLogIndexForQuestID, id)
+		local info = idx and Try(C_QuestLog.GetInfo, idx)
+		if type(info) ~= "table" or info.isHidden or type(info.title) ~= "string" then return end
+		local title = info.title
+		if #title > QUEST_TITLE_MAX then title = Utf8Cut(title, QUEST_TITLE_MAX - 3) .. "..." end
+		Prompt("questPrompt", "WoWAIQuestPrompt", -282, (Spanish() and "¿Cómo hago \"%s\"? (WoW AI)" or "How do I do \"%s\"? (WoW AI)"):format(title),
+			QUEST_PROMPT_SECONDS, function()
+				WoWAI.QuestFocus(id)
+				WoWAI.SendWithAttachment("quest")
+			end)
+	end
 end
 
 -- /ai screenshot [question]: the bridge saves a picture of the game window as the
@@ -4334,7 +4726,12 @@ local HELP = table.concat({
 	"/ai weekly [question]          ... with your Great Vault, keystone, Mythic+ rating and runs, affixes and lockouts (also /ai semanal)",
 	"/ai boss [question]            ... with your target (or a boss named in the question, inside an instance) and its encounter journal abilities (also /ai jefe)",
 	"/ai bars [question]            ... with your action bars, their key bindings and the spells on no bar (also /ai barras)",
+	"/ai bags [question]            ... with your bags: equippable items against what you wear, junk and its value, the rest by kind (also /ai bolsas)",
+	"/ai quest [question]           ... with one quest: its text, objectives and map area; the question can name it by title words or id, else the one you follow (also /ai mision)",
+	"/ai reputations [question]     ... with your reputations, renown, friendships and paragon progress (also /ai reputaciones)",
+	"/ai professions [question]     ... with your professions, their skill and expansion tiers (also /ai profesiones)",
 	"/wow-ai deathbutton on|off     the \"Why did I die?\" button after a death (on by default)",
+	"/wow-ai questbutton on|off     the \"How do I do ...?\" button on accepting a quest (on by default)",
 	"/wow-ai context [on|off]       what the agent is told about your character and where you are (no argument = show it)",
 	"/wow-ai map [...]              map layers the agent drew, the route navigator and herb/ore nodes (no argument = status and subcommands; /aimap is the same)",
 	"/wow-ai mode pixel             no-reload transport (default)",
@@ -4375,7 +4772,7 @@ local COMMAND_ARGS = {
 	context = { [""] = true, on = true, off = true }, ctx = { [""] = true, on = true, off = true },
 	mode = { [""] = true, pixel = true, reload = true },
 	signal = { [""] = true, on = true, off = true }, longchat = { [""] = true, on = true, off = true },
-	deathbutton = { [""] = true, on = true, off = true },
+	deathbutton = { [""] = true, on = true, off = true }, questbutton = { [""] = true, on = true, off = true },
 	auto = OnOffOrNumber,
 	echo = function(rest) return rest == "" or rest == "summary" or rest == "full" or rest == "short" or rest == "off" or tonumber(rest) ~= nil end,
 	bind = 1, agent = 1,
@@ -4547,6 +4944,11 @@ SlashCmdList["WOWAI"] = function(msg)
 		AddHistory(c, "system", "button after a death: " .. (s.deathPrompt == false and "off" or "on"))
 		WoWAI.Render()
 		WoWAI.Toggle(true)
+	elseif cmd == "questbutton" then
+		if rest == "on" then s.questPrompt = true elseif rest == "off" then s.questPrompt = false end
+		AddHistory(c, "system", "button on accepting a quest: " .. (s.questPrompt == false and "off" or "on"))
+		WoWAI.Render()
+		WoWAI.Toggle(true)
 	elseif cmd == "signal" then
 		if rest == "on" then s.signal = true elseif rest == "off" then s.signal = false end
 		AddHistory(c, "system", "signal check is " .. (s.signal and "on" or "off"))
@@ -4637,8 +5039,9 @@ ev:RegisterEvent("PLAYER_DEAD")
 ev:RegisterEvent("PLAYER_ALIVE")
 ev:RegisterEvent("PLAYER_UNGHOST")
 ev:RegisterEvent("PLAYER_REGEN_DISABLED")
+ev:RegisterEvent("QUEST_ACCEPTED")
 pcall(ev.RegisterEvent, ev, "COMBAT_LOG_EVENT_UNFILTERED")
-ev:SetScript("OnEvent", function(self, event, arg1)
+ev:SetScript("OnEvent", function(self, event, arg1, arg2)
 	if event == "ADDON_LOADED" then
 		if arg1 == ADDON_NAME then
 			InitDB()
@@ -4656,6 +5059,8 @@ ev:SetScript("OnEvent", function(self, event, arg1)
 		if not Try(UnitIsGhost, "player") then WoWAI.ShowDeathPrompt(false) end
 	elseif event == "PLAYER_REGEN_DISABLED" then
 		WoWAI.FightStarted()
+	elseif event == "QUEST_ACCEPTED" then
+		if db then WoWAI.QuestAccepted(arg1, arg2) end
 	elseif event == "CHAT_MSG_WHISPER" or event == "CHAT_MSG_BN_WHISPER" then
 		-- A real person whispered: /r belongs to them again.
 		run.lastMessenger = "player"

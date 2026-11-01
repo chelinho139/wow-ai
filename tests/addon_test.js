@@ -953,6 +953,190 @@ test('/ai barras sends every bar with its keys, macros with their spell, and the
   ].join('\n')), rec.text);
 });
 
+test('/ai bolsas sends equippable items against what is worn, the junk and its value, and the rest by kind', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run(RETAIL_STUBS);
+  vm.run(`
+    NUM_BAG_SLOTS, NUM_REAGENTBAG_SLOTS = 1, 0
+    INVTYPE_HEAD, INVTYPE_FINGER = "Cabeza", "Dedo"
+    local BAGS = {
+      [0] = {
+        { hyperlink = "|cff1eff00|Hitem:300::::::::23:::::|h[Capucha de tela]|h|r", stackCount = 1, quality = 2 },
+        { hyperlink = "|cff9d9d9d|Hitem:301::::::::23:::::|h[Colmillo roto]|h|r", stackCount = 3, quality = 0 },
+        false,
+        { hyperlink = "|cffffffff|Hitem:302::::::::23:::::|h[Agua]|h|r", stackCount = 5, quality = 1 },
+      },
+      [1] = {
+        { hyperlink = "|cffffffff|Hitem:302::::::::23:::::|h[Agua]|h|r", stackCount = 2, quality = 1 },
+        { hyperlink = "|cff1eff00|Hitem:303::::::::23:::::|h[Anillo]|h|r", stackCount = 1, quality = 2, isBound = true },
+      },
+    }
+    C_Container = {
+      GetContainerNumSlots = function(bag) return BAGS[bag] and #BAGS[bag] or 0 end,
+      GetContainerItemInfo = function(bag, slot) return BAGS[bag] and BAGS[bag][slot] or nil end,
+    }
+    local KIND = { ["300"] = { "Armadura", "Tela", "INVTYPE_HEAD" }, ["301"] = { "Chatarra", "Basura", "" },
+      ["302"] = { "Consumible", "Comida", "" }, ["303"] = { "Armadura", "Miscelánea", "INVTYPE_FINGER" } }
+    C_Item.GetItemInfoInstant = function(link)
+      local id = tostring(link):match("item:(%d+)")
+      local k = KIND[id]
+      if k then return tonumber(id), k[1], k[2], k[3] end
+    end
+    local SELL = { ["300"] = 150, ["301"] = 25, ["302"] = 1, ["303"] = 12000 }
+    C_Item.GetItemInfo = function(link) return "x", link, 2, 0, 0, "", "", 0, "", 0, SELL[tostring(link):match("item:(%d+)")] end
+    local ILVL = { ["300"] = 30, ["303"] = 28, ["2140"] = 25 }
+    C_Item.GetDetailedItemLevelInfo = function(link) return ILVL[tostring(link):match("item:(%d+)")] or 20 end`);
+  vm.run('SlashCmdList.WOWAI("bolsas")');
+  const rec = sentStartingWith(vm, '¿Qué me equipo, uso, vendo o tiro de mis bolsas?');
+  assert.ok(rec);
+  assert.ok(rec.text.endsWith([
+    'Bags, read from the game:',
+    'Bags: 5 of 6 slots used, 1 free; everything would sell for 1g 22s 32c.',
+    'Equippable (item level against the lowest worn in that slot):',
+    '- Capucha de tela (Cabeza, Tela, ilvl 30, worn 25 (+5), Uncommon, sells 1s 50c)',
+    '- Anillo (Dedo, Miscelánea, ilvl 28, that slot is empty, Uncommon, bound, sells 1g 20s)',
+    'Junk (grey, 75c in all): Colmillo roto x3',
+    'Everything else, by kind:',
+    '- Consumible: Agua x7',
+  ].join('\n')), rec.text);
+});
+
+test('/ai mision sends one quest (by title words, the followed one, or the one just accepted from its button)', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run(RETAIL_STUBS);
+  vm.run(`
+    C_QuestLog.GetLogIndexForQuestID = function(id) if id == 101 then return 3 elseif id == 49930 then return 4 end end
+    C_QuestLog.GetQuestTagInfo = function(id) if id == 101 then return { tagName = "Élite" } end end
+    C_QuestLog.GetQuestsOnMap = function(m) return { { questID = 101, x = 0.452, y = 0.31 } } end
+    STUB.sel = 49930
+    C_QuestLog.GetSelectedQuest = function() return STUB.sel end
+    C_QuestLog.SetSelectedQuest = function(id) STUB.sel = id end
+    function GetQuestUiMapID(id) return 1431 end
+    function GetQuestLogQuestText()
+      if STUB.sel == 101 then return "Los lobos |cffffffffatacan|r la granja.", "Mata 8 lobos sarnosos." end
+      return "Lleva el correo.", "Entrega el correo."
+    end
+    C_SuperTrack = { GetSuperTrackedQuestID = function() return STUB.tracked or 0 end }`);
+  vm.run('SlashCmdList.WOWAI("mision lobos")');
+  let rec = sentStartingWith(vm, 'lobos');
+  assert.equal(rec.text, [
+    'lobos',
+    '',
+    'Quest, read from the game:',
+    'Quest 101: Lobos hambrientos, Élite',
+    'Map: Duskwood 45.2, 31.0 (the quest\'s area on the map; map id 1431)',
+    '- Lobos sarnosos: 3/8',
+    '- Habla con Lana (done)',
+    'Objective: Mata 8 lobos sarnosos.',
+    'Quest text: Los lobos atacan la granja.',
+  ].join('\n'));
+  assert.equal(vm.num('STUB.sel'), 49930, 'the log\'s selection is put back');
+  // Nothing named: the quest followed on the map.
+  vm.run('WoWAI.NewChat("t"); STUB.tracked = 49930; SlashCmdList.WOWAI("mision")');
+  rec = sentStartingWith(vm, '¿Cómo hago esta misión?');
+  assert.ok(rec.text.includes('\nQuest 49930: Entrega del correo, ready to turn in\n'), rec.text);
+  // Accepting a quest offers help with it; a click sends that one.
+  vm.run('WoWAI.NewChat("b"); STUB.FireEvent("QUEST_ACCEPTED", 101)');
+  assert.equal(vm.evaluate('WoWAIQuestPrompt:IsShown()'), 'true');
+  assert.equal(vm.evaluate('WoWAIQuestPrompt:GetText()'), '¿Cómo hago "Lobos hambrientos"? (WoW AI)');
+  vm.run('WoWAIQuestPrompt.scripts.OnClick(WoWAIQuestPrompt)');
+  assert.equal(vm.evaluate('WoWAIQuestPrompt:IsShown()'), 'false');
+  rec = stripRecords(vm).filter(r => r.text.startsWith('¿Cómo hago esta misión?')).pop();
+  assert.ok(rec.text.includes('\nQuest 101: Lobos hambrientos, Élite\n'), 'the accepted quest, not the followed one: ' + rec.text);
+  vm.run('STUB.RunTimers(); SlashCmdList.WOWAI("questbutton off"); STUB.FireEvent("QUEST_ACCEPTED", 49930)');
+  assert.equal(vm.evaluate('WoWAIQuestPrompt:IsShown()'), 'false', 'switched off');
+});
+
+test('/ai reputaciones sends standings under their headers (renown, friendship, paragon) and opens collapsed headers only to read them', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run(RETAIL_STUBS);
+  vm.run(`
+    local F = {
+      { name = "The War Within", isHeader = true, isCollapsed = false, factionID = 1 },
+      { name = "Consejo de Dornogal", factionID = 2590, reaction = 5 },
+      { name = "Bribones", factionID = 2600, reaction = 4 },
+      { name = "Clásicas", isHeader = true, isCollapsed = true, factionID = 3 },
+    }
+    local HIDDEN = {
+      { name = "Orgrimmar", factionID = 76, reaction = 8, currentReactionThreshold = 42000, nextReactionThreshold = 42000, currentStanding = 42999 },
+      { name = "Entrañas", factionID = 68, reaction = 6, currentReactionThreshold = 9000, nextReactionThreshold = 21000, currentStanding = 12000, isWatched = true },
+      { name = "Cenarion", factionID = 609, reaction = 8, currentReactionThreshold = 42000, nextReactionThreshold = 42000, currentStanding = 50000 },
+    }
+    STUB.factions = F
+    C_Reputation = {
+      GetNumFactions = function() return #F end,
+      GetFactionDataByIndex = function(i) return F[i] end,
+      ExpandFactionHeader = function(i) F[i].isCollapsed = false; for k = #HIDDEN, 1, -1 do table.insert(F, i + 1, HIDDEN[k]) end end,
+      CollapseFactionHeader = function(i) F[i].isCollapsed = true; for k = 1, #HIDDEN do table.remove(F, i + 1) end end,
+      IsMajorFaction = function(id) return id == 2590 end,
+      IsFactionParagon = function(id) return id == 609 end,
+      GetFactionParagonInfo = function(id) return 12500, 10000, 1, true end,
+    }
+    C_MajorFactions = {
+      GetMajorFactionData = function(id) return { renownLevel = 12, renownReputationEarned = 1500, renownLevelThreshold = 2500 } end,
+      HasMaximumRenown = function() return false end,
+    }
+    C_GossipInfo = { GetFriendshipReputation = function(id)
+      if id == 2600 then return { friendshipFactionID = 2600, reaction = "Conocido", standing = 300, reactionThreshold = 100, nextThreshold = 600 } end
+      return { friendshipFactionID = 0 }
+    end }
+    FACTION_STANDING_LABEL6, FACTION_STANDING_LABEL8 = "Honorable", "Exaltado"`);
+  vm.run('SlashCmdList.WOWAI("reputaciones")');
+  const rec = sentStartingWith(vm, '¿Qué reputaciones me conviene subir y qué desbloquean?');
+  assert.ok(rec);
+  assert.ok(rec.text.endsWith([
+    'Reputations, read from the game:',
+    '== The War Within',
+    '- Consejo de Dornogal: renown 12 (1500/2500)',
+    '- Bribones: Conocido 200/500',
+    '== Clásicas',
+    '- Entrañas: Honorable 3000/12000 (tracked)',
+    '- Cenarion: Exaltado, paragon 2500/10000, reward waiting',
+    'Maxed (1): Orgrimmar',
+  ].join('\n')), rec.text);
+  assert.equal(vm.num('#STUB.factions'), 4, 'the collapsed header is closed again');
+  assert.equal(vm.evaluate('STUB.factions[4].isCollapsed'), 'true');
+});
+
+test('/ai profesiones sends each profession with its skill and learned expansion tiers, and the free primary slots', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run(RETAIL_STUBS);
+  vm.run(`
+    function GetProfessions() return 1, nil, nil, 4, 5 end
+    function GetProfessionInfo(i)
+      if i == 1 then return "Alquimia", 0, 40, 100, 0, 0, 171, 5 end
+      if i == 4 then return "Pesca", 0, 10, 300, 0, 0, 356, 0 end
+      if i == 5 then return "Cocina", 0, 1, 300, 0, 0, 185, 0 end
+    end
+    C_TradeSkillUI = {
+      GetAllProfessionTradeSkillLines = function() return { 171, 2871, 2823, 356 } end,
+      GetProfessionInfoBySkillLineID = function(id)
+        if id == 2871 then return { professionName = "Alquimia de Khaz Algar", skillLevel = 25, maxSkillLevel = 100, parentProfessionID = 171 } end
+        if id == 2823 then return { professionName = "Alquimia de las Islas Dragón", skillLevel = 0, maxSkillLevel = 0, parentProfessionID = 171 } end
+        if id == 171 then return { professionName = "Alquimia", skillLevel = 40, maxSkillLevel = 100, parentProfessionID = 0 } end
+      end,
+    }`);
+  vm.run('SlashCmdList.WOWAI("profesiones")');
+  const rec = sentStartingWith(vm, '¿Cómo subo mis profesiones y qué me conviene fabricar?');
+  assert.ok(rec);
+  assert.ok(rec.text.endsWith([
+    'Professions, read from the game:',
+    'Primary professions: 1 of 2 (1 free)',
+    '- Alquimia 40/100 (+5 from bonuses)',
+    '  - Alquimia de Khaz Algar 25/100',
+    '- Pesca 10/300 (secondary)',
+    '- Cocina 1/300 (secondary)',
+  ].join('\n')), rec.text);
+});
+
 test('/ai foto sends the question flagged for a screenshot and steps the window aside for a moment', () => {
   const vm = newVM();
   login(vm);
