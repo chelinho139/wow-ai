@@ -656,10 +656,11 @@ test('/ai muerte attaches the last death from the combat log: biggest damage, th
   vm.run(`
     Log(0, 1000, "SWING_DAMAGE", false, "Creature-9", "Lobo viejo", 0, 0, "Player-1", "Testchar", 0, 0, 50, -1, 1, 0, 0, 0, nil)
     Log(20, 1000, "SPELL_DAMAGE", false, "Creature-7", "Ogro", 0, 0, "Player-2", "Otro", 0, 0, 1, "Golpe", 1, 900, -1)
-    Log(1, 700, "SPELL_DAMAGE", false, "Creature-7", "Ogro", 0, 0, "Player-1", "Testchar", 0, 0, 133, "Golpe", 1, 300, -1, 1, 0, 0, 20, true)
+    -- As in the client, UnitHealth doesn't include an event's change yet when the log reports it.
+    Log(1, 1000, "SPELL_DAMAGE", false, "Creature-7", "Ogro", 0, 0, "Player-1", "Testchar", 0, 0, 133, "Golpe", 1, 300, -1, 1, 0, 0, 20, true)
     Log(1, 700, "SPELL_CAST_SUCCESS", false, "Player-1", "Testchar", 0, 0, "", nil, 0, 0, 774, "Rejuvenecimiento", 8)
-    Log(0.5, 750, "SPELL_PERIODIC_HEAL", false, "Player-1", "Testchar", 0, 0, "Player-1", "Testchar", 0, 0, 774, "Rejuvenecimiento", 8, 60, 10, 0, false)
-    Log(1, 0, "SPELL_DAMAGE", false, "Creature-7", "Ogro", 0, 0, "Player-1", "Testchar", 0, 0, 133, "Golpe", 1, 800, 50, 1, 0, 0, 0, false)
+    Log(0.5, 700, "SPELL_PERIODIC_HEAL", false, "Player-1", "Testchar", 0, 0, "Player-1", "Testchar", 0, 0, 774, "Rejuvenecimiento", 8, 60, 10, 0, false)
+    Log(1, 750, "SPELL_DAMAGE", false, "Creature-7", "Ogro", 0, 0, "Player-1", "Testchar", 0, 0, 133, "Golpe", 1, 800, 50, 1, 0, 0, 0, false)
     STUB.FireEvent("PLAYER_DEAD")`);
   vm.run('WoWAI.NewChat("d"); STUB.now = STUB.now + 30; SlashCmdList.WOWAI("muerte")');
   const rec = sentStartingWith(vm, '¿Por qué he muerto');
@@ -836,7 +837,19 @@ test('/ai jefe sends the target\'s encounter journal entry, or the boss the ques
     function GetInstanceInfo() return "Nido", "party", 23, "Mítica" end
     function EJ_GetInstanceInfo(i) if i == 77 then return "Nido de Ara-Kara" end end
     local ENC = { { "Avanoxx", "Una araña |cffffffffhambrienta|r.", 1, 100 }, { "Anub'zekt", "Un nerubiano.", 2, 200 } }
-    function EJ_GetEncounterInfoByIndex(i, inst) local e = ENC[i]; if e then return e[1], e[2], e[3], e[4] end end
+    function EJ_GetEncounterInfoByIndex(i, inst)
+      local e = (inst == 77 and ENC[i]) or (inst == 88 and i == 1 and { "Jinete decapitado", "Sin cabeza.", 3, 300 })
+      if e then return e[1], e[2], e[3], e[4] end
+    end
+    -- The whole journal: two expansions, the second with the monastery as a dungeon.
+    STUB.tier = 2
+    function EJ_GetNumTiers() return 2 end
+    function EJ_GetCurrentTier() return STUB.tier end
+    function EJ_SelectTier(t) STUB.tier = t; STUB.tiersSeen = (STUB.tiersSeen or 0) + 1 end
+    function EJ_GetInstanceByIndex(i, raid)
+      if STUB.tier == 1 and not raid and i == 1 then return 77, "Nido de Ara-Kara" end
+      if STUB.tier == 2 and not raid and i == 1 then return 88, "Monasterio Escarlata" end
+    end
     local CREATURES = { [1] = { "Avanoxx" }, [2] = { "Anub'zekt", "Guardia de sangre" } }
     function EJ_GetCreatureInfo(c, enc) local n = CREATURES[enc] and CREATURES[enc][c]; if n then return c, n end end
     local SECTIONS = {
@@ -844,6 +857,7 @@ test('/ai jefe sends the target\'s encounter journal entry, or the boss the ques
       [101] = { title = "Alimentar", description = "Avanoxx |cff00ff00devora|r a los |Tx|t aliados.", siblingSectionID = 102 },
       [102] = { title = "Solo heroico", description = "No sale.", filteredByDifficulty = true },
       [110] = { title = "Gritos", description = "Interrumpe." },
+      [300] = { title = "Cabeza", description = "Lanza su cabeza." },
     }
     C_EncounterJournal = { GetSectionInfo = function(id) return SECTIONS[id] end }
     STUB.target = "Avanoxx"
@@ -870,6 +884,22 @@ test('/ai jefe sends the target\'s encounter journal entry, or the boss the ques
   vm.run('WoWAI.NewChat("b"); STUB.target = "Guardia de sangre"; SlashCmdList.WOWAI("jefe")');
   rec = stripRecords(vm).filter(r => r.text.startsWith('¿Cómo se hace')).pop();
   assert.ok(rec.text.includes('\nEncounter journal: Anub\'zekt (Nido de Ara-Kara, Mítica)\nUn nerubiano.\nCreatures: Anub\'zekt, Guardia de sangre\n'), rec.text);
+  // A boss the instance's list doesn't have is looked up across the journal,
+  // which is left on the expansion it was showing.
+  vm.run('WoWAI.NewChat("h"); STUB.target = "El Jinete decapitado"; SlashCmdList.WOWAI("jefe")');
+  rec = stripRecords(vm).filter(r => r.text.startsWith('¿Cómo se hace')).pop();
+  assert.ok(rec.text.endsWith([
+    'Encounter journal: Jinete decapitado (Monasterio Escarlata, found by name across the journal)',
+    'Sin cabeza.',
+    'Abilities, as the journal nests them:',
+    '- Cabeza: Lanza su cabeza.',
+  ].join('\n')), rec.text);
+  assert.equal(vm.num('STUB.tier'), 2, 'the journal is back on its expansion');
+  // Not anywhere in the journal: the target, then the instance's bosses.
+  vm.run('WoWAI.NewChat("i"); STUB.target = "Lobo sarnoso"; STUB.tiersSeen = 0; SlashCmdList.WOWAI("jefe")');
+  rec = stripRecords(vm).filter(r => r.text.startsWith('¿Cómo se hace')).pop();
+  assert.ok(rec.text.includes('\nLobo sarnoso is not in the game\'s encounter journal; the bosses it lists for Nido de Ara-Kara, Mítica follow.\nBosses in Nido de Ara-Kara, Mítica:\n'), rec.text);
+  assert.equal(vm.num('STUB.tiersSeen'), 0, 'the journal is read across once per session');
   // No target: the question names the boss.
   vm.run('WoWAI.NewChat("c"); STUB.target = nil; SlashCmdList.WOWAI("jefe cómo hago a Avanoxx")');
   rec = sentStartingWith(vm, 'cómo hago a Avanoxx');

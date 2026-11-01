@@ -1717,7 +1717,7 @@ end
 
 local function Remember(entry)
 	local now = GetTime()
-	entry.t, entry.hp = now, HealthPct()
+	entry.t, entry.hp0 = now, HealthPct()
 	table.insert(deathRing, entry)
 	while #deathRing > DEATH_RING or (deathRing[1] and deathRing[1].t < now - DEATH_WINDOW) do
 		table.remove(deathRing, 1)
@@ -1974,6 +1974,20 @@ function WoWAI.RecordDeath()
 		end
 	end
 	wipe(deathRing)
+	-- The client hasn't applied an event's change to UnitHealth yet when the
+	-- combat log reports it, so the health after an event is what the next
+	-- later event read; after the last ones, death.
+	local evs = d.events
+	for i, e in ipairs(evs) do
+		e.hp = 0
+		for j = i + 1, #evs do
+			if evs[j].ago < e.ago then
+				e.hp = evs[j].hp0
+				break
+			end
+		end
+	end
+	for _, e in ipairs(evs) do e.hp0 = nil end
 	db.deaths = db.deaths or {}
 	table.insert(db.deaths, 1, d)
 	while #db.deaths > DEATH_KEEP do table.remove(db.deaths) end
@@ -2174,16 +2188,8 @@ do
 		return a == b or (#b >= 4 and a:find(b, 1, true) ~= nil) or (#a >= 4 and b:find(a, 1, true) ~= nil)
 	end
 
-	-- The journal's instance for where the player stands, and its encounters.
-	local function JournalEncounters()
-		if not EJ_GetInstanceForMap then return nil end
-		local mapID = Try(C_Map and C_Map.GetBestMapForUnit, "player")
-		local inst = mapID and Try(EJ_GetInstanceForMap, mapID)
-		if type(inst) ~= "number" or inst == 0 then return nil end
-		Try(EJ_SelectInstance, inst)
-		local _, _, difficulty = Try(GetInstanceInfo)
-		if type(difficulty) == "number" and difficulty > 0 then Try(EJ_SetDifficulty, difficulty) end
-		local list = {}
+	-- An instance's encounters with the names of their creatures, appended to list.
+	local function AddEncounters(list, inst, instName)
 		for i = 1, 40 do
 			local name, desc, id, root = Try(EJ_GetEncounterInfoByIndex, i, inst)
 			if type(name) ~= "string" then break end
@@ -2193,9 +2199,56 @@ do
 				if type(cname) ~= "string" then break end
 				creatures[#creatures + 1] = cname
 			end
-			list[#list + 1] = { name = name, desc = desc, id = id, root = root, creatures = creatures }
+			list[#list + 1] = { name = name, desc = desc, id = id, root = root, creatures = creatures, instName = instName }
 		end
-		return inst, list
+		return list
+	end
+
+	-- The journal's instance for where the player stands, and its encounters.
+	local function JournalEncounters()
+		if not EJ_GetInstanceForMap then return nil end
+		local mapID = Try(C_Map and C_Map.GetBestMapForUnit, "player")
+		local inst = mapID and Try(EJ_GetInstanceForMap, mapID)
+		if type(inst) ~= "number" or inst == 0 then return nil end
+		Try(EJ_SelectInstance, inst)
+		local _, _, difficulty = Try(GetInstanceInfo)
+		if type(difficulty) == "number" and difficulty > 0 then Try(EJ_SetDifficulty, difficulty) end
+		return inst, AddEncounters({}, inst)
+	end
+
+	-- Every encounter of every expansion's dungeons and raids, for a target the
+	-- instance's own list doesn't have (a holiday boss, a world boss, a boss
+	-- targeted from outside). Built once per session; the journal's selected
+	-- expansion is put back afterwards.
+	local everyEncounter
+	local function AllEncounters()
+		if everyEncounter then return everyEncounter end
+		everyEncounter = {}
+		if not (EJ_GetNumTiers and EJ_SelectTier and EJ_GetInstanceByIndex) then return everyEncounter end
+		local current = Try(EJ_GetCurrentTier)
+		for tier = 1, (Try(EJ_GetNumTiers) or 0) do
+			Try(EJ_SelectTier, tier)
+			for _, raid in ipairs({ false, true }) do
+				for i = 1, 200 do
+					local inst, instName = Try(EJ_GetInstanceByIndex, i, raid)
+					if type(inst) ~= "number" then break end
+					AddEncounters(everyEncounter, inst, instName)
+				end
+			end
+		end
+		if type(current) == "number" then Try(EJ_SelectTier, current) end
+		return everyEncounter
+	end
+
+	-- The encounter a unit name belongs to: the boss itself or one of its creatures.
+	local function EncounterNamed(list, name)
+		if type(name) ~= "string" then return nil end
+		for _, e in ipairs(list) do
+			if SameName(e.name, name) then return e end
+			for _, c in ipairs(e.creatures) do
+				if SameName(c, name) then return e end
+			end
+		end
 	end
 
 	-- The encounter's ability sections in journal order, nested, while they fit.
@@ -2252,13 +2305,11 @@ do
 		if not unit and not list then return nil, "target the boss or enemy first, or ask from inside a dungeon or raid" end
 		local lines = {}
 		if unit then lines[#lines + 1] = UnitLine(unit) end
-		local enc
-		for _, e in ipairs(list or {}) do
-			if type(name) == "string" then
-				if SameName(e.name, name) then enc = e end
-				for _, c in ipairs(e.creatures) do if SameName(c, name) then enc = e end end
-			end
-			if enc then break end
+		local enc = EncounterNamed(list or {}, name)
+		local elsewhere
+		if not enc and name then
+			enc = EncounterNamed(AllEncounters(), name)
+			elsewhere = enc ~= nil
 		end
 		if not enc and list then
 			-- "/ai boss how do I do Ovi'nax?" names the boss.
@@ -2273,7 +2324,7 @@ do
 		local _, _, _, diffName = Try(GetInstanceInfo)
 		local where = (type(instName) == "string" and instName or "?") .. ((type(diffName) == "string" and diffName ~= "") and (", " .. diffName) or "")
 		if enc then
-			lines[#lines + 1] = "Encounter journal: " .. enc.name .. " (" .. where .. ")"
+			lines[#lines + 1] = "Encounter journal: " .. enc.name .. " (" .. (elsewhere and (tostring(enc.instName or "?") .. ", found by name across the journal") or where) .. ")"
 			local desc = CleanText(enc.desc, 400)
 			if desc then lines[#lines + 1] = desc end
 			if #enc.creatures > 1 then lines[#lines + 1] = "Creatures: " .. table.concat(enc.creatures, ", ") end
@@ -2281,7 +2332,7 @@ do
 			local used = #table.concat(lines, "\n")
 			for _, l in ipairs(SectionLines(enc.root, BOSS_MAX - used)) do lines[#lines + 1] = l end
 		elseif list then
-			if name then lines[#lines + 1] = name .. " is not one of the bosses the journal lists for " .. where .. "." end
+			if name then lines[#lines + 1] = name .. " is not in the game's encounter journal; the bosses it lists for " .. where .. " follow." end
 			lines[#lines + 1] = "Bosses in " .. where .. ":"
 			local used = #table.concat(lines, "\n")
 			for i, e in ipairs(list) do
@@ -2291,7 +2342,7 @@ do
 				used = used + #l + 1
 			end
 		else
-			lines[#lines + 1] = "Not in the game's encounter journal here (an open-world enemy, or a boss the journal has no entry for)."
+			lines[#lines + 1] = "Not in the game's encounter journal (an open-world enemy, or a boss the journal has no entry for)."
 		end
 		return table.concat(lines, "\n")
 	end
