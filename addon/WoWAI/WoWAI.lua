@@ -2904,10 +2904,16 @@ do
 			b:SetSize(300, 26)
 			b:SetPoint("TOP", UIParent, "TOP", 0, y)
 			b:SetFrameStrata("DIALOG")
-			b:SetScript("OnClick", function(self)
+			-- A right-click, or the X beside it, dismisses it without asking.
+			b:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+			b:SetScript("OnClick", function(self, button)
 				self:Hide()
-				if self.onClick then self.onClick() end
+				if button ~= "RightButton" and self.onClick then self.onClick() end
 			end)
+			local close = CreateFrame("Button", frameName .. "Close", b, "UIPanelCloseButton")
+			close:SetSize(24, 24)
+			close:SetPoint("LEFT", b, "RIGHT", 0, 0)
+			close:SetScript("OnClick", function() b:Hide() end)
 			ui[key] = b
 		end
 		b.onClick = onClick

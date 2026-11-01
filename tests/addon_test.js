@@ -1055,6 +1055,15 @@ test('/ai mision sends one quest (by title words, the followed one, or the one j
   assert.equal(vm.evaluate('WoWAIQuestPrompt:IsShown()'), 'false');
   rec = stripRecords(vm).filter(r => r.text.startsWith('¿Cómo hago esta misión?')).pop();
   assert.ok(rec.text.includes('\nQuest 101: Lobos hambrientos, Élite\n'), 'the accepted quest, not the followed one: ' + rec.text);
+  // Dismissed without asking: the X beside it, or a right-click.
+  const sent = stripRecords(vm).length;
+  vm.run('STUB.FireEvent("QUEST_ACCEPTED", 49930)');
+  assert.equal(vm.evaluate('WoWAIQuestPrompt:IsShown()'), 'true');
+  vm.run('WoWAIQuestPromptClose.scripts.OnClick(WoWAIQuestPromptClose)');
+  assert.equal(vm.evaluate('WoWAIQuestPrompt:IsShown()'), 'false');
+  vm.run('STUB.FireEvent("QUEST_ACCEPTED", 49930); WoWAIQuestPrompt.scripts.OnClick(WoWAIQuestPrompt, "RightButton")');
+  assert.equal(vm.evaluate('WoWAIQuestPrompt:IsShown()'), 'false');
+  assert.equal(stripRecords(vm).length, sent, 'nothing sent');
   vm.run('STUB.RunTimers(); SlashCmdList.WOWAI("questbutton off"); STUB.FireEvent("QUEST_ACCEPTED", 49930)');
   assert.equal(vm.evaluate('WoWAIQuestPrompt:IsShown()'), 'false', 'switched off');
 });
