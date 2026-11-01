@@ -36,6 +36,10 @@ const CONFIG_FILE = path.join(HERE, 'config.json');
 const STATE_FILE = path.join(HERE, 'state.json');
 const LOG_FILE = path.join(HERE, 'bridge.log');
 const TMP_DIR = path.join(HERE, 'tmp'); // prompt files for agents that read the prompt from disk
+// Where Claude may put temporary files without asking (--add-dir, and TEMP/TMP for
+// its shell). Anything older than a week is cleared when the bridge starts.
+const SCRATCH_DIR = path.join(TMP_DIR, 'scratch');
+const SCRATCH_DAYS = 7;
 
 const argv = process.argv.slice(2);
 if (argv.includes('--help') || argv.includes('-h')) {
@@ -63,6 +67,33 @@ const DEFAULT_AGENT = A.normalizeAgent(cfg.agent || A.DEFAULT_AGENT);
 if (!DEFAULT_AGENT) {
   console.error(`"agent": "${cfg.agent}" in ${CONFIG_FILE} is not one of ${A.agentIds().join(', ')}.`);
   process.exit(2);
+}
+
+// One bridge at a time: two would both read the strip, run every message twice
+// and fight over the slot files. The lock holds our pid and is touched every
+// 10 s; one whose process is gone, or that nobody touched for 30 s, is taken over.
+const LOCK_FILE = path.join(TMP_DIR, 'bridge.lock');
+const LOCK_STALE_MS = 30000;
+function lockHolder() {
+  try {
+    const pid = Number(fs.readFileSync(LOCK_FILE, 'utf8'));
+    if (!pid || pid === process.pid) return 0;
+    if (Date.now() - fs.statSync(LOCK_FILE).mtimeMs > LOCK_STALE_MS) return 0;
+    try { process.kill(pid, 0); return pid; } catch (e) { return e.code === 'EPERM' ? pid : 0; }
+  } catch { return 0; }
+}
+{
+  const other = lockHolder();
+  if (other) {
+    console.error(`Another bridge is already running (pid ${other}). Use that one, or stop it first (Ctrl+C or close its window).`);
+    process.exit(2);
+  }
+  fs.mkdirSync(TMP_DIR, { recursive: true });
+  fs.writeFileSync(LOCK_FILE, String(process.pid));
+  setInterval(() => { try { const t = new Date(); fs.utimesSync(LOCK_FILE, t, t); } catch {} }, 10000).unref();
+  process.on('exit', () => {
+    try { if (Number(fs.readFileSync(LOCK_FILE, 'utf8')) === process.pid) fs.rmSync(LOCK_FILE); } catch {}
+  });
 }
 
 // Default folder: --project, else the folder we were started from (unless that is
@@ -393,17 +424,41 @@ function setContext(job) {
 
 function gameContext() {
   if (cfg.gameContext === false) return '';
-  return (state.context && state.context.text) || '';
+  const text = (state.context && state.context.text) || '';
+  // What the addon can't know: e.g. a private server on an older build than live.
+  return text && cfg.serverNote ? `${text}\nServer: ${cfg.serverNote}` : text;
+}
+
+// The scratch folder (see SCRATCH_DIR), created on first use; "" if it can't be.
+let scratchPruned = false;
+function ensureScratch() {
+  try {
+    fs.mkdirSync(SCRATCH_DIR, { recursive: true });
+    if (!scratchPruned) {
+      scratchPruned = true;
+      const cutoff = Date.now() - SCRATCH_DAYS * 86400000;
+      for (const name of fs.readdirSync(SCRATCH_DIR)) {
+        const p = path.join(SCRATCH_DIR, name);
+        try { if (fs.statSync(p).mtimeMs < cutoff) fs.rmSync(p, { recursive: true, force: true }); } catch {}
+      }
+    }
+    return SCRATCH_DIR;
+  } catch (e) {
+    log(`scratch folder unavailable: ${e.message}`);
+    return '';
+  }
 }
 
 // The addon/macro primer that goes into the system prompt with the context.
 // Read on every run so edits count without a restart; "" in the config turns
-// it off. Relative paths are taken from the repo (docs/WOW-ADDON-PRIMER.md).
-const PRIMER_FILE = cfg.primerFile === undefined ? 'docs/WOW-ADDON-PRIMER.md' : cfg.primerFile;
+// it off. Relative paths are taken from the repo; without one in the config it
+// follows the client in the context (protocol.primerFor).
 let warnedNoPrimer = false;
-function primer() {
-  if (!PRIMER_FILE) return '';
-  const file = path.resolve(REPO, PRIMER_FILE);
+function primerFile(ctx) { return P.primerFor(ctx, cfg.primerFile); }
+function primer(ctx) {
+  const name = primerFile(ctx);
+  if (!name) return '';
+  const file = path.resolve(REPO, name);
   try { return fs.readFileSync(file, 'utf8'); } catch (e) {
     if (!warnedNoPrimer) { warnedNoPrimer = true; log(`primer: cannot read ${file} (${e.code || e.message}); running without it`); }
     return '';
@@ -507,7 +562,7 @@ function runJob(job) {
   }
   job.agent = agentId;
   const agent = A.AGENTS[agentId];
-  const acfg = A.agentConfig(cfg, agentId);
+  let acfg = A.agentConfig(cfg, agentId);
   const cmd = A.resolveCommand(agentId, acfg);
   if (!cmd.found) {
     log(`${tag} ${agentId} not found: ${cmd.note}`);
@@ -529,16 +584,25 @@ function runJob(job) {
     delete state.sessions[skey]; delete state.sessions[key];
   }
   if (Array.isArray(job.allow) && job.allow.length) {
-    const added = allowRules(agentId, job.allow);
-    log(`${tag} allowed for ${agentId}: ${job.allow.join(', ')}${added.length ? '' : ' (already allowed)'}`);
+    if (job.allowOnce) {
+      // For this run only: nothing is written to config.json.
+      const have = new Set(acfg.allowedTools || []);
+      acfg = { ...acfg, allowedTools: [...have, ...job.allow.filter(r => !have.has(r))] };
+      log(`${tag} allowed once for ${agentId}: ${job.allow.join(', ')}`);
+    } else {
+      const added = allowRules(agentId, job.allow);
+      acfg = A.agentConfig(cfg, agentId);
+      log(`${tag} allowed for ${agentId}: ${job.allow.join(', ')}${added.length ? '' : ' (already allowed)'}`);
+    }
   }
   maybeOfferRestore(job);
   noteMessage(job, 'user', job.text);
   const resume = state.sessions[skey] || state.sessions[key];
 
   const ctx = gameContext();
-  const system = P.systemPrompt(ctx, primer());
-  const systemShort = P.systemPrompt(ctx, '');
+  const scratch = agentId === 'claude' ? ensureScratch() : '';
+  const system = P.systemPrompt(ctx, primer(ctx), { scratch });
+  const systemShort = P.systemPrompt(ctx, '', { scratch });
   const promptFile = path.join(TMP_DIR, `prompt-${job.id}-${Date.now().toString(36)}.txt`);
   const input = agent.input({ prompt: job.text, system, systemShort, resume, cfg: acfg });
   if (input.promptFile !== undefined) {
@@ -546,10 +610,12 @@ function runJob(job) {
     catch (e) { finish(job, 'error', `Could not write the prompt file ${promptFile}: ${e.message}`); return; }
   }
   const args = [...cmd.args, ...agent.args({
-    cfg: acfg, resume, cwd, system, systemShort, promptFile,
+    cfg: acfg, resume, cwd, system, systemShort, promptFile, scratch,
     prompt: job.text, timeoutMs: cfg.timeoutMs,
   })];
   const env = agent.env({ ...process.env });
+  // "$TEMP/x" and "/tmp/x" in Claude's shell then land where it may write.
+  if (scratch) env.TEMP = env.TMP = env.TMPDIR = scratch;
   // Where this run's tools append map commands (docs/MAP.md); any agent can use it.
   try {
     fs.mkdirSync(MAP_DIR, { recursive: true });
@@ -664,19 +730,21 @@ function runJob(job) {
     const mapped = takeMapCommands(job, result ? result.text : '');
     if (result) result.text = mapped.text;
     if (mapped.note) notes.push(mapped.note);
-    const extra = notes.length ? `\n\n[bridge] ${notes.join('\n\n[bridge] ')}` : '';
+    const sorted = P.sortDenials([...denied], acfg.allowedTools, notes);
+    if (sorted.denied.length < denied.size) log(`${tag} refused although allowed: ${[...denied].filter(r => !sorted.denied.includes(r)).join(', ')}`);
     if (result && !result.error) {
-      const body = String(result.text || '').trim() || (notes.length ? '' : `(${agent.name} finished without a reply)`);
-      finish(job, 'done', (body + extra).trim(), sessionId, [...denied]);
+      const body = String(result.text || '').trim() || (sorted.notes.length ? '' : `(${agent.name} finished without a reply)`);
+      finish(job, 'done', body, sessionId, sorted.denied, sorted.notes);
     } else if (result) {
-      finish(job, 'error', (String(result.text || '') + extra).trim(), sessionId, [...denied]);
+      const extra = sorted.notes.length ? `\n\n[bridge] ${sorted.notes.join('\n\n[bridge] ')}` : '';
+      finish(job, 'error', (String(result.text || '') + extra).trim(), sessionId, sorted.denied);
     } else {
       finish(job, 'error', `${agent.name} exited with code ${code} and no result.\n${stderr.trim().slice(-1500)}`, sessionId);
     }
   });
 }
 
-function finish(job, status, text, session, denied) {
+function finish(job, status, text, session, denied, notes = []) {
   if (job.finished) return; // spawn failures fire both 'error' and 'close'
   job.finished = true;
   running.delete(chatKey(job));
@@ -684,6 +752,7 @@ function finish(job, status, text, session, denied) {
   saveState();
   // A finished reply ends with the "TL;DR:" block the system prompt asks for:
   // that part is what the game chat prints; the window gets the whole reply.
+  // The bridge's own notes go after the split, so they never reach the summary.
   let summary = '';
   let macros = [];
   if (status === 'done') {
@@ -691,9 +760,13 @@ function finish(job, status, text, session, denied) {
     // After the split: a macro block the agent put after "TL;DR:" must not end up
     // in the game-chat summary.
     const m = P.extractMacros(text);
-    text = m.text + (m.notes.length ? `\n\n[bridge] ${m.notes.join('; ')}` : '');
+    const all = [...notes, ...(m.notes.length ? [m.notes.join('; ')] : [])];
+    text = (m.text + (all.length ? `\n\n[bridge] ${all.join('\n\n[bridge] ')}` : '')).trim();
     macros = m.macros;
     summary = P.stripMacroBlocks(summary);
+    if (denied && denied.length) {
+      summary += (summary ? '\n' : '') + `Needs permission for ${denied.length} action(s): open the window to allow.`;
+    }
   }
   noteMessage(job, status === 'done' ? 'assistant' : 'system', status === 'done' ? text : 'Bridge error: ' + text);
   publish(chatKey(job), { chat: job.chat, id: job.id, status, text, summary, cwd: job.cwd, session, denied, macros, agent: job.agent || '' }, true);
@@ -785,7 +858,8 @@ function banner() {
   console.log(`  sessions : ${Object.keys(state.sessions).length} saved`);
   const ctx = gameContext();
   console.log(`  context  : ${cfg.gameContext === false ? 'off (gameContext in config.json)' : ctx ? (ctx.split('\n').find(l => /^Character:/i.test(l)) || ctx.split('\n')[0]).slice(0, 100) : 'none yet (the addon sends it with its hello; /wow-ai context in game)'}`);
-  console.log(`  primer   : ${!PRIMER_FILE ? 'off (primerFile in config.json)' : primer() ? path.resolve(REPO, PRIMER_FILE) + ' (' + primer().length + ' chars, with the context)' : 'NOT FOUND: ' + path.resolve(REPO, PRIMER_FILE)}`);
+  const pf = primerFile(ctx), pt = primer(ctx);
+  console.log(`  primer   : ${!pf ? 'off (primerFile in config.json)' : pt ? path.resolve(REPO, pf) + ' (' + pt.length + ' chars, with the context)' : 'NOT FOUND: ' + path.resolve(REPO, pf)}`);
   console.log('Leave this window open while you play. Ctrl+C to stop.\n');
 }
 

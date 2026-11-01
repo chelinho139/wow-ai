@@ -111,13 +111,14 @@ function sameFolder(a, b) {
 // Flags field: ';'-separated tokens. "n" = fresh agent session, "h" = hello
 // (no prompt), "d" = the player deleted this chat: forget its transcript and
 // session (no prompt), "allow=Rule1,Rule2" = add these permission rules before
-// running, "c" = the record carries a game-context field before the text (an
+// running ("once" with it = for this run only, not saved), "c" = the record carries a game-context field before the text (an
 // empty one clears the context the bridge keeps), "agent=codex" = run this
 // chat with that agent instead of the bridge's default (see agents.js).
 function parseFlags(flags) {
-  const out = { newSession: false, hello: false, forget: false, context: false, allow: [], agent: '' };
+  const out = { newSession: false, hello: false, forget: false, context: false, allow: [], allowOnce: false, agent: '' };
   for (const tok of String(flags || '').split(';')) {
     if (tok === 'n') out.newSession = true;
+    else if (tok === 'once') out.allowOnce = true;
     else if (tok === 'h') out.hello = true;
     else if (tok === 'd') out.forget = true;
     else if (tok === 'c') out.context = true;
@@ -171,6 +172,7 @@ function parseOutbox(src) {
   if (agent && agent[1]) job.agent = agent[1].toLowerCase();
   const allow = b.match(/\["allow"\]\s*=\s*"([0-9a-fA-F]*)"/);
   if (allow && allow[1]) job.allow = fromHex(allow[1]).split('\x1F').filter(Boolean);
+  if (/\["allowOnce"\]\s*=\s*true/.test(b)) job.allowOnce = true;
   return job;
 }
 
@@ -198,10 +200,11 @@ const REPLY_FORMAT = [
 // How the agent draws on the world map (see "Map layers" below and docs/MAP.md).
 // Sent with the game context, since marks only make sense in a game chat.
 const MAP_HINT = [
-  'You can mark the player\'s world map. Either append commands to the file named by the WOW_AI_MAP_FILE environment variable (one JSON object per line) or, for a few marks, end the reply with a fenced block whose language tag is wowmap containing them. Commands:',
+  'You can mark the player\'s world map. Put the commands, one JSON object per line, in a fenced block whose language tag is wowmap at the end of the reply: that always works and needs no tool or permission. Only a script that generates many points needs the other way, appending lines to the file named by the WOW_AI_MAP_FILE environment variable; do not reach for shell commands just to write a route you can put in the block. Do not check afterwards that the marks arrived (no reading or listing WOW_AI_MAP_FILE, the bridge\'s folders or its state): the bridge validates them and tells the player what was drawn, and every refused check costs the player a permission prompt. Commands:',
   '{"op":"set","layer":"<name>","title":"<shown title>","ordered":true,"loop":false,"points":[{"m":<uiMapID>,"x":<0-100>,"y":<0-100>,"label":"<text>","kind":"quest"}]}  replaces that layer; "ordered" draws a numbered route with a navigator, "loop" closes it.',
   '{"op":"clear","layer":"<name>"} removes a layer; {"op":"clearall"} removes them all.',
   'x and y are map percent on the map with that uiMapID (the context gives the player\'s current one). kind is one of ore, herb, quest, turnin, kill, loot, object, explore, npc, trainer, vendor, dungeon, flight, poi. Only mark the map when asked for a route, marks or locations; say in the reply what you drew.',
+  'In a quest route, give every stop that belongs to a quest its quest id as "q" (the ids are in the context\'s quest log): {"m":94,"x":31,"y":70,"label":"Kill 5 thugs","kind":"kill","q":8892}. The navigator then moves on by itself as the quest progresses, wherever the player is: a "quest" stop (pick up) when the quest is accepted, a "turnin" stop when it is turned in, any other kind when its objectives are complete; it also shows the objective progress. A stop with "q" does not move on just by walking onto it, so do not add "q" to stops that are only places to go. Use one stop per step: a kill stop and a turnin stop for the same quest both carry its id.',
 ];
 
 // How the agent hands the player a ready-made macro (see "Macros" below).
@@ -214,8 +217,25 @@ const MACRO_HINT = [
   'The addon shows the player a button that creates the macro (or updates one with the same name) and puts it on their cursor. Explain outside the block what it does. Avoid /run and /script unless asked; the player is warned about them.',
 ];
 
-function systemPrompt(ctx, primer) {
+// Which primer goes with a context when config.json doesn't name one: the
+// "Game:" line carries the client's interface number, and retail (100000 and
+// up) has its own APIs, so it gets docs/WOW-ADDON-PRIMER-RETAIL.md. Configs
+// written by setup before this choice existed name the Forever primer only
+// because the example did; that value still means "pick by client".
+const PRIMERS = { forever: 'docs/WOW-ADDON-PRIMER.md', retail: 'docs/WOW-ADDON-PRIMER-RETAIL.md' };
+function primerFor(ctx, configured) {
+  if (configured !== undefined && configured !== PRIMERS.forever) return configured;
+  const m = /^Game:.*\binterface (\d+)/m.exec(String(ctx || ''));
+  return m && Number(m[1]) >= 100000 ? PRIMERS.retail : PRIMERS.forever;
+}
+
+function systemPrompt(ctx, primer, opts = {}) {
   const lines = [...REPLY_FORMAT];
+  // A folder the agent may write without asking (Claude gets it with --add-dir):
+  // the system temp folder is outside what it may touch, and Allow can't change that.
+  if (opts.scratch) {
+    lines.push('', `For temporary files (downloads, throwaway scripts, intermediate data) use the scratch folder ${opts.scratch}: it is writable without asking. Do not write to the system temp folder (%TEMP%, /tmp) or anywhere else outside the working folder; those writes are refused.`);
+  }
   const text = String(ctx || '').trim();
   if (text) {
     lines.push('',
@@ -223,6 +243,8 @@ function systemPrompt(ctx, primer) {
       text,
       '',
       'Use this when the request is about the game or the character (questions, macros, addon code, gear advice); ignore it when the task is unrelated. Items, spells or quests the player shift-clicked into a message appear as [Name] in the text, with their tooltip in a "Linked from the game" block at the end of the message.',
+      '',
+      'The addon can attach more, read straight from the game, when the player sends a message with one of these commands: "/ai talents <question>" (the talent build in use, by name and rank, the hero tree and unspent points), "/ai gear <question>" (equipped items with item level and quality, average item level, main stats), "/ai mounts <question>" (the collected mounts by name, the missing ones counted by source with a few examples; and every mount whose name shares a word with the question, each marked collected or missing with its source, so "/ai mounts halcón zancudo kodo" settles exactly which of those the player has: ask for that rather than guessing from examples, since the full missing list does not fit in a message), "/ai quests <question>" (the quest log with titles and objective progress). Spanish names work too: /ai talentos, /ai equipo, /ai monturas, /ai misiones. The data arrives in a block such as "Talents, read from the game:". When you need one of these and it is not in the message, ask the player to resend with the command instead of asking for an export string, a screenshot or a list typed by hand; it matches their client exactly, which online databases may not.',
       '',
       ...MAP_HINT,
       '',
@@ -259,12 +281,32 @@ function splitSummary(text) {
 function ruleFor(d) {
   const name = d.tool_name || 'Unknown';
   if (name === 'Bash') {
-    const cmd = String((d.tool_input && d.tool_input.command) || '').trim();
+    let cmd = String((d.tool_input && d.tool_input.command) || '').trim();
+    // "cd somewhere && curl ..." is refused for the curl: a Bash(cd:*) rule would allow nothing.
+    const CD = /^cd\s+("[^"]*"|'[^']*'|\S+)\s*(&&|;)\s*/;
+    while (CD.test(cmd)) cmd = cmd.replace(CD, '');
     const word = cmd.split(/\s+/)[0];
     if (word && /^[\w.\-]+$/.test(word)) return `Bash(${word}:*)`;
     return 'Bash';
   }
   return name;
+}
+
+// After a run: refused rules that the run already had cannot be fixed by Allow
+// (the agent reached outside the folders it may touch), so they come off the
+// list that drives the button and get an explanation instead. Returns the rules
+// still worth offering and the notes to append, with the agents' "use the Allow
+// button" hint dropped when nothing is left to allow.
+function sortDenials(denied, allowedTools, notes) {
+  const have = new Set(allowedTools || []);
+  const offer = [...new Set(denied || [])].filter(r => !have.has(r));
+  const stale = [...new Set(denied || [])].filter(r => have.has(r));
+  let out = [...(notes || [])];
+  if (!offer.length) out = out.map(n => n.replace(/\nUse the Allow button below to permit (them|it) and let it continue\.$/, ''));
+  if (stale.length) {
+    out.push(`Refused although already allowed: ${stale.join(', ')}. That usually means the action reached outside the chat's folder (another drive, the system temp folder); Allow can't change that. Ask for it to be done inside the folder, or in the scratch folder for temporary files.`);
+  }
+  return { denied: offer, notes: out };
 }
 
 // One progress line per Claude tool call, as shown in the game's "working"
@@ -387,10 +429,14 @@ function validateMapCommand(c, why = []) {
   for (const p of c.points.slice(0, MAP_LIMITS.pointsPerLayer)) {
     const m = Number(p && p.m), x = Number(p && p.x), y = Number(p && p.y);
     if (!Number.isInteger(m) || m <= 0 || m > 99999 || !Number.isFinite(x) || !Number.isFinite(y)) continue;
-    points.push({
+    const point = {
       m, x: Math.round(Math.min(100, Math.max(0, x)) * 100) / 100, y: Math.round(Math.min(100, Math.max(0, y)) * 100) / 100,
       label: cleanText(p.label, MAP_LIMITS.label), kind: MAP_KINDS.has(p.kind) ? p.kind : 'poi',
-    });
+    };
+    // The quest this stop is for: the addon's navigator moves on when it is done.
+    const q = Number(p.q);
+    if (Number.isInteger(q) && q > 0 && q < 1e7) point.q = q;
+    points.push(point);
   }
   if (c.points.length > MAP_LIMITS.pointsPerLayer) why.push(`layer ${layer}: kept the first ${MAP_LIMITS.pointsPerLayer} points`);
   if (points.length < c.points.slice(0, MAP_LIMITS.pointsPerLayer).length) why.push(`layer ${layer}: dropped invalid points`);
@@ -468,7 +514,7 @@ function luaMap(map) {
   const lines = ['\tmap = {', `\t\tepoch = ${luaStr(map.epoch)},`, `\t\tversion = ${Number(map.version) || 0},`, '\t\tlayers = {'];
   for (const [name, l] of Object.entries(map.layers || {})) {
     lines.push(`\t\t\t{ name = ${luaStr(name)}, title = ${luaStr(l.title)}, ordered = ${l.ordered ? 'true' : 'false'}, loop = ${l.loop ? 'true' : 'false'}, points = {`);
-    for (const p of l.points) lines.push(`\t\t\t\t{ ${p.m}, ${p.x}, ${p.y}, ${luaStr(p.label)}, ${luaStr(p.kind)} },`);
+    for (const p of l.points) lines.push(`\t\t\t\t{ ${p.m}, ${p.x}, ${p.y}, ${luaStr(p.label)}, ${luaStr(p.kind)}${p.q ? ', ' + p.q : ''} },`);
     lines.push('\t\t\t} },');
   }
   lines.push('\t\t},', '\t},');
@@ -549,8 +595,8 @@ module.exports = {
   fromHex, pad3, slotNumber, chatKey, sessKey,
   alreadyHandled, markHandled, pruneStale, MONTH_MS,
   resolveCwd, sameFolder, baseName,
-  parseFlags, jobsFromStrip, parseOutbox, systemPrompt, splitSummary,
-  ruleFor, describeToolUse,
+  parseFlags, jobsFromStrip, parseOutbox, systemPrompt, primerFor, splitSummary,
+  ruleFor, sortDenials, describeToolUse,
   luaStr, luaTable, SILENT_WAV,
   MAP_LIMITS, validateMapCommand, newMap, applyMapCommands, extractMapBlocks, parseMapFile, luaMap,
   MACRO_LIMITS, extractMacros, stripMacroBlocks, luaMacros,

@@ -12,7 +12,7 @@ const addons = cfg.addonDir;
 const N = cfg.slots || 200;
 const ACT = cfg.actMax || 60;
 const PRESENCE = cfg.presenceMax || 2000;
-const iface = cfg.tocInterface || '16001';
+const iface = cfg.tocInterface || '16001, 110205';
 
 if (!fs.existsSync(path.join(addons, 'WoWAI', 'WoWAI.toc'))) {
   console.error('WoWAI addon not found under ' + addons);

@@ -174,6 +174,56 @@ test('navigator shows yards and bearing, and advances on arrival', () => {
   assert.equal(vm.evaluate('WoWAINavigator.text.text'), 'no position here');
 });
 
+test('quest stops move on with the quest, not on arrival, skipping several at once and showing progress', () => {
+  const vm = newVM();
+  // A quest log the test drives: STUB.q[id] = "active" | "complete" | "done" (turned in).
+  vm.run(`
+    STUB.q = { [101] = "active" }
+    STUB.obj = { [101] = { { text = "Pelambre de garrágil: 2/6", finished = false }, { text = "Habla con Lana", finished = true } } }
+    C_QuestLog = {
+      IsQuestFlaggedCompleted = function(id) return STUB.q[id] == "done" end,
+      GetLogIndexForQuestID = function(id) local s = STUB.q[id]; if s == "active" or s == "complete" then return 1 end end,
+      IsComplete = function(id) return STUB.q[id] == "complete" end,
+      GetQuestObjectives = function(id) return STUB.obj[id] end,
+    }
+  `);
+  vm.run(`WoWAIMap.Sync({ epoch = "e1", version = 1, layers = { { name = "quests", title = "Ruta", ordered = true, loop = false, points = {
+    { 1432, 50, 40, "1. Pieles", "kill", 101 }, { 1432, 60, 50, "2. Entregar", "turnin", 101 },
+    { 1432, 60, 50, "3. Recoger la siguiente", "quest", 102 }, { 1432, 55, 70, "4. Ir al puente", "poi" } } } } })`);
+  assert.equal(vm.evaluate('WoWAIMapDB.nav.index'), '1');
+  // Standing on the kill stop does not finish it; the navigator shows the objective left.
+  vm.run('STUB.posX, STUB.posY = 0.5, 0.4; WoWAIMap.UpdateNavigator()');
+  assert.equal(vm.evaluate('WoWAIMapDB.nav.index'), '1', 'arrival alone does not move a quest stop');
+  assert.match(vm.evaluate('WoWAINavigator.text.text'), /Pelambre de garrágil: 2\/6/);
+  // Objectives done far away: the quest event moves on to the turn-in.
+  vm.run('STUB.posX, STUB.posY = 0.1, 0.1; STUB.q[101] = "complete"; STUB.FireEvent("QUEST_LOG_UPDATE")');
+  assert.equal(vm.evaluate('WoWAIMapDB.nav.index'), '2');
+  assert.match(vm.evaluate('WoWAINavigator.text.text'), /ready to turn in/);
+  assert.ok(vm.evaluate('STUB.prints[#STUB.prints]').includes('next 2/4: 2. Entregar'));
+  // Turning in, with the follow-up already accepted: both stops are done at once.
+  vm.run('STUB.q[101] = "done"; STUB.q[102] = "active"; STUB.FireEvent("QUEST_TURNED_IN", 101)');
+  assert.equal(vm.evaluate('WoWAIMapDB.nav.index'), '4');
+  // A plain stop still moves on by arrival: the route ends there.
+  vm.run('STUB.posX, STUB.posY = 0.55, 0.7; WoWAIMap.UpdateNavigator()');
+  assert.equal(vm.evaluate('WoWAIMapDB.nav'), null, 'route finished');
+  assert.equal(vm.evaluate('WoWAIMapDB.hidden.quests'), 'true', 'a finished route leaves the map');
+  assert.ok(vm.evaluate('STUB.prints[#STUB.prints]').includes('/wow-ai map show quests brings it back'));
+  vm.run('WoWAIMap.Refresh()');
+  assert.deepEqual(shownPins(vm), [], 'no pins left on the map');
+  // Done stops fade on the map.
+  vm.run('STUB.posX, STUB.posY = 0.1, 0.1; WoWAIMap.Navigate("quests", 1)'); // all quest stops are done: starts at 4
+  assert.equal(vm.evaluate('WoWAIMapDB.nav.index'), '4');
+  vm.run('WoWAIMap.Refresh()');
+  vm.run(`
+    local overlay = WorldMapFrame:GetCanvas().children[#WorldMapFrame:GetCanvas().children]
+    local faded = 0
+    for _, c in ipairs(overlay.children) do
+      if c.kind == "Button" and c.shown and c.info and c.info.label:find("(done)", 1, true) then faded = faded + 1 end
+    end
+    RESULT = faded`);
+  assert.equal(vm.evaluate('RESULT'), '3');
+});
+
 test('herb/ore nodes toggle and follow the gathering skill', () => {
   const vm = newVM();
   vm.run(`WoWAINodes = { kinds = { { "Copper Vein", "mining", 1 }, { "Tin Vein", "mining", 65 }, { "Peacebloom", "herbalism", 1 } },

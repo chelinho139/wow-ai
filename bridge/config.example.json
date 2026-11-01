@@ -3,7 +3,7 @@
   "savedVariablesFile": "C:\\Program Files (x86)\\World of Warcraft\\_classic_beta_\\WTF\\Account\\YOUR_ACCOUNT\\SavedVariables\\WoWAI.lua",
   "inboxFile": "C:\\Program Files (x86)\\World of Warcraft\\_classic_beta_\\Interface\\AddOns\\WoWAI\\Inbox.lua",
   "defaultCwd": "C:\\path\\to\\your\\project",
-  "tocInterface": "16001",
+  "tocInterface": "16001, 110205",
   "slots": 200,
   "actMax": 60,
   "presenceMax": 2000,
@@ -83,7 +83,6 @@
     }
   },
   "gameContext": true,
-  "primerFile": "docs/WOW-ADDON-PRIMER.md",
   "pollMs": 750,
   "progressWriteMs": 3000,
   "timeoutMs": 1800000

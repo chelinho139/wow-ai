@@ -178,6 +178,27 @@ test('the game context describes the character and rides on the hello, then only
   assert.ok(vm.evaluate('WoWAIDB.chats[2].history[#WoWAIDB.chats[2].history].text').includes('Game context is ON'));
 });
 
+test('on a retail client the context names the specialization, loadout and professions instead of talent tabs and skill lines', () => {
+  const vm = newVM();
+  vm.run(`
+    function GetBuildInfo() return "11.2.5", "63906", "Oct 7 2025", 110205 end
+    function GetLocale() return "esES" end
+    GetNumTalentTabs, GetTalentTabInfo, GetNumSkillLines, GetSkillLineInfo = nil, nil, nil, nil
+    function GetSpecialization() return 2 end
+    function GetSpecializationInfo(i) if i == 2 then return 254, "Puntería", "", 0, "DAMAGER" end end
+    C_ClassTalents = { GetLastSelectedSavedConfigID = function(specID) if specID == 254 then return 77 end end }
+    C_Traits = { GetConfigInfo = function(id) if id == 77 then return { ID = 77, name = "Raid ST" } end end }
+    function GetProfessions() return 3, nil, nil, 9, 10 end
+    local P = { [3] = { "Desuello", 100, 100 }, [9] = { "Pesca", 12, 300 }, [10] = { "Cocina", 5, 300 } }
+    function GetProfessionInfo(i) local p = P[i]; if p then return p[1], 0, p[2], p[3] end end
+  `);
+  const lines = vm.evaluate('WoWAI.GameContext()').split('\n');
+  assert.equal(lines[0], 'Game: World of Warcraft (retail) (client 11.2.5.63906, interface 110205, locale esES)');
+  assert.ok(lines.includes('Specialization: Puntería (loadout: Raid ST)'), lines.join('\n'));
+  assert.ok(lines.includes('Professions: Desuello 100/100, Pesca 12/300, Cocina 5/300'), lines.join('\n'));
+  assert.ok(!lines.some(l => l.startsWith('Talents:')));
+});
+
 test('a shift-clicked link lands in the focused input and is sent as its name plus tooltip', () => {
   const vm = newVM();
   login(vm);
@@ -322,6 +343,22 @@ test('without the sound channel, the light stays green between idle slot polls',
   assert.equal(vm.evaluate('WoWAI.BridgeState()'), 'down');
 });
 
+test('without the sound channel the first minute after a send is polled every 4 s; with it, on the usual schedule', () => {
+  const loadsInFirstMinute = (sound) => {
+    const vm = newVM();
+    if (sound) vm.run('STUB.sounds["Interface\\\\AddOns\\\\WoWAI\\\\ctl\\\\valid.wav"] = true');
+    login(vm);
+    connect(vm);
+    vm.run('WoWAI.Send("hello world")');
+    vm.run('STUB.loadCount = 0; STUB.onLoadAddOn = function(name) STUB.loadCount = STUB.loadCount + 1; WoWAI_SlotData = { now = time(), cwd = "", replies = {} } end');
+    for (let t = 0; t < 60; t += 2) vm.run('STUB.now = STUB.now + 2; STUB.Tick()');
+    assert.notEqual(vm.evaluate('WoWAIDB.chats[1].pendingId'), null, 'still waiting');
+    return vm.num('STUB.loadCount');
+  };
+  assert.equal(loadsInFirstMinute(false), 15, 'every 4 s, 4..60');
+  assert.equal(loadsInFirstMinute(true), 7, '5, 10, 16, 24, 34, 46, 60');
+});
+
 test('the Folder... menu item (right-click a chat) opens a prompt that sets the chat folder like /wow-ai cd', () => {
   const vm = newVM();
   login(vm);
@@ -376,21 +413,309 @@ test('a sent message is encoded on the strip with the chat folder, then a slot r
   assert.ok(vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history].text').includes('C:\\proj'));
 });
 
-test('a denied reply shows Allow, and Allow resends with the rules as flags', () => {
+test('a denied reply shows Allow once and Always; once resends the rules flagged for one run, Always without the flag', () => {
   const vm = newVM();
   login(vm);
   connect(vm);
-  vm.run('WoWAI.Send("search for it")');
-  const chatId = vm.evaluate('WoWAIDB.chats[1].id');
-  const id = vm.num('WoWAIDB.chats[1].pendingId');
-  nextSlot(vm, `{ now = time(), cwd = "", replies = { { chat = "${chatId}", id = ${id}, status = "done", text = "need permission", denied = { "WebSearch", "Bash(cargo:*)" } } } }`);
-  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
-  assert.equal(vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history].denied[2]'), 'Bash(cargo:*)');
-  vm.run(`WoWAI.Allow("${chatId}", { "WebSearch", "Bash(cargo:*)" })`);
-  const rec = stripRecords(vm).find(r => r.flags.includes('allow='));
+  const deny = (n) => {
+    vm.run(`WoWAI.Send("search for it ${n}")`);
+    const chatId = vm.evaluate('WoWAIDB.chats[1].id');
+    const id = vm.num('WoWAIDB.chats[1].pendingId');
+    nextSlot(vm, `{ now = time(), cwd = "", replies = { { chat = "${chatId}", id = ${id}, status = "done", text = "need permission", denied = { "WebSearch", "Bash(cargo:*)" } } } }`);
+    vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+    assert.equal(vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history].denied[2]'), 'Bash(cargo:*)');
+    return { chatId, id };
+  };
+  let { chatId, id } = deny(1);
+  vm.run(`WoWAI.Allow("${chatId}", { "WebSearch", "Bash(cargo:*)" }, false)`);
+  let rec = stripRecords(vm).find(r => r.flags.includes('allow='));
   assert.ok(rec, 'allow record on the strip');
-  assert.equal(rec.flags, 'allow=WebSearch,Bash(cargo:*)');
+  assert.equal(rec.flags, 'allow=WebSearch,Bash(cargo:*);once');
   assert.equal(rec.id, id + 1);
+  assert.equal(vm.evaluate('WoWAIDB.outbox.allowOnce'), 'true', 'the reload path says "once" too');
+  assert.ok(vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history - 1].text').startsWith('Allowed once: '));
+
+  // Answer the retry, get refused again, and this time save the rules.
+  nextSlot(vm, `{ now = time(), cwd = "", replies = { { chat = "${chatId}", id = ${id + 1}, status = "done", text = "ok" } } }`);
+  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+  ({ chatId, id } = deny(2));
+  vm.run(`WoWAI.Allow("${chatId}", { "WebSearch", "Bash(cargo:*)" }, true)`);
+  rec = stripRecords(vm).find(r => r.id === id + 1);
+  assert.equal(rec.flags, 'allow=WebSearch,Bash(cargo:*)');
+  assert.equal(vm.evaluate('WoWAIDB.outbox.allowOnce'), null);
+});
+
+// A retail-looking client: trait trees, item levels, the mount journal and C_QuestLog.
+const RETAIL_STUBS = `
+  function GetLocale() return "esES" end
+  GetNumTalentTabs, GetTalentTabInfo = nil, nil
+  function GetSpecialization() return 3 end
+  function GetSpecializationInfo(i) if i == 3 then return 267, "Destrucción" end end
+  C_Spell = {
+    GetSpellName = function(id) return ({ [1] = "Inmolar", [2] = "Conflagrar" })[id] end,
+    -- Markup and line breaks as tooltips have them; a long one made of 2-byte characters.
+    GetSpellDescription = function(id)
+      if id == 2 then return "|cffffffffQuema|r al\\nobjetivo." end
+      if id == 1 then return string.rep("á", 100) end
+    end,
+  }
+  local NODES = {
+    [10] = { ID = 10, currentRank = 1, maxRanks = 1, posX = 5, posY = 2, isVisible = true, activeEntry = { entryID = 100 } },
+    [11] = { ID = 11, currentRank = 2, maxRanks = 2, posX = 1, posY = 2, isVisible = true, activeEntry = { entryID = 110 } },
+    [12] = { ID = 12, currentRank = 0, maxRanks = 1, posX = 1, posY = 1, isVisible = true, entryIDs = { 120 } },
+    [13] = { ID = 13, currentRank = 1, maxRanks = 1, posX = 9, posY = 0, isVisible = true, activeEntry = { entryID = 130 } },
+    [14] = { ID = 14, currentRank = 1, maxRanks = 1, posX = 9, posY = 1, isVisible = true, subTreeID = 7, subTreeActive = true, activeEntry = { entryID = 140 } },
+    [15] = { ID = 15, currentRank = 1, maxRanks = 1, posX = 9, posY = 1, isVisible = true, subTreeID = 8, subTreeActive = false, activeEntry = { entryID = 150 } },
+  }
+  local ENTRIES = { [100] = { definitionID = 1000 }, [110] = { definitionID = 1100 }, [120] = { definitionID = 1200 },
+    [130] = { subTreeID = 7 }, [140] = { definitionID = 1400 }, [150] = { definitionID = 1500 } }
+  local DEFS = { [1000] = { spellID = 1 }, [1100] = { spellID = 2 }, [1200] = { overrideName = "Nunca" },
+    [1400] = { overrideName = "Ritual diabólico" }, [1500] = { overrideName = "Otra rama" } }
+  C_ClassTalents = { GetActiveConfigID = function() return 5 end, GetLastSelectedSavedConfigID = function(specID) if specID == 267 then return 9 end end }
+  C_Traits = {
+    GetConfigInfo = function(id) if id == 5 then return { ID = 5, treeIDs = { 1 } } elseif id == 9 then return { ID = 9, name = "Raid ST" } end end,
+    GetTreeNodes = function(tree) return { 10, 11, 12, 13, 14, 15 } end,
+    GetNodeInfo = function(cfg, id) return NODES[id] end,
+    GetEntryInfo = function(cfg, id) return ENTRIES[id] end,
+    GetDefinitionInfo = function(id) return DEFS[id] end,
+    GetSubTreeInfo = function(cfg, id) if id == 7 then return { ID = 7, name = "Diabolista" } end end,
+    GetTreeCurrencyInfo = function(cfg, tree) return { { traitCurrencyID = 1, quantity = 2 }, { traitCurrencyID = 2, quantity = 0 } } end,
+  }
+  HEADSLOT, MAINHANDSLOT = "Cabeza", "Mano principal"
+  function GetAverageItemLevel() return 48.2, 45.5 end
+  function GetInventoryItemLink(unit, slot)
+    if slot == 1 then return "|cff1eff00|Hitem:2140::::::::16:::::|h[Fine Longsword]|h|r" end
+    if slot == 16 then return "|cffffffff|Hitem:99::::::::16:::::|h[Bastón viejo]|h|r" end
+  end
+  C_Item.GetDetailedItemLevelInfo = function(link) if link:find("item:2140") then return 47 end return 40 end
+  C_Item.GetItemInfoInstant = function(link)
+    if tostring(link):find("item:99") then return 99, "Arma", STUB.weaponType or "Bastones", STUB.weaponLoc or "INVTYPE_2HWEAPON" end
+  end
+  -- The client takes a full link here; the shared stub only knows bare "item:" strings.
+  C_Item.GetItemInfo = function(link) if tostring(link):find("item:2140") then return "Fine Longsword", link, 2 end end
+  SPELL_STAT4_NAME = "Intelecto"
+  function UnitStat(unit, i) if i == 4 then return 300, 312 end end
+  function GetSpellCritChance() return 12.34 end
+  function GetHaste() return 8 end
+  BATTLE_PET_SOURCE_3, BATTLE_PET_SOURCE_10 = "Vendedor", "Tienda"
+  local MOUNTS = {
+    [1] = { "Lobo", 3, false, true }, [2] = { "Raptor", 3, false, false }, [3] = { "Zancudo", 3, false, false },
+    [4] = { "Caballo de la Alianza", 3, true, false }, [5] = { "Dragón de tienda", 10, false, false },
+  }
+  C_MountJournal = {
+    GetMountIDs = function() return { 1, 2, 3, 4, 5 } end,
+    GetMountInfoByID = function(id) local m = MOUNTS[id]; return m[1], 100 + id, 0, false, true, m[2], false, false, nil, m[3], m[4], id end,
+  }
+  local LOG = {
+    { title = "Dragonflight", isHeader = true }, -- a group header with no quest under it
+    { title = "Bosque Canción Eterna", isHeader = true },
+    { title = "Lobos hambrientos", questID = 101 },
+    { title = "Entrega del correo", questID = 49930 },
+  }
+  local OBJ = { [101] = { { text = "Lobos sarnosos: 3/8", finished = false }, { text = "Habla con Lana", finished = true } }, [49930] = {} }
+  C_QuestLog = {
+    GetNumQuestLogEntries = function() return #LOG end,
+    GetInfo = function(i) return LOG[i] end,
+    IsComplete = function(id) return id == 49930 end,
+    GetQuestObjectives = function(id) return OBJ[id] end,
+  }
+`;
+
+// The record the last /ai <attachment> put on the strip, by the start of its text.
+function sentStartingWith(vm, start) {
+  return stripRecords(vm).find(r => r.text.startsWith(start));
+}
+
+test('/ai talentos sends the build in use: names, ranks and descriptions top to bottom, the hero tree, unspent points', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run(RETAIL_STUBS);
+  vm.run('SlashCmdList.WOWAI("talentos")');
+  const rec = sentStartingWith(vm, 'Revisa mis talentos.');
+  assert.ok(rec, 'sent with the Spanish default question');
+  assert.equal(rec.text, [
+    'Revisa mis talentos.',
+    '',
+    'Talents, read from the game:',
+    'Specialization: Destrucción (loadout Raid ST)',
+    'Unspent talent points: 2',
+    'Class and spec talents, top to bottom (2):',
+    '- Conflagrar 2/2: Quema al objetivo.',
+    '- Inmolar: ' + 'á'.repeat(68) + '...',
+    'Hero talents (Diabolista):',
+    '- Ritual diabólico',
+  ].join('\n'));
+  // A question typed after the command replaces the default one.
+  vm.run('STUB.now = STUB.now + 1; WoWAI.NewChat("Otro"); SlashCmdList.WOWAI("talents is Conflagrar worth it?")');
+  assert.ok(sentStartingWith(vm, 'is Conflagrar worth it?\n\nTalents, read from the game:\n'));
+});
+
+test('/ai equipo, /ai monturas and /ai misiones attach gear, the mount collection and the quest log', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run(RETAIL_STUBS);
+  vm.run('SlashCmdList.WOWAI("equipo que mejoro?")');
+  let rec = sentStartingWith(vm, 'que mejoro?');
+  assert.ok(rec);
+  const gear = rec.text.split('\n');
+  assert.equal(gear[2], 'Equipped gear, read from the game:');
+  assert.ok(gear[3].startsWith('Average item level equipped: 45.5; empty slots: 13 (Neck, Shoulder, '), gear[3]);
+  assert.ok(!rec.text.includes('48.2'), 'the "overall" average is not passed on as gear in the bags');
+  assert.ok(gear.includes('Cabeza: Fine Longsword (ilvl 47, Uncommon)'), rec.text);
+  assert.ok(gear.includes('Mano principal: Bastón viejo (ilvl 40, Bastones, two-handed)'), rec.text);
+  assert.ok(gear.includes('Neck: (empty)'), 'an empty slot is listed, by its English name when the client has no global for it');
+  assert.ok(!rec.text.includes('Off hand'), 'an empty off hand is left out behind a two-handed weapon');
+  // A one-handed weapon leaves the off hand free: that empty slot counts.
+  vm.run('STUB.weaponType, STUB.weaponLoc = "Dagas", "INVTYPE_WEAPON"');
+  const oneHand = vm.evaluate('WoWAI.GearText()').split('\n');
+  assert.ok(oneHand.includes('Mano principal: Bastón viejo (ilvl 40, Dagas)'), oneHand.join('\n'));
+  assert.ok(oneHand.includes('Off hand: (empty)'));
+  assert.ok(oneHand[0].includes('empty slots: 14 ('), oneHand[0]);
+  assert.equal(gear[gear.length - 1], 'Stats: Intelecto 312, crit 12.3%, haste 8.0%');
+
+  vm.run('WoWAI.NewChat("m"); SlashCmdList.WOWAI("monturas")');
+  rec = sentStartingWith(vm, '¿Qué monturas');
+  assert.ok(rec);
+  assert.ok(rec.text.endsWith([
+    'Mount collection, read from the game:',
+    'Mounts: 1 collected of 4 this character can see; 3 missing',
+    'Collected (1): Lobo',
+    'Missing by source: Vendedor 2, Tienda 1',
+    'Examples missing, Vendedor: Raptor, Zancudo',
+  ].join('\n')), rec.text);
+
+  vm.run('WoWAI.NewChat("q"); SlashCmdList.WOWAI("misiones")');
+  rec = sentStartingWith(vm, 'Ayúdame con mis misiones');
+  assert.ok(rec.text.endsWith([
+    'Quest log, read from the game:',
+    '== Bosque Canción Eterna',
+    '101 Lobos hambrientos',
+    '  - Lobos sarnosos: 3/8',
+    '  - Habla con Lana (done)',
+    '49930 Entrega del correo - ready to turn in',
+  ].join('\n')), rec.text);
+  assert.ok(!rec.text.includes('Dragonflight'), 'a header with no quest under it is left out');
+});
+
+test('the context lists quests with their titles while they fit, then ids only, never over the cap', () => {
+  const vm = newVM();
+  vm.run(RETAIL_STUBS);
+  let ctx = vm.evaluate('WoWAI.GameContext()');
+  assert.ok(ctx.split('\n').includes('Quest log (id, * = ready to turn in, title): 101 Lobos hambrientos; 49930* Entrega del correo'), ctx);
+  // A full log of long titles: the first ones keep theirs, every id is still there.
+  vm.run(`
+    local log = {}
+    for i = 1, 35 do log[i] = { title = "Una mision con un titulo bastante largo " .. i, questID = 1000 + i } end
+    C_QuestLog.GetNumQuestLogEntries = function() return #log end
+    C_QuestLog.GetInfo = function(i) return log[i] end
+  `);
+  ctx = vm.evaluate('WoWAI.GameContext()');
+  assert.ok(ctx.length <= 900, `context is ${ctx.length} bytes`);
+  const line = ctx.split('\n').find(l => l.startsWith('Quest log'));
+  assert.ok(line.includes('1001 Una mision con un titulo bastant;'), 'early quests keep a title, cut to 32 characters');
+  for (let i = 1; i <= 35; i++) assert.ok(line.includes(String(1000 + i)), 'quest ' + (1000 + i) + ' is listed');
+  assert.ok(line.endsWith('; 1035'), 'the last ones are ids only');
+});
+
+test('a big mount collection keeps every source count and stays within the attachment budget', () => {
+  const vm = newVM();
+  vm.run(RETAIL_STUBS);
+  vm.run(`
+    for i = 1, 12 do _G["BATTLE_PET_SOURCE_" .. i] = "Origen" .. i end
+    C_MountJournal.GetMountIDs = function() local t = {} for i = 1, 1000 do t[i] = i end return t end
+    C_MountJournal.GetMountInfoByID = function(id) return "Montura de nombre largo " .. id, id, 0, false, true, (id % 12) + 1, false, false, nil, false, id <= 50, id end
+  `);
+  const text = vm.evaluate('WoWAI.MountsText()');
+  assert.ok(text.length <= 2000, `${text.length} bytes`);
+  const counts = text.split('\n').find(l => l.startsWith('Missing by source: '));
+  for (let i = 1; i <= 12; i++) assert.ok(counts.includes('Origen' + i + ' '), 'source ' + i + ' counted');
+  assert.ok(text.includes('Collected (50): Montura de nombre largo 1, '), 'owned mounts by name');
+  assert.ok(text.includes('Examples missing, Origen'), 'some names as examples');
+});
+
+test('/ai monturas with a question says, for each mount it names, whether it is collected', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run(RETAIL_STUBS);
+  vm.run('SlashCmdList.WOWAI("monturas ¿tengo el raptor o el lobo?")');
+  const rec = sentStartingWith(vm, '¿tengo el raptor o el lobo?');
+  assert.ok(rec);
+  assert.ok(rec.text.includes('\nMatching "raptor" (1): Raptor (missing, Vendedor)\nMatching "lobo" (1): Lobo (have)\n'), rec.text);
+  // A name the journal doesn't have is said so, not guessed.
+  const none = vm.evaluate('WoWAI.MountsText("tengo el grifo dorado")');
+  assert.ok(none.includes('Matching the question: none;'), none);
+  // Accented words survive the split ("á" shares a byte with "¡"), and accents don't matter either way.
+  assert.ok(vm.evaluate('WoWAI.MountsText("¡Dragón de tienda!")').includes('Dragón de tienda (missing, Tienda)'));
+  assert.ok(vm.evaluate('WoWAI.MountsText("dragon")').includes('Matching "dragon" (1): Dragón de tienda (missing, Tienda)'));
+  assert.ok(vm.evaluate('WoWAI.MountsText("ZANCÚDO")').includes('Zancudo (missing, Vendedor)'));
+});
+
+test('a mount question naming several kinds gives each kind its share of the room', () => {
+  const vm = newVM();
+  vm.run(RETAIL_STUBS);
+  vm.run(`
+    local kinds = { "Halcón zancudo", "Kodo", "Lobo", "Raptor" }
+    C_MountJournal.GetMountIDs = function() local t = {} for i = 1, 400 do t[i] = i end return t end
+    C_MountJournal.GetMountInfoByID = function(id)
+      return kinds[(id % 4) + 1] .. " de color numero " .. id, id, 0, false, true, 3, false, false, nil, false, id % 10 == 0, id
+    end
+  `);
+  const text = vm.evaluate('WoWAI.MountsText("halcón zancudo kodo lobo raptor")');
+  assert.ok(text.length <= 2000, `${text.length} bytes`);
+  for (const w of ['halcon', 'kodo', 'lobo', 'raptor']) { // words are matched (and shown) without accents
+    assert.ok(new RegExp(`\\nMatching "${w}" \\(100\\): \\S`).test(text), w + ' has its own line with names: ' + text);
+  }
+  assert.ok(!text.includes('Matching "zancudo"'), 'a word already matched by an earlier one adds no empty group');
+  // Owned ones (every tenth id, so hawkstriders and wolves here) lead their group.
+  assert.match(text, /\nMatching "lobo" \(100\): Lobo de color numero 10 \(have\), Lobo de color numero 110 \(have\), /);
+});
+
+test('owned mounts lead a cut match list', () => {
+  const vm = newVM();
+  vm.run(RETAIL_STUBS);
+  vm.run(`
+    C_MountJournal.GetMountIDs = function() local t = {} for i = 1, 60 do t[i] = i end return t end
+    C_MountJournal.GetMountInfoByID = function(id)
+      return (id == 60 and "Zzz raptor viejo" or ("Raptor numero " .. id)), id, 0, false, true, 3, false, false, nil, false, id == 60, id
+    end
+  `);
+  const line = vm.evaluate('WoWAI.MountsText("raptor")').split('\n').find(l => l.startsWith('Matching'));
+  assert.ok(line.startsWith('Matching "raptor" (60): Zzz raptor viejo (have), '), line);
+  assert.match(line, /\+\d+ more$/, 'the list is cut, and the owned one is still in it');
+});
+
+test('an attachment the client cannot provide is explained in the chat and nothing is sent', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run('C_MountJournal = nil; SlashCmdList.WOWAI("mounts")');
+  assert.equal(vm.evaluate('WoWAIDB.chats[1].pendingId'), null);
+  assert.equal(vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history].text'), 'Could not read mount collection: this client has no mount journal');
+});
+
+test('/wow-ai resend puts the message back with the flags it went out with', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run('SlashCmdList.WOWAI("agent grok"); SlashCmdList.WOWAI("reset"); WoWAI.Send("start over")');
+  assert.equal(sentStartingWith(vm, 'start over').flags, 'n;agent=grok');
+  vm.run('WoWAI.Resend()');
+  assert.equal(sentStartingWith(vm, 'start over').flags, 'n;agent=grok', 'the fresh-session mark survives a resend');
+});
+
+test('the addon\'s own commands typed in its input box run locally instead of going to the agent', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run('WoWAIInput:SetText("/wow-ai new Second"); WoWAI.SendFromInput()');
+  assert.equal(vm.evaluate('WoWAIDB.chats[#WoWAIDB.chats].name'), 'Second', 'ran as a command');
+  assert.equal(vm.evaluate('WoWAIDB.outbox'), null, 'nothing sent');
+  // Other slash lines are messages: the player may be asking about a macro.
+  vm.run('WoWAIInput:SetText("/cast [@mouseover] Inmolar is this right?"); WoWAI.SendFromInput()');
+  assert.ok(stripRecords(vm).some(r => r.text === '/cast [@mouseover] Inmolar is this right?'));
 });
 
 test('a chat can pick its agent: the strip says so, replies are labelled by their writer, unknown names are refused', () => {

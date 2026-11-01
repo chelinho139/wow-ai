@@ -13,7 +13,7 @@ Chat with your local coding agents from inside **World of Warcraft: Forever**: [
 - The agent can draw on your world map: numbered routes, quest stops and marks, with a navigator arrow that walks you from stop to stop
 - Herb and ore spawns on the world map, filtered by your gathering skill (`/wow-ai map ore`, `/wow-ai map herb`)
 - Ready-made macros: ask for one and the reply carries a **Create macro** button that saves it and puts it on your cursor, ready to drop on an action bar (`/wow-ai macro undo` reverts it)
-- An **Allow & retry** button when Claude or Grok needs a command outside your allowlist
+- **Allow once** and **Always** buttons when Claude or Grok needs a command outside your allowlist (once lets only the retry use it; Always saves it), and a scratch folder Claude can write temporary files to without asking
 - A status light for the bridge, automatic retries, and recovery of your chats (and map layers) if the beta client wipes addon data
 - Runs on Windows, on Linux with the game under Wine, and on macOS with a native client
 
@@ -27,7 +27,7 @@ WoW addons are sandboxed: no network, no file reads at runtime. Two doors remain
 
 The bridge drives whichever of these you have installed; each chat can use a different one.
 
-| Agent | CLI the bridge runs | Permissions | Allow & retry |
+| Agent | CLI the bridge runs | Permissions | Allow once / Always |
 |---|---|---|---|
 | **Claude Code** (`claude`) | `claude -p --output-format stream-json`, resumed with `--resume` | `permissionMode` + `allowedTools` rules | yes |
 | **Codex** (`codex`) | `codex exec --json`, resumed with `codex exec resume` | a sandbox chosen from `permissionMode` (read-only, workspace-write, or none) | no: a command the sandbox declined is reported in the reply |
@@ -40,7 +40,7 @@ The bridge drives whichever of these you have installed; each chat can use a dif
 ## Requirements
 
 - Windows (NTFS), or Linux with the game under Wine on an **X11** session and python3 (see [docs/INSTALL-LINUX.md](docs/INSTALL-LINUX.md)), or macOS with a native client and python3
-- World of Warcraft: Forever (tested on 1.60.1.69913 and 1.60.1.69977, TOC 16001), **windowed or borderless** (exclusive fullscreen blocks screen capture)
+- World of Warcraft: Forever (tested on 1.60.1.69913 and 1.60.1.69977, TOC 16001), **windowed or borderless** (exclusive fullscreen blocks screen capture). Retail clients on The War Within (TOC 110205, 11.2.5) are supported too, tested on a Firestorm 11.2.5 client (63704): see "Retail clients" in [docs/INSTALL-WINDOWS.md](docs/INSTALL-WINDOWS.md)
 - [Node.js](https://nodejs.org) 22.2 or newer
 - At least one agent CLI, installed and logged in:
   - [Claude Code](https://claude.com/claude-code): `claude --version` works
@@ -126,6 +126,10 @@ Right-clicking a chat in the left panel opens a small menu with **Rename...**, *
 | `/wow-ai agent [claude\|codex\|grok\|agy\|hermes]` | which agent this chat talks to; no name shows the current one and the bridge's default, `default` goes back to the bridge's. A chat that changes agent starts a fresh session with it |
 | `/wow-ai cd <folder>` | folder this chat's agent works in (**Folder...** after right-clicking the chat opens the same thing as a dialog). Relative to the bridge's folder (`/wow-ai cd realms`, `/wow-ai cd ../other`), `~` works, a full path too; `/wow-ai cd` alone goes back to the bridge's default. A chat that changes folder starts a fresh session there |
 | `/wow-ai reset` | wipe this chat's agent memory, keep the transcript |
+| `/ai talents [question]` | send the question with your talent build read from the game: names and ranks, hero tree, unspent points (`/ai talentos`) |
+| `/ai gear [question]` | ... with your equipped items, item levels and main stats (`/ai equipo`) |
+| `/ai mounts [question]` | ... with your mount collection: the mounts you own by name, the missing ones counted by source, and for each mount your question names whether you have it (`/ai monturas ¿tengo el raptor?`) |
+| `/ai quests [question]` | ... with your quest log: titles and objective progress (`/ai misiones`) |
 | `/wow-ai context [on\|off]` | show what the agent is told about your character and location, or turn it on/off |
 | `/wow-ai rename`, `/wow-ai delete`, `/wow-ai clear` | manage the current chat |
 | `/wow-ai echo summary\|full\|short\|off\|<chars>` | how much of each reply to print into the game chat. `summary` (the default) prints only the agent's closing TL;DR lines, the full reply is in the window behind `[open]`; `full` prints up to 4000 chars, `short` one preview line |
