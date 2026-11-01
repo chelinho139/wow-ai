@@ -3078,6 +3078,8 @@ do
 				local b = CreateFrame("Button", name .. "WoWAIButton", frame, "UIPanelButtonTemplate")
 				b:SetSize(170, 22)
 				b:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -8, 8)
+				-- Above the set's model, which takes the mouse to rotate it.
+				b:SetFrameLevel((Try(frame.GetFrameLevel, frame) or 1) + 100)
 				local locale = Try(GetLocale)
 				b:SetText((type(locale) == "string" and locale:sub(1, 2) == "es") and "Preguntar a WoW AI" or "Ask WoW AI")
 				b:SetScript("OnClick", function()
