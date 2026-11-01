@@ -1144,7 +1144,7 @@ test('/ai profesiones sends each profession with its skill and learned expansion
     '- Cocina 1/300 (secondary)',
   ].join('\n')), rec.text);
   // None learned still goes out: what to pick is the question.
-  vm.run('WoWAI.NewChat("n"); function GetProfessions() end; SlashCmdList.WOWAI("profesiones cuál cojo?")');
+  vm.run('WoWAI.NewChat("n"); function GetProfessions() end; GetNumSkillLines = nil; SlashCmdList.WOWAI("profesiones cuál cojo?")');
   assert.ok(sentStartingWith(vm, 'cuál cojo?').text.endsWith('Professions, read from the game:\nNo professions learned: both primary slots are free, and no secondary ones (cooking, fishing) either.'));
 });
 
