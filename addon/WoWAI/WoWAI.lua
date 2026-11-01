@@ -2810,7 +2810,11 @@ do
 				lines[#lines + 1] = "- " .. sk.name .. " " .. tostring(sk.rank or 0) .. "/" .. tostring(sk.maxRank or 0)
 			end
 		end
-		if #lines == 0 then return nil, "no professions learned" end
+		if #lines == 0 then
+			-- Nothing learned is an answer too: the question is what to pick.
+			if GetProfessions then return "No professions learned: both primary slots are free, and no secondary ones (cooking, fishing) either." end
+			return nil, "no professions learned"
+		end
 		return table.concat(lines, "\n")
 	end
 end
