@@ -971,21 +971,28 @@ test('/ai bolsas sends equippable items against what is worn, the junk and its v
       [1] = {
         { hyperlink = "|cffffffff|Hitem:302::::::::23:::::|h[Agua]|h|r", stackCount = 2, quality = 1 },
         { hyperlink = "|cff1eff00|Hitem:303::::::::23:::::|h[Anillo]|h|r", stackCount = 1, quality = 2, isBound = true },
+        { hyperlink = "|cff1eff00|Hitem:304::::::::23:::::|h[Orbe]|h|r", stackCount = 1, quality = 2 },
       },
     }
+    INVTYPE_HOLDABLE = "Mano izquierda"
     C_Container = {
       GetContainerNumSlots = function(bag) return BAGS[bag] and #BAGS[bag] or 0 end,
       GetContainerItemInfo = function(bag, slot) return BAGS[bag] and BAGS[bag][slot] or nil end,
     }
     local KIND = { ["300"] = { "Armadura", "Tela", "INVTYPE_HEAD" }, ["301"] = { "Chatarra", "Basura", "" },
-      ["302"] = { "Consumible", "Comida", "" }, ["303"] = { "Armadura", "Miscelánea", "INVTYPE_FINGER" } }
+      ["302"] = { "Consumible", "Comida", "" }, ["303"] = { "Armadura", "Miscelánea", "INVTYPE_FINGER" },
+      ["304"] = { "Armadura", "Miscelánea", "INVTYPE_HOLDABLE" }, ["99"] = { "Arma", "Bastones", "INVTYPE_2HWEAPON" } }
     C_Item.GetItemInfoInstant = function(link)
       local id = tostring(link):match("item:(%d+)")
       local k = KIND[id]
       if k then return tonumber(id), k[1], k[2], k[3] end
     end
     local SELL = { ["300"] = 150, ["301"] = 25, ["302"] = 1, ["303"] = 12000 }
-    C_Item.GetItemInfo = function(link) return "x", link, 2, 0, 0, "", "", 0, "", 0, SELL[tostring(link):match("item:(%d+)")] end
+    local MINLEVEL = { ["303"] = 70 }
+    C_Item.GetItemInfo = function(link)
+      local id = tostring(link):match("item:(%d+)")
+      return "x", link, 2, 0, MINLEVEL[id] or 1, "", "", 0, "", 0, SELL[id]
+    end
     local ILVL = { ["300"] = 30, ["303"] = 28, ["2140"] = 25 }
     C_Item.GetDetailedItemLevelInfo = function(link) return ILVL[tostring(link):match("item:(%d+)")] or 20 end`);
   vm.run('SlashCmdList.WOWAI("bolsas")');
@@ -993,10 +1000,11 @@ test('/ai bolsas sends equippable items against what is worn, the junk and its v
   assert.ok(rec);
   assert.ok(rec.text.endsWith([
     'Bags, read from the game:',
-    'Bags: 5 of 6 slots used, 1 free; everything would sell for 1g 22s 32c.',
+    'Bags: 6 of 7 slots used, 1 free; everything would sell for 1g 22s 32c.',
     'Equippable (item level against the lowest worn in that slot):',
     '- Capucha de tela (Cabeza, Tela, ilvl 30, worn 25 (+5), Uncommon, sells 1s 50c)',
-    '- Anillo (Dedo, Miscelánea, ilvl 28, that slot is empty, Uncommon, bound, sells 1g 20s)',
+    '- Anillo (Dedo, Miscelánea, REQUIRES LEVEL 70, you are 23, ilvl 28, that slot is empty, Uncommon, bound, sells 1g 20s)',
+    '- Orbe (Mano izquierda, Miscelánea, ilvl 20, that slot is empty, your two-handed weapon takes the off hand, Uncommon)',
     'Junk (grey, 75c in all): Colmillo roto x3',
     'Everything else, by kind:',
     '- Consumible: Agua x7',

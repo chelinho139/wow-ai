@@ -2510,6 +2510,10 @@ do
 		if not numSlots then return nil, "this client does not report bags to addons" end
 		local lastBag = (NUM_BAG_SLOTS or 4) + (NUM_REAGENTBAG_SLOTS or 0)
 		local total, free, worth = 0, 0, 0
+		local level = Try(UnitLevel, "player")
+		local mainLink = Try(GetInventoryItemLink, "player", 16)
+		local mainLoc = mainLink and select(4, Try(C_Item and C_Item.GetItemInfoInstant, mainLink))
+		local twoHanded = mainLoc == "INVTYPE_2HWEAPON" or mainLoc == "INVTYPE_RANGED" or mainLoc == "INVTYPE_RANGEDRIGHT"
 		local equip, junk, other, otherOrder, junkWorth = {}, {}, {}, {}, 0
 		for bag = 0, lastBag do
 			for slot = 1, (Try(numSlots, bag) or 0) do
@@ -2521,8 +2525,9 @@ do
 					local name = link:match("%[(.-)%]") or "?"
 					local itemID, itemType, subType, equipLoc = Try(C_Item and C_Item.GetItemInfoInstant, link)
 					if not itemID then itemID, itemType, subType, equipLoc = Try(GetItemInfoInstant, link) end
-					local sell = select(11, Try(C_Item and C_Item.GetItemInfo, link))
-					if type(sell) ~= "number" then sell = select(11, Try(GetItemInfo, link)) end
+					local info = { Try(C_Item and C_Item.GetItemInfo, link) }
+					if info[1] == nil then info = { Try(GetItemInfo, link) } end
+					local sell, minLevel = info[11], info[5]
 					sell = (type(sell) == "number" and sell or 0) * count
 					worth = worth + sell
 					if quality == 0 then
@@ -2531,10 +2536,16 @@ do
 					elseif EQUIP_SLOTS[equipLoc] then
 						local extra = { _G[equipLoc] or equipLoc }
 						if type(subType) == "string" and subType ~= "" then extra[#extra + 1] = subType end
+						if type(minLevel) == "number" and type(level) == "number" and minLevel > level then
+							extra[#extra + 1] = "REQUIRES LEVEL " .. minLevel .. ", you are " .. level
+						end
 						local l = ItemLevelOf(link)
 						if l then
 							local worn = WornLevel(EQUIP_SLOTS[equipLoc])
 							extra[#extra + 1] = "ilvl " .. l .. (worn and (", worn " .. worn .. string.format(" (%+d)", l - worn)) or ", that slot is empty")
+						end
+						if twoHanded and EQUIP_SLOTS[equipLoc][1] == 17 then
+							extra[#extra + 1] = "your two-handed weapon takes the off hand"
 						end
 						local qname = quality and _G["ITEM_QUALITY" .. quality .. "_DESC"]
 						if type(qname) == "string" then extra[#extra + 1] = qname end
