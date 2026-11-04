@@ -6,7 +6,8 @@
 //
 // Finds the WoW: Forever client, copies the addon into Interface\AddOns, writes
 // bridge/config.json from the example (if missing), and builds the slot pool.
-// Re-running is safe: existing config and generated files are kept.
+// Re-running is safe: existing config and generated files are kept. A config
+// still on the beta client moves to Forever once Forever is installed.
 //
 // An install of this project under its old name (wow-claude: the WoWClaude
 // addon, WoWClaude_S### slots, WoWClaude.lua saved data) is migrated: the saved
@@ -23,6 +24,7 @@ const ADDON_SRC = path.join(ROOT, 'addon', 'WoWAI');
 const BRIDGE = path.join(ROOT, 'bridge');
 const CONFIG = path.join(BRIDGE, 'config.json');
 const EXAMPLE = path.join(BRIDGE, 'config.example.json');
+const { sameFolder } = require(path.join(BRIDGE, 'protocol.js'));
 
 const args = {};
 for (let i = 2; i < process.argv.length; i++) {
@@ -39,11 +41,19 @@ function isClient(dir) {
   } catch { return false; }
 }
 
+// The client folder an existing config.json points at.
+function configuredClient() {
+  try { return path.dirname(path.dirname(JSON.parse(fs.readFileSync(CONFIG, 'utf8')).addonDir)); } catch { return null; }
+}
+
 function findClient() {
   if (args.wow) {
     if (isClient(args.wow)) return args.wow;
     throw new Error(`--wow "${args.wow}" does not look like a WoW client folder (needs Interface\\ and a game binary)`);
   }
+  // A re-run stays on its client, unless that's the beta: Forever replaced it.
+  const current = configuredClient();
+  if (current && isClient(current) && path.basename(current) !== '_classic_beta_') return current;
   let roots;
   if (process.platform === 'win32') {
     roots = [process.env['ProgramFiles(x86)'], process.env.ProgramFiles, 'D:\\', 'E:\\', 'D:\\Games', 'E:\\Games', 'C:\\Games']
@@ -56,13 +66,17 @@ function findClient() {
       path.join(os.homedir(), 'Games', 'battlenet')]
       .filter(Boolean).flatMap(p => ['Program Files (x86)', 'Program Files'].map(pf => path.join(p, 'drive_c', pf, 'World of Warcraft')));
   }
+  if (current) roots.unshift(path.dirname(current));
+  // Tests search a fake install tree and nothing else, never a real game.
+  if (process.env.WOWAI_TEST_WOW_ROOT) roots = [process.env.WOWAI_TEST_WOW_ROOT];
   for (const root of roots) {
-    for (const flavor of ['_classic_beta_', '_forever_', '_retail_', '_classic_era_', '_classic_']) {
+    // The beta folder can outlive the beta: Forever goes first.
+    for (const flavor of ['_forever_', '_classic_beta_', '_retail_', '_classic_era_', '_classic_']) {
       const dir = path.join(root, flavor);
       if (isClient(dir)) return dir;
     }
   }
-  throw new Error('Could not find the WoW client. Pass --wow "<path to World of Warcraft/_classic_beta_>"');
+  throw new Error('Could not find the WoW client. Pass --wow "<path to World of Warcraft/_forever_>"');
 }
 
 function findAccount(client) {
@@ -73,7 +87,10 @@ function findAccount(client) {
     if (!names.includes(args.account)) throw new Error(`Account "${args.account}" not found under ${base}`);
     return args.account;
   }
-  if (!names.length) throw new Error(`No account folder under ${base}. Log into the game once, then run setup again.`);
+  // The game creates this folder at the first login. Everything else can be
+  // installed before that (slots must exist when the game launches); the bridge
+  // finds the account by itself once it appears.
+  if (!names.length) return null;
   if (names.length > 1) console.log(`Several accounts found (${names.join(', ')}); using "${names[0]}". Pass --account to choose another.`);
   return names[0];
 }
@@ -142,11 +159,46 @@ function upgradeConfig(cfg, example) {
   return notes;
 }
 
+function savedVariablesFile(client, account) {
+  return account ? path.join(client, 'WTF', 'Account', account, 'SavedVariables', 'WoWAI.lua') : '';
+}
+
+// The game exe without .exe, as the capture looks for it.
+function processNameOf(client) {
+  const exe = fs.readdirSync(client).find(f => /^Wow.*\.exe$/i.test(f) || /\.app$/i.test(f));
+  if (!exe) return null;
+  let processName = exe.replace(/\.exe$/i, '');
+  // macOS: the process name is the executable inside the .app bundle, not the bundle name.
+  if (process.platform === 'darwin' && exe.toLowerCase().endsWith('.app')) {
+    const macosDir = path.join(client, exe, 'Contents', 'MacOS');
+    try {
+      const bins = fs.readdirSync(macosDir).filter(f => fs.statSync(path.join(macosDir, f)).isFile());
+      if (bins.length) processName = bins[0];
+    } catch {}
+  }
+  return processName;
+}
+
+function pointAtClient(cfg, client, account) {
+  cfg.addonDir = path.join(client, 'Interface', 'AddOns');
+  cfg.inboxFile = path.join(cfg.addonDir, 'WoWAI', 'Inbox.lua');
+  cfg.savedVariablesFile = savedVariablesFile(client, account);
+  const processName = processNameOf(client);
+  if (processName) cfg.capture = { ...cfg.capture, processName };
+}
+
 function writeConfig(client, account) {
   const example = JSON.parse(fs.readFileSync(EXAMPLE, 'utf8'));
   if (fs.existsSync(CONFIG)) {
     const cfg = JSON.parse(fs.readFileSync(CONFIG, 'utf8'));
     const notes = upgradeConfig(cfg, example);
+    if (!sameFolder(cfg.addonDir, path.join(client, 'Interface', 'AddOns'))) {
+      pointAtClient(cfg, client, account);
+      notes.push(`moved to ${path.basename(client)}, process ${cfg.capture.processName}`);
+    } else if (account && !cfg.savedVariablesFile) {
+      cfg.savedVariablesFile = savedVariablesFile(client, account);
+      notes.push('savedVariablesFile');
+    }
     if (notes.length) {
       fs.writeFileSync(CONFIG, JSON.stringify(cfg, null, 2) + '\n');
       console.log(`config   : ${CONFIG} updated (${notes.join(', ')}); everything else kept`);
@@ -156,23 +208,8 @@ function writeConfig(client, account) {
     return cfg;
   }
   const cfg = example;
-  cfg.addonDir = path.join(client, 'Interface', 'AddOns');
-  cfg.inboxFile = path.join(cfg.addonDir, 'WoWAI', 'Inbox.lua');
-  cfg.savedVariablesFile = path.join(client, 'WTF', 'Account', account, 'SavedVariables', 'WoWAI.lua');
+  pointAtClient(cfg, client, account);
   cfg.defaultCwd = args.project ? path.resolve(args.project) : process.cwd();
-  const exe = fs.readdirSync(client).find(f => /^Wow.*\.exe$/i.test(f) || /\.app$/i.test(f));
-  if (exe) {
-    let processName = exe.replace(/\.exe$/i, '');
-    // macOS: the process name is the executable inside the .app bundle, not the bundle name.
-    if (process.platform === 'darwin' && exe.toLowerCase().endsWith('.app')) {
-      const macosDir = path.join(client, exe, 'Contents', 'MacOS');
-      try {
-        const bins = fs.readdirSync(macosDir).filter(f => fs.statSync(path.join(macosDir, f)).isFile());
-        if (bins.length) processName = bins[0];
-      } catch {}
-    }
-    cfg.capture.processName = processName;
-  }
   fs.writeFileSync(CONFIG, JSON.stringify(cfg, null, 2) + '\n');
   console.log(`config   : wrote ${CONFIG}`);
   return cfg;
@@ -193,8 +230,8 @@ try {
   const client = findClient();
   console.log(`client   : ${client}`);
   const account = findAccount(client);
-  console.log(`account  : ${account}`);
-  migrateOldInstall(client, account);
+  console.log(`account  : ${account || 'none yet (the game creates it at your first login; the bridge picks it up then)'}`);
+  if (account) migrateOldInstall(client, account);
   const { dest, copied } = copyAddon(client);
   console.log(`addon    : ${copied} file(s) -> ${dest}`);
   const cfg = writeConfig(client, account);

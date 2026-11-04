@@ -6,7 +6,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Added
 
-- Linux support: the game under Wine on an X11 session. `bridge/capture_x11.py` (python3 + libX11 through ctypes, no packages) does what `capture.ps1` does, finding the game window by its Wine WM_CLASS (`wowb.exe`) and tolerating a few pixels of misalignment. `npm run probe` saves what the capture sees to `bridge/probe.png`. New `capture` keys: `python`, `windowName`, `keepComposited`. `setup.js` looks for the client inside Wine prefixes. See [docs/INSTALL-LINUX.md](docs/INSTALL-LINUX.md).
+- Linux support: the game under Wine on an X11 session. `bridge/capture_x11.py` (python3 + libX11 through ctypes, no packages) does what `capture.ps1` does, finding the game window by its Wine WM_CLASS (`wow.exe`) and tolerating a few pixels of misalignment. `npm run probe` saves what the capture sees to `bridge/probe.png`. New `capture` keys: `python`, `windowName`, `keepComposited`. `setup.js` looks for the client inside Wine prefixes. See [docs/INSTALL-LINUX.md](docs/INSTALL-LINUX.md).
 - Map layers drawn by the agent: numbered route pins joined by lines, quest stops and marks on the world map (zone and continent views), plus a navigator with an arrow and the distance in yards to the next stop that advances as you arrive. The agent's tools append commands to the file in `WOW_AI_MAP_FILE` (set per run), or the agent ends its reply with a ```` ```wowmap ```` block; the system prompt explains both. The bridge validates them, keeps the layers versioned in `state.json` and ships the whole set in the slot files, so nothing is applied twice and a client that lost its saved data gets them back on its next hello. See [docs/MAP.md](docs/MAP.md).
 - Herb and ore spawns on the world map from an optional `WoWAI_Nodes` data addon, filtered by your gathering skill. `/wow-ai map` (or `/aimap`) toggles them (`ore`, `herb`, `filter all|skill`) and controls layers and navigation (`show`, `hide`, `nav`, `next`, `prev`, `stop`).
 - The game context includes the quest log (quest ids, `*` when ready to turn in); its cap goes from 700 to 900 bytes.
@@ -14,8 +14,15 @@ All notable changes to this project are recorded here. The format follows [Keep 
 - macOS support for a native client: `bridge/capture_mac.py` (python3 stdlib only) finds the game window through System Events and grabs its top-left corner with `screencapture`; the bridge starts it on macOS, and `setup.js` recognises a `.app` client under `/Applications/World of Warcraft` and sets `capture.processName` from the bundle. `npm run probe:mac` saves what the capture sees. Contributed and tested live by its author; the decoder is covered by the codec round-trip test.
 - **Antigravity** (`agy`, Google's Antigravity CLI) and **Hermes Agent** (`hermes`) next to Claude Code, Codex and Grok: `/wow-ai agent agy` or `hermes`, with their own blocks under `agents` in `config.json`. Hermes prints plain text, so the bridge reads its reply when the process ends (no live progress) and never passes it `--yolo`, even from `extraArgs`. Contributed with captured streams in `tests/agents_test.js` and a live check by their author on Windows. `CODEX_BIN` names the Codex launcher when the one on `PATH` isn't the right one.
 
+### Changed
+
+- The Forever release: the client moved to `_forever_` and its exe to `Wow.exe` (from `_classic_beta_` and `WowB.exe`). `setup.js` looks for `_forever_` first and moves a config still on the beta to it, keeping the other settings. The bridge's banner warns about a beta config when `_forever_` is installed. Defaults and docs follow.
+- `setup.js` no longer needs a first login: it installs the addon and slots without an account folder, and the bridge finds the account once the game creates it.
+
 ### Fixed
 
+- Re-running `setup.js --wow` with another client copied the addon there but kept the config and built the slots in the old one. The config now moves with it.
+- Windows: the capture skips a game running from a different client folder than `addonDir`. Retail's exe is also `Wow.exe`, and the capture stayed attached to the first window it found.
 - Codex, Claude or Grok installed with `npm install -g` on Windows were not found behind npm's `.cmd` launchers: current npm shims mention `node.exe` before the program, and the bridge took the first path it saw. It now takes the launcher whatever its name (`.js`, `.exe` or a bare script), and honours `agents.<id>.path` pointing at a `.cmd` or `.bat`.
 - Professions in the game context were always empty on Forever: the client only has `C_SkillInfo` (one table per skill line), not the classic `GetNumSkillLines`/`GetSkillLineInfo` globals, which stay as fallback. Child lines that repeat their parent are skipped.
 

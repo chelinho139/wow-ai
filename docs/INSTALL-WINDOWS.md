@@ -38,7 +38,7 @@ node setup.js --project "C:\path\to\the\project\you\want\to\work\on"
 
 This:
 
-- finds the WoW: Forever client (it looks under `Program Files (x86)\World of Warcraft\_classic_beta_` and a few other common places; pass `--wow "D:\Games\World of Warcraft\_classic_beta_"` if it can't find yours),
+- finds the WoW: Forever client (it looks under `Program Files (x86)\World of Warcraft\_forever_` and a few other common places; pass `--wow "D:\Games\World of Warcraft\_forever_"` if it can't find yours),
 - copies the addon into `Interface\AddOns\WoWAI`,
 - writes `bridge\config.json` with your paths and the project folder,
 - reports which agent CLIs it found (Claude Code, Codex, Grok Build, Antigravity, Hermes); one is enough, and you can add another later,
@@ -63,9 +63,9 @@ You should see a banner like:
 ```
 WoW AI bridge
   folder   : C:\path\to\your\project  (config.json; chats can override with /wow-ai cd)
-  addons   : C:\Program Files (x86)\World of Warcraft\_classic_beta_\Interface\AddOns
+  addons   : C:\Program Files (x86)\World of Warcraft\_forever_\Interface\AddOns
   slots    : 200 installed
-  capture  : on (WowB, 200x48 cells of 4px)
+  capture  : on (Wow, 200x48 cells of 4px)
   parallel : up to 3 chats at once
   fallback : ...
   agent    : claude (default; chats pick their own with /wow-ai agent)
@@ -121,6 +121,20 @@ node setup.js        # re-copies the addon; keeps your config.json and the slot 
 
 Then `/reload` in game and restart the bridge. If `setup.js` reports that it created new files, quit and relaunch the game instead of `/reload`.
 
+### Moving from the beta to the Forever release
+
+The release client lives in `_forever_` and its exe is `Wow.exe` (the beta's were `_classic_beta_` and `WowB.exe`). An install from the beta needs one step:
+
+```powershell
+cd C:\Users\<you>\Documents\wow-ai
+git pull
+node setup.js
+```
+
+It moves `bridge/config.json` to `_forever_` (the paths and the process name; your other settings stay) and installs the addon and its slots there. It works before your first login, so you can do it ahead of launch. The beta folder is left alone.
+
+Then fully quit and relaunch the game, and enable "WoW AI" at the character select AddOns screen. Your chats come back from the bridge's `transcripts.json` the first time the addon talks to it.
+
 ### Upgrading from wow-claude
 
 The project was called wow-claude until it learned to drive Codex and Grok; the addon was `WoWClaude` and the command `/wow-claude`. To move an existing install:
@@ -163,7 +177,7 @@ or type `wow-ai.cmd` instead, which bypasses the policy.
 
 **A reply says the agent is not logged in, or the run ends in a timeout.** Run the CLI once by hand in a terminal on this PC (`claude`, `codex`, `grok login`) and finish the login; headless runs reuse it. Grok also stops for nothing else: the bridge passes `--no-auto-update`.
 
-**The light stays red / "no sign of the bridge".** The bridge can't see the strip in the top-left corner of the game window. In order of likelihood: the game is in exclusive fullscreen (switch to windowed or borderless); the game window is minimized or on a monitor the bridge can't capture; `capture.processName` in the config doesn't match your game exe (`WowB` for Forever; `setup.js` sets it from the exe it finds). `bridge\bridge.log` prints `attached to '...'` when it finds the window and `strip #N` when it decodes a message.
+**The light stays red / "no sign of the bridge".** The bridge can't see the strip in the top-left corner of the game window. In order of likelihood: the game is in exclusive fullscreen (switch to windowed or borderless); the game window is minimized or on a monitor the bridge can't capture; `capture.processName` in the config doesn't match your game exe (`Wow` for Forever; `setup.js` sets it from the exe it finds). `bridge\bridge.log` prints `attached to '...'` when it finds the window and `strip #N` when it decodes a message.
 
 **Windows Defender or another antivirus complains about the slot files.** They are 15,000 empty or 124-byte files; nothing runs from them. Exclude `Interface\AddOns` if the scanner slows the bridge's writes down.
 
