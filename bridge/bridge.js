@@ -94,11 +94,24 @@ function siblingFolders() {
 
 const SLOTS = cfg.slots || 200;
 const MAX_PARALLEL = cfg.maxParallel || 3;
-const cap = Object.assign({ enabled: true, processName: 'WowB', cellPx: 4, cellsPerRow: 200, maxRows: 48, intervalMs: 250 }, cfg.capture || {});
+const cap = Object.assign({ enabled: true, processName: 'Wow', cellPx: 4, cellsPerRow: 200, maxRows: 48, intervalMs: 250 }, cfg.capture || {});
 // The game-side files. A config.json written for the addon's old name
 // (WoWClaude) still works: the paths are derived from addonDir instead.
 const INBOX_FILE = cfg.inboxFile && !/WoWClaude/.test(cfg.inboxFile) ? cfg.inboxFile : path.join(cfg.addonDir || '', 'WoWAI', 'Inbox.lua');
-const SAVED_VARS = String(cfg.savedVariablesFile || '').replace(/WoWClaude\.lua$/, 'WoWAI.lua');
+let SAVED_VARS = String(cfg.savedVariablesFile || '').replace(/WoWClaude\.lua$/, 'WoWAI.lua');
+// The client folder holding the AddOns folder.
+const CLIENT_DIR = cfg.addonDir ? path.dirname(path.dirname(cfg.addonDir)) : '';
+
+// Set up before the first login there was no account folder to point at: the
+// game creates it at login, so keep looking until it shows up.
+function findSavedVars() {
+  if (SAVED_VARS || !CLIENT_DIR) return;
+  const base = path.join(CLIENT_DIR, 'WTF', 'Account');
+  try {
+    const account = fs.readdirSync(base, { withFileTypes: true }).find(d => d.isDirectory() && d.name !== 'SavedVariables');
+    if (account) SAVED_VARS = path.join(base, account.name, 'SavedVariables', 'WoWAI.lua');
+  } catch {}
+}
 
 let state = readJson(STATE_FILE, { lastId: 0, sessions: {}, handled: {} });
 if (!state.handled) state.handled = {};
@@ -708,6 +721,7 @@ function finish(job, status, text, session, denied) {
 // ---------------------------------------------------------------------------
 
 function pollSavedVariables() {
+  findSavedVars();
   let st;
   try { st = fs.statSync(SAVED_VARS); } catch { return; }
   if (st.mtimeMs === lastMtime) return;
@@ -721,7 +735,7 @@ function captureCommand() {
   if (process.platform === 'win32') {
     return ['powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(HERE, 'capture.ps1'),
       '-Cell', String(cap.cellPx), '-Cells', String(cap.cellsPerRow), '-MaxRows', String(cap.maxRows),
-      '-IntervalMs', String(cap.intervalMs), '-ProcessName', cap.processName]];
+      '-IntervalMs', String(cap.intervalMs), '-ProcessName', cap.processName, '-ClientFolder', path.basename(CLIENT_DIR)]];
   }
   if (process.platform === 'darwin') {
     const args = [path.join(HERE, 'capture_mac.py'),
@@ -775,11 +789,14 @@ function banner() {
   console.log('WoW AI bridge');
   console.log(`  folder   : ${DEFAULT_CWD}  (${DEFAULT_CWD_SOURCE}; chats can override with /wow-ai cd)`);
   console.log(`  addons   : ${cfg.addonDir}`);
+  if (path.basename(CLIENT_DIR) === '_classic_beta_' && fs.existsSync(path.join(path.dirname(CLIENT_DIR), '_forever_'))) {
+    console.log('  WARNING  : this config is on the beta client, but _forever_ is installed - run: node setup.js, then restart WoW');
+  }
   console.log(`  addon    : ${addonInstalled() ? 'installed' : 'NOT INSTALLED - run: node setup.js, then restart WoW'}`);
   console.log(`  slots    : ${slotsInstalled() ? SLOTS + ' installed' : 'NOT INSTALLED - run: node setup.js (or node bridge/install-slots.js), then restart WoW'}`);
   console.log(`  capture  : ${cap.enabled ? 'on (' + cap.processName + ', ' + cap.cellsPerRow + 'x' + cap.maxRows + ' cells of ' + cap.cellPx + 'px)' : 'off'}`);
   console.log(`  parallel : up to ${MAX_PARALLEL} chats at once`);
-  console.log(`  fallback : ${SAVED_VARS}`);
+  console.log(`  fallback : ${SAVED_VARS || 'waiting for the first login'}`);
   console.log(`  agent    : ${DEFAULT_AGENT} (default; chats pick their own with /wow-ai agent)`);
   for (const id of A.agentIds()) console.log(`  ${id.padEnd(9)}: ${agentLine(id)}`);
   console.log(`  sessions : ${Object.keys(state.sessions).length} saved`);
@@ -789,6 +806,7 @@ function banner() {
   console.log('Leave this window open while you play. Ctrl+C to stop.\n');
 }
 
+findSavedVars();
 banner();
 if (inject !== null) {
   submit({ id: state.lastId + 1, session: '', chat: '', text: inject, cwd: '', newSession: false, via: 'inject', agent: injectAgent || '' });

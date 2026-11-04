@@ -8,7 +8,7 @@ The bridge reads `config.json` once at start. Restart it after editing, except f
 
 | Key | Default (from `config.example.json`) | Meaning |
 |---|---|---|
-| `addonDir` | `…\World of Warcraft\_classic_beta_\Interface\AddOns` | The game's AddOns folder. The bridge writes the slot addons, `Inbox.lua` and every signal file under it. `setup.js` fills this in from the client it finds. |
+| `addonDir` | `…\World of Warcraft\_forever_\Interface\AddOns` | The game's AddOns folder. The bridge writes the slot addons, `Inbox.lua` and every signal file under it. `setup.js` fills this in from the client it finds. |
 | `inboxFile` | `<addonDir>\WoWAI\Inbox.lua` | The file the game reads on `/reload` (fallback path). Normally derived from `addonDir`; only change it if you moved the addon. A value still naming the old `WoWClaude` addon is ignored in favour of the derived one. |
 | `savedVariablesFile` | `…\WTF\Account\<account>\SavedVariables\WoWAI.lua` | The addon's saved data. The bridge polls it for the reload-path outbox. `setup.js` picks the first account under `WTF\Account`; pass `--account <name>` to choose another. |
 | `defaultCwd` | `C:\path\to\your\project` | Folder for chats that have not chosen one with `/wow-ai cd`, when the bridge is started from inside this repo (`npm start`). See [Which folder the agent works in](#which-folder-the-agent-works-in). |
@@ -52,7 +52,7 @@ Keys under `capture`:
 | Key | Default | Meaning |
 |---|---|---|
 | `enabled` | `true` | Run `capture.ps1` (Windows), `capture_mac.py` (macOS) or `capture_x11.py` (Linux). With `false` only the reload path works (`/wow-ai mode reload` in game). |
-| `processName` | `"WowB"` | The game executable without `.exe`. `setup.js` sets it from the `Wow*.exe` it finds in the client folder (on macOS, from the binary inside the `.app` bundle). |
+| `processName` | `"Wow"` | The game executable without `.exe`. `setup.js` sets it from the `Wow*.exe` it finds in the client folder (on macOS, from the binary inside the `.app` bundle). On Windows the capture also skips a game running from a different client folder than `addonDir`, because retail's exe has the same name. |
 | `cellPx` | `4` | Pixel size of one strip cell. Must match `CELL` in `addon/WoWAI/Codec.lua`. |
 | `cellsPerRow` | `200` | Cells per strip row. Must match the addon. |
 | `maxRows` | `48` | Maximum strip rows captured. Must match the addon. |

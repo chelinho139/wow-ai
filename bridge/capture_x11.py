@@ -26,7 +26,7 @@ p.add_argument("--cell", type=int, default=4)
 p.add_argument("--cells", type=int, default=200)
 p.add_argument("--max-rows", type=int, default=48)
 p.add_argument("--interval-ms", type=int, default=250)
-p.add_argument("--process-name", default="WowB")
+p.add_argument("--process-name", default="Wow")
 p.add_argument("--window-name", default="")
 p.add_argument("--keep-composited", action="store_true",
                help="ask the compositor not to unredirect the game window (_NET_WM_BYPASS_COMPOSITOR=2)")
