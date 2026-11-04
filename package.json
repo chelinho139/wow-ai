@@ -1,6 +1,6 @@
 {
   "name": "wow-ai",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "description": "Chat with local coding agents (Claude Code, Codex, Grok Build, Antigravity, Hermes) from inside World of Warcraft: Forever, with no UI reloads. Pixel strip out, load-on-demand slots in.",
   "license": "MIT",

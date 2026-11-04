@@ -4,6 +4,8 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-04
+
 ### Added
 
 - Linux support: the game under Wine on an X11 session. `bridge/capture_x11.py` (python3 + libX11 through ctypes, no packages) does what `capture.ps1` does, finding the game window by its Wine WM_CLASS (`wow.exe`) and tolerating a few pixels of misalignment. `npm run probe` saves what the capture sees to `bridge/probe.png`. New `capture` keys: `python`, `windowName`, `keepComposited`. `setup.js` looks for the client inside Wine prefixes. See [docs/INSTALL-LINUX.md](docs/INSTALL-LINUX.md).
@@ -81,6 +83,7 @@ First public release.
 - `setup.js` installer: finds the client, copies the addon, writes `config.json`, builds the slot pool.
 - Test suite: addon in a Lua VM with a stub client, protocol unit tests, slot-file round trip, codec-to-decoder round trip, and a live inject test.
 
-[Unreleased]: https://github.com/chelinho139/wow-ai/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/chelinho139/wow-ai/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/chelinho139/wow-ai/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/chelinho139/wow-ai/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/chelinho139/wow-ai/releases/tag/v0.3.0
