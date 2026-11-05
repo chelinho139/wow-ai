@@ -346,7 +346,8 @@ const AGENTS = {
     install: 'https://claude.com/claude-code, then run `claude` once and log in',
     windowsPaths: () => [path.join(os.homedir(), '.local', 'bin', 'claude.exe')],
     posixPaths: () => [path.join(os.homedir(), '.local', 'bin', 'claude')],
-    args({ cfg, resume, system }) {
+    effort: true,
+    args({ cfg, resume, system, effort }) {
       const a = ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', cfg.permissionMode || 'acceptEdits'];
       const rules = Array.isArray(cfg.allowedTools) ? cfg.allowedTools.filter(Boolean) : [];
       if (rules.length) a.push('--allowedTools', ...rules);
@@ -355,7 +356,8 @@ const AGENTS = {
       if (cfg.model) a.push('--model', cfg.model);
       if (resume) a.push('--resume', resume);
       if (system) a.push('--append-system-prompt', system);
-      return a.concat(Array.isArray(cfg.extraArgs) ? cfg.extraArgs : []);
+      // After extraArgs, so a message's "!high" beats an --effort set there.
+      return a.concat(Array.isArray(cfg.extraArgs) ? cfg.extraArgs : [], effort ? ['--effort', effort] : []);
     },
     input: ({ prompt, images }) => {
       const attached = images && images.length ? `\n\nAttached screenshots: ${images.join(', ')} — read them with your Read tool` : '';
@@ -372,7 +374,8 @@ const AGENTS = {
     posixPaths: () => [],
     envPath: 'CODEX_BIN',
     npmPackage: '@openai/codex',
-    args({ cfg, resume, cwd, images }) {
+    effort: true,
+    args({ cfg, resume, cwd, images, effort }) {
       const a = [];
       if (cfg.networkAccess) a.push('-c', 'sandbox_workspace_write.network_access=true');
       a.push('exec', '--json', '--skip-git-repo-check', '-C', cwd);
@@ -381,6 +384,9 @@ const AGENTS = {
       else a.push('--sandbox', mode === 'default' ? 'read-only' : 'workspace-write');
       if (cfg.model) a.push('-m', cfg.model);
       a.push(...(Array.isArray(cfg.extraArgs) ? cfg.extraArgs : []));
+      // The last -c for a key wins, on resume too (codex 0.156), so this beats a
+      // model_reasoning_effort set in extraArgs or config.toml for this run only.
+      if (effort) a.push('-c', `model_reasoning_effort="${effort}"`);
       if (resume) a.push('resume', resume);
       for (const image of images || []) if (!String(image).startsWith('-')) a.push('-i', image);
       a.push('-'); // the prompt comes on stdin

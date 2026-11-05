@@ -65,6 +65,18 @@ test('Codex: exec --json in the chat folder, sandbox from permissionMode, resume
   assert.deepEqual(A.AGENTS.codex.args({ cfg: {}, resume: '', cwd: 'x', images: ['a.png', 'b.png'] }).slice(-5), ['-i', 'a.png', '-i', 'b.png', '-']);
 });
 
+test('A message\'s effort reaches Claude and Codex after extraArgs, so it wins for that run only', () => {
+  assert.equal(A.AGENTS.claude.effort, true);
+  assert.equal(A.AGENTS.codex.effort, true);
+  for (const id of ['grok', 'agy', 'hermes']) assert.ok(!A.AGENTS[id].effort, id);
+  const claude = A.AGENTS.claude.args({ cfg: { extraArgs: ['--effort', 'low'] }, resume: 's', system: '', effort: 'max' });
+  assert.deepEqual(claude.slice(-6), ['--resume', 's', '--effort', 'low', '--effort', 'max']);
+  assert.ok(!A.AGENTS.claude.args({ cfg: {}, resume: '', system: '' }).includes('--effort'));
+  const codex = A.AGENTS.codex.args({ cfg: { extraArgs: ['-c', 'model_reasoning_effort="medium"'] }, resume: 't', cwd: 'x', effort: 'high' });
+  assert.deepEqual(codex.slice(-7), ['-c', 'model_reasoning_effort="medium"', '-c', 'model_reasoning_effort="high"', 'resume', 't', '-']);
+  assert.ok(!A.AGENTS.codex.args({ cfg: {}, resume: '', cwd: 'x' }).join(' ').includes('model_reasoning_effort'));
+});
+
 test('Antigravity arguments and captured stream parser', () => {
   const input = { cfg: {}, resume: '', cwd: 'C:\\work', prompt: 'PONG', system: SYS, systemShort: 'short' };
   const accept = A.AGENTS.agy.args({ ...input, cfg: { permissionMode: 'acceptEdits' } });

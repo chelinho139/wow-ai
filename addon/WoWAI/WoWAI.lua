@@ -138,10 +138,16 @@ local function Contains(list, v)
 	return false
 end
 
+-- The bridge's per-message effort prefix ("!high plan my route") is not part of the topic.
+local EFFORT_WORDS = { low = true, medium = true, high = true, xhigh = true, max = true }
+
 -- First few words of a message, as a chat title.
 local function AutoTitle(text)
+	text = tostring(text or "")
+	local level, rest = text:match("^!(%a+)%s+(%S.*)$")
+	if level and EFFORT_WORDS[level:lower()] then text = rest end
 	local words = {}
-	for w in tostring(text or ""):gmatch("%S+") do
+	for w in text:gmatch("%S+") do
 		w = w:gsub("^[%p]+", ""):gsub("[%p]+$", "")
 		if w ~= "" then
 			table.insert(words, w)
@@ -2812,6 +2818,7 @@ local HELP = table.concat({
 	"/wow-ai hide                   hide the window completely",
 	"/ai <text>                         send <text> to the current chat straight from the game chat box (/wow-ai <text> too). A message that starts with a command word is still sent when the rest of the line doesn't fit that command",
 	"/r <text>                          replies to the agent when it was the last to message you (else normal whisper reply)",
+	"!high <text>                       start a message with !low, !medium, !high, !xhigh or !max to set how hard the agent thinks on that one reply (Claude Code and Codex)",
 	"/wow-ai echo summary|full|short|off|<chars>   how much of each reply to print in the game chat (summary = the agent's closing TL;DR lines)",
 	"/wow-ai longchat on|off        let the game chat box take 4000 characters (for long /ai messages)",
 	"/wow-ai new [name]             start a new chat (its own agent session, like a new terminal)",

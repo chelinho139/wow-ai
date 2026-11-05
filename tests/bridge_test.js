@@ -79,6 +79,30 @@ test('systemPrompt always asks for the TL;DR block, and wraps the game context a
   assert.ok(!P.systemPrompt('', '# Primer').includes('# Primer'));
 });
 
+test('splitEffort takes a leading !level off the message and leaves anything else alone', () => {
+  assert.deepEqual(P.splitEffort('!high plan my route to Redridge'), { effort: 'high', text: 'plan my route to Redridge' });
+  assert.deepEqual(P.splitEffort('!LOW  quick one'), { effort: 'low', text: 'quick one' });
+  for (const level of ['low', 'medium', 'high', 'xhigh', 'max']) assert.equal(P.splitEffort(`!${level} x`).effort, level);
+  assert.deepEqual(P.splitEffort('!high\nsecond line'), { effort: 'high', text: 'second line' });
+  // Not a prefix: another word, a level only one CLI has, nothing after it, or not at the start.
+  for (const text of ['!highway to hell', '!ultra think', '!high', '!high   ', 'plan it !high', ' !high x', '! high x']) {
+    assert.deepEqual(P.splitEffort(text), { effort: '', text });
+  }
+  assert.deepEqual(P.splitEffort(''), { effort: '', text: '' });
+  assert.deepEqual(P.splitEffort(undefined), { effort: '', text: '' });
+});
+
+test('effortForRun hands the level only to an agent with an effort switch, and always drops the prefix', () => {
+  const codex = { name: 'Codex', effort: true }, grok = { name: 'Grok' };
+  assert.deepEqual(P.effortForRun('!high plan it', codex), { prompt: 'plan it', effort: 'high', note: '' });
+  const ignored = P.effortForRun('!high plan it', grok);
+  assert.equal(ignored.prompt, 'plan it');
+  assert.equal(ignored.effort, '');
+  assert.match(ignored.note, /"!high" was ignored.*Grok/);
+  assert.deepEqual(P.effortForRun('plan it', grok), { prompt: 'plan it', effort: '', note: '' });
+  assert.deepEqual(P.effortForRun('plan it', codex), { prompt: 'plan it', effort: '', note: '' });
+});
+
 test('splitSummary takes the last TL;DR block for the game chat and keeps the whole reply for the window', () => {
   const reply = 'Renamed the function.\n\nDetails:\n- foo.js\n- bar.js\n\n---\n**TL;DR:** Renamed doIt to run in foo.js and bar.js.\nTests pass.';
   const r = P.splitSummary(reply);
