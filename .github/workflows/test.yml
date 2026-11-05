@@ -7,10 +7,12 @@ on:
 jobs:
   test:
     # Windows: the codec round-trip runs the real capture.ps1 decoder.
-    # Linux: it runs the capture_x11.py decoder (python3 is on the runner).
+    # Linux and macOS: it runs both python decoders, capture_x11.py and
+    # capture_mac.py (python3 is on every runner, and --test-image needs only the
+    # stdlib). macOS is in the matrix because that is where capture_mac.py ships.
     strategy:
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        os: [windows-latest, ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
