@@ -16,6 +16,8 @@ pub struct Config {
     pub schema_version: u32,
     pub project_dir: PathBuf,
     pub data_dir: PathBuf,
+    #[serde(default)]
+    pub addon_dir: Option<PathBuf>,
     pub agent: AgentKind,
     #[serde(default = "timeout")]
     pub timeout_ms: u64,
@@ -65,6 +67,13 @@ impl Config {
             return Err(io::Error::other("project_dir is not a directory"));
         }
         cfg.data_dir = resolve_path(base, &cfg.data_dir);
+        if let Some(ref addon_dir) = cfg.addon_dir {
+            let resolved = resolve_path(base, addon_dir).canonicalize()?;
+            if !resolved.is_dir() {
+                return Err(io::Error::other("addon_dir is not a directory"));
+            }
+            cfg.addon_dir = Some(resolved);
+        }
         for (name, agent) in &mut cfg.agents {
             let kind = AgentKind::parse_name(name).map_err(io::Error::other)?;
             if kind.id() != name {

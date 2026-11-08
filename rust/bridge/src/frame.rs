@@ -40,7 +40,7 @@ impl<'a> RgbImage<'a> {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Layout {
     pub cell_px: usize,
     pub columns: usize,
@@ -56,7 +56,7 @@ impl Default for Layout {
     }
 }
 impl Layout {
-    fn dimensions(self) -> Result<(usize, usize, usize), Error> {
+    pub fn dimensions(self) -> Result<(usize, usize, usize), Error> {
         if self.cell_px == 0 || self.columns == 0 || self.rows == 0 {
             return Err(Error::InvalidLayout);
         }

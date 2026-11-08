@@ -272,5 +272,12 @@ Authenticated agent checks, shared addon ownership, and live capture remain open
 Stage 4 now has a native `setup --wow <client-directory>` command with embedded addon
 assets and slots, preserving existing runtime data and checking static assets.
 Tests verify byte-for-byte equivalence against the legacy installer in isolated trees.
-Windows builds smoke-test setup before upload. Native screen capture and live WoW validation remain open.
+Windows builds smoke-test setup before upload.
+
+Stage 4 also implements native Windows screen capture via Win32 GDI `BitBlt` and the
+`wow-ai-reforged run --config <file> [--wow <client>]` live bridge loop. It attaches to
+`Wow.exe`, captures the pixel strip, decodes frames, dispatches to the agent pipeline,
+and publishes slot replies and WAV signals. Synthetic frame tests and live CLI tests pass in CI.
+Live in-game WoW validation on Windows remains open.
+
 

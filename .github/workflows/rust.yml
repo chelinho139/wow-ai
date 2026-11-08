@@ -65,7 +65,7 @@ jobs:
           Copy-Item LICENSE windows-preview/
           Copy-Item rust/WINDOWS-TESTING.md windows-preview/README.md
           Copy-Item rust/config.example.json windows-preview/config.example.json
-          @("Commit: $env:GITHUB_SHA", "Run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID", "Target: Windows x64", "Status: injected pipeline preview with native addon setup; live WoW capture is not implemented") | Set-Content windows-preview/BUILD.txt
+          @("Commit: $env:GITHUB_SHA", "Run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID", "Target: Windows x64", "Status: standalone preview with native addon setup and live screen capture loop") | Set-Content windows-preview/BUILD.txt
           $binaryHash = Get-FileHash windows-preview/wow-ai-reforged.exe -Algorithm SHA256
           "$($binaryHash.Hash.ToLowerInvariant())  wow-ai-reforged.exe" | Set-Content -Encoding ascii windows-preview/SHA256SUMS.txt
       - name: Upload Windows preview

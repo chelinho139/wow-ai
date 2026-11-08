@@ -43,7 +43,21 @@ The executable bundles the addon files, primer, and all 200 reply slots directly
 - `--wow` must point to the game folder containing `Wow.exe` (normally `_forever_`).
 - It extracts `Interface\AddOns\WoWAI` and `WoWAI_S001` through `WoWAI_S200`.
 - It is create-only and safe to rerun: existing runtime files (`Inbox.lua`, signals) and other addons are preserved. Differing static assets cause an explicit error without touching your files.
-- Live capture is still under development; use `npm start` for legacy live game chat until capture is connected.
+
+### Running the live bridge
+
+Once addon setup is complete, launch World of Warcraft and enable the `WoWAI` addon.
+To start the live Rust bridge:
+
+```powershell
+.\wow-ai-reforged.exe run --config .\config.json --wow "C:\Program Files (x86)\World of Warcraft\_forever_"
+```
+
+- Discovers the `Wow.exe` game window and client area coordinates.
+- Polls and captures the in-game pixel strip directly via Windows GDI `BitBlt` without PowerShell/Python helper scripts.
+- Executes configured agent CLIs when prompts are sent from in-game chat.
+- Atomically publishes replies and signal WAVs directly to `Interface\AddOns`.
+- Use Ctrl+C to stop the bridge when done playing.
 
 ## Prerequisites for building from source
 
