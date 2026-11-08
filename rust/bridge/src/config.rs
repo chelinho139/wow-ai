@@ -81,8 +81,11 @@ impl Config {
                     "agent configuration keys must use canonical lowercase names",
                 ));
             }
-            agent.executable = resolve_path(base, &agent.executable).canonicalize()?;
-            validate_program(&agent.executable)?;
+            agent.executable = resolve_path(base, &agent.executable);
+            if name == cfg.agent.id() {
+                agent.executable = agent.executable.canonicalize()?;
+                validate_program(&agent.executable)?;
+            }
         }
         if !cfg.agents.contains_key(cfg.agent.id()) {
             return Err(io::Error::other(

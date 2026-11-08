@@ -322,3 +322,31 @@ fn oversized_provider_metadata_is_rejected_before_accepting_a_result() {
             < 65536
     );
 }
+
+#[test]
+fn process_ticks_continue_while_an_agent_is_running() {
+    use std::{ffi::OsString, time::Duration};
+    let w = Workspace::new();
+    let mut ticks = 0;
+    let args: Vec<OsString> = ["__fixture-agent", "codex", "hang"]
+        .into_iter()
+        .map(Into::into)
+        .collect();
+    let result = wow_ai_reforged::process::run_with_tick(
+        wow_ai_reforged::process::Request {
+            program: Path::new(BINARY),
+            args: &args,
+            cwd: &w.0,
+            input: None,
+            env: &[],
+            timeout: Duration::from_millis(100),
+            max_output: 1024,
+        },
+        || {
+            ticks += 1;
+            Ok(())
+        },
+    );
+    assert!(result.is_err());
+    assert!(ticks > 0);
+}

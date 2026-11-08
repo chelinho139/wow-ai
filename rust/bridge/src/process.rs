@@ -106,6 +106,13 @@ fn terminate(child: &mut Child) -> io::Result<()> {
 }
 
 pub fn run(request: Request<'_>) -> io::Result<Output> {
+    run_with_tick(request, || Ok(()))
+}
+
+pub fn run_with_tick(
+    request: Request<'_>,
+    mut on_tick: impl FnMut() -> io::Result<()>,
+) -> io::Result<Output> {
     if request.timeout.is_zero() || request.max_output == 0 {
         return Err(io::Error::other("invalid process limits"));
     }
@@ -184,6 +191,7 @@ pub fn run(request: Request<'_>) -> io::Result<Output> {
                     "agent exceeded timeout",
                 ));
             }
+            on_tick()?;
             let status = child.try_wait()?;
             if let Some(status) = status
                 && stdout_done

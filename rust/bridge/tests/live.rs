@@ -111,7 +111,7 @@ fn run_with_wow_validates_addons_directory() {
 
     // Now install addons via setup
     let setup = Command::new(binary)
-        .args(["setup", "--wow", fake_wow.to_str().unwrap()])
+        .args(["setup", "--wow", fake_wow.to_str().unwrap(), "--no-config"])
         .output()
         .unwrap();
     assert!(setup.status.success());

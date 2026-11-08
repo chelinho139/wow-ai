@@ -75,7 +75,7 @@ fn directory(path: &Path) -> io::Result<()> {
     }
     Ok(())
 }
-fn prepare_outbox(dir: &Path) -> io::Result<PathBuf> {
+pub(crate) fn prepare_outbox(dir: &Path) -> io::Result<PathBuf> {
     let outbox = dir.join("outbox");
     directory(&outbox)?;
     for addon in ["WoWAI", "WoWAI_S001"] {
@@ -321,6 +321,7 @@ pub fn inject(
             }
             state.record(chat, "assistant", &output.text, id, kind.id())?;
             state.pending = Some(PendingReply {
+                addon_dir: None,
                 chat: chat.into(),
                 id,
                 agent: kind,
@@ -388,6 +389,11 @@ pub fn recover(cfg: &Config) -> io::Result<Injection> {
         .pending
         .clone()
         .ok_or_else(|| io::Error::other("no completed reply awaits publication"))?;
+    if pending.addon_dir.is_some() {
+        return Err(io::Error::other(
+            "a live reply must be recovered by run with the same addon_dir",
+        ));
+    }
     let outbox = prepare_outbox(dir)?;
     Publisher {
         outbox: &outbox,

@@ -21,3 +21,7 @@ __pycache__/
 
 # Rust injected pipeline local data
 reforged-data/
+
+# Generated starter configuration (local paths)
+/config.json
+/rust/bridge/config.json

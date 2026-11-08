@@ -96,3 +96,17 @@ fn capture_session_initializes_with_defaults() {
         );
     }
 }
+
+#[cfg(windows)]
+#[test]
+fn invalid_capture_geometry_is_rejected_before_using_win32_handles() {
+    for (width, height) in [
+        (0, 1),
+        (1, 0),
+        (usize::MAX, 1),
+        (1, usize::MAX),
+        (16384, 16384),
+    ] {
+        assert!(wow_ai_reforged::capture::platform::capture_client_rect(0, width, height).is_err());
+    }
+}

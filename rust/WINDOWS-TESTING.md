@@ -1,7 +1,8 @@
 # Testing on Windows 11 x64
 
-The injected Rust pipeline can run fake-agent self-tests and configured real agent
-CLIs, then save replies to a private Rust outbox. It cannot capture WoW yet.
+The Windows preview includes embedded setup, native screen capture, and a live
+bridge command. Automated checks exercise synthetic addon messages and fake agents;
+authenticated, in-game validation on Windows 11 is still required.
 
 ## Download a Windows build (no Rust or Node installation needed)
 
@@ -46,8 +47,14 @@ The executable bundles the addon files, primer, and all 200 reply slots directly
 
 ### Running the live bridge
 
-Once addon setup is complete, launch World of Warcraft and enable the `WoWAI` addon.
-To start the live Rust bridge:
+1. Quit WoW and stop the Node bridge before running setup. Keep only one backend
+   running against a game installation; the Rust lock does not coordinate Node.
+2. Setup creates `config.json` if absent. Set `project_dir` to the project you intend
+   the agent to work in, and set your default agent's `executable` (and `launcher_args`
+   if needed). Keep `data_dir` separate from your legacy bridge folder.
+3. Fully relaunch WoW, enable `WoW AI` and the slot addons, and use windowed or
+   borderless mode with the game visible.
+4. Start the live Rust bridge:
 
 ```powershell
 .\wow-ai-reforged.exe run --config .\config.json --wow "C:\Program Files (x86)\World of Warcraft\_forever_"
@@ -57,7 +64,19 @@ To start the live Rust bridge:
 - Polls and captures the in-game pixel strip directly via Windows GDI `BitBlt` without PowerShell/Python helper scripts.
 - Executes configured agent CLIs when prompts are sent from in-game chat.
 - Atomically publishes replies and signal WAVs directly to `Interface\AddOns`.
+- Presence runs every 30 seconds while idle or waiting for an agent, with its counter
+  saved across bridge restarts.
+- Click **Connect** in the addon. The bridge should log the hello and refresh slot
+  data containing its clock and configured agent list. Then send “Reply with PONG”.
+- Send one message at a time during this preview. Unknown/uninstalled agents produce
+  error replies; they never silently route to the default agent.
+- Per-chat folder changes and in-game permission grants are explicitly unsupported
+  in this preview; configure `project_dir` and agent permissions in the config.
 - Use Ctrl+C to stop the bridge when done playing.
+
+The native capture target currently searches for `Wow.exe` under `_forever_`.
+Capture tests in CI do not prove that a particular DPI/GPU/game combination works.
+Report the client build and bridge output if Connect or the first reply fails.
 
 ## Prerequisites for building from source
 
@@ -122,7 +141,7 @@ node rust/bridge/tests/validate-slot.cjs
 The last command runs Rust-generated reply data through a Lua VM. Node remains a
 legacy/development requirement only; core Rust tests use committed fixtures.
 
-## Live WoW testing comes later
+## Optional agent testing outside WoW
 
 To try an actual agent outside the game, copy `config.example.json` from the ZIP,
 replace its project/executable paths, and choose a new empty data directory. Keep
@@ -147,9 +166,9 @@ fake-process coverage; authenticated compatibility with your installed CLI versi
 still needs testing. See `rust/bridge/README.md` in the source repository for the
 provider-specific permission behavior and Windows launcher configuration.
 
-Continue using the Node backend for live chat. Do not point an ad hoc Rust example
-at your real addon directory: shared live bridge coordination and native capture are still pending. The roadmap's live Windows gate will cover those
-features once the runtime is ready. Files already read by WoW can remain cached;
+Use the Node backend as the fallback if the live Rust preview fails. Stop Rust
+before starting Node. Cross-backend coordination and complete feature parity remain
+pending; the supported live entry point is `run`, not a standalone library example. Files already read by WoW can remain cached;
 clearing a signal on disk cannot reset that cache.
 
 If a check fails, retain the failing command and its full output along with

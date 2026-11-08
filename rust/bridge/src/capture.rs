@@ -88,6 +88,8 @@ pub mod platform {
     use super::*;
     use std::{ffi::c_void, mem, path::Path, ptr};
 
+    // Preserve Win32 ABI names inside this binding-only module.
+    #[allow(non_snake_case, clippy::upper_case_acronyms)]
     mod ffi {
         use std::ffi::c_void;
 
@@ -171,6 +173,7 @@ pub mod platform {
                 y1: i32,
                 rop: DWORD,
             ) -> BOOL;
+            pub fn GdiFlush() -> BOOL;
             pub fn DeleteDC(hdc: HDC) -> BOOL;
             pub fn DeleteObject(ho: HGDIOBJ) -> BOOL;
         }
@@ -204,77 +207,84 @@ pub mod platform {
     }
 
     unsafe extern "system" fn enum_window_proc(hwnd: ffi::HWND, lparam: isize) -> ffi::BOOL {
-        let ctx = &mut *(lparam as *mut EnumContext<'_>);
-        if ffi::IsWindowVisible(hwnd) == 0 {
-            return 1;
-        }
-        let mut pid: ffi::DWORD = 0;
-        ffi::GetWindowThreadProcessId(hwnd, &mut pid);
-        if pid == 0 {
-            return 1;
-        }
-        let hproc = ffi::OpenProcess(ffi::PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if hproc.is_null() {
-            return 1;
-        }
-        let mut path_buf = [0u16; 1024];
-        let mut size = path_buf.len() as ffi::DWORD;
-        let success = ffi::QueryFullProcessImageNameW(hproc, 0, path_buf.as_mut_ptr(), &mut size);
-        ffi::CloseHandle(hproc);
-        if success == 0 || size == 0 {
-            return 1;
-        }
-        let full_path = String::from_utf16_lossy(&path_buf[..size as usize]);
-        let path = Path::new(&full_path);
-
-        // Check executable file name
-        let matches_name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .map(|name| {
-                name.eq_ignore_ascii_case(&ctx.target.process_name)
-                    || (ctx.target.process_name.ends_with(".exe")
-                        && name.eq_ignore_ascii_case(
-                            &ctx.target.process_name[..ctx.target.process_name.len() - 4],
-                        ))
-                    || (!ctx.target.process_name.ends_with(".exe")
-                        && name.eq_ignore_ascii_case(&format!("{}.exe", ctx.target.process_name)))
-            })
-            .unwrap_or(false);
-
-        if !matches_name {
-            return 1;
-        }
-
-        // Check client folder (e.g. parent directory name _forever_)
-        if let Some(ref required_folder) = ctx.target.client_folder {
-            let matches_folder = path
-                .parent()
-                .and_then(|p| p.file_name())
-                .and_then(|f| f.to_str())
-                .map(|folder| folder.eq_ignore_ascii_case(required_folder))
-                .unwrap_or(false);
-            if !matches_folder {
+        // SAFETY: EnumWindows invokes this callback synchronously. lparam points
+        // to the live EnumContext passed by find_window; all Win32 buffers below
+        // are owned here and their lengths are passed to the matching APIs.
+        unsafe {
+            let ctx = &mut *(lparam as *mut EnumContext<'_>);
+            if ffi::IsWindowVisible(hwnd) == 0 {
                 return 1;
             }
+            let mut pid: ffi::DWORD = 0;
+            ffi::GetWindowThreadProcessId(hwnd, &mut pid);
+            if pid == 0 {
+                return 1;
+            }
+            let hproc = ffi::OpenProcess(ffi::PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if hproc.is_null() {
+                return 1;
+            }
+            let mut path_buf = [0u16; 1024];
+            let mut size = path_buf.len() as ffi::DWORD;
+            let success =
+                ffi::QueryFullProcessImageNameW(hproc, 0, path_buf.as_mut_ptr(), &mut size);
+            ffi::CloseHandle(hproc);
+            if success == 0 || size == 0 {
+                return 1;
+            }
+            let full_path = String::from_utf16_lossy(&path_buf[..size as usize]);
+            let path = Path::new(&full_path);
+
+            // Check executable file name
+            let matches_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|name| {
+                    name.eq_ignore_ascii_case(&ctx.target.process_name)
+                        || (ctx.target.process_name.ends_with(".exe")
+                            && name.eq_ignore_ascii_case(
+                                &ctx.target.process_name[..ctx.target.process_name.len() - 4],
+                            ))
+                        || (!ctx.target.process_name.ends_with(".exe")
+                            && name
+                                .eq_ignore_ascii_case(&format!("{}.exe", ctx.target.process_name)))
+                })
+                .unwrap_or(false);
+
+            if !matches_name {
+                return 1;
+            }
+
+            // Check client folder (e.g. parent directory name _forever_)
+            if let Some(ref required_folder) = ctx.target.client_folder {
+                let matches_folder = path
+                    .parent()
+                    .and_then(|p| p.file_name())
+                    .and_then(|f| f.to_str())
+                    .map(|folder| folder.eq_ignore_ascii_case(required_folder))
+                    .unwrap_or(false);
+                if !matches_folder {
+                    return 1;
+                }
+            }
+
+            let mut title_buf = [0u16; 512];
+            let len = ffi::GetWindowTextW(hwnd, title_buf.as_mut_ptr(), title_buf.len() as i32);
+            let title = if len > 0 {
+                String::from_utf16_lossy(&title_buf[..len as usize])
+            } else {
+                String::new()
+            };
+
+            ctx.found = Some(WindowInfo {
+                hwnd: hwnd as usize,
+                pid,
+                title,
+                path: full_path,
+            });
+
+            0 // Stop enumeration once matched
         }
-
-        let mut title_buf = [0u16; 512];
-        let len = ffi::GetWindowTextW(hwnd, title_buf.as_mut_ptr(), title_buf.len() as i32);
-        let title = if len > 0 {
-            String::from_utf16_lossy(&title_buf[..len as usize])
-        } else {
-            String::new()
-        };
-
-        ctx.found = Some(WindowInfo {
-            hwnd: hwnd as usize,
-            pid,
-            title,
-            path: full_path,
-        });
-
-        0 // Stop enumeration once matched
     }
 
     pub fn find_window(target: &CaptureTarget) -> Option<WindowInfo> {
@@ -299,6 +309,22 @@ pub mod platform {
         width: usize,
         height: usize,
     ) -> io::Result<Option<Vec<u8>>> {
+        let dib_width =
+            i32::try_from(width).map_err(|_| io::Error::other("capture width out of range"))?;
+        let dib_height =
+            i32::try_from(height).map_err(|_| io::Error::other("capture height out of range"))?;
+        let row_stride = width
+            .checked_mul(3)
+            .and_then(|n| n.checked_add(3))
+            .map(|n| n & !3)
+            .ok_or_else(|| io::Error::other("capture stride overflow"))?;
+        let total_bytes = row_stride
+            .checked_mul(height)
+            .filter(|n| *n > 0 && *n <= 16_777_216)
+            .ok_or_else(|| io::Error::other("capture buffer outside supported bounds"))?;
+        if width == 0 || height == 0 {
+            return Err(io::Error::other("capture dimensions must be positive"));
+        }
         let hwnd = hwnd as ffi::HWND;
         unsafe {
             if ffi::IsIconic(hwnd) != 0 {
@@ -323,8 +349,8 @@ pub mod platform {
 
             let mut bmi: ffi::BITMAPINFO = mem::zeroed();
             bmi.bmiHeader.biSize = mem::size_of::<ffi::BITMAPINFOHEADER>() as ffi::DWORD;
-            bmi.bmiHeader.biWidth = width as i32;
-            bmi.bmiHeader.biHeight = -(height as i32); // Top-down DIB
+            bmi.bmiHeader.biWidth = dib_width;
+            bmi.bmiHeader.biHeight = -dib_height; // Top-down DIB
             bmi.bmiHeader.biPlanes = 1;
             bmi.bmiHeader.biBitCount = 24;
             bmi.bmiHeader.biCompression = ffi::BI_RGB;
@@ -346,6 +372,12 @@ pub mod platform {
             }
 
             let old_bmp = ffi::SelectObject(hdc_mem, hbmp as ffi::HGDIOBJ);
+            if old_bmp.is_null() || old_bmp as isize == -1 {
+                ffi::DeleteObject(hbmp as ffi::HGDIOBJ);
+                ffi::DeleteDC(hdc_mem);
+                ffi::ReleaseDC(ptr::null_mut(), hdc_screen);
+                return Err(io::Error::other("SelectObject failed"));
+            }
 
             let copy_ok = ffi::BitBlt(
                 hdc_mem,
@@ -359,11 +391,12 @@ pub mod platform {
                 ffi::SRCCOPY,
             );
 
-            let row_stride = (width * 3 + 3) & !3;
-            let total_bytes = row_stride * height;
+            // CreateDIBSection requires GDI drawing to be flushed before reading
+            // the shared bitmap memory through its returned bits pointer.
+            let copy_ok = copy_ok != 0 && ffi::GdiFlush() != 0;
             let mut rgb_output = Vec::with_capacity(width * height * 3);
 
-            if copy_ok != 0 {
+            if copy_ok {
                 let dib_slice = std::slice::from_raw_parts(bits as *const u8, total_bytes);
                 for y in 0..height {
                     let row_start = y * row_stride;
@@ -385,8 +418,8 @@ pub mod platform {
             ffi::DeleteDC(hdc_mem);
             ffi::ReleaseDC(ptr::null_mut(), hdc_screen);
 
-            if copy_ok == 0 {
-                return Err(io::Error::other("BitBlt screen copy failed"));
+            if !copy_ok {
+                return Err(io::Error::other("BitBlt or GdiFlush screen copy failed"));
             }
 
             Ok(Some(rgb_output))

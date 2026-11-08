@@ -13,6 +13,12 @@ pub struct State {
     pub next_id: u64,
     #[serde(default)]
     pub history_pruned: bool,
+    #[serde(default)]
+    pub presence_counter: u16,
+    #[serde(default)]
+    pub handled_live: Vec<(String, u64)>,
+    #[serde(default)]
+    pub game_context: Option<String>,
     pub sessions: BTreeMap<String, Session>,
     pub history: BTreeMap<String, Vec<Message>>,
     #[serde(default)]
@@ -21,6 +27,8 @@ pub struct State {
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PendingReply {
+    #[serde(default)]
+    pub addon_dir: Option<PathBuf>,
     pub chat: String,
     pub id: u64,
     pub agent: crate::agents::AgentKind,

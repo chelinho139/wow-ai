@@ -280,4 +280,9 @@ Stage 4 also implements native Windows screen capture via Win32 GDI `BitBlt` and
 and publishes slot replies and WAV signals. Synthetic frame tests and live CLI tests pass in CI.
 Live in-game WoW validation on Windows remains open.
 
-
+Live-loop hardening adds tested hello snapshots, complete configured-agent lists,
+periodic idle/busy presence with persisted counters, recent message deduplication
+across restart, and target-bound pending-reply recovery. Unknown/uninstalled agents
+produce explicit errors. Publication reports are checked before completion is
+cleared. SavedVariables polling is not connected to the live loop yet. Windows FFI lint and
+GDI bitmap synchronization issues from the initial capture commit are corrected.

@@ -1,10 +1,13 @@
-# Rust injected bridge preview
+# Rust bridge preview
 
 The executable now has a one-shot message → agent → saved reply → Lua outbox
-pipeline. Native screen capture and live addon setup are not connected yet.
+pipeline, native embedded setup, and a Windows live capture loop. In-game behavior
+still requires live Windows validation; synthetic tests alone do not establish it.
 
 ```sh
 cargo run -- self-test
+cargo run -- setup --wow /path/to/_forever_
+cargo run -- run --config config.json
 cargo run -- inject --config rust/config.local.json --prompt "Hello" --agent codex
 cargo run -- recover --config rust/config.local.json
 ```
@@ -91,7 +94,18 @@ CI checks fixture drift. Pure frame decoding accepts top-down RGB with padded ro
 validates magic/length/Fletcher checksum, and searches the legacy offset window.
 
 Slot/WAV helpers require preinstalled regular files and report per-file failures;
-a broadcast is not a multi-file transaction. Timed activity/presence scheduling,
-shared live addon ownership, native capture, native installation, and full feature
-parity remain pending. See [Windows testing](../WINDOWS-TESTING.md) and
+a broadcast is not a multi-file transaction. Timed presence is connected to the
+live loop. Activity-stream progress, coordination with the legacy Node backend,
+full feature parity, and live game validation remain pending. See [Windows testing](../WINDOWS-TESTING.md) and
 [the roadmap](../ROADMAP.md).
+
+## Live-loop validation
+
+`tests/live_transport.rs` drives the same owned bridge session used by `run` with
+synthetic frames. It covers hello snapshots, configured agent lists, persistent
+presence counters, strict routing, failed publication, restart recovery and context.
+The live loop reserves message identities before provider invocation so recent
+repeated frames/restarts do not rerun work. Pending results record their addon target;
+private injected replies are never automatically published to a different game tree.
+Presence ticks also run while waiting for agent output. Per-chat folder overrides
+and in-game permission grants are rejected explicitly in this preview.
