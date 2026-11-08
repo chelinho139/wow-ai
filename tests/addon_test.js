@@ -128,7 +128,7 @@ test('outbound records replace field separators inside user text', () => {
   const vm = newVM();
   login(vm);
   connect(vm);
-  vm.run('WoWAI.Send("wire" .. string.char(30, 31) .. "safe")');
+  vm.run('SlashCmdList.WOWAI("wire" .. string.char(30, 31) .. "safe")');
   const rec = stripRecords(vm).find(r => r.text === 'wire  safe');
   assert.ok(rec, 'the record keeps the full message as one wire field');
 });
@@ -144,21 +144,24 @@ test('the game context describes the character and rides on the hello, then only
     'Location: Duskwood - Darkshire',
     'Position: 45.2, 67.8 (map 1431)',
     'Money: 1g 23s 45c; XP: 1234/5000',
-    'Talents: Beast Mastery 10 / Marksmanship 5 / Survival 0',
+    'Talents: Beast Mastery 10 / Marksmanship 5 / Survival 0; Improved Aspect of the Hawk 3/5',
     'Professions: Skinning 75/75, First Aid 40/75',
+    'Status: PvP flagged; rested XP 800; target Defias Thug level 23 hostile',
+    'Gear (slot:itemID name): 16:2140 Fine Longsword',
+    'Known spell ids: 1978,3044',
   ]);
   // The bridge answers the hello: the context is now known to be on its side.
   nextSlot(vm, '{ now = time(), cwd = "", replies = {} }');
   vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
   assert.equal(vm.evaluate('WoWAI.IsConnected()'), 'true');
-  vm.run('WoWAI.Send("hello world")');
+  vm.run('SlashCmdList.WOWAI("hello world")');
   let rec = stripRecords(vm).find(r => r.text === 'hello world');
   assert.equal(rec.flags, '', 'unchanged context is not repeated');
   assert.equal(rec.ctx, undefined);
   assert.equal(vm.evaluate('WoWAIDB.outbox.ctx'), null);
   // Moving to another zone changes it, so the next message (from another chat,
   // the first one is still waiting) carries the new version.
-  vm.run('STUB.zone = "Elwynn Forest"; STUB.subzone = ""; STUB.posX = 0.1; WoWAI.NewChat("Second"); WoWAI.Send("where am I")');
+  vm.run('STUB.zone = "Elwynn Forest"; STUB.subzone = ""; STUB.posX = 0.1; WoWAI.NewChat("Second"); SlashCmdList.WOWAI("where am I")');
   rec = stripRecords(vm).find(r => r.text === 'where am I');
   assert.equal(rec.flags, 'c');
   assert.ok(rec.ctx.includes('Location: Elwynn Forest\n'), rec.ctx);
@@ -349,7 +352,7 @@ test('a sent message is encoded on the strip with the chat folder, then a slot r
   connect(vm);
   vm.run('SlashCmdList.WOWAI("cd realms")');
   assert.equal(vm.evaluate('WoWAIDB.chats[1].cwd'), 'realms');
-  vm.run('WoWAI.Send("hello world")');
+  vm.run('SlashCmdList.WOWAI("hello world")');
   const chatId = vm.evaluate('WoWAIDB.chats[1].id');
   const id = vm.num('WoWAIDB.chats[1].pendingId');
   assert.ok(id >= 1);
@@ -380,7 +383,7 @@ test('a denied reply shows Allow, and Allow resends with the rules as flags', ()
   const vm = newVM();
   login(vm);
   connect(vm);
-  vm.run('WoWAI.Send("search for it")');
+  vm.run('SlashCmdList.WOWAI("search for it")');
   const chatId = vm.evaluate('WoWAIDB.chats[1].id');
   const id = vm.num('WoWAIDB.chats[1].pendingId');
   nextSlot(vm, `{ now = time(), cwd = "", replies = { { chat = "${chatId}", id = ${id}, status = "done", text = "need permission", denied = { "WebSearch", "Bash(cargo:*)" } } } }`);
@@ -391,6 +394,62 @@ test('a denied reply shows Allow, and Allow resends with the rules as flags', ()
   assert.ok(rec, 'allow record on the strip');
   assert.equal(rec.flags, 'allow=WebSearch,Bash(cargo:*)');
   assert.equal(rec.id, id + 1);
+  // Sending is not reachable from outside the addon (no /run WoWAI.Send(...) from another addon or macro).
+  assert.equal(vm.evaluate('WoWAI.Send'), null);
+});
+
+const REWARD_LINKS = `STUB.questChoices = 2
+  STUB.questLinks = { "|cff1eff00|Hitem:100:0:0:0:0:0:0:0:60:0:0|h[Staff A]|h|r", "|cff1eff00|Hitem:200:0:0:0:0:0:0:0:60:0:0|h[Robe B]|h|r" }
+  STUB.tooltips["item:100:0:0:0:0:0:0:0:60:0:0"] = { "Staff A", "Two-Hand", "+5 Stamina", "+3 Intellect" }
+  STUB.tooltips["item:200:0:0:0:0:0:0:0:60:0:0"] = { "Robe B", "Chest", "+2 Spirit" }
+  STUB.tooltips["item:2140:0:0:0:0:0:0:0:60:0:0"] = { "Fine Longsword", "Main Hand", "+1 Stamina" }`;
+
+test('with rewards on, a quest turn-in with a choice asks the agent and shows its pick beside the quest window', () => {
+  const vm = newVM();
+  login(vm);
+  connect(vm);
+  vm.run(REWARD_LINKS);
+  // Off by default: nothing is sent, nothing shown.
+  vm.run('STUB.FireEvent("QUEST_COMPLETE")');
+  assert.equal(vm.evaluate('WoWAIReward'), null);
+  vm.run('SlashCmdList.WOWAI("rewards on")');
+  vm.run('STUB.FireEvent("QUEST_COMPLETE")');
+  const rec = stripRecords(vm).find(r => r.text.startsWith('Quest reward choice for a Night Elf Hunter. Options:'));
+  assert.ok(rec, 'the choice was sent as a message');
+  assert.ok(rec.text.includes('1. [Staff A]\n  Two-Hand\n  +5 Stamina\n  +3 Intellect'));
+  assert.ok(rec.text.includes('2. [Robe B]'));
+  assert.ok(rec.text.includes('Currently equipped in those slots: \n[Fine Longsword]\n  Main Hand\n  +1 Stamina'), 'what the staff would replace rides along');
+  assert.ok(rec.text.endsWith('Start your reply with the option number.'));
+  assert.equal(vm.evaluate('WoWAIReward.shown'), 'true');
+  assert.ok(vm.evaluate('WoWAIReward.title.text').includes('asking'));
+  assert.ok(vm.evaluate('WoWAIReward.body.text').includes('local rule says 1. Staff A'));
+  // The reply's TL;DR names option 2: that one is highlighted.
+  const chatId = vm.evaluate('WoWAIDB.chats[1].id');
+  nextSlot(vm, `{ now = time(), cwd = "", replies = { { chat = "${chatId}", id = ${rec.id}, status = "done", text = "Long reasoning.\\n\\nTL;DR:\\n2 - the robe: cloth you can wear.", summary = "2 - the robe: cloth you can wear." } } }`);
+  vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
+  assert.ok(vm.evaluate('WoWAIReward.title.text').includes('2. Robe B'), vm.evaluate('WoWAIReward.title.text'));
+  assert.ok(vm.evaluate('WoWAIReward.body.text').includes('the robe'));
+  // The quest window closing takes the advice with it.
+  vm.run('STUB.FireEvent("QUEST_FINISHED")');
+  assert.equal(vm.evaluate('WoWAIReward.shown'), 'false');
+});
+
+test('with the bridge down, the reward advisor applies the local rule: most Stamina + Intellect + Spirit the character can equip', () => {
+  const vm = newVM();
+  login(vm);
+  vm.run(REWARD_LINKS);
+  vm.run('SlashCmdList.WOWAI("rewards on")');
+  vm.run('STUB.FireEvent("QUEST_COMPLETE")');
+  assert.equal(stripRecords(vm).filter(r => r.text !== '').length, 0, 'nothing sent while not connected');
+  assert.ok(vm.evaluate('WoWAIReward.title.text').includes('(local rule)'));
+  assert.ok(vm.evaluate('WoWAIReward.title.text').includes('1. Staff A'));
+  // A red tooltip line means the character can't use it: the other option wins even with fewer stats.
+  vm.run('STUB.tooltips["item:100:0:0:0:0:0:0:0:60:0:0"] = { "Staff A", { "Two-Hand", red = true }, "+5 Stamina", "+3 Intellect" }');
+  vm.run('STUB.FireEvent("QUEST_COMPLETE")');
+  assert.ok(vm.evaluate('WoWAIReward.title.text').includes('2. Robe B'));
+  // One choice is no choice.
+  vm.run('STUB.questChoices = 1; STUB.FireEvent("QUEST_COMPLETE")');
+  assert.equal(vm.evaluate('WoWAIReward.shown'), 'false');
 });
 
 test('a chat can pick its agent: the strip says so, replies are labelled by their writer, unknown names are refused', () => {
@@ -405,7 +464,7 @@ test('a chat can pick its agent: the strip says so, replies are labelled by thei
   const texts = () => vm.evaluate('table.concat(STUB.texts, "|")');
   assert.ok(texts().includes('agent: Claude (bridge default)'), 'the cwd line names the bridge default');
   // Without an agent of its own the chat sends no agent flag, and the reply is labelled Claude.
-  vm.run('WoWAI.Send("hello")');
+  vm.run('SlashCmdList.WOWAI("hello")');
   const chatId = vm.evaluate('WoWAIDB.chats[1].id');
   let rec = stripRecords(vm).find(r => r.text === 'hello');
   assert.equal(rec.flags, '');
@@ -420,7 +479,7 @@ test('a chat can pick its agent: the strip says so, replies are labelled by thei
   vm.run('SlashCmdList.WOWAI("agent Codex")');
   assert.equal(vm.evaluate('WoWAIDB.chats[1].agent'), 'codex');
   assert.ok(vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history].text').includes('agent set to Codex'));
-  vm.run('WoWAI.Send("now with codex")');
+  vm.run('SlashCmdList.WOWAI("now with codex")');
   rec = stripRecords(vm).find(r => r.text === 'now with codex');
   assert.equal(rec.flags, 'agent=codex');
   assert.equal(vm.evaluate('WoWAIDB.outbox.agent'), 'codex');
@@ -431,7 +490,7 @@ test('a chat can pick its agent: the strip says so, replies are labelled by thei
   assert.equal(vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history].agent'), 'codex');
   assert.ok(vm.evaluate('table.concat(STUB.prints, "\\n")').includes('[Codex · '));
   // Resend keeps the agent flag.
-  vm.run('WoWAI.Send("again")');
+  vm.run('SlashCmdList.WOWAI("again")');
   vm.run('WoWAI.Resend()');
   assert.equal(stripRecords(vm).find(r => r.text === 'again').flags, 'agent=codex');
   vm.run('SlashCmdList.WOWAI("cancel")');
@@ -525,7 +584,7 @@ test('/wow-ai reset marks the next message as a new session', () => {
   login(vm);
   connect(vm);
   vm.run('SlashCmdList.WOWAI("reset")');
-  vm.run('WoWAI.Send("start over")');
+  vm.run('SlashCmdList.WOWAI("start over")');
   const rec = stripRecords(vm).find(r => r.text === 'start over');
   assert.equal(rec.flags, 'n');
   assert.equal(vm.evaluate('WoWAIDB.chats[1].resetNext'), null);
@@ -540,7 +599,7 @@ test('game chat echo: the summary by default, the first lines without one, the w
   const prints = () => vm.evaluate('table.concat(STUB.prints, "\\n")');
   const reply = (text, summary) => {
     vm.run('STUB.prints = {}');
-    vm.run('WoWAI.Send("do it")');
+    vm.run('SlashCmdList.WOWAI("do it")');
     const id = vm.num('WoWAIDB.chats[1].pendingId');
     const sum = summary === undefined ? '' : `, summary = "${summary}"`;
     nextSlot(vm, `{ now = time(), cwd = "", replies = { { chat = "${chatId}", id = ${id}, status = "done", text = "${text}", agent = "claude"${sum} } } }`);
@@ -598,7 +657,7 @@ test('a restore bundle addressed to this session adds the missing chats once', (
   const vm = newVM();
   login(vm);
   connect(vm);
-  vm.run('WoWAI.Send("hi")');
+  vm.run('SlashCmdList.WOWAI("hi")');
   const chatId = vm.evaluate('WoWAIDB.chats[1].id');
   const id = vm.num('WoWAIDB.chats[1].pendingId');
   const token = vm.evaluate('WoWAIDB.session');
@@ -613,7 +672,7 @@ test('a restore bundle addressed to this session adds the missing chats once', (
   assert.equal(vm.evaluate('WoWAIDB.chats[1].history[2].agent'), 'claude');
   assert.equal(vm.evaluate('WoWAIDB.restored'), 'true');
   // A second bundle with the same token is ignored.
-  vm.run('WoWAI.Send("again")');
+  vm.run('SlashCmdList.WOWAI("again")');
   const id2 = vm.num('WoWAIDB.chats[2].pendingId');
   nextSlot(vm, `{ now = time(), cwd = "", replies = { { chat = "${chatId}", id = ${id2}, status = "done", text = "ok" } }, ${bundle.replace('old1', 'old2')} }`);
   vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
@@ -708,10 +767,11 @@ test('reload mode writes the outbox for the bridge instead of drawing the strip'
   login(vm);
   vm.run('SlashCmdList.WOWAI("mode reload")');
   vm.run('SlashCmdList.WOWAI("reset")');
-  vm.run('WoWAI.Send("via reload", { "WebSearch", "Bash(git:*)" })');
+  vm.run('WoWAI.Allow(WoWAIDB.chats[1].id, { "WebSearch", "Bash(git:*)" }, true)');
   assert.equal(vm.evaluate('STUB.reloaded'), 'true');
   assert.equal(vm.evaluate('WoWAIDB.outbox.newSession'), 'true');
-  assert.equal(vm.evaluate('WoWAIDB.outbox.text'), Buffer.from('via reload').toString('hex'));
+  assert.equal(vm.evaluate('WoWAIDB.outbox.text'), Buffer.from('Those actions are allowed now. Continue from where you left off.').toString('hex'));
+  assert.equal(vm.evaluate('WoWAIDB.outbox.always'), 'true');
   assert.equal(Buffer.from(vm.evaluate('WoWAIDB.outbox.allow'), 'hex').toString('utf8'), 'WebSearch\x1fBash(git:*)');
   assert.equal(decodeStrip(vm), null);
 });

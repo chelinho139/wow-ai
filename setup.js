@@ -199,6 +199,10 @@ function writeConfig(client, account) {
       cfg.savedVariablesFile = savedVariablesFile(client, account);
       notes.push('savedVariablesFile');
     }
+    if (args.project && !sameFolder(cfg.defaultCwd, path.resolve(args.project))) {
+      cfg.defaultCwd = path.resolve(args.project);
+      notes.push('defaultCwd');
+    }
     if (notes.length) {
       fs.writeFileSync(CONFIG, JSON.stringify(cfg, null, 2) + '\n');
       console.log(`config   : ${CONFIG} updated (${notes.join(', ')}); everything else kept`);
@@ -209,6 +213,14 @@ function writeConfig(client, account) {
   }
   const cfg = example;
   pointAtClient(cfg, client, account);
+  // The agent must not work inside this repo by default: it would be editing the
+  // bridge that runs it. Only an explicit --project may point there.
+  if (!args.project) {
+    const rel = path.relative(ROOT, process.cwd());
+    if (rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))) {
+      throw new Error('pass --project "<folder for the agent to work in>" (for example a notes folder); the wow-ai folder itself is refused as the default');
+    }
+  }
   cfg.defaultCwd = args.project ? path.resolve(args.project) : process.cwd();
   fs.writeFileSync(CONFIG, JSON.stringify(cfg, null, 2) + '\n');
   console.log(`config   : wrote ${CONFIG}`);

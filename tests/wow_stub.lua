@@ -54,6 +54,7 @@ function Methods.SetWidth(self, w) self.width = w end
 function Methods.SetHeight(self, h) self.height = h end
 function Methods.GetSize(self) return self:GetWidth(), self:GetHeight() end
 function Methods.GetStringHeight(self) return 14 end
+function Methods.GetTextColor(self) if self.red then return 1, 0.125, 0.125 end return 1, 1, 1 end
 function Methods.GetStringWidth(self) return 100 end
 function Methods.GetFontString(self) return self end
 function Methods.GetPoint(self) return "CENTER", nil, "CENTER", 0, 0 end
@@ -97,6 +98,7 @@ function Methods.SetHyperlink(self, link)
 		if type(l) == "table" then left, right = l[1], l[2] end
 		local L = NewObject("FontString", self.name .. "TextLeft" .. i, self)
 		L.text = left
+		L.red = type(l) == "table" and l.red or nil -- a red line: the character can't use the item
 		local R = NewObject("FontString", self.name .. "TextRight" .. i, self)
 		R.text = right
 		R.shown = right ~= nil
@@ -182,7 +184,21 @@ function ChatEdit_InsertLink(text) return ChatFrameUtil.InsertLink(text) end
 
 -- The character, for the game context (WoWAI.GameContext).
 function GetBuildInfo() return "1.60.1", "69913", "Sep 1 2026", 16001 end
-function UnitName(unit) if unit == "player" then return "Testchar" end end
+function UnitName(unit) if unit == "player" then return "Testchar" elseif unit == "target" then return "Defias Thug" end end
+function UnitExists(unit) return unit == "target" or unit == "player" end
+function UnitIsPVP(unit) return true end
+function UnitIsPlayer(unit) return false end
+function UnitCanAttack(a, b) return b == "target" end
+function GetXPExhaustion() return 800 end
+function GetInventoryItemLink(unit, slot)
+	if slot == 16 then return "|cff1eff00|Hitem:2140:0:0:0:0:0:0:0:60:0:0|h[Fine Longsword]|h|r" end
+end
+function GetNumSpellTabs() return 1 end
+function GetSpellTabInfo(i) return "General", "tex", 0, 3 end
+function GetSpellBookItemInfo(i, bank) if i == 3 then return "FUTURESPELL", 9999 end return "SPELL", ({ 1978, 3044 })[i] end
+function GetNumQuestChoices() return STUB.questChoices or 0 end
+function GetQuestItemLink(kind, i) return STUB.questLinks and STUB.questLinks[i] end
+QuestFrame = CreateFrame("Frame", "QuestFrame", UIParent)
 function GetRealmName() return "Test Realm" end
 function UnitLevel(unit) return STUB.level end
 function UnitRace(unit) return "Night Elf", "NightElf" end
@@ -204,6 +220,11 @@ function GetTalentTabInfo(i)
 	local tabs = { { "Beast Mastery", 10 }, { "Marksmanship", 5 }, { "Survival", 0 } }
 	return tabs[i][1], "Interface\\Icons\\x", tabs[i][2]
 end
+function GetNumTalents(tab) return tab == 1 and 2 or 0 end
+function GetTalentInfo(tab, i)
+	local t = ({ { "Improved Aspect of the Hawk", 3, 5 }, { "Endurance Training", 0, 5 } })[i]
+	return t[1], "Interface\\Icons\\x", 1, i, t[2], t[3]
+end
 TRADE_SKILLS, SECONDARY_SKILLS = "Professions", "Secondary Skills"
 local SKILLS = {
 	{ "Class Skills", true }, { "Bows", false, 46, 115 },
@@ -217,9 +238,16 @@ function GetSkillLineInfo(i)
 	return s[1], s[2] or nil, false, s[3], 0, 0, s[4]
 end
 ITEM_QUALITY2_DESC = "Uncommon"
+-- name, link, quality, ilvl, reqLevel, type, subtype, stack, equipLoc, texture, sellPrice
+local ITEMS = {
+	["2140"] = { "Fine Longsword", 2, "Weapon", "One-Handed Swords", "INVTYPE_WEAPON", 500 },
+	["100"] = { "Staff A", 2, "Weapon", "Staves", "INVTYPE_2HWEAPON", 300 },
+	["200"] = { "Robe B", 2, "Armor", "Cloth", "INVTYPE_ROBE", 400 },
+}
 C_Item = {
 	GetItemInfo = function(link)
-		if tostring(link):find("^item:2140") then return "Fine Longsword", link, 2, 19, 14, "Weapon", "One-Handed Swords" end
+		local it = ITEMS[tostring(link):match("item:(%d+)") or ""]
+		if it then return it[1], link, it[2], 19, 14, it[3], it[4], 1, it[5], "tex", it[6] end
 	end,
 }
 function print(...)

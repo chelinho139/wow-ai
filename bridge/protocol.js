@@ -111,16 +111,19 @@ function sameFolder(a, b) {
 // Flags field: ';'-separated tokens. "n" = fresh agent session, "h" = hello
 // (no prompt), "d" = the player deleted this chat: forget its transcript and
 // session (no prompt), "allow=Rule1,Rule2" = add these permission rules before
-// running, "c" = the record carries a game-context field before the text (an
-// empty one clears the context the bridge keeps), "agent=codex" = run this
-// chat with that agent instead of the bridge's default (see agents.js).
+// running (for this run only; with "a" the player also asked to keep them,
+// which the bridge console must confirm), "c" = the record carries a
+// game-context field before the text (an empty one clears the context the
+// bridge keeps), "agent=codex" = run this chat with that agent instead of the
+// bridge's default (see agents.js).
 function parseFlags(flags) {
-  const out = { newSession: false, hello: false, forget: false, context: false, allow: [], agent: '' };
+  const out = { newSession: false, hello: false, forget: false, context: false, always: false, allow: [], agent: '' };
   for (const tok of String(flags || '').split(';')) {
     if (tok === 'n') out.newSession = true;
     else if (tok === 'h') out.hello = true;
     else if (tok === 'd') out.forget = true;
     else if (tok === 'c') out.context = true;
+    else if (tok === 'a') out.always = true;
     else if (tok.startsWith('allow=')) out.allow.push(...tok.slice(6).split(',').map(s => s.trim()).filter(Boolean));
     else if (tok.startsWith('agent=')) out.agent = tok.slice(6).trim().toLowerCase();
   }
@@ -171,6 +174,7 @@ function parseOutbox(src) {
   if (agent && agent[1]) job.agent = agent[1].toLowerCase();
   const allow = b.match(/\["allow"\]\s*=\s*"([0-9a-fA-F]*)"/);
   if (allow && allow[1]) job.allow = fromHex(allow[1]).split('\x1F').filter(Boolean);
+  job.always = /\["always"\]\s*=\s*true/.test(b);
   return job;
 }
 
@@ -230,9 +234,17 @@ function systemPrompt(ctx, primer) {
   }
   const ref = text ? String(primer || '').trim() : '';
   if (ref) {
-    lines.push('', 'Reference for writing addons and macros for this client. Follow it when the task is about WoW, and check anything it marks as uncertain against the Blizzard UI source it names:', '', ref);
+    lines.push('', 'Reference for this client (gameplay, or writing addons and macros). Follow it when the task is about WoW, and check anything it marks as uncertain against the sources it names:', '', ref);
   }
   return lines.join('\n');
+}
+
+// Which primer a message needs: the addon/macro one when it is about writing
+// code for the client, else the gameplay one (see primerFile and
+// gameplayPrimerFile in docs/CONFIGURATION.md).
+const DEV_WORDS_RE = /\b(addon|add-on|lua|toc|xml|macro|macros|frame|savedvariables|hooksecurefunc|slash command|api|script|weakaura)\b/i;
+function primerKind(text) {
+  return DEV_WORDS_RE.test(String(text || '')) ? 'dev' : 'gameplay';
 }
 
 // Pull the game-chat summary out of a reply: whatever follows the last "TL;DR:"
@@ -256,13 +268,22 @@ function splitSummary(text) {
 // Turn a permission denial (Claude's shape: tool_name, tool_input) into an
 // allowlist rule the user can accept. Rules are in Claude Code's syntax for
 // every agent; agents.js translates where an agent's own syntax differs.
+// Never a bare `Bash`, `Edit` or `Write` (that would allow everything): a
+// command whose first word can't be a prefix rule gets an exact-command rule,
+// and file tools get the file they asked for.
 function ruleFor(d) {
   const name = d.tool_name || 'Unknown';
+  const input = d.tool_input || {};
   if (name === 'Bash') {
-    const cmd = String((d.tool_input && d.tool_input.command) || '').trim();
+    const cmd = String(input.command || '').trim().split('\n')[0];
     const word = cmd.split(/\s+/)[0];
     if (word && /^[\w.\-]+$/.test(word)) return `Bash(${word}:*)`;
-    return 'Bash';
+    // shortcut: a command with a comma can't ride the strip's allow= list, so the game can't grant it; fine for a one-shot
+    return `Bash(${cmd || 'true'})`;
+  }
+  if (name === 'Edit' || name === 'Write' || name === 'MultiEdit' || name === 'NotebookEdit') {
+    const file = String(input.file_path || input.notebook_path || '').trim();
+    return file ? `${name}(${file})` : `${name}(/nonexistent)`;
   }
   return name;
 }
@@ -549,7 +570,7 @@ module.exports = {
   fromHex, pad3, slotNumber, chatKey, sessKey,
   alreadyHandled, markHandled, pruneStale, MONTH_MS,
   resolveCwd, sameFolder, baseName,
-  parseFlags, jobsFromStrip, parseOutbox, systemPrompt, splitSummary,
+  parseFlags, jobsFromStrip, parseOutbox, systemPrompt, splitSummary, primerKind,
   ruleFor, describeToolUse,
   luaStr, luaTable, SILENT_WAV,
   MAP_LIMITS, validateMapCommand, newMap, applyMapCommands, extractMapBlocks, parseMapFile, luaMap,

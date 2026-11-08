@@ -84,6 +84,7 @@
   },
   "gameContext": true,
   "primerFile": "docs/WOW-ADDON-PRIMER.md",
+  "gameplayPrimerFile": "docs/FOREVER-PRIMER.md",
   "pollMs": 750,
   "progressWriteMs": 3000,
   "timeoutMs": 1800000

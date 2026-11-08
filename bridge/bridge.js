@@ -395,7 +395,7 @@ function readOutbox() {
 // It is kept in state.json so a restarted bridge still has it, and goes into
 // the agent's system prompt on every run (see protocol.systemPrompt).
 function setContext(job) {
-  const text = String(job.ctx || '').replace(/\r/g, '').trim().slice(0, 2000);
+  const text = String(job.ctx || '').replace(/\r/g, '').trim().slice(0, 3000);
   const prev = (state.context && state.context.text) || '';
   if (text === prev) return;
   state.context = text ? { text, at: Date.now(), session: job.session || '' } : null;
@@ -409,23 +409,45 @@ function gameContext() {
   return (state.context && state.context.text) || '';
 }
 
-// The addon/macro primer that goes into the system prompt with the context.
-// Read on every run so edits count without a restart; "" in the config turns
-// it off. Relative paths are taken from the repo (docs/WOW-ADDON-PRIMER.md).
+// The primers that go into the system prompt with the context: the addon/macro
+// one for messages about code (docs/WOW-ADDON-PRIMER.md), the gameplay one for
+// everything else (docs/FOREVER-PRIMER.md); protocol.primerKind picks. Read on
+// every run so edits count without a restart; "" in the config turns one off.
+// Relative paths are taken from the repo.
 const PRIMER_FILE = cfg.primerFile === undefined ? 'docs/WOW-ADDON-PRIMER.md' : cfg.primerFile;
-let warnedNoPrimer = false;
-function primer() {
-  if (!PRIMER_FILE) return '';
-  const file = path.resolve(REPO, PRIMER_FILE);
+const GAMEPLAY_PRIMER_FILE = cfg.gameplayPrimerFile === undefined ? 'docs/FOREVER-PRIMER.md' : cfg.gameplayPrimerFile;
+const warnedNoPrimer = new Set();
+function primer(kind = 'dev') {
+  const name = kind === 'gameplay' ? GAMEPLAY_PRIMER_FILE : PRIMER_FILE;
+  if (!name) return '';
+  const file = path.resolve(REPO, name);
   try { return fs.readFileSync(file, 'utf8'); } catch (e) {
-    if (!warnedNoPrimer) { warnedNoPrimer = true; log(`primer: cannot read ${file} (${e.code || e.message}); running without it`); }
+    if (!warnedNoPrimer.has(file)) { warnedNoPrimer.add(file); log(`primer: cannot read ${file} (${e.code || e.message}); running without it`); }
     return '';
   }
 }
 
-// Persist newly allowed rules for an agent so they stick across bridge restarts.
-// They go under agents.<id>.allowedTools; a config.json from before agents
-// existed keeps Claude's list at the top level, which moves down on first write.
+// "Always allow" from the game only sticks if someone at the bridge console says
+// so: the run itself gets the rules one-shot either way. Default is no.
+let askingAlways = false;
+function askAlwaysAllow(agentId, rules) {
+  const what = `${rules.join(', ')} for ${agentId}`;
+  if (!process.stdin.isTTY) { log(`always-allow ${what}: no console to confirm on, not saved`); return; }
+  if (askingAlways) { log(`always-allow ${what}: another question is still open, not saved`); return; }
+  askingAlways = true;
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const done = (msg) => { clearTimeout(timer); rl.close(); askingAlways = false; log(`always-allow ${what}: ${msg}`); };
+  const timer = setTimeout(() => done('no answer in 60 s, not saved'), 60000);
+  rl.question(`\nThe game asks to ALWAYS allow ${what} (written to config.json). Allow? [y/N] `, (ans) => {
+    if (/^y(es)?$/i.test(ans.trim())) done(`saved (${allowRules(agentId, rules).join(', ') || 'already allowed'})`);
+    else done('declined, not saved');
+  });
+}
+
+// Persist allowed rules for an agent so they stick across bridge restarts (only
+// after askAlwaysAllow was answered yes). They go under agents.<id>.allowedTools;
+// a config.json from before agents existed keeps Claude's list at the top level,
+// which moves down on first write.
 function allowRules(agentId, rules) {
   const current = new Set(A.agentConfig(cfg, agentId).allowedTools || []);
   const added = rules.filter(r => r && !current.has(r));
@@ -541,25 +563,33 @@ function runJob(job) {
     log(`${tag} agent changed (${prevAgent} -> ${agentId}): new session`);
     delete state.sessions[skey]; delete state.sessions[key];
   }
+  // Allow & retry: only rules this chat's last reply was refused (as published in
+  // its `denied`), and only for this one run; nothing is written to config.json
+  // unless the console confirms an "always" request.
+  const granted = [], refused = [];
   if (Array.isArray(job.allow) && job.allow.length) {
-    const added = allowRules(agentId, job.allow);
-    log(`${tag} allowed for ${agentId}: ${job.allow.join(', ')}${added.length ? '' : ' (already allowed)'}`);
+    const offered = (state.lastDenied && state.lastDenied[skey]) || [];
+    for (const r of job.allow) (offered.includes(r) ? granted : refused).push(r);
+    if (granted.length) log(`${tag} one-shot allow for ${agentId}: ${granted.join(', ')}`);
+    if (refused.length) log(`${tag} ignored allow rules the last reply did not ask for: ${refused.join(', ')}`);
+    if (granted.length && job.always) askAlwaysAllow(agentId, granted);
   }
+  const runCfg = granted.length ? { ...acfg, allowedTools: [...(acfg.allowedTools || []), ...granted] } : acfg;
   maybeOfferRestore(job);
   noteMessage(job, 'user', job.text);
   const resume = state.sessions[skey] || state.sessions[key];
 
   const ctx = gameContext();
-  const system = P.systemPrompt(ctx, primer());
+  const system = P.systemPrompt(ctx, primer(P.primerKind(job.text)));
   const systemShort = P.systemPrompt(ctx, '');
   const promptFile = path.join(TMP_DIR, `prompt-${job.id}-${Date.now().toString(36)}.txt`);
-  const input = agent.input({ prompt: job.text, system, systemShort, resume, cfg: acfg });
+  const input = agent.input({ prompt: job.text, system, systemShort, resume, cfg: runCfg });
   if (input.promptFile !== undefined) {
     try { fs.mkdirSync(TMP_DIR, { recursive: true }); fs.writeFileSync(promptFile, input.promptFile); }
     catch (e) { finish(job, 'error', `Could not write the prompt file ${promptFile}: ${e.message}`); return; }
   }
   const args = [...cmd.args, ...agent.args({
-    cfg: acfg, resume, cwd, system, systemShort, promptFile,
+    cfg: runCfg, resume, cwd, system, systemShort, promptFile,
     prompt: job.text, timeoutMs: cfg.timeoutMs,
   })];
   const env = agent.env({ ...process.env });
@@ -582,6 +612,7 @@ function runJob(job) {
   let result = null;       // { text, error } once the agent has produced its reply
   const denied = new Set(); // allowlist rules the run was refused (Claude syntax)
   const notes = [];        // bridge remarks appended to the reply
+  if (refused.length) notes.push(`Ignored allow rules this chat was not refused: ${refused.join(', ')}.`);
   let stderr = '';
   let buffer = '';
   let stdoutText = '';
@@ -694,6 +725,8 @@ function finish(job, status, text, session, denied) {
   job.finished = true;
   running.delete(chatKey(job));
   markHandled(job);
+  // What an Allow on this reply may grant (see runJob).
+  (state.lastDenied = state.lastDenied || {})[sessKey(job)] = Array.isArray(denied) ? denied : [];
   saveState();
   // A finished reply ends with the "TL;DR:" block the system prompt asks for:
   // that part is what the game chat prints; the window gets the whole reply.
@@ -802,7 +835,8 @@ function banner() {
   console.log(`  sessions : ${Object.keys(state.sessions).length} saved`);
   const ctx = gameContext();
   console.log(`  context  : ${cfg.gameContext === false ? 'off (gameContext in config.json)' : ctx ? (ctx.split('\n').find(l => /^Character:/i.test(l)) || ctx.split('\n')[0]).slice(0, 100) : 'none yet (the addon sends it with its hello; /wow-ai context in game)'}`);
-  console.log(`  primer   : ${!PRIMER_FILE ? 'off (primerFile in config.json)' : primer() ? path.resolve(REPO, PRIMER_FILE) + ' (' + primer().length + ' chars, with the context)' : 'NOT FOUND: ' + path.resolve(REPO, PRIMER_FILE)}`);
+  console.log(`  primer   : ${!PRIMER_FILE ? 'off (primerFile in config.json)' : primer() ? path.resolve(REPO, PRIMER_FILE) + ' (' + primer().length + ' chars, for addon/macro messages)' : 'NOT FOUND: ' + path.resolve(REPO, PRIMER_FILE)}`);
+  console.log(`  gameplay : ${!GAMEPLAY_PRIMER_FILE ? 'off (gameplayPrimerFile in config.json)' : primer('gameplay') ? path.resolve(REPO, GAMEPLAY_PRIMER_FILE) + ' (' + primer('gameplay').length + ' chars, for other game messages)' : 'NOT FOUND: ' + path.resolve(REPO, GAMEPLAY_PRIMER_FILE)}`);
   console.log('Leave this window open while you play. Ctrl+C to stop.\n');
 }
 

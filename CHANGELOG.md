@@ -4,6 +4,19 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+### Added
+
+- Quest reward advisor: `/wow-ai rewards on` asks the agent at every turn-in that offers a choice (each option's tooltip plus what is equipped in its slot) and shows the answer beside the quest window with the suggested option in green. The player still clicks the reward. With the bridge down or the chat busy, a local rule picks the usable option with the most Stamina + Intellect + Spirit (vendor value as tiebreak).
+- The game context also carries the talents taken (name and rank), the PvP flag, rested XP, the pet, the current target, equipped gear (slot, item id, name) and the known spell ids; its cap goes from 900 to 2400 bytes.
+- A gameplay primer, [docs/FOREVER-PRIMER.md](docs/FOREVER-PRIMER.md) (`gameplayPrimerFile`), goes to the agent for game messages; the addon/macro primer only when the message mentions addon or Lua code.
+- `bridge/install-startup.ps1` registers a Task Scheduler job that starts the bridge minimized at logon.
+
+### Changed
+
+- Permissions are harder to widen by accident. **Allow & retry** grants the refused rules for that one run only (nothing is written to `config.json`); the new **Always allow** button also asks the bridge console, which must answer `y`. The bridge only accepts `allow=` rules that match the `denied` list it published for that chat's last reply. A refused tool never becomes a bare `Bash`, `Edit` or `Write` rule: an odd command gets an exact-command rule, file tools get their file.
+- The addon decides whether a macro "runs code" (`/run`, `/script`, `/click`, `/console`, `/dump`) from the macro body itself rather than from the bridge's flag, and no longer exposes `WoWAI.Send` to other addons or `/run`.
+- `setup.js` refuses to make the wow-ai folder itself the agent's default folder: run it with `--project <folder>`; on a re-run `--project` moves `defaultCwd`.
+
 ## [0.5.0] - 2026-11-04
 
 ### Added

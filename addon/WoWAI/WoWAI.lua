@@ -43,6 +43,9 @@ local db
 local ui = {}
 -- Transport state for this UI session. outbound[id] = { chat, cwd, flags, text, sentAt, acked }
 local run = { outbound = {} }
+-- Sending is deliberately not on the WoWAI global: only this file can put a
+-- message (or a permission grant) in front of the agent. Defined under "Sending".
+local Send
 
 -- Shared window backdrop. Declared up here because ShowCopy (rendering section)
 -- uses it too: a later `local` would be invisible there and resolve to a nil global.
@@ -594,7 +597,7 @@ function WoWAI.CheckConnection()
 			local c = queued and ActiveChat()
 			if c and c.id == queued.chat and not c.pendingId then
 				if ui.input and Trim(ui.input:GetText() or "") == queued.text then ui.input:SetText("") end
-				WoWAI.Send(queued.text, queued.allow)
+				Send(queued.text, queued.allow, queued.always)
 			end
 		elseif GetTime() - run.connectingAt > CONNECT_WAIT then
 			run.connectingAt, run.connectFailed = nil, true
@@ -906,6 +909,9 @@ end
 
 Finish = function(chat, role, text, denied, agent, summary, macros)
 	AddHistory(chat, role, text, chat.pendingId, denied, agent, macros)
+	if run.reward and run.reward.id and run.reward.id == chat.pendingId then
+		WoWAI.RewardReply(role == "assistant" and ((summary and summary ~= "") and summary or text) or nil)
+	end
 	chat.pendingId = nil
 	chat.progress = nil
 	if run.act then run.act[chat.id] = nil end
@@ -936,7 +942,7 @@ end
 -- are meaningless markup to the agent; their tooltips are what the player sees).
 -- Every game API here is optional: whatever the client lacks is left out.
 
-local CONTEXT_MAX = 900 -- bytes of context per record; the strip has ~3.2 KB for everything
+local CONTEXT_MAX = 2400 -- bytes of context per record; the strip has ~3.2 KB for everything, and a hello carries nothing else
 local LINK_LINES_MAX = 30 -- tooltip lines kept per link
 local LINK_BYTES_MAX = 900 -- bytes kept per link
 
@@ -1059,17 +1065,24 @@ function WoWAI.GameContext()
 	end
 	if #progress > 0 then table.insert(lines, table.concat(progress, "; ")) end
 
-	-- Classic-style talent tabs: name, icon, points spent.
+	-- Classic-style talent tabs: name, points spent, then every talent with points in it.
 	local tabs = Try(GetNumTalentTabs)
 	if type(tabs) == "number" and tabs > 0 then
-		local parts = {}
+		local parts, picked = {}, {}
 		for i = 1, tabs do
 			local tname, _, points = Try(GetTalentTabInfo, i)
 			if type(tname) == "string" and type(points) == "number" then
 				table.insert(parts, tname .. " " .. points)
 			end
+			local n = Try(GetNumTalents, i)
+			for j = 1, (type(n) == "number" and n or 0) do
+				local name, _, _, _, rank, maxRank = Try(GetTalentInfo, i, j)
+				if type(name) == "string" and type(rank) == "number" and rank > 0 then
+					table.insert(picked, name .. " " .. rank .. "/" .. tostring(maxRank or "?"))
+				end
+			end
 		end
-		if #parts > 0 then table.insert(lines, "Talents: " .. table.concat(parts, " / ")) end
+		if #parts > 0 then table.insert(lines, "Talents: " .. table.concat(parts, " / ") .. (#picked > 0 and ("; " .. table.concat(picked, ", ")) or "")) end
 	end
 
 	-- Skill lines under the Professions and Secondary Skills headers.
@@ -1083,6 +1096,31 @@ function WoWAI.GameContext()
 		end
 	end
 	if #parts > 0 then table.insert(lines, "Professions: " .. table.concat(parts, ", ")) end
+
+	-- PvP flag, rested XP, pet and target: what fight and world-PvP advice depends on.
+	local status = {}
+	if Try(UnitIsPVP, "player") then table.insert(status, "PvP flagged") end
+	local rested = Try(GetXPExhaustion)
+	if type(rested) == "number" and rested > 0 then table.insert(status, "rested XP " .. rested) end
+	if Try(UnitExists, "pet") then
+		local family = Try(UnitCreatureFamily, "pet")
+		table.insert(status, "pet " .. tostring(Try(UnitName, "pet") or "?") .. (family and (" (" .. tostring(family) .. ")") or "") .. " level " .. tostring(Try(UnitLevel, "pet") or "?"))
+	end
+	if Try(UnitExists, "target") then
+		local tl = Try(UnitLevel, "target")
+		table.insert(status, "target " .. tostring(Try(UnitName, "target") or "?") .. " level " .. ((type(tl) == "number" and tl > 0) and tl or "??")
+			.. (Try(UnitIsPlayer, "target") and " (player)" or "") .. (Try(UnitCanAttack, "player", "target") and " hostile" or " friendly"))
+	end
+	if #status > 0 then table.insert(lines, "Status: " .. table.concat(status, "; ")) end
+
+	-- Equipped gear as slot:itemID Name (head 1 ... ranged 18), for gear and upgrade advice.
+	local gear = {}
+	for slot = 1, 18 do
+		local link = Try(GetInventoryItemLink, "player", slot)
+		local itemId, iname = type(link) == "string" and link:match("item:(%d+)"), type(link) == "string" and link:match("%[(.-)%]")
+		if itemId then table.insert(gear, slot .. ":" .. itemId .. (iname and (" " .. iname) or "")) end
+	end
+	if #gear > 0 then table.insert(lines, "Gear (slot:itemID name): " .. table.concat(gear, ", ")) end
 
 	-- Quest log ids (what is accepted, and which are done), so route planning can
 	-- skip pickups and turn-ins that no longer apply.
@@ -1105,6 +1143,37 @@ function WoWAI.GameContext()
 		end
 	end
 	if #quests > 0 then table.insert(lines, "Quest log (id, * = ready to turn in): " .. table.concat(quests, ",")) end
+
+	-- Known spell ids from the spellbook (each rank is its own spell), last so the
+	-- byte cap cuts here first. Modern C_SpellBook on Forever, classic globals elsewhere.
+	local spells, seenSpell = {}, {}
+	local function AddSpell(id)
+		if type(id) == "number" and id > 0 and not seenSpell[id] then seenSpell[id] = true; table.insert(spells, id) end
+	end
+	if C_SpellBook and C_SpellBook.GetNumSpellBookSkillLines then
+		local n = Try(C_SpellBook.GetNumSpellBookSkillLines)
+		local bank = (Enum and Enum.SpellBookSpellBank and Enum.SpellBookSpellBank.Player) or 0
+		local future = Enum and Enum.SpellBookItemType and Enum.SpellBookItemType.FutureSpell
+		for i = 1, (type(n) == "number" and n or 0) do
+			local sl = Try(C_SpellBook.GetSpellBookSkillLineInfo, i)
+			if type(sl) == "table" and type(sl.itemIndexOffset) == "number" and type(sl.numSpellBookItems) == "number" then
+				for j = sl.itemIndexOffset + 1, sl.itemIndexOffset + sl.numSpellBookItems do
+					local it = Try(C_SpellBook.GetSpellBookItemInfo, j, bank)
+					if type(it) == "table" and (future == nil or it.itemType ~= future) then AddSpell(it.spellID) end
+				end
+			end
+		end
+	else
+		local stabs = Try(GetNumSpellTabs)
+		for i = 1, (type(stabs) == "number" and stabs or 0) do
+			local _, _, offset, num = Try(GetSpellTabInfo, i)
+			for j = (tonumber(offset) or 0) + 1, (tonumber(offset) or 0) + (tonumber(num) or 0) do
+				local kind, id = Try(GetSpellBookItemInfo, j, "spell")
+				if kind == "SPELL" then AddSpell(id) end
+			end
+		end
+	end
+	if #spells > 0 then table.insert(lines, "Known spell ids: " .. table.concat(spells, ",")) end
 
 	local s = table.concat(lines, "\n"):gsub("[\30\31]", " ")
 	if #s > CONTEXT_MAX then s = s:sub(1, CONTEXT_MAX) end
@@ -1129,7 +1198,7 @@ local function TooltipLines(payload)
 	end
 	scanTip:SetOwner(UIParent, "ANCHOR_NONE")
 	scanTip:ClearLines()
-	local lines = {}
+	local lines, unusable = {}, false
 	if pcall(scanTip.SetHyperlink, scanTip, payload) then
 		for i = 1, math.min(scanTip:NumLines() or 0, LINK_LINES_MAX) do
 			local left = _G["WoWAIScanTipTextLeft" .. i]
@@ -1138,10 +1207,13 @@ local function TooltipLines(payload)
 			local r = Trim(tostring((right and right:IsShown() and right:GetText()) or ""))
 			if r ~= "" then l = l .. "  " .. r end
 			if l ~= "" then table.insert(lines, l) end
+			-- The game prints what the character can't use (class, level, armor type) in red.
+			local cr, cg, cb = Try(left and left.GetTextColor, left)
+			if type(cr) == "number" and cr > 0.9 and (tonumber(cg) or 0) < 0.2 and (tonumber(cb) or 0) < 0.2 then unusable = true end
 		end
 	end
 	scanTip:Hide()
-	return lines
+	return lines, unusable
 end
 
 -- What a link is, in words: "item 2140 (Uncommon)", "spell 1978", "quest 176".
@@ -1188,8 +1260,10 @@ end
 -- Sending
 ---------------------------------------------------------------------------
 
--- allow: optional list of permission rules to grant before this message runs.
-function WoWAI.Send(text, allow)
+-- allow: optional list of permission rules to grant for this one run (the bridge
+-- only takes the ones the last reply was refused); always: ask the bridge to
+-- keep them, which its console must confirm.
+function Send(text, allow, always)
 	local c = ActiveChat()
 	if not c then return end
 	text = Trim(text or "")
@@ -1209,7 +1283,7 @@ function WoWAI.Send(text, allow)
 		-- CheckConnection sends it the moment the light turns green. If the bridge
 		-- never answers, the text is still in the box for a later try.
 		if ui.input then ui.input:SetText(text) end
-		run.sendOnConnect = { chat = c.id, text = text, allow = allow }
+		run.sendOnConnect = { chat = c.id, text = text, allow = allow, always = always }
 		if not run.connectingAt then WoWAI.Connect() end
 		WoWAI.Toggle(true)
 		return
@@ -1235,6 +1309,7 @@ function WoWAI.Send(text, allow)
 	if type(allow) == "table" and #allow > 0 then
 		table.insert(tokens, "allow=" .. table.concat(allow, ","))
 		allowHex = ToHex(table.concat(allow, US))
+		if always then table.insert(tokens, "a") end
 	end
 	local flags = table.concat(tokens, ";")
 	local newSession = c.resetNext and true or nil
@@ -1248,6 +1323,7 @@ function WoWAI.Send(text, allow)
 		ctx = ctx and ToHex(ctx) or nil,
 		agent = (c.agent and c.agent ~= "") and c.agent or nil,
 		allow = allowHex,
+		always = (allowHex and always) and true or nil,
 		newSession = newSession,
 		t = time(),
 	}
@@ -1354,17 +1430,162 @@ function WoWAI.SendFromInput()
 	local text = ui.input:GetText()
 	ui.input:SetText("")
 	ui.input:ClearFocus() -- hand the keyboard back to the game after sending
-	WoWAI.Send(text)
+	Send(text)
 end
 
--- The Allow button: grant the rules a reply asked for, then tell the agent to carry on.
-function WoWAI.Allow(chatId, rules)
+-- The Allow button: grant the rules a reply asked for, for the retry only, then
+-- tell the agent to carry on. `always` is the second button: the bridge asks on
+-- its console before writing them to config.json.
+function WoWAI.Allow(chatId, rules, always)
 	local c = FindChat(chatId)
 	if not c or c.pendingId or not rules or #rules == 0 then return end
 	if db.activeChat ~= c.id then WoWAI.SwitchChat(c.id) end
 	for _, m in ipairs(c.history) do m.denied = nil end
-	AddHistory(c, "system", "Allowed: " .. table.concat(rules, ", "))
-	WoWAI.Send("Those actions are allowed now. Continue from where you left off.", rules)
+	AddHistory(c, "system", "Allowed for this retry: " .. table.concat(rules, ", ") .. (always and "\n(asked the bridge to keep them: answer y in its console window)" or ""))
+	Send("Those actions are allowed now. Continue from where you left off.", rules, always)
+end
+
+---------------------------------------------------------------------------
+-- Quest reward advisor
+---------------------------------------------------------------------------
+-- With /wow-ai rewards on, a quest turn-in that offers a choice asks the agent
+-- which reward to take (each option's tooltip plus what is equipped in its slot)
+-- and shows the answer beside the quest window with the suggested option in
+-- green. The player still clicks the reward: GetQuestReward is never called.
+-- Bridge down or chat busy: a local rule picks the usable option with the most
+-- Stamina + Intellect + Spirit, vendor value as the tiebreak.
+
+local STAT_WORDS = { ITEM_MOD_STAMINA_SHORT or "Stamina", ITEM_MOD_INTELLECT_SHORT or "Intellect", ITEM_MOD_SPIRIT_SHORT or "Spirit" }
+-- Inventory slot ids per equip location (both slots where there are two).
+local EQUIP_SLOTS = {
+	INVTYPE_HEAD = { 1 }, INVTYPE_NECK = { 2 }, INVTYPE_SHOULDER = { 3 }, INVTYPE_BODY = { 4 }, INVTYPE_CHEST = { 5 }, INVTYPE_ROBE = { 5 },
+	INVTYPE_WAIST = { 6 }, INVTYPE_LEGS = { 7 }, INVTYPE_FEET = { 8 }, INVTYPE_WRIST = { 9 }, INVTYPE_HAND = { 10 },
+	INVTYPE_FINGER = { 11, 12 }, INVTYPE_TRINKET = { 13, 14 }, INVTYPE_CLOAK = { 15 },
+	INVTYPE_WEAPON = { 16, 17 }, INVTYPE_2HWEAPON = { 16 }, INVTYPE_WEAPONMAINHAND = { 16 }, INVTYPE_WEAPONOFFHAND = { 17 },
+	INVTYPE_SHIELD = { 17 }, INVTYPE_HOLDABLE = { 17 }, INVTYPE_RANGED = { 18 }, INVTYPE_RANGEDRIGHT = { 18 }, INVTYPE_THROWN = { 18 }, INVTYPE_RELIC = { 18 },
+}
+
+-- An item link as the advisor sees it: name, tooltip lines (first 10), the three
+-- stats summed, whether the tooltip has a red (unusable) line, equip location, vendor price.
+local function RewardItem(link)
+	local payload, name = tostring(link or ""):match("|H([^|]+)|h%[([^%]]*)%]")
+	if not payload then return nil end
+	local lines, unusable = TooltipLines(payload)
+	local stats, kept = 0, {}
+	for _, l in ipairs(lines) do
+		if l ~= name then
+			for _, w in ipairs(STAT_WORDS) do
+				local n = l:match("^%+(%d+) " .. w .. "$")
+				if n then stats = stats + tonumber(n) end
+			end
+			if #kept < 10 then table.insert(kept, l) end
+		end
+	end
+	-- GetItemInfo's 9th and 11th returns (equip location, vendor price): past what Try hands back.
+	local getInfo = (C_Item and C_Item.GetItemInfo) or GetItemInfo
+	local ok, info = pcall(function() return { getInfo(payload) } end)
+	if not ok or type(info) ~= "table" then info = {} end
+	return { name = name, lines = kept, stats = stats, unusable = unusable, equipLoc = info[9], price = tonumber(info[11]) or 0 }
+end
+
+local function LocalRewardPick(items)
+	local best
+	for i, it in ipairs(items) do
+		if not it.unusable and (not best or it.stats > items[best].stats or (it.stats == items[best].stats and it.price > items[best].price)) then best = i end
+	end
+	return best
+end
+
+local function ShowReward(title, body)
+	local f = ui.reward
+	if not f then
+		f = CreateFrame("Frame", "WoWAIReward", QuestFrame or UIParent, "BackdropTemplate")
+		f:SetSize(260, 90)
+		f:SetPoint("TOPLEFT", QuestFrame or UIParent, "TOPRIGHT", -30, -60)
+		f:SetBackdrop(BACKDROP)
+		f:SetBackdropColor(0, 0, 0, 0.85)
+		f.title = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+		f.title:SetPoint("TOPLEFT", 12, -10)
+		f.title:SetWidth(236)
+		f.title:SetJustifyH("LEFT")
+		f.title:SetWordWrap(true)
+		f.body = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+		f.body:SetPoint("TOPLEFT", f.title, "BOTTOMLEFT", 0, -6)
+		f.body:SetWidth(236)
+		f.body:SetJustifyH("LEFT")
+		f.body:SetWordWrap(true)
+		ui.reward = f
+	end
+	f.title:SetText(title)
+	f.body:SetText(Display(body or ""))
+	local h = (f.title:GetStringHeight() or 14) + (f.body:GetStringHeight() or 14)
+	f:SetHeight(h + 34)
+	f:Show()
+end
+
+-- The pick for the options on screen: the suggested option in green, then the reason.
+local function ShowRewardPick(items, index, why, source)
+	local it = index and items[index]
+	ShowReward("WoW AI (" .. source .. "): " .. (it and ("|cff40ff40" .. index .. ". " .. it.name .. "|r") or "no usable option"), why)
+end
+
+local function OnQuestComplete()
+	run.reward = nil
+	if ui.reward then ui.reward:Hide() end
+	if not db.settings.rewards then return end
+	local n = Try(GetNumQuestChoices)
+	if type(n) ~= "number" or n < 2 then return end
+	local items = {}
+	for i = 1, n do
+		local it = RewardItem(Try(GetQuestItemLink, "choice", i))
+		if it then table.insert(items, it) end
+	end
+	if #items < 2 then return end
+	local rule = LocalRewardPick(items)
+	local c = ActiveChat()
+	if not c or c.pendingId or not WoWAI.IsConnected() then
+		ShowRewardPick(items, rule, "Bridge not available: the usable option with the most Stamina + Intellect + Spirit (vendor value as tiebreak).", "local rule")
+		return
+	end
+	local race, class = Try(UnitRace, "player"), Try(UnitClass, "player")
+	local parts = { "Quest reward choice for " .. ((race and class) and ("a " .. race .. " " .. class) or "my character") .. ". Options:" }
+	local equipped, seen = {}, {}
+	for i, it in ipairs(items) do
+		table.insert(parts, i .. ". [" .. it.name .. "]" .. (it.unusable and " (cannot equip)" or "") .. "\n  " .. table.concat(it.lines, "\n  "))
+		for _, slot in ipairs(EQUIP_SLOTS[it.equipLoc or ""] or {}) do
+			local link = Try(GetInventoryItemLink, "player", slot)
+			local eq = link and not seen[link] and RewardItem(link)
+			if eq then
+				seen[link] = true
+				table.insert(equipped, "[" .. eq.name .. "]\n  " .. table.concat(eq.lines, "\n  "))
+			end
+		end
+	end
+	table.insert(parts, "Currently equipped in those slots: " .. (#equipped > 0 and ("\n" .. table.concat(equipped, "\n")) or "nothing"))
+	table.insert(parts, "Which one and why, one line. Start your reply with the option number.")
+	local text = table.concat(parts, "\n")
+	if #text > Codec.MAX_PAYLOAD - 300 then
+		ShowRewardPick(items, rule, "Too much tooltip text to send in one message; local rule instead.", "local rule")
+		return
+	end
+	Send(text)
+	if not c.pendingId then return end -- not sent (Send said why in the chat)
+	run.reward = { id = c.pendingId, items = items }
+	ShowReward("WoW AI: asking " .. ChatAgentName(c) .. "...", "Meanwhile the local rule says " .. (rule and (rule .. ". " .. items[rule].name) or "nothing here is usable") .. ".")
+end
+
+-- From Finish: the reply (its TL;DR when it has one) to the advisor's message.
+function WoWAI.RewardReply(text)
+	local r = run.reward
+	run.reward = nil
+	if not r or not ui.reward or not ui.reward:IsShown() then return end
+	if not text then
+		ShowRewardPick(r.items, LocalRewardPick(r.items), "The agent did not answer; local rule instead.", "local rule")
+		return
+	end
+	local idx = tonumber(text:match("^%D-(%d+)"))
+	if not (idx and r.items[idx]) then idx = LocalRewardPick(r.items) end
+	ShowRewardPick(r.items, idx, text, ChatAgentName(ActiveChat()))
 end
 
 ---------------------------------------------------------------------------
@@ -1638,6 +1859,18 @@ local function MacroSay(msg)
 	print("|cff66ccff[WoW AI]|r " .. msg)
 end
 
+-- Commands that run code or press buttons for the player; a macro with one of
+-- these asks before it is created. Decided here from the body, whatever the
+-- bridge's own flag says.
+local RISKY_SLASH = { run = true, script = true, click = true, console = true, dump = true }
+local function RiskyMacro(body)
+	for line in (body .. "\n"):gmatch("([^\n]*)\n") do
+		local cmd = line:match("^%s*/(%a+)")
+		if cmd and RISKY_SLASH[cmd:lower()] then return true end
+	end
+	return false
+end
+
 -- Only well-formed entries survive (the slot file is trusted, but not blindly).
 function WoWAI.CleanMacros(list)
 	if type(list) ~= "table" then return nil end
@@ -1645,7 +1878,7 @@ function WoWAI.CleanMacros(list)
 	for _, m in ipairs(list) do
 		if type(m) == "table" and type(m.name) == "string" and m.name ~= "" and type(m.body) == "string" and m.body ~= "" then
 			out[#out + 1] = {
-				name = m.name, body = m.body, char = m.char == true, risky = m.risky == true,
+				name = m.name, body = m.body, char = m.char == true, risky = RiskyMacro(m.body),
 				icon = (type(m.icon) == "number" or type(m.icon) == "string") and m.icon or nil,
 			}
 		end
@@ -1886,6 +2119,21 @@ local function GetBubble(i)
 		WoWAI.Allow(self.chatId, self.rules)
 	end)
 	b.allow:Hide()
+	b.always = CreateFrame("Button", nil, b, "UIPanelButtonTemplate")
+	b.always:SetHeight(22)
+	b.always:SetPoint("LEFT", b.allow, "RIGHT", 6, 0)
+	b.always:SetText("Always allow")
+	b.always:SetWidth(110)
+	b.always:SetScript("OnClick", function(self)
+		WoWAI.Allow(self.chatId, self.rules, true)
+	end)
+	b.always:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+		GameTooltip:AddLine("Also asks the bridge to keep these rules. Someone must answer y in the bridge's console window, else they stay one-shot.", 1, 1, 1, true)
+		GameTooltip:Show()
+	end)
+	b.always:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	b.always:Hide()
 	b.macroBtns = {}
 	-- FontStrings can't be selected, so a click opens the message in the copy box.
 	b:EnableMouse(true)
@@ -1926,13 +2174,17 @@ function WoWAI.Render()
 			if denied then
 				local label = "Allow " .. table.concat(denied, ", ") .. " & retry"
 				b.allow:SetText(label)
-				b.allow:SetWidth(math.min(width - 24, math.max(160, b.allow:GetFontString():GetStringWidth() + 30)))
+				b.allow:SetWidth(math.min(width - 24 - 116, math.max(160, b.allow:GetFontString():GetStringWidth() + 30)))
 				b.allow.chatId = c.id
 				b.allow.rules = denied
 				b.allow:Show()
+				b.always.chatId = c.id
+				b.always.rules = denied
+				b.always:Show()
 				extra = 28
 			else
 				b.allow:Hide()
+				b.always:Hide()
 			end
 			-- One button per macro the agent handed over.
 			local shownMacros = 0
@@ -2209,7 +2461,7 @@ local function SendBoxToAgent(eb)
 	eb:ClearChat()
 	if chat and db.activeChat ~= chat.id then WoWAI.SwitchChat(chat.id) end
 	if text ~= "" then
-		WoWAI.Send(text)
+		Send(text)
 	else
 		WoWAI.Toggle(true)
 		if ui.input then ui.input:SetFocus() end
@@ -2662,7 +2914,7 @@ local function BuildUI()
 	hotkey:SetScript("OnClick", function()
 		local c = ActiveChat()
 		if c and c.pendingId then
-			WoWAI.Send("")
+			Send("")
 		else
 			WoWAI.Toggle()
 		end
@@ -2830,6 +3082,7 @@ local HELP = table.concat({
 	"/wow-ai cancel                 stop waiting on this chat's reply",
 	"/wow-ai copy                   open the last reply in a selectable box for Ctrl+C",
 	"/wow-ai macro undo             undo the last macro the agent's button created or changed",
+	"/wow-ai rewards on|off         at a quest turn-in with a choice of rewards, ask the agent which to take (shown beside the quest window; you still click it)",
 	"/wow-ai bind <key>             hotkey: checks for a reply while waiting, else toggles the window",
 	"/wow-ai auto on|off            reload-mode only: auto-reload on your next keypress after the interval",
 	"/wow-ai signal on|off          the cheap sound-file readiness check (off if it spams errors)",
@@ -2867,6 +3120,7 @@ local COMMAND_ARGS = {
 	cd = true, new = true, rename = true,
 	map = true, -- /wow-ai map ...: Map.lua (layers, navigator, herb/ore nodes)
 	macro = { undo = true }, -- /wow-ai macro undo; "/ai macro for my warrior" still goes to the agent
+	rewards = { [""] = true, on = true, off = true },
 }
 
 local function IsCommand(cmd, rest)
@@ -2900,7 +3154,7 @@ SlashCmdList["WOWAI"] = function(msg)
 	-- Anything that isn't a command, or a command word followed by something it
 	-- doesn't take, is a message for the agent.
 	if cmd ~= "" and not IsCommand(cmd, rest) then
-		WoWAI.Send(msg)
+		Send(msg)
 		return
 	end
 	if cmd == "" then
@@ -2995,6 +3249,13 @@ SlashCmdList["WOWAI"] = function(msg)
 		WoWAI.Toggle(false)
 	elseif cmd == "macro" and rest == "undo" then
 		WoWAI.UndoMacro()
+	elseif cmd == "rewards" then
+		if rest == "on" or rest == "off" then s.rewards = rest == "on" end
+		AddHistory(c, "system", "Quest reward advisor is " .. (s.rewards
+			and "ON: at a quest turn-in with a choice, the agent is asked which reward to take and its answer shows beside the quest window. You still click the reward yourself. /wow-ai rewards off to stop."
+			or "OFF. /wow-ai rewards on to ask the agent at every reward choice."))
+		WoWAI.Render()
+		WoWAI.Toggle(true)
 	elseif cmd == "copy" then
 		for i = #c.history, 1, -1 do
 			if c.history[i].role == "assistant" then
@@ -3093,11 +3354,19 @@ ev:RegisterEvent("PLAYER_REGEN_ENABLED")
 ev:RegisterEvent("UPDATE_MACROS")
 ev:RegisterEvent("CHAT_MSG_WHISPER")
 ev:RegisterEvent("CHAT_MSG_BN_WHISPER")
+ev:RegisterEvent("QUEST_COMPLETE")
+ev:RegisterEvent("QUEST_FINISHED")
 ev:SetScript("OnEvent", function(self, event, arg1)
 	if event == "ADDON_LOADED" then
 		if arg1 == ADDON_NAME then
 			InitDB()
 		end
+	elseif event == "QUEST_COMPLETE" then
+		if db then OnQuestComplete() end
+	elseif event == "QUEST_FINISHED" then
+		-- The quest window closed: whatever the agent says now is moot.
+		run.reward = nil
+		if ui.reward then ui.reward:Hide() end
 	elseif event == "CHAT_MSG_WHISPER" or event == "CHAT_MSG_BN_WHISPER" then
 		-- A real person whispered: /r belongs to them again.
 		run.lastMessenger = "player"

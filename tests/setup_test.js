@@ -38,7 +38,9 @@ function setup(s, ...args) {
   // Replaces the search list outright: this must never find a real game on the
   // machine running the tests (it would install into it).
   const env = { ...process.env, WOWAI_TEST_WOW_ROOT: s.wow };
-  const r = spawnSync(process.execPath, ['setup.js', '--project', '.', ...args], { cwd: s.repo, env, encoding: 'utf8' });
+  // A fresh install needs --project (setup refuses the repo as the default folder); re-runs keep the config's.
+  const project = fs.existsSync(path.join(s.repo, 'bridge', 'config.json')) ? [] : ['--project', '.'];
+  const r = spawnSync(process.execPath, ['setup.js', ...project, ...args], { cwd: s.repo, env, encoding: 'utf8' });
   assert.equal(r.status, 0, r.stdout + r.stderr);
   return r.stdout;
 }
@@ -99,6 +101,19 @@ test('a re-run stays on a client that is not the beta', t => {
   client(s, '_forever_', 'Wow.exe', '1#1');
   assert.match(setup(s), /already exists, keeping it/);
   assert.equal(config(s).addonDir, path.join(era, 'Interface', 'AddOns'));
+});
+
+test('without --project, setup run from inside the repo refuses to make the repo the default folder', t => {
+  const s = sandbox(t);
+  client(s, '_forever_', 'Wow.exe', '1#1');
+  const r = spawnSync(process.execPath, ['setup.js'], { cwd: s.repo, env: { ...process.env, WOWAI_TEST_WOW_ROOT: s.wow }, encoding: 'utf8' });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /--project/);
+  assert.ok(!fs.existsSync(path.join(s.repo, 'bridge', 'config.json')));
+  // A re-run with --project moves an existing config's default folder.
+  setup(s);
+  assert.match(setup(s, '--project', path.join(s.wow, 'notes')), /defaultCwd/);
+  assert.equal(config(s).defaultCwd, path.join(s.wow, 'notes'));
 });
 
 test('setup installs before the first login and fills the account in later', t => {

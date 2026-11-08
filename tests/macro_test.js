@@ -206,10 +206,12 @@ test('undo removes a macro the button created', () => {
 
 test('"/ai macro ..." with anything but undo is a message for the agent', () => {
   const vm = newVM();
-  vm.run('SENT = nil; WoWAI.Send = function(m) SENT = m end; SlashCmdList.WOWAI("macro para mi guerrero con carga")');
-  assert.equal(vm.evaluate('SENT'), 'macro para mi guerrero con carga');
-  vm.run('SENT = nil; SlashCmdList.WOWAI("macro undo")');
-  assert.equal(vm.evaluate('SENT'), null);
+  // Not connected to a bridge here: a sent message waits in the input box.
+  vm.run('SlashCmdList.WOWAI("macro para mi guerrero con carga")');
+  assert.equal(vm.evaluate('WoWAIInput:GetText()'), 'macro para mi guerrero con carga');
+  vm.run('WoWAIInput:SetText(""); SlashCmdList.WOWAI("macro undo")');
+  assert.equal(vm.evaluate('WoWAIInput:GetText()'), '');
+  assert.ok(vm.evaluate('table.concat(STUB.prints, "\\n")').includes('nothing to undo'));
 });
 
 test('macros that run code ask first even when new', () => {
@@ -221,6 +223,13 @@ test('macros that run code ask first even when new', () => {
   assert.equal(vm.evaluate('(GetNumMacros())'), '0');
   accept(vm);
   assert.equal(vm.evaluate('(GetNumMacros())'), '1');
+});
+
+test('the addon decides "runs code" from the body itself, not the bridge\'s flag', () => {
+  const vm = newVM();
+  deliver(vm, '{ { name = "Sneaky", body = "#showtooltip\\n /Script print(1)", char = false, risky = false }, { name = "Plain", body = "/cast Corruption", char = false, risky = true } }');
+  assert.match(buttons(vm)[0], /^Create macro: Sneaky .*runs code/);
+  assert.equal(buttons(vm)[1], 'Create macro: Plain');
 });
 
 test('character scope only matches character macros with that name', () => {

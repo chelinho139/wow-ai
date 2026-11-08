@@ -13,7 +13,8 @@ test('luaStr escapes everything Lua 5.1 needs', () => {
 });
 
 test('parseFlags reads new-session, hello, forget, context, agent and allow lists', () => {
-  const none = { newSession: false, hello: false, forget: false, context: false, allow: [], agent: '' };
+  const none = { newSession: false, hello: false, forget: false, context: false, always: false, allow: [], agent: '' };
+  assert.deepEqual(P.parseFlags('a;allow=WebSearch'), { ...none, always: true, allow: ['WebSearch'] });
   assert.deepEqual(P.parseFlags(''), none);
   assert.deepEqual(P.parseFlags('n'), { ...none, newSession: true });
   assert.deepEqual(P.parseFlags('h'), { ...none, hello: true });
@@ -28,7 +29,7 @@ test('jobsFromStrip parses the current record format and keeps separators inside
   const rec = ['sess', 'chat1', '12', 'realms', 'allow=WebSearch', 'My chat', 'hello\x1Fworld'].join('\x1F');
   const jobs = P.jobsFromStrip(12, rec);
   assert.equal(jobs.length, 1);
-  assert.deepEqual(jobs[0], { session: 'sess', chat: 'chat1', id: 12, cwd: 'realms', newSession: false, hello: false, forget: false, context: false, allow: ['WebSearch'], agent: '', name: 'My chat', text: 'hello\x1Fworld', via: 'pixel' });
+  assert.deepEqual(jobs[0], { session: 'sess', chat: 'chat1', id: 12, cwd: 'realms', newSession: false, hello: false, forget: false, context: false, always: false, allow: ['WebSearch'], agent: '', name: 'My chat', text: 'hello\x1Fworld', via: 'pixel' });
   // A chat that picked its own agent says so in the flags.
   const codex = P.jobsFromStrip(13, ['sess', 'chat1', '13', '', 'agent=codex', 'My chat', 'hi'].join('\x1F'))[0];
   assert.equal(codex.agent, 'codex');
@@ -64,7 +65,7 @@ test('systemPrompt always asks for the TL;DR block, and wraps the game context a
     assert.ok(s.includes('wow-ai addon'));
     assert.ok(s.includes('"TL;DR:"'), 'asks for the summary marker');
     assert.ok(!s.includes('in-game situation'), 'no context section without a context');
-    assert.ok(!s.includes('Reference for writing addons'), 'no primer section without a context');
+    assert.ok(!s.includes('Reference for this client'), 'no primer section without a context');
   }
   const s = P.systemPrompt('Game: World of Warcraft: Forever\nCharacter: Testchar, level 23 Hunter');
   assert.ok(s.includes('"TL;DR:"'));
@@ -72,10 +73,10 @@ test('systemPrompt always asks for the TL;DR block, and wraps the game context a
   assert.ok(!P.systemPrompt('').includes('WOW_AI_MAP_FILE'), 'map hint only with the game context');
   assert.ok(s.includes('\nGame: World of Warcraft: Forever\nCharacter: Testchar, level 23 Hunter\n'));
   assert.ok(s.includes('Linked from the game'));
-  assert.ok(!s.includes('Reference for writing addons'), 'no primer section without a primer');
+  assert.ok(!s.includes('Reference for this client'), 'no primer section without a primer');
   // The primer rides with the context, and only with it.
   const withPrimer = P.systemPrompt('Character: Testchar', '# Primer\n\nUse local.');
-  assert.ok(withPrimer.endsWith('Reference for writing addons and macros for this client. Follow it when the task is about WoW, and check anything it marks as uncertain against the Blizzard UI source it names:\n\n# Primer\n\nUse local.'));
+  assert.ok(withPrimer.endsWith('Reference for this client (gameplay, or writing addons and macros). Follow it when the task is about WoW, and check anything it marks as uncertain against the sources it names:\n\n# Primer\n\nUse local.'));
   assert.ok(!P.systemPrompt('', '# Primer').includes('# Primer'));
 });
 
@@ -105,6 +106,9 @@ test('the shipped primer exists, mentions the essentials, and stays small enough
     assert.ok(primer.includes(must), 'primer mentions ' + must);
   }
   assert.ok(primer.length < 9000, `primer is ${primer.length} chars; keep it under 9000 (it costs tokens on every message)`);
+  const gameplay = fs.readFileSync(path.join(__dirname, '..', 'docs', 'FOREVER-PRIMER.md'), 'utf8');
+  for (const must of ['Forever', 'PvP ruleset', 'WebSearch', 'Soul Shards', 'Tirisfal']) assert.ok(gameplay.includes(must), 'gameplay primer mentions ' + must);
+  assert.ok(gameplay.length < 9000, `gameplay primer is ${gameplay.length} chars; keep it under 9000`);
 });
 
 test('jobsFromStrip handles several records per frame and older formats', () => {
@@ -120,7 +124,8 @@ test('jobsFromStrip handles several records per frame and older formats', () => 
 test('parseOutbox decodes the SavedVariables fallback', () => {
   const hex = s => Buffer.from(s, 'utf8').toString('hex');
   const src = `WoWAIDB = {\n["outbox"] = {\n["id"] = 7,\n["session"] = "abc123",\n["chat"] = "c1",\n["text"] = "${hex('héllo')}",\n["cwd"] = "${hex('realms')}",\n["newSession"] = true,\n},\n["settings"] = {},\n}`;
-  assert.deepEqual(P.parseOutbox(src), { id: 7, session: 'abc123', chat: 'c1', text: 'héllo', cwd: 'realms', newSession: true, via: 'reload' });
+  assert.deepEqual(P.parseOutbox(src), { id: 7, session: 'abc123', chat: 'c1', text: 'héllo', cwd: 'realms', newSession: true, always: false, via: 'reload' });
+  assert.equal(P.parseOutbox(src.replace('["newSession"]', '["always"] = true,\n["newSession"]')).always, true);
   const withAllow = src.replace('["newSession"]', `["allow"] = "${hex('WebSearch\x1fBash(git:*)')}",\n["newSession"]`);
   assert.deepEqual(P.parseOutbox(withAllow).allow, ['WebSearch', 'Bash(git:*)']);
   const withCtx = src.replace('["newSession"]', `["ctx"] = "${hex('Character: Testchar')}",\n["newSession"]`);
@@ -148,8 +153,19 @@ test('resolveCwd: empty is the default, relative joins it, ~ is home, absolute w
 test('ruleFor turns denials into prefix rules', () => {
   assert.equal(P.ruleFor({ tool_name: 'WebSearch' }), 'WebSearch');
   assert.equal(P.ruleFor({ tool_name: 'Bash', tool_input: { command: 'cargo build --release' } }), 'Bash(cargo:*)');
-  assert.equal(P.ruleFor({ tool_name: 'Bash', tool_input: { command: '"C:\\weird path\\x.exe" arg' } }), 'Bash');
+  // Never a bare tool rule: an odd command gets an exact-command rule, file tools get their file.
+  assert.equal(P.ruleFor({ tool_name: 'Bash', tool_input: { command: '"C:\\weird path\\x.exe" arg' } }), 'Bash("C:\\weird path\\x.exe" arg)');
+  assert.equal(P.ruleFor({ tool_name: 'Bash', tool_input: { command: '' } }), 'Bash(true)');
+  assert.equal(P.ruleFor({ tool_name: 'Edit', tool_input: { file_path: 'C:\\notes\\a.md' } }), 'Edit(C:\\notes\\a.md)');
+  assert.equal(P.ruleFor({ tool_name: 'Write' }), 'Write(/nonexistent)');
   assert.equal(P.ruleFor({}), 'Unknown');
+});
+
+test('primerKind sends the addon primer only for code talk', () => {
+  assert.equal(P.primerKind('which quest reward should I take?'), 'gameplay');
+  assert.equal(P.primerKind('write me an addon that tracks Corruption'), 'dev');
+  assert.equal(P.primerKind('a macro for Drain Life'), 'dev');
+  assert.equal(P.primerKind(''), 'gameplay');
 });
 
 test('describeToolUse gives one short line per tool call', () => {
