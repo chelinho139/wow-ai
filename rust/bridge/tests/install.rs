@@ -110,6 +110,47 @@ fn rejects_linked_output_directories_and_files_without_writing_targets() {
     );
 }
 #[test]
+fn setup_creates_and_preserves_starter_config() {
+    let client = Client::new();
+    let config_path = client.0.join("test-config.json");
+    let binary = env!("CARGO_BIN_EXE_wow-ai-reforged");
+
+    // First setup run: creates starter config
+    let output = Command::new(binary)
+        .args([
+            "setup",
+            "--wow",
+            client.0.to_str().unwrap(),
+            "--config",
+            config_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(config_path.is_file());
+    let content = fs::read_to_string(&config_path).unwrap();
+    assert!(content.contains("\"schema_version\": 1"));
+    assert!(content.contains("Interface/AddOns"));
+
+    // Modify config and rerun setup: must preserve customized config!
+    fs::write(&config_path, b"customized config content").unwrap();
+    let rerun = Command::new(binary)
+        .args([
+            "setup",
+            "--wow",
+            client.0.to_str().unwrap(),
+            "--config",
+            config_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(rerun.status.success());
+    assert_eq!(
+        fs::read(&config_path).unwrap(),
+        b"customized config content"
+    );
+}
+#[test]
 fn setup_cli_rejects_missing_or_extra_arguments() {
     let binary = env!("CARGO_BIN_EXE_wow-ai-reforged");
     for args in [

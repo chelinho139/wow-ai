@@ -29,18 +29,7 @@ fn execute(args: Vec<String>) -> Result<(), String> {
             Ok(())
         }
         [arg] if arg == "self-test" => self_test(),
-        [command, flag, client] if command == "setup" && flag == "--wow" => {
-            let report =
-                wow_ai_reforged::install::install(Path::new(client)).map_err(|e| e.to_string())?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?
-            );
-            println!(
-                "Setup completed. Fully quit and relaunch WoW to discover the addon files. Use 'wow-ai-reforged run --config <file> --wow <client>' to start the live bridge."
-            );
-            Ok(())
-        }
+        [command, rest @ ..] if command == "setup" => setup_command(rest),
         [command, rest @ ..] if command == "__fixture-agent" => wow_ai_reforged::fixture::run(rest),
         [command, rest @ ..] if command == "run" => run_bridge(rest),
         [command, rest @ ..] if command == "inject" => inject(rest),
@@ -56,6 +45,54 @@ fn execute(args: Vec<String>) -> Result<(), String> {
         [] => Err("Choose self-test, setup, run, or inject. Use --help for usage.".into()),
         _ => Err("Unknown arguments. Use --help for usage.".into()),
     }
+}
+fn setup_command(args: &[String]) -> Result<(), String> {
+    let mut wow_client: Option<&str> = None;
+    let mut config_path = PathBuf::from("config.json");
+    let mut skip_config = false;
+    let mut cursor = 0;
+    while cursor < args.len() {
+        match args[cursor].as_str() {
+            "--wow" => {
+                cursor += 1;
+                wow_client = Some(args.get(cursor).ok_or("missing value for --wow")?);
+            }
+            "--config" => {
+                cursor += 1;
+                let val = args.get(cursor).ok_or("missing value for --config")?;
+                config_path = PathBuf::from(val);
+            }
+            "--no-config" => {
+                skip_config = true;
+            }
+            unknown => return Err(format!("unknown option for setup: {unknown}")),
+        }
+        cursor += 1;
+    }
+    let wow_client = wow_client.ok_or("--wow <client-directory> is required")?;
+    let report =
+        wow_ai_reforged::install::install(Path::new(wow_client)).map_err(|e| e.to_string())?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?
+    );
+
+    if !skip_config {
+        match wow_ai_reforged::install::init_starter_config(&config_path, &report.addons_dir) {
+            Ok(true) => println!(
+                "Created starter {} with your addon path. Edit it to set your agent executable path.",
+                config_path.display()
+            ),
+            Ok(false) => println!("Existing {} was preserved.", config_path.display()),
+            Err(e) => eprintln!("Could not create {}: {e}", config_path.display()),
+        }
+    }
+
+    println!(
+        "Setup completed. Fully quit and relaunch WoW to discover the addon files. Use 'wow-ai-reforged run --config {}' to start the live bridge.",
+        config_path.display()
+    );
+    Ok(())
 }
 fn run_bridge(args: &[String]) -> Result<(), String> {
     let mut config_path: Option<&str> = None;

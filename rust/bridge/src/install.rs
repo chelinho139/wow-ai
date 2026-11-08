@@ -246,3 +246,58 @@ pub fn install(client: &Path) -> io::Result<Report> {
     }
     Ok(report)
 }
+
+/// Creates a starter `config.json` if the target path does not already exist.
+/// Returns `Ok(true)` if created, `Ok(false)` if it already existed.
+pub fn init_starter_config(config_path: &Path, addons_dir: &Path) -> io::Result<bool> {
+    if config_path.exists() {
+        return Ok(false);
+    }
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let project_str = cwd.display().to_string().replace('\\', "/");
+    let addons_str = addons_dir.display().to_string().replace('\\', "/");
+
+    let template = format!(
+        r#"{{
+  "schema_version": 1,
+  "project_dir": "{}",
+  "data_dir": "./reforged-data",
+  "addon_dir": "{}",
+  "agent": "codex",
+  "timeout_ms": 1800000,
+  "max_output_bytes": 1048576,
+  "agents": {{
+    "codex": {{
+      "executable": "C:/REPLACE_WITH_ACTUAL_PATH/codex.exe",
+      "permission_mode": "default"
+    }},
+    "claude": {{
+      "executable": "C:/Program Files/nodejs/node.exe",
+      "launcher_args": [
+        "C:/Users/REPLACE_WITH_USER/AppData/Roaming/npm/node_modules/@anthropic-ai/claude-code/bin/claude.js"
+      ],
+      "permission_mode": "acceptEdits"
+    }},
+    "gemini": {{
+      "executable": "C:/REPLACE_WITH_ACTUAL_PATH/gemini.exe",
+      "permission_mode": "default"
+    }}
+  }}
+}}
+"#,
+        project_str, addons_str
+    );
+
+    let mut file = match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(config_path)
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Ok(false),
+        Err(e) => return Err(e),
+    };
+    file.write_all(template.as_bytes())?;
+    file.sync_all()?;
+    Ok(true)
+}
