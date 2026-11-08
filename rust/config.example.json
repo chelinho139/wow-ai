@@ -7,7 +7,6 @@
   "max_output_bytes": 1048576,
   "agents": {
     "codex": {
-      "executable": "C:/REPLACE_WITH_ACTUAL_PATH/codex.exe",
       "permission_mode": "default"
     }
   }

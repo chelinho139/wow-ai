@@ -2,6 +2,7 @@
 pub mod agents;
 pub mod capture;
 pub mod config;
+pub mod discovery;
 pub mod fixture;
 pub mod frame;
 pub mod install;

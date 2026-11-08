@@ -45,13 +45,31 @@ The executable bundles the addon files, primer, and all 200 reply slots directly
 - It extracts `Interface\AddOns\WoWAI` and `WoWAI_S001` through `WoWAI_S200`.
 - It is create-only and safe to rerun: existing runtime files (`Inbox.lua`, signals) and other addons are preserved. Differing static assets cause an explicit error without touching your files.
 
+### Agent discovery
+
+```powershell
+.\wow-ai-reforged.exe agents
+.\wow-ai-reforged.exe agents --config .\config.json
+```
+
+The report lists all six agents with their resolved command or installation guidance.
+Discovery does not install or sign into agents. It searches native installers, PATH,
+`CODEX_BIN`, and npm's Windows launchers. It can use Codex's existing native binary
+inside its npm package without requiring Node for that invocation.
+
+For existing config files, remove old placeholder `executable` and `launcher_args`
+fields to enable auto-detection. An explicit invalid path is kept and reported,
+not silently replaced. Install/sign into a missing agent, then rerun the report.
+No rebuild is needed for configuration or PATH changes (reopen the terminal after
+an installer changes PATH).
+
 ### Running the live bridge
 
 1. Quit WoW and stop the Node bridge before running setup. Keep only one backend
    running against a game installation; the Rust lock does not coordinate Node.
-2. Setup creates `config.json` if absent. Set `project_dir` to the project you intend
-   the agent to work in, and set your default agent's `executable` (and `launcher_args`
-   if needed). Keep `data_dir` separate from your legacy bridge folder.
+2. Setup creates `config.json` if absent and records detected agents. Set
+   `project_dir` to your project. Omit `executable` for automatic detection, or set
+   an explicit override. Keep `data_dir` separate from your legacy bridge folder.
 3. Fully relaunch WoW, enable `WoW AI` and the slot addons, and use windowed or
    borderless mode with the game visible.
 4. Start the live Rust bridge:
@@ -144,7 +162,8 @@ legacy/development requirement only; core Rust tests use committed fixtures.
 ## Optional agent testing outside WoW
 
 To try an actual agent outside the game, copy `config.example.json` from the ZIP,
-replace its project/executable paths, and choose a new empty data directory. Keep
+set your project path, use auto-detection or an explicit executable override, and
+choose a new empty data directory. Keep
 only the agent configurations you have installed and logged in. Then run:
 
 ```powershell

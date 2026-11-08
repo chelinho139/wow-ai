@@ -56,9 +56,10 @@ pub enum PermissionMode {
     AcceptEdits,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentSettings {
+    #[serde(default)]
     pub executable: PathBuf,
     #[serde(default)]
     pub launcher_args: Vec<String>,
@@ -99,7 +100,11 @@ pub fn build(
     prompt_file: &Path,
 ) -> Result<Invocation, String> {
     if settings.executable.as_os_str().is_empty() {
-        return Err("agent executable must not be empty".into());
+        return Err(format!(
+            "{} was not found. {}",
+            kind.id(),
+            crate::discovery::install_hint(kind)
+        ));
     }
     if settings.launcher_args.iter().any(|value| value.is_empty()) {
         return Err("launcher arguments must not be empty".into());

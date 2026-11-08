@@ -18,7 +18,7 @@ try {
   for (const name of ['install-slots.js','protocol.js']) fs.copyFileSync(path.join(repo,'bridge',name),path.join(bridge,name));
   fs.writeFileSync(path.join(bridge,'config.json'),JSON.stringify({addonDir:addons}));
   execFileSync(process.execPath,[path.join(bridge,'install-slots.js')]);
-  execFileSync('cargo',['run','--quiet','--locked','--','setup','--wow',native],{cwd:repo});
+  execFileSync('cargo',['run','--quiet','--locked','--','setup','--wow',native,'--no-config'],{cwd:repo});
   let compared=0;
   function compare(dir,relative='') {
     for (const entry of fs.readdirSync(dir,{withFileTypes:true})) {

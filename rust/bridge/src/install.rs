@@ -254,39 +254,29 @@ pub fn init_starter_config(config_path: &Path, addons_dir: &Path) -> io::Result<
         return Ok(false);
     }
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let project_str = cwd.display().to_string().replace('\\', "/");
-    let addons_str = addons_dir.display().to_string().replace('\\', "/");
-
-    let template = format!(
-        r#"{{
-  "schema_version": 1,
-  "project_dir": "{}",
-  "data_dir": "./reforged-data",
-  "addon_dir": "{}",
-  "agent": "codex",
-  "timeout_ms": 1800000,
-  "max_output_bytes": 1048576,
-  "agents": {{
-    "codex": {{
-      "executable": "C:/REPLACE_WITH_ACTUAL_PATH/codex.exe",
-      "permission_mode": "default"
-    }},
-    "claude": {{
-      "executable": "C:/Program Files/nodejs/node.exe",
-      "launcher_args": [
-        "C:/Users/REPLACE_WITH_USER/AppData/Roaming/npm/node_modules/@anthropic-ai/claude-code/bin/claude.js"
-      ],
-      "permission_mode": "acceptEdits"
-    }},
-    "gemini": {{
-      "executable": "C:/REPLACE_WITH_ACTUAL_PATH/gemini.exe",
-      "permission_mode": "default"
-    }}
-  }}
-}}
-"#,
-        project_str, addons_str
-    );
+    let mut agents = serde_json::Map::new();
+    let context = crate::discovery::Environment::current();
+    for kind in crate::discovery::AGENTS {
+        let mut value = serde_json::json!({"permission_mode":"default"});
+        if let Ok(found) = crate::discovery::resolve(
+            kind,
+            &crate::agents::AgentSettings::default(),
+            &cwd,
+            &context,
+        ) {
+            value["executable"] = serde_json::json!(found.executable);
+            if !found.launcher_args.is_empty() {
+                value["launcher_args"] = serde_json::json!(found.launcher_args);
+            }
+        }
+        agents.insert(kind.id().into(), value);
+    }
+    let template = serde_json::to_vec_pretty(&serde_json::json!({
+        "schema_version":1,"project_dir":cwd.to_string_lossy().replace('\\',"/"),
+        "data_dir":"./reforged-data","addon_dir":addons_dir.to_string_lossy().replace('\\',"/"),
+        "agent":"codex","timeout_ms":1800000,"max_output_bytes":1048576,"agents":agents
+    }))
+    .map_err(io::Error::other)?;
 
     let mut file = match OpenOptions::new()
         .write(true)
@@ -297,7 +287,7 @@ pub fn init_starter_config(config_path: &Path, addons_dir: &Path) -> io::Result<
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Ok(false),
         Err(e) => return Err(e),
     };
-    file.write_all(template.as_bytes())?;
+    file.write_all(&template)?;
     file.sync_all()?;
     Ok(true)
 }

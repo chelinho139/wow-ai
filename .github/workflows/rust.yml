@@ -51,6 +51,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & .\target\release\wow-ai-reforged.exe self-test
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\target\release\wow-ai-reforged.exe agents
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           New-Item -ItemType Directory -Path "$env:TEMP\fake-wow" | Out-Null
           New-Item -ItemType File -Path "$env:TEMP\fake-wow\Wow.exe" | Out-Null
           & .\target\release\wow-ai-reforged.exe setup --wow "$env:TEMP\fake-wow"

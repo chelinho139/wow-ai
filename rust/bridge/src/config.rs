@@ -1,6 +1,7 @@
 use crate::{
     agents::{AgentKind, AgentSettings},
-    process::{resolve_path, validate_program},
+    discovery::{self, Environment},
+    process::resolve_path,
 };
 use serde::Deserialize;
 use std::{
@@ -23,6 +24,7 @@ pub struct Config {
     pub timeout_ms: u64,
     #[serde(default = "output_limit")]
     pub max_output_bytes: usize,
+    #[serde(default)]
     pub agents: BTreeMap<String, AgentSettings>,
 }
 fn timeout() -> u64 {
@@ -74,6 +76,8 @@ impl Config {
             }
             cfg.addon_dir = Some(resolved);
         }
+        let context = Environment::current();
+        cfg.agents.entry(cfg.agent.id().into()).or_default();
         for (name, agent) in &mut cfg.agents {
             let kind = AgentKind::parse_name(name).map_err(io::Error::other)?;
             if kind.id() != name {
@@ -81,16 +85,22 @@ impl Config {
                     "agent configuration keys must use canonical lowercase names",
                 ));
             }
-            agent.executable = resolve_path(base, &agent.executable);
-            if name == cfg.agent.id() {
-                agent.executable = agent.executable.canonicalize()?;
-                validate_program(&agent.executable)?;
+            match discovery::resolve(kind, agent, base, &context) {
+                Ok(found) => {
+                    agent.executable = found.executable;
+                    agent.launcher_args = found.launcher_args;
+                }
+                Err(error) if kind == cfg.agent => {
+                    return Err(io::Error::other(format!(
+                        "Cannot find default agent {name}: {error}"
+                    )));
+                }
+                Err(_) => {
+                    if !agent.executable.as_os_str().is_empty() {
+                        agent.executable = resolve_path(base, &agent.executable);
+                    }
+                }
             }
-        }
-        if !cfg.agents.contains_key(cfg.agent.id()) {
-            return Err(io::Error::other(
-                "default agent has no executable configuration",
-            ));
         }
         Ok(cfg)
     }

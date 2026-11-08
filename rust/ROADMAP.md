@@ -286,3 +286,10 @@ across restart, and target-bound pending-reply recovery. Unknown/uninstalled age
 produce explicit errors. Publication reports are checked before completion is
 cleared. SavedVariables polling is not connected to the live loop yet. Windows FFI lint and
 GDI bitmap synchronization issues from the initial capture commit are corrected.
+
+Agent discovery now mirrors the legacy backend: configured paths take precedence,
+then environment overrides, known install locations and PATH/npm launchers are
+searched. Setup records discovered commands using JSON serialization, preserves
+existing config, and prints installation guidance for missing agents. The `agents`
+command provides a read-only diagnostic report; agent installation and login remain
+separate. All six adapters use the same resolver; no shell launcher is executed.

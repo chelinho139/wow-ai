@@ -18,12 +18,25 @@ no accounts, Node, Python or running game. It deliberately leaves its workspace 
 inspection. `inject` uses the configured real executable and its existing login;
 it may consume provider credits and use tools according to that agent's settings.
 
-Copy `rust/config.example.json` and replace the project and executable paths.
-Paths are resolved relative to the config file. Configure only agents installed on
-your machine. Executables must be explicit paths; Windows `.cmd`, `.bat` and `.ps1`
-launchers are rejected. For a JavaScript CLI, set `executable` to its Node executable
-and `launcher_args` to the absolute CLI script path. That is an agent prerequisite,
-not a runtime requirement of the Rust backend.
+Copy `rust/config.example.json` and set your project path. Run
+`wow-ai-reforged agents` to list detected agents, or
+`wow-ai-reforged agents --config config.json` to include configured overrides.
+Detection only reads files; it does not install agents or check their login.
+
+Omit `executable` (or set it to an empty string) for automatic discovery. Rust checks
+`PATH`, platform-specific install folders, Windows `%APPDATA%/npm` launchers and
+`CODEX_BIN`. Native npm-packaged Codex/Grok binaries are preferred when present;
+otherwise JS entry points use the existing Node installation required by that agent.
+No npm launcher is executed through `cmd.exe` or PowerShell.
+
+Explicit executable paths take precedence. A missing explicit path is reported
+instead of silently choosing another installation. Configured `.cmd`/`.bat` npm
+wrappers and `.js`/`.mjs`/`.cjs` entry points are resolved to the underlying command.
+`.ps1` wrappers are not executed: omit the executable for discovery or select the npm
+`.cmd` file. `launcher_args` still supports an explicitly selected executable/script.
+Existing config files are preserved. New setup config uses JSON serialization,
+records detected paths, and leaves missing agents set to auto-discovery; startup
+searches again after you install them. The default agent must be found to start.
 
 ## Runtime boundaries
 

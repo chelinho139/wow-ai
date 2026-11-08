@@ -7,7 +7,7 @@ use std::{
 };
 use wow_ai_reforged::{agents::AgentKind, config::Config, runtime};
 
-const HELP: &str = "WoW AI Reforged — Rust backend (in development)\n\nUsage:\n  wow-ai-reforged self-test\n  wow-ai-reforged setup --wow <client-directory>\n  wow-ai-reforged run --config <file.json> [--wow <client-directory>] [--once]\n  wow-ai-reforged inject --config <file.json> --prompt <text> [--agent <id>] [--chat <id>] [--fresh-session]\n  wow-ai-reforged recover --config <file.json>\n  wow-ai-reforged --help | --version\n\nAgents: claude, codex, grok, agy, hermes, gemini\n\nself-test runs fake agents in a new temporary workspace; no login or game needed.\nsetup extracts embedded addon files and reply slots into your World of Warcraft client.\nrun connects live screen capture to the game addon and agent execution loop.\ninject runs a configured agent and writes replies to its private Rust outbox.\nrecover republishes a completed reply if publication was previously interrupted.\n";
+const HELP: &str = "WoW AI Reforged — Rust backend (in development)\n\nUsage:\n  wow-ai-reforged self-test\n  wow-ai-reforged agents [--config <file.json>]\n  wow-ai-reforged setup --wow <client-directory>\n  wow-ai-reforged run --config <file.json> [--wow <client-directory>] [--once]\n  wow-ai-reforged inject --config <file.json> --prompt <text> [--agent <id>] [--chat <id>] [--fresh-session]\n  wow-ai-reforged recover --config <file.json>\n  wow-ai-reforged --help | --version\n\nAgents: claude, codex, grok, agy, hermes, gemini\n\nself-test runs fake agents in a new temporary workspace; no login or game needed.\nsetup extracts embedded addon files and reply slots into your World of Warcraft client.\nrun connects live screen capture to the game addon and agent execution loop.\ninject runs a configured agent and writes replies to its private Rust outbox.\nrecover republishes a completed reply if publication was previously interrupted.\n";
 
 fn main() -> ExitCode {
     match execute(env::args().skip(1).collect()) {
@@ -29,6 +29,10 @@ fn execute(args: Vec<String>) -> Result<(), String> {
             Ok(())
         }
         [arg] if arg == "self-test" => self_test(),
+        [arg] if arg == "agents" => agent_report(None),
+        [command, flag, path] if command == "agents" && flag == "--config" => {
+            agent_report(Some(Path::new(path)))
+        }
         [command, rest @ ..] if command == "setup" => setup_command(rest),
         [command, rest @ ..] if command == "__fixture-agent" => wow_ai_reforged::fixture::run(rest),
         [command, rest @ ..] if command == "run" => run_bridge(rest),
@@ -46,6 +50,15 @@ fn execute(args: Vec<String>) -> Result<(), String> {
         _ => Err("Unknown arguments. Use --help for usage.".into()),
     }
 }
+fn agent_report(path: Option<&Path>) -> Result<(), String> {
+    let report = wow_ai_reforged::discovery::inspect(path).map_err(|e| e.to_string())?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?
+    );
+    Ok(())
+}
+
 fn setup_command(args: &[String]) -> Result<(), String> {
     let mut wow_client: Option<&str> = None;
     let mut config_path = PathBuf::from("config.json");
@@ -80,12 +93,20 @@ fn setup_command(args: &[String]) -> Result<(), String> {
     if !skip_config {
         match wow_ai_reforged::install::init_starter_config(&config_path, &report.addons_dir) {
             Ok(true) => println!(
-                "Created starter {} with your addon path. Edit it to set your agent executable path.",
+                "Created starter {} with your addon path and detected agents. Missing agents will be searched again at startup.",
                 config_path.display()
             ),
             Ok(false) => println!("Existing {} was preserved.", config_path.display()),
             Err(e) => eprintln!("Could not create {}: {e}", config_path.display()),
         }
+    }
+
+    if let Err(e) = agent_report(if !skip_config && config_path.is_file() {
+        Some(&config_path)
+    } else {
+        None
+    }) {
+        eprintln!("Agent detection report: {e}");
     }
 
     println!(
