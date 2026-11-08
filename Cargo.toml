@@ -1,0 +1,3 @@
+[workspace]
+members = ["rust/bridge"]
+resolver = "3"

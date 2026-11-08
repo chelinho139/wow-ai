@@ -9,6 +9,8 @@ bridge/tmp/
 # tooling
 node_modules/
 tests/tmp/
+/target/
+.omx/
 
 # OS / local artifacts
 .DS_Store

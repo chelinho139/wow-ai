@@ -1,4 +1,12 @@
-# wow-ai
+# WoW AI Reforged
+
+This fork is developing a Rust backend with Windows as the primary target.
+The original Node backend remains the working **legacy** implementation in
+`bridge/`; the installation and usage instructions below still apply to it.
+The Rust workspace in `rust/` is currently a scaffold, not a working replacement.
+See [FORK.md](FORK.md) for development commands and the upstream sync workflow.
+
+## Original wow-ai documentation
 
 <p align="center">
   <img src="docs/screenshot.jpg" alt="The WoW AI chat window open in Goldshire, with a message on its way to a coding agent" width="900">
