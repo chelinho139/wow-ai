@@ -9,8 +9,9 @@ distinguishes absent context from an explicit context reset.
 
 Rust rejects IDs outside JavaScript's safe integer range instead of accepting
 rounded values. This intentional validation difference does not affect normal
-addon message IDs. Frame checksums and size validation are not implemented yet;
-this parser accepts already decoded UTF-8 payloads, not raw screen captures.
+addon message IDs. The record parser accepts already decoded UTF-8 payloads. The separate frame module
+validates magic, length and Fletcher checksum from a top-down RGB buffer, and searches
+the legacy 0..8-pixel offset window. Native screen capture is not implemented yet.
 
 ## Compatibility tests
 
@@ -48,3 +49,9 @@ Signal operations require installed files and report per-file failures. Presence
 returns the proposed next counter; scheduling and persistence are not implemented.
 Pools of 50 or fewer presence files are rejected to avoid clearing the active beat.
 See [Windows testing](../WINDOWS-TESTING.md) for native Windows checks.
+
+Frame fixtures come from the real addon Lua encoder. Regenerate them with
+`node rust/bridge/tests/generate-frame-fixtures.cjs` after reviewing codec changes.
+`cargo test --test frame_compat` covers Unicode, invalid UTF-8 replacement, empty and
+3200-byte payloads, channel thresholds, padding, offsets, corrupted frames and invalid
+buffer geometry. The frame module is OS-independent and uses no image dependencies.

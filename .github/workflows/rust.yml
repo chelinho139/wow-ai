@@ -36,5 +36,6 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           node rust/bridge/tests/generate-fixtures.cjs
+          node rust/bridge/tests/generate-frame-fixtures.cjs
           git diff --exit-code -- rust/bridge/tests/fixtures
           node rust/bridge/tests/validate-slot.cjs

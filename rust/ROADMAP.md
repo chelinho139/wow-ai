@@ -257,6 +257,7 @@ work begins. No delivery dates or performance gains are promised. Current scaffo
 complete. Stage 2 has an initial tested slice: pixel record/flag parsing and Lua
 string escaping, basic-chat slot serialization, and per-file atomic publication.
 Node-reference fixture comparisons and Lua VM checks pass locally. Runtime ownership
-locking, frame decoding, and the remaining stage gates are still pending. WAV signal
+locking and the remaining stage gates are still pending. Pure RGB frame decoding
+now has tests based on the actual Lua encoder; native screen capture remains pending. WAV signal
 operations and presence/activity logic now have tests, with a Windows testing guide
 in rust/WINDOWS-TESTING.md. Scheduling and persisted counters are not implemented; no stage is claimed complete.

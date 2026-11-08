@@ -1,7 +1,7 @@
 # Testing on Windows 11 x64
 
 The Rust backend is under development. You can test its protocol, slot publication,
-and WAV signals now. It cannot capture WoW or run agents yet, and starting the main
+WAV signals, and pixel-frame decoding now. It cannot capture WoW or run agents yet, and starting the main
 executable without arguments intentionally fails with a scaffold message.
 
 ## Prerequisites for building from source
@@ -44,6 +44,7 @@ To run just the new signal tests:
 
 ```powershell
 cargo test --locked signals::tests -- --nocapture
+cargo test --locked --test frame_compat
 ```
 
 For the same Rust quality checks used in CI:
