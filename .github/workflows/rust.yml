@@ -39,3 +39,30 @@ jobs:
           node rust/bridge/tests/generate-frame-fixtures.cjs
           git diff --exit-code -- rust/bridge/tests/fixtures
           node rust/bridge/tests/validate-slot.cjs
+      - name: Smoke-test Windows release executable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & .\target\release\wow-ai-reforged.exe --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\target\release\wow-ai-reforged.exe --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Package Windows preview
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path windows-preview | Out-Null
+          Copy-Item target/release/wow-ai-reforged.exe windows-preview/
+          Copy-Item LICENSE windows-preview/
+          Copy-Item rust/WINDOWS-TESTING.md windows-preview/README.md
+          @("Commit: $env:GITHUB_SHA", "Run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID", "Target: Windows x64", "Status: development scaffold; live WoW chat is not implemented") | Set-Content windows-preview/BUILD.txt
+          $binaryHash = Get-FileHash windows-preview/wow-ai-reforged.exe -Algorithm SHA256
+          "$($binaryHash.Hash.ToLowerInvariant())  wow-ai-reforged.exe" | Set-Content -Encoding ascii windows-preview/SHA256SUMS.txt
+      - name: Upload Windows preview
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-ai-reforged-windows-x64
+          path: windows-preview/
+          if-no-files-found: error
+          retention-days: 14

@@ -4,6 +4,35 @@ The Rust backend is under development. You can test its protocol, slot publicati
 WAV signals, and pixel-frame decoding now. It cannot capture WoW or run agents yet, and starting the main
 executable without arguments intentionally fails with a scaffold message.
 
+## Download a Windows build (no Rust or Node installation needed)
+
+1. Sign in to GitHub and open the
+   [Rust workflow](https://github.com/leozitor/wow-ai-reforged/actions/workflows/rust.yml).
+2. Select a successful run for `feat/rust-backend` with the desired commit.
+3. Under **Artifacts**, download `wow-ai-reforged-windows-x64` and extract the ZIP.
+   Artifacts expire after 14 days; a later successful run provides a fresh build.
+4. Open a terminal in the extracted folder and run:
+
+```powershell
+.\wow-ai-reforged.exe --help
+.\wow-ai-reforged.exe --version
+```
+
+These are executable smoke checks, not live game tests. The automated protocol,
+publication, signal and frame tests run in CI before this executable is uploaded.
+Running without arguments still returns the expected scaffold error.
+
+The archive includes `BUILD.txt` with its source commit and CI run, `LICENSE`, and
+`SHA256SUMS.txt`. To compare the executable against the included checksum:
+
+```powershell
+(Get-FileHash .\wow-ai-reforged.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+Get-Content .\SHA256SUMS.txt
+```
+
+The binary does not install or modify the addon yet. Use the source instructions
+below only if you want to run the automated tests on your own Windows machine.
+
 ## Prerequisites for building from source
 
 Use native Windows, rather than WSL, to exercise Windows file replacement behavior.
@@ -13,8 +42,7 @@ Follow its prompts for the Visual Studio C++ build tools. Open a new terminal af
 installation so Cargo is on PATH. These are developer prerequisites, not requirements
 for the eventual standalone release.
 
-Use a copy of the `feat/rust-backend` sources containing the latest signal commit.
-Local commits are not available in a remote clone until the branch is pushed. Do not
+Use an up-to-date copy of the `feat/rust-backend` sources. Do not
 copy another OS's `target/` build directory; Cargo builds the Windows binaries locally.
 
 ## Core tests (no Node, WoW, or agent login needed)
