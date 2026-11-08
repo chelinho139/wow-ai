@@ -214,3 +214,31 @@ fn an_uninstalled_optional_agent_does_not_block_the_default_agent() {
     assert!(f.inbox().contains("status = \"error\""));
     assert!(State::load(&cfg.data_dir).unwrap().sessions.is_empty());
 }
+
+#[test]
+fn shutdown_publishes_offline_to_every_slot_and_hello_reconnects() {
+    let f = Fixture::new();
+    {
+        let mut bridge = LiveBridge::start(&f.cfg, None).unwrap();
+        bridge.accept_frame(&f.frame(1, "h", "")).unwrap();
+        assert!(f.inbox().contains("bridgeOnline = true"));
+        bridge.shutdown().unwrap();
+        assert!(f.inbox().contains("bridgeOnline = false"));
+        for n in 1..=200 {
+            let path = f
+                .cfg
+                .addon_dir
+                .as_ref()
+                .unwrap()
+                .join(format!("WoWAI_S{n:03}/Inbox.lua"));
+            assert!(
+                fs::read_to_string(path)
+                    .unwrap()
+                    .contains("bridgeOnline = false")
+            );
+        }
+    }
+    let mut bridge = LiveBridge::start(&f.cfg, None).unwrap();
+    bridge.accept_frame(&f.frame(2, "h", "")).unwrap();
+    assert!(f.inbox().contains("bridgeOnline = true"));
+}

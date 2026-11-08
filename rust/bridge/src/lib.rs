@@ -12,6 +12,7 @@ pub mod process;
 pub mod protocol;
 pub mod publication;
 pub mod runtime;
+pub mod shutdown;
 pub mod signals;
 pub mod slots;
 pub mod state;

@@ -168,3 +168,33 @@ fn setup_cli_rejects_missing_or_extra_arguments() {
         );
     }
 }
+
+#[test]
+fn explicit_update_backs_up_static_assets_and_preserves_runtime() {
+    let client = Client::new();
+    install::install(&client.0).unwrap();
+    let addon = client.addons().join("WoWAI/WoWAI.lua");
+    let inbox = client.addons().join("WoWAI/Inbox.lua");
+    let signal = client.addons().join("WoWAI/ack/001.wav");
+    fs::write(&addon, b"previous addon version").unwrap();
+    fs::write(&inbox, b"keep replies").unwrap();
+    fs::write(&signal, b"keep signal").unwrap();
+    let report = install::update(&client.0).unwrap();
+    assert_eq!(report.updated, 1);
+    assert_eq!(report.created, 0);
+    assert_eq!(report.preserved, 14808);
+    let backup = report.backup_dir.unwrap();
+    assert_eq!(
+        fs::read(backup.join("WoWAI/WoWAI.lua")).unwrap(),
+        b"previous addon version"
+    );
+    assert_eq!(
+        fs::read(&addon).unwrap(),
+        include_bytes!("../../../addon/WoWAI/WoWAI.lua")
+    );
+    assert_eq!(fs::read(inbox).unwrap(), b"keep replies");
+    assert_eq!(fs::read(signal).unwrap(), b"keep signal");
+    let rerun = install::update(&client.0).unwrap();
+    assert_eq!(rerun.updated, 0);
+    assert!(rerun.backup_dir.is_none());
+}

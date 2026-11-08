@@ -7,7 +7,7 @@ use std::{
 };
 use wow_ai_reforged::{agents::AgentKind, config::Config, runtime};
 
-const HELP: &str = "WoW AI Reforged — Rust backend (in development)\n\nUsage:\n  wow-ai-reforged self-test\n  wow-ai-reforged agents [--config <file.json>]\n  wow-ai-reforged setup --wow <client-directory>\n  wow-ai-reforged run --config <file.json> [--wow <client-directory>] [--once]\n  wow-ai-reforged inject --config <file.json> --prompt <text> [--agent <id>] [--chat <id>] [--fresh-session]\n  wow-ai-reforged recover --config <file.json>\n  wow-ai-reforged --help | --version\n\nAgents: claude, codex, grok, agy, hermes, gemini\n\nself-test runs fake agents in a new temporary workspace; no login or game needed.\nsetup extracts embedded addon files and reply slots into your World of Warcraft client.\nrun connects live screen capture to the game addon and agent execution loop.\ninject runs a configured agent and writes replies to its private Rust outbox.\nrecover republishes a completed reply if publication was previously interrupted.\n";
+const HELP: &str = "WoW AI Reforged — Rust backend (in development)\n\nUsage:\n  wow-ai-reforged self-test\n  wow-ai-reforged agents [--config <file.json>]\n  wow-ai-reforged setup --wow <client-directory> [--update-addon]\n  wow-ai-reforged run --config <file.json> [--wow <client-directory>] [--once]\n  wow-ai-reforged inject --config <file.json> --prompt <text> [--agent <id>] [--chat <id>] [--fresh-session]\n  wow-ai-reforged recover --config <file.json>\n  wow-ai-reforged --help | --version\n\nAgents: claude, codex, grok, agy, hermes, gemini\n\nself-test runs fake agents in a new temporary workspace; no login or game needed.\nsetup extracts embedded addon files and reply slots into your World of Warcraft client.\nrun connects live screen capture to the game addon and agent execution loop.\ninject runs a configured agent and writes replies to its private Rust outbox.\nrecover republishes a completed reply if publication was previously interrupted.\n";
 
 fn main() -> ExitCode {
     match execute(env::args().skip(1).collect()) {
@@ -63,6 +63,7 @@ fn setup_command(args: &[String]) -> Result<(), String> {
     let mut wow_client: Option<&str> = None;
     let mut config_path = PathBuf::from("config.json");
     let mut skip_config = false;
+    let mut update_addon = false;
     let mut cursor = 0;
     while cursor < args.len() {
         match args[cursor].as_str() {
@@ -75,6 +76,9 @@ fn setup_command(args: &[String]) -> Result<(), String> {
                 let val = args.get(cursor).ok_or("missing value for --config")?;
                 config_path = PathBuf::from(val);
             }
+            "--update-addon" => {
+                update_addon = true;
+            }
             "--no-config" => {
                 skip_config = true;
             }
@@ -83,8 +87,12 @@ fn setup_command(args: &[String]) -> Result<(), String> {
         cursor += 1;
     }
     let wow_client = wow_client.ok_or("--wow <client-directory> is required")?;
-    let report =
-        wow_ai_reforged::install::install(Path::new(wow_client)).map_err(|e| e.to_string())?;
+    let report = if update_addon {
+        wow_ai_reforged::install::update(Path::new(wow_client))
+    } else {
+        wow_ai_reforged::install::install(Path::new(wow_client))
+    }
+    .map_err(|e| e.to_string())?;
     println!(
         "{}",
         serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?

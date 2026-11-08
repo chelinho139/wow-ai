@@ -126,6 +126,14 @@ impl<'a> LiveBridge<'a> {
             last_presence: None,
         })
     }
+    pub fn shutdown(&mut self) -> io::Result<()> {
+        publish_connection(
+            self.cfg,
+            self.data_guard.data_dir(),
+            self.addon_dir.as_deref(),
+            false,
+        )
+    }
     pub fn tick(&mut self, now: Instant) -> io::Result<()> {
         let mut state = State::load(self.data_guard.data_dir())?;
         if let Some(pending) = state.pending.clone() {
@@ -164,6 +172,9 @@ impl<'a> LiveBridge<'a> {
     pub fn accept_frame(&mut self, frame: &crate::frame::Frame) -> io::Result<()> {
         let mut failure = None;
         for job in protocol::jobs_from_strip(u64::from(frame.id), &frame.text) {
+            if crate::shutdown::requested() {
+                break;
+            }
             let key = (job.session.clone(), job.id);
             if self.handled_jobs.contains(&key)
                 || State::load(self.data_guard.data_dir())?
@@ -198,6 +209,7 @@ impl<'a> LiveBridge<'a> {
 }
 
 pub fn run(cfg: &Config, options: BridgeOptions) -> io::Result<()> {
+    let _shutdown = crate::shutdown::install()?;
     let mut bridge = LiveBridge::start(cfg, options.wow_dir.as_deref())?;
     let data_dir = bridge.data_guard.data_dir();
     let addon_dir = &bridge.addon_dir;
@@ -220,6 +232,9 @@ pub fn run(cfg: &Config, options: BridgeOptions) -> io::Result<()> {
     let mut last_warn_log = Instant::now() - Duration::from_secs(10);
 
     loop {
+        if crate::shutdown::requested() {
+            break;
+        }
         if let Err(e) = bridge.tick(Instant::now()) {
             eprintln!("[presence] {e}");
         }
@@ -264,6 +279,7 @@ pub fn run(cfg: &Config, options: BridgeOptions) -> io::Result<()> {
         thread::sleep(Duration::from_millis(250));
     }
 
+    bridge.shutdown()?;
     Ok(())
 }
 
@@ -301,7 +317,7 @@ fn execute_job(
 
     if job.flags.hello {
         println!("[job #{}] hello from session {}", job.id, job.session);
-        publish_connection(cfg, data_dir, addon_dir)?;
+        publish_connection(cfg, data_dir, addon_dir, true)?;
         *last_presence = None;
         heartbeat(signals, &mut state, data_dir, last_presence, Instant::now())?;
         state.save(data_dir)?;
@@ -452,6 +468,12 @@ fn execute_job(
                 max_output: cfg.max_output_bytes,
             },
             || {
+                if crate::shutdown::requested() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "bridge is stopping",
+                    ));
+                }
                 if let Err(e) =
                     heartbeat(signals, &mut state, data_dir, last_presence, Instant::now())
                 {
@@ -615,6 +637,7 @@ fn publish_reply(req: ReplyPublication<'_>) -> io::Result<()> {
         .as_secs();
 
     let snapshot = Snapshot {
+        online: Some(true),
         timestamp: utc_timestamp(now)?,
         now_seconds: now,
         cwd: req.project.to_string_lossy().into_owned(),
@@ -672,12 +695,18 @@ fn heartbeat(
     *last = Some(now);
     Ok(())
 }
-fn publish_connection(cfg: &Config, data_dir: &Path, addon_dir: Option<&Path>) -> io::Result<()> {
+fn publish_connection(
+    cfg: &Config,
+    data_dir: &Path,
+    addon_dir: Option<&Path>,
+    online: bool,
+) -> io::Result<()> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(io::Error::other)?
         .as_secs();
     let snapshot = Snapshot {
+        online: Some(online),
         timestamp: utc_timestamp(now)?,
         now_seconds: now,
         cwd: cfg.project_dir.to_string_lossy().into_owned(),

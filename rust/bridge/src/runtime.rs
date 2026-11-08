@@ -165,6 +165,7 @@ impl Publisher<'_> {
             .map_err(io::Error::other)?
             .as_secs();
         let snapshot = Snapshot {
+            online: None,
             timestamp: utc_timestamp(now)?,
             now_seconds: now,
             cwd: project.to_string_lossy().into_owned(),

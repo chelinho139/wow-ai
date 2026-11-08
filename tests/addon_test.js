@@ -715,3 +715,32 @@ test('reload mode writes the outbox for the bridge instead of drawing the strip'
   assert.equal(Buffer.from(vm.evaluate('WoWAIDB.outbox.allow'), 'hex').toString('utf8'), 'WebSearch\x1fBash(git:*)');
   assert.equal(decodeStrip(vm), null);
 });
+
+test('stale working replies do not keep a stopped Rust bridge connected', () => {
+  const vm = newVM(); vm.run('STUB.sounds["Interface\\\\AddOns\\\\WoWAI\\\\ctl\\\\valid.wav"] = true'); login(vm); connect(vm);
+  vm.run('WoWAI.Send("read only task")');
+  const id = vm.num('WoWAIDB.chats[1].pendingId');
+  vm.run('FROZEN_NOW = time()');
+  nextSlot(vm, `{now=FROZEN_NOW,bridgeOnline=true,replies={{chat=WoWAIDB.chats[1].id,id=${id},status="working",text="Agent is running"}}}`);
+  vm.run('STUB.now=STUB.now+6; STUB.Tick()');
+  for (let i = 0; i < 5; i++) vm.run('STUB.now=STUB.now+20; STUB.Tick()');
+  assert.notEqual(vm.evaluate('WoWAI.BridgeState()'), 'ok', 'cached working is not a heartbeat');
+  assert.equal(vm.evaluate('WoWAIDB.chats[1].pendingId'), null);
+  assert.equal(vm.evaluate('WoWAIDB.outbox'), null);
+});
+
+test('offline snapshots stop the pending spinner and allow reconnecting in the same chat', () => {
+  const vm = newVM(); login(vm); connect(vm); vm.run('WoWAI.Send("sent after bridge stopped")');
+  nextSlot(vm, '{now=time(),bridgeOnline=false,replies={}}');
+  vm.run('STUB.now=STUB.now+6; STUB.Tick()');
+  assert.equal(vm.evaluate('WoWAI.BridgeState()'),'down');
+  assert.equal(vm.evaluate('WoWAIDB.chats[1].pendingId'),null);
+  assert.equal(vm.evaluate('WoWAIDB.outbox'),null,'ambiguous request is not replayed on reload');
+  assert.ok(vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history].text').includes('not be resent automatically'));
+  assert.equal(stripRecords(vm).filter(r=>r.text==='sent after bridge stopped').length,0);
+  vm.run('WoWAI.Connect()'); nextSlot(vm,'{now=time(),bridgeOnline=true,replies={}}');
+  vm.run('STUB.now=STUB.now+6; STUB.Tick()');
+  assert.equal(vm.evaluate('WoWAI.IsConnected()'),'true');
+  vm.run('WoWAI.Send("new explicit message")');
+  assert.ok(stripRecords(vm).some(r=>r.text==='new explicit message'));
+});

@@ -1,6 +1,7 @@
 use wow_ai_reforged::slots::{Reply, Snapshot, Status};
 pub fn snapshot() -> Snapshot {
     Snapshot {
+        online: None,
         timestamp: "2023-11-14T22:13:20.123Z".into(),
         now_seconds: 1700000000,
         cwd: "C:\\My Project".into(),

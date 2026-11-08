@@ -1,5 +1,5 @@
-//! Native, create-only setup. Assets are compiled into the executable. Existing
-//! runtime files are preserved; differing static assets cause an explicit error.
+//! Native setup with embedded assets. Runtime files are preserved. Differing
+//! static assets require explicit update mode, which backs up old files first.
 //! This is not a multi-file transaction. Stop WoW and both bridges before setup.
 use crate::{config::read_bounded, ownership::OwnershipGuard, signals::silent_wav};
 use serde::Serialize;
@@ -33,6 +33,8 @@ pub struct Report {
     pub addons_dir: PathBuf,
     pub created: usize,
     pub preserved: usize,
+    pub updated: usize,
+    pub backup_dir: Option<PathBuf>,
 }
 
 fn assets() -> Vec<Asset> {
@@ -147,7 +149,7 @@ fn directories(root: &Path, relative: &Path, create: bool) -> io::Result<()> {
     }
     Ok(())
 }
-fn existing(root: &Path, asset: &Asset) -> io::Result<bool> {
+fn check_existing(root: &Path, asset: &Asset, updates: bool) -> io::Result<bool> {
     directories(root, asset.path.parent().unwrap(), false)?;
     let path = root.join(&asset.path);
     match fs::symlink_metadata(&path) {
@@ -158,7 +160,8 @@ fn existing(root: &Path, asset: &Asset) -> io::Result<bool> {
                     path.display()
                 )));
             }
-            if !asset.mutable && read_bounded(&path, asset.body.len())? != asset.body.as_ref() {
+            if !asset.mutable && read_bounded(&path, 4_194_304)? != asset.body.as_ref() && !updates
+            {
                 return Err(io::Error::other(format!(
                     "existing addon asset differs: {}. No existing file will be overwritten; review your installed addon version first",
                     path.display()
@@ -174,6 +177,14 @@ fn existing(root: &Path, asset: &Asset) -> io::Result<bool> {
 /// `client` must be the actual Windows client directory containing Wow.exe,
 /// normally `_forever_`, not the launcher installation's parent directory.
 pub fn install(client: &Path) -> io::Result<Report> {
+    install_inner(client, false)
+}
+/// Explicitly update differing static assets, backing up each old file first.
+/// Runtime files and unknown addons are never overwritten.
+pub fn update(client: &Path) -> io::Result<Report> {
+    install_inner(client, true)
+}
+fn install_inner(client: &Path, updates: bool) -> io::Result<Report> {
     let client = match client.canonicalize() {
         Ok(path) => path,
         Err(e) => {
@@ -195,23 +206,54 @@ pub fn install(client: &Path) -> io::Result<Report> {
     let assets = assets();
     // Check the entire existing tree before creating even the ownership lock.
     for asset in &assets {
-        existing(&addons, asset)?;
+        check_existing(&addons, asset, updates)?;
     }
     directories(&client, Path::new("Interface/AddOns"), true)?;
     // This only serializes Rust setup processes, not the legacy Node installer.
     let guard = OwnershipGuard::acquire(&addons)?;
     let addons = guard.data_dir();
     for asset in &assets {
-        existing(addons, asset)?;
+        check_existing(addons, asset, updates)?;
     }
     let mut report = Report {
         addons_dir: addons.into(),
         created: 0,
         preserved: 0,
+        updated: 0,
+        backup_dir: None,
     };
     for asset in &assets {
-        if existing(addons, asset)? {
-            report.preserved += 1;
+        if check_existing(addons, asset, updates)? {
+            let path = addons.join(&asset.path);
+            if updates && !asset.mutable && read_bounded(&path, 4_194_304)? != asset.body.as_ref() {
+                if report.backup_dir.is_none() {
+                    use std::time::{SystemTime, UNIX_EPOCH};
+                    directories(&client, Path::new("Interface/WoWAI-Reforged-Backups"), true)?;
+                    let unique = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map_err(io::Error::other)?
+                        .as_nanos();
+                    let backup = client
+                        .join("Interface/WoWAI-Reforged-Backups")
+                        .join(format!("{}-{unique}", std::process::id()));
+                    fs::create_dir(&backup)?;
+                    report.backup_dir = Some(backup);
+                }
+                let backup = report.backup_dir.as_ref().unwrap();
+                directories(backup, asset.path.parent().unwrap(), true)?;
+                let old = read_bounded(&path, 4_194_304)?;
+                let mut file = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(backup.join(&asset.path))?;
+                file.write_all(&old)?;
+                file.sync_all()?;
+                drop(file);
+                crate::publication::atomic_write(&path, &asset.body)?;
+                report.updated += 1;
+            } else {
+                report.preserved += 1;
+            }
             continue;
         }
         directories(addons, asset.path.parent().unwrap(), true)?;
@@ -219,7 +261,7 @@ pub fn install(client: &Path) -> io::Result<Report> {
         let mut file = match OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(file) => file,
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                existing(addons, asset)?;
+                check_existing(addons, asset, updates)?;
                 report.preserved += 1;
                 continue;
             }

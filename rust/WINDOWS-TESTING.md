@@ -43,7 +43,36 @@ The executable bundles the addon files, primer, and all 200 reply slots directly
 
 - `--wow` must point to the game folder containing `Wow.exe` (normally `_forever_`).
 - It extracts `Interface\AddOns\WoWAI` and `WoWAI_S001` through `WoWAI_S200`.
-- It is create-only and safe to rerun: existing runtime files (`Inbox.lua`, signals) and other addons are preserved. Differing static assets cause an explicit error without touching your files.
+- Default setup only creates missing files. Existing runtime files (`Inbox.lua`, signals) and other addons are preserved. Differing static assets require the explicit update command below.
+
+### Updating a source build and testing disconnects
+
+Quit WoW and stop both bridges, then run from the repository root. Replace the
+example client path with your own:
+
+```powershell
+git pull
+cargo build --release --locked
+.\target\release\wow-ai-reforged.exe setup --wow "C:\Games\World of Warcraft\_forever_" --update-addon
+.\target\release\wow-ai-reforged.exe run --config .\config.json
+```
+
+`--update-addon` backs up differing static addon files under
+`<client>\Interface\WoWAI-Reforged-Backups\<unique-directory>` before replacing
+them. It preserves runtime files, existing configuration, and chat data. Fully
+restart WoW to load the updated addon.
+
+Connect and send a message. Stop the bridge with **Ctrl+C**, then send another
+message in that same chat. On its next reply-slot poll the addon should show the
+bridge as stopped, clear the working spinner, and explain that the request will
+not be resent automatically. Restart the bridge, click **Reconnect**, and send a
+new message in the same chat; a new chat should not be necessary.
+
+Ctrl+C publishes an offline snapshot and cancels a running agent process. A forced
+kill or crash cannot publish one: connection loss is detected by heartbeat age
+instead (about 90 seconds with the sound presence channel available). Detection
+is slower without the sound channel because it relies on occasional slot reads.
+Idle addons also use heartbeat expiry; shutdown is not an instant notification.
 
 ### Agent discovery
 

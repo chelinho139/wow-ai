@@ -102,6 +102,7 @@ mod tests {
     }
     fn snapshot() -> Snapshot {
         Snapshot {
+            online: None,
             timestamp: "2023-11-14T22:13:20.000Z".into(),
             now_seconds: 1700000000,
             cwd: String::new(),

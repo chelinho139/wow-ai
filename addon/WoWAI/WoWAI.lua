@@ -468,7 +468,7 @@ end
 -- presence beats, acks, slot data (which carries the bridge's clock), replies.
 local function NotedBridge(at)
 	at = at or GetTime()
-	if not run.bridgeSeen or at > run.bridgeSeen then run.bridgeSeen = at end
+	if not run.bridgeSeen or at > run.bridgeSeen then run.bridgeSeen = at; run.bridgeStopped = nil end
 	run.pixelFailed = nil
 end
 
@@ -512,6 +512,7 @@ end
 -- so the windows have to be wider or the light could never stay green between
 -- messages and every reply would be followed by a Reconnect.
 function WoWAI.BridgeState()
+	if run.bridgeStopped then return "down", 0.9, 0.25, 0.25, "Bridge: stopped or connection lost; reconnect to continue" end
 	local seen = run.bridgeSeen
 	if not seen then
 		return "unknown", 0.6, 0.6, 0.6, "Bridge: not seen yet this session"
@@ -697,7 +698,6 @@ local function MarkAcked(id)
 		NoteAcked(rec)
 		RefreshStrip()
 	end
-	NotedBridge()
 end
 
 -- Dispatch a list of reply records to the chats waiting for them.
@@ -763,6 +763,30 @@ local function ImportRestore(r)
 	end
 end
 
+-- A timed-out request may have reached the agent. Never automatically replay it.
+local function Disconnected(reason)
+    for _, c in ipairs(db.chats) do
+        if c.pendingId then
+            local id = c.pendingId
+            run.outbound[id] = nil
+            if db.outbox and db.outbox.id == id then db.outbox = nil end
+            Finish(c, "system", reason .. " This request may have reached the agent and will not be resent automatically. Reconnect before retrying.")
+        end
+    end
+    run.bridgeStopped = true
+    RefreshStrip()
+    WoWAI.UpdateStatus()
+end
+
+local function ApplyBridgeStatus(data)
+    if type(data) ~= "table" then return end
+    if type(data.bridgeOnline) == "boolean" then
+        run.rustPeer = true
+        if not data.bridgeOnline then Disconnected("The Rust bridge stopped.")
+        else run.bridgeStopped = nil end
+    end
+end
+
 local function TryLoadSlot(why)
 	local name = FreeSlot()
 	if not name then
@@ -785,7 +809,7 @@ local function TryLoadSlot(why)
 	run.polls = (run.polls or 0) + 1
 	ScheduleNextPoll()
 	local data = WoWAI_SlotData
-	if type(data) == "table" and type(data.now) == "number" then
+	if type(data) == "table" and data.bridgeOnline ~= false and type(data.now) == "number" then
 		-- The bridge's clock and ours are the same machine; translate to GetTime().
 		NotedBridge(GetTime() - (time() - data.now))
 	end
@@ -795,6 +819,7 @@ local function TryLoadSlot(why)
 		if type(data.agents) == "table" and #data.agents > 0 then run.bridgeAgents = data.agents end
 	end
 	local matched = ApplyReplies(type(data) == "table" and data.replies or nil)
+	ApplyBridgeStatus(data)
 	if type(data) == "table" and data.restore then ImportRestore(data.restore) end
 	if type(data) == "table" and data.map and WoWAIMap then WoWAIMap.Sync(data.map) end
 	if why == "signal" and not matched then
@@ -875,6 +900,9 @@ local function Tick()
 		RefreshStrip()
 		WoWAI.UpdateStatus()
 	end
+	if run.rustPeer and AnyPending() and WoWAI.BridgeState() ~= "ok" then
+		Disconnected("Fresh bridge heartbeats have stopped.")
+	end
 	if not AnyPending() then return end
 	local moved = false
 	for _, c in ipairs(db.chats) do
@@ -900,6 +928,7 @@ local function ProcessInbox()
 	if type(inbox.agent) == "string" and inbox.agent ~= "" then run.bridgeAgent = inbox.agent end
 	if type(inbox.agents) == "table" and #inbox.agents > 0 then run.bridgeAgents = inbox.agents end
 	ApplyReplies(inbox.replies)
+	ApplyBridgeStatus(inbox)
 	if inbox.restore then ImportRestore(inbox.restore) end
 	if inbox.map and WoWAIMap then WoWAIMap.Sync(inbox.map) end
 end
@@ -909,7 +938,6 @@ Finish = function(chat, role, text, denied, agent, summary, macros)
 	chat.pendingId = nil
 	chat.progress = nil
 	if run.act then run.act[chat.id] = nil end
-	NotedBridge()
 	local visible = ui.frame and ui.frame:IsShown() and db.activeChat == chat.id
 	if not visible then
 		chat.unread = (chat.unread or 0) + 1
