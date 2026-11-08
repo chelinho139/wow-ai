@@ -2,7 +2,8 @@
 
 The executable remains a scaffold. The library currently implements pixel payload
 record/flag parsing, Lua 5.1 string escaping, basic-chat slot serialization, and
-per-file atomic publication to an explicitly installed addon tree. It accepts current, unnamed-chat,
+per-file atomic publication to an explicitly installed addon tree, and WAV
+acknowledgement/reply-ready/activity/presence signal operations. It accepts current, unnamed-chat,
 and pre-chat layouts, preserves embedded field separators in message text, and
 distinguishes absent context from an explicit context reset.
 
@@ -42,3 +43,8 @@ the addon tree. The public library is not connected to the CLI yet.
 
 Capture, runtime ownership locking, persistence, setup, and agent execution remain
 unimplemented. See [the roadmap](../ROADMAP.md) for the release contract.
+
+Signal operations require installed files and report per-file failures. Presence
+returns the proposed next counter; scheduling and persistence are not implemented.
+Pools of 50 or fewer presence files are rejected to avoid clearing the active beat.
+See [Windows testing](../WINDOWS-TESTING.md) for native Windows checks.

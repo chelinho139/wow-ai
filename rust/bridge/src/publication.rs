@@ -58,6 +58,10 @@ pub fn publish(addon_dir: &Path, slots: u16, snapshot: &Snapshot) -> io::Result<
             body.as_bytes(),
         ));
     }
+    write_installed_files(targets)
+}
+
+pub(crate) fn write_installed_files(targets: Vec<(PathBuf, &[u8])>) -> io::Result<Report> {
     for (path, _) in &targets {
         if !fs::symlink_metadata(path)?.file_type().is_file() {
             return Err(io::Error::other(format!(

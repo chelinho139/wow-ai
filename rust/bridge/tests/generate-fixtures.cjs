@@ -37,3 +37,4 @@ const opts = {now: 1700000000123, cwd: 'C:\\My Project', agent: 'codex', agents:
 for (const name of ['WoWAI_Inbox', 'WoWAI_SlotData']) {
   fs.writeFileSync(path.join(__dirname, 'fixtures', `${name}.lua`), p.luaTable(name, replies, opts));
 }
+fs.writeFileSync(path.join(__dirname, 'fixtures/silent.wav'), p.SILENT_WAV);
