@@ -24,3 +24,17 @@ jobs:
       - run: cargo build --workspace --release --locked
       - run: cargo run --locked -- --help
       - run: cargo run --locked -- --version
+      - uses: actions/setup-node@v4
+        if: runner.os == 'Linux'
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install Lua test tooling
+        if: runner.os == 'Linux'
+        run: npm ci
+      - name: Check legacy fixtures and load Rust slots in Lua
+        if: runner.os == 'Linux'
+        run: |
+          node rust/bridge/tests/generate-fixtures.cjs
+          git diff --exit-code -- rust/bridge/tests/fixtures
+          node rust/bridge/tests/validate-slot.cjs

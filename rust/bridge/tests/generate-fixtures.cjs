@@ -27,3 +27,13 @@ for (const value of ['', 'quote" slash\\\r\n\t', 'é 世界 🐉', '\0' + '123',
   rows.push(['lua', hex(value), hex(p.luaStr(value))].join('\t'));
 }
 fs.writeFileSync(path.join(__dirname, 'fixtures/protocol.tsv'), rows.join('\n') + '\n');
+const replies = ['working', 'done', 'error'].map((status, i) => ({
+  chat: `chat${i}`, id: i + 1, status, text: 'Hello 世界 🐉\n"quoted" \\ \0',
+  cwd: '', session: 'session', agent: 'codex',
+  summary: i === 1 ? 'short reply' : undefined,
+  denied: i === 2 ? ['WebSearch', 'Bash(git:*)'] : [],
+}));
+const opts = {now: 1700000000123, cwd: 'C:\\My Project', agent: 'codex', agents: ['claude', 'codex', 'grok', 'agy', 'hermes', 'gemini']};
+for (const name of ['WoWAI_Inbox', 'WoWAI_SlotData']) {
+  fs.writeFileSync(path.join(__dirname, 'fixtures', `${name}.lua`), p.luaTable(name, replies, opts));
+}

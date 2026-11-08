@@ -255,5 +255,6 @@ capture correctness. Record evidence and unresolved gaps at every stage.
 These follow-ups do not require another general requirements interview before protocol
 work begins. No delivery dates or performance gains are promised. Current scaffold is
 complete. Stage 2 has an initial tested slice: pixel record/flag parsing and Lua
-string escaping. Slot publication, frame decoding, and the remaining stage gates
-are still pending; no stage is claimed complete.
+string escaping, basic-chat slot serialization, and per-file atomic publication.
+Node-reference fixture comparisons and Lua VM checks pass locally. Runtime ownership
+locking, frame decoding, signals, and the remaining stage gates are still pending; no stage is claimed complete.

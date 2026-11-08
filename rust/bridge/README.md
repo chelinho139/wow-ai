@@ -1,7 +1,8 @@
 # Rust bridge
 
 The executable remains a scaffold. The library currently implements pixel payload
-record/flag parsing and Lua 5.1 string escaping. It accepts current, unnamed-chat,
+record/flag parsing, Lua 5.1 string escaping, basic-chat slot serialization, and
+per-file atomic publication to an explicitly installed addon tree. It accepts current, unnamed-chat,
 and pre-chat layouts, preserves embedded field separators in message text, and
 distinguishes absent context from an explicit context reset.
 
@@ -28,5 +29,16 @@ cargo test --workspace --locked
 Review the fixture diff before committing it. Generation uses the legacy
 implementation unchanged; fixture changes are compatibility decisions.
 
-Slot payload publication, capture, persistence, setup, and agent execution remain
+Run `node rust/bridge/tests/validate-slot.cjs` for a Lua VM round trip of Rust-generated
+slot output (requires `npm ci` for development tooling). CI also checks regenerated
+fixtures against the committed Node reference.
+
+Publication requires preinstalled regular Inbox.lua files for the main addon and
+each configured slot. It checks all targets before writing, then replaces files
+individually using unique sibling temporary files. A returned report lists every
+success and failure; the broadcast is not a multi-file transaction. The caller must
+provide consistent UTC timestamp/epoch values and enforce exclusive ownership of
+the addon tree. The public library is not connected to the CLI yet.
+
+Capture, runtime ownership locking, persistence, setup, and agent execution remain
 unimplemented. See [the roadmap](../ROADMAP.md) for the release contract.
