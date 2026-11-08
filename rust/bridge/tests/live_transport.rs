@@ -76,7 +76,11 @@ fn hello_publishes_connection_clock_and_all_configured_agents_without_running_ag
     let text = f.inbox();
     assert!(text.contains("now = "));
     assert!(text.contains("agent = \"codex\""));
-    assert!(text.contains("agents = { \"codex\", \"gemini\" }"));
+    assert!(
+        text.contains(
+            "agents = { \"agy\", \"claude\", \"codex\", \"gemini\", \"grok\", \"hermes\" }"
+        )
+    );
     assert!(!text.contains("status ="));
     let state = State::load(&f.cfg.data_dir).unwrap();
     assert!(state.history.is_empty());

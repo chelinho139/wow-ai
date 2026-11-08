@@ -77,7 +77,9 @@ impl Config {
             cfg.addon_dir = Some(resolved);
         }
         let context = Environment::current();
-        cfg.agents.entry(cfg.agent.id().into()).or_default();
+        for kind in discovery::AGENTS {
+            cfg.agents.entry(kind.id().into()).or_default();
+        }
         for (name, agent) in &mut cfg.agents {
             let kind = AgentKind::parse_name(name).map_err(io::Error::other)?;
             if kind.id() != name {
