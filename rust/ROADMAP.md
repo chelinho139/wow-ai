@@ -1,7 +1,7 @@
 # Rust backend execution roadmap
 
 Status: execution plan based on agreed product scope. Implementation has not started
-beyond the workspace scaffold. Updated 2026-11-08.
+through the protocol and injected pipeline stages. Live capture remains pending. Updated 2026-11-08.
 
 Canonical repository roadmap: rust/ROADMAP.md. Technical proposals below remain
 subject to validation during implementation; this document is not a claim of
@@ -261,3 +261,10 @@ locking and the remaining stage gates are still pending. Pure RGB frame decoding
 now has tests based on the actual Lua encoder; native screen capture remains pending. WAV signal
 operations and presence/activity logic now have tests, with a Windows testing guide
 in rust/WINDOWS-TESTING.md. Scheduling and persisted counters are not implemented; no stage is claimed complete.
+
+Stage 3 now has a runnable `inject` command, strict JSON config, Rust-private state,
+exclusive data ownership, six provider adapters, process/output limits, persistent
+Rust sessions, completion-publication recovery, and a six-fake-agent `self-test`.
+Integration tests cover timeouts, inherited pipes, malformed output, publication
+recovery and legacy preservation. Windows builds run `self-test` before upload.
+Authenticated agent checks, shared addon ownership, and live capture remain open.

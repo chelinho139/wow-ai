@@ -39,6 +39,7 @@ jobs:
           node rust/bridge/tests/generate-frame-fixtures.cjs
           git diff --exit-code -- rust/bridge/tests/fixtures
           node rust/bridge/tests/validate-slot.cjs
+          node rust/bridge/tests/validate-pipeline.cjs
       - name: Smoke-test Windows release executable
         if: runner.os == 'Windows'
         shell: pwsh
@@ -46,6 +47,8 @@ jobs:
           & .\target\release\wow-ai-reforged.exe --help
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & .\target\release\wow-ai-reforged.exe --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\target\release\wow-ai-reforged.exe self-test
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Package Windows preview
         if: runner.os == 'Windows'
@@ -55,7 +58,8 @@ jobs:
           Copy-Item target/release/wow-ai-reforged.exe windows-preview/
           Copy-Item LICENSE windows-preview/
           Copy-Item rust/WINDOWS-TESTING.md windows-preview/README.md
-          @("Commit: $env:GITHUB_SHA", "Run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID", "Target: Windows x64", "Status: development scaffold; live WoW chat is not implemented") | Set-Content windows-preview/BUILD.txt
+          Copy-Item rust/config.example.json windows-preview/config.example.json
+          @("Commit: $env:GITHUB_SHA", "Run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID", "Target: Windows x64", "Status: injected pipeline preview; live WoW capture is not implemented") | Set-Content windows-preview/BUILD.txt
           $binaryHash = Get-FileHash windows-preview/wow-ai-reforged.exe -Algorithm SHA256
           "$($binaryHash.Hash.ToLowerInvariant())  wow-ai-reforged.exe" | Set-Content -Encoding ascii windows-preview/SHA256SUMS.txt
       - name: Upload Windows preview

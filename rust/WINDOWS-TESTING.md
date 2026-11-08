@@ -1,8 +1,7 @@
 # Testing on Windows 11 x64
 
-The Rust backend is under development. You can test its protocol, slot publication,
-WAV signals, and pixel-frame decoding now. It cannot capture WoW or run agents yet, and starting the main
-executable without arguments intentionally fails with a scaffold message.
+The injected Rust pipeline can run fake-agent self-tests and configured real agent
+CLIs, then save replies to a private Rust outbox. It cannot capture WoW yet.
 
 ## Download a Windows build (no Rust or Node installation needed)
 
@@ -16,11 +15,14 @@ executable without arguments intentionally fails with a scaffold message.
 ```powershell
 .\wow-ai-reforged.exe --help
 .\wow-ai-reforged.exe --version
+.\wow-ai-reforged.exe self-test
 ```
 
-These are executable smoke checks, not live game tests. The automated protocol,
+Expect six `PASS` lines from fake agents and a printed temporary workspace/reply path.
+No account, agent installation or running game is needed for `self-test`.
+These are pipeline smoke checks, not live game tests. The automated protocol,
 publication, signal and frame tests run in CI before this executable is uploaded.
-Running without arguments still returns the expected scaffold error.
+Running without arguments prints usage guidance and exits with an error.
 
 The archive includes `BUILD.txt` with its source commit and CI run, `LICENSE`, and
 `SHA256SUMS.txt`. To compare the executable against the included checksum:
@@ -30,7 +32,7 @@ The archive includes `BUILD.txt` with its source commit and CI run, `LICENSE`, a
 Get-Content .\SHA256SUMS.txt
 ```
 
-The binary does not install or modify the addon yet. Use the source instructions
+The binary does not install or modify the live addon yet. Use the source instructions
 below only if you want to run the automated tests on your own Windows machine.
 
 ## Prerequisites for building from source
@@ -59,7 +61,7 @@ cargo build --release --locked
 ```
 
 Expect all tests to pass, a successful release build, help text explaining the
-scaffold, and version `0.1.0`. Test counts may grow as development continues.
+available commands, and version `0.1.0`. Test counts may grow as development continues.
 
 The tests create their own folders under Windows' temporary directory, then remove
 them. They check message parsing, Lua serialization, atomic replacement, slot and
@@ -98,9 +100,31 @@ legacy/development requirement only; core Rust tests use committed fixtures.
 
 ## Live WoW testing comes later
 
+To try an actual agent outside the game, copy `config.example.json` from the ZIP,
+replace its project/executable paths, and choose a new empty data directory. Keep
+only the agent configurations you have installed and logged in. Then run:
+
+```powershell
+.\wow-ai-reforged.exe inject --config .\config.example.json --agent codex --prompt "Reply with exactly PONG"
+```
+
+This contacts your selected provider and uses its existing authentication. The reply
+is printed as JSON and saved under the configured `data_dir/outbox`; your installed
+addon files and legacy chats are untouched. Inspect `reforged-state.json` for the new
+Rust history/session. Repeating a chat resumes its Rust session; `--fresh-session`
+starts a new one. If a completed reply cannot be published, use:
+
+```powershell
+.\wow-ai-reforged.exe recover --config .\config.example.json
+```
+
+Recovery republishes the saved reply without another provider call. Adapters have
+fake-process coverage; authenticated compatibility with your installed CLI version
+still needs testing. See `rust/bridge/README.md` in the source repository for the
+provider-specific permission behavior and Windows launcher configuration.
+
 Continue using the Node backend for live chat. Do not point an ad hoc Rust example
-at your real addon directory: exclusive ownership, native capture, setup and the
-agent adapters are still pending. The roadmap's live Windows gate will cover those
+at your real addon directory: shared addon ownership, native capture and setup are still pending. The roadmap's live Windows gate will cover those
 features once the runtime is ready. Files already read by WoW can remain cached;
 clearing a signal on disk cannot reset that cache.
 

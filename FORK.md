@@ -16,9 +16,10 @@ is the working legacy backend and a reference for compatibility.
 - `.github/workflows/test.yml`: existing legacy checks.
 - `.github/workflows/rust.yml`: independent Windows/Linux/macOS Rust checks.
 
-The Rust executable is currently a scaffold, not a working game bridge. It has
-no runtime dependencies and does not read or write legacy configuration, state,
-or game files. Never run both backends against the same game installation at once
+The Rust executable supports injected messages and fake-agent self-tests, but is
+not yet a live game bridge. JSON libraries compile into the binary; no separate
+Node/Python runtime is required by the backend. It uses its own versioned JSON
+configuration and state, and does not read or write legacy state or game files. Never run both backends against the same game installation at once
 once the Rust transport is implemented.
 
 ## Local development

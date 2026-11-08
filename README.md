@@ -3,7 +3,8 @@
 This fork is developing a Rust backend with Windows as the primary target.
 The original Node backend remains the working **legacy** implementation in
 `bridge/`; the installation and usage instructions below still apply to it.
-The Rust workspace in `rust/` is currently a scaffold, not a working replacement.
+The Rust workspace in `rust/` now supports an injected chat pipeline and a
+`self-test` command. Live WoW capture is still pending; it is not yet a replacement.
 See [FORK.md](FORK.md) for development commands and the upstream sync workflow.
 
 ## Original wow-ai documentation

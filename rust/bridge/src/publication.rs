@@ -11,7 +11,7 @@ static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Replace one file using a uniquely created sibling and rename. Existing content
 /// remains intact if writing or replacement fails. This is not a multi-file transaction.
-fn atomic_write(path: &Path, body: &[u8]) -> io::Result<()> {
+pub(crate) fn atomic_write(path: &Path, body: &[u8]) -> io::Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| io::Error::other("missing parent"))?;
