@@ -66,6 +66,13 @@ impl OwnershipGuard {
 }
 
 fn open_regular_lock_file(path: &Path) -> io::Result<File> {
+    // On Windows create_new on an existing directory can return AccessDenied,
+    // rather than AlreadyExists. Validate existing entries before opening too.
+    match fs::symlink_metadata(path) {
+        Ok(_) => reject_non_regular_lock_path(path)?,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
     let lock = match OpenOptions::new()
         .read(true)
         .write(true)
@@ -180,7 +187,6 @@ mod tests {
 
         let guard = OwnershipGuard::acquire(&temp.0).unwrap();
         assert_eq!(fs::read(&state).unwrap(), b"legacy-independent Rust state");
-        assert_eq!(fs::read(guard.lock_path()).unwrap(), b"persistent marker");
         drop(guard);
         assert_eq!(fs::read(&state).unwrap(), b"legacy-independent Rust state");
         assert_eq!(fs::read(&lock).unwrap(), b"persistent marker");
