@@ -40,6 +40,7 @@ jobs:
           git diff --exit-code -- rust/bridge/tests/fixtures
           node rust/bridge/tests/validate-slot.cjs
           node rust/bridge/tests/validate-pipeline.cjs
+          node rust/bridge/tests/validate-install.cjs
       - name: Smoke-test Windows release executable
         if: runner.os == 'Windows'
         shell: pwsh
@@ -50,6 +51,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & .\target\release\wow-ai-reforged.exe self-test
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Path "$env:TEMP\fake-wow" | Out-Null
+          New-Item -ItemType File -Path "$env:TEMP\fake-wow\Wow.exe" | Out-Null
+          & .\target\release\wow-ai-reforged.exe setup --wow "$env:TEMP\fake-wow"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Remove-Item -Recurse -Force "$env:TEMP\fake-wow"
       - name: Package Windows preview
         if: runner.os == 'Windows'
         shell: pwsh
@@ -59,7 +65,7 @@ jobs:
           Copy-Item LICENSE windows-preview/
           Copy-Item rust/WINDOWS-TESTING.md windows-preview/README.md
           Copy-Item rust/config.example.json windows-preview/config.example.json
-          @("Commit: $env:GITHUB_SHA", "Run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID", "Target: Windows x64", "Status: injected pipeline preview; live WoW capture is not implemented") | Set-Content windows-preview/BUILD.txt
+          @("Commit: $env:GITHUB_SHA", "Run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID", "Target: Windows x64", "Status: injected pipeline preview with native addon setup; live WoW capture is not implemented") | Set-Content windows-preview/BUILD.txt
           $binaryHash = Get-FileHash windows-preview/wow-ai-reforged.exe -Algorithm SHA256
           "$($binaryHash.Hash.ToLowerInvariant())  wow-ai-reforged.exe" | Set-Content -Encoding ascii windows-preview/SHA256SUMS.txt
       - name: Upload Windows preview

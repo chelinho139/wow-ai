@@ -7,7 +7,7 @@ use std::{
 };
 use wow_ai_reforged::{agents::AgentKind, config::Config, runtime};
 
-const HELP: &str = "WoW AI Reforged — Rust backend (in development)\n\nUsage:\n  wow-ai-reforged self-test\n  wow-ai-reforged inject --config <file.json> --prompt <text> [--agent <id>] [--chat <id>] [--fresh-session]\n  wow-ai-reforged recover --config <file.json>\n  wow-ai-reforged --help | --version\n\nAgents: claude, codex, grok, agy, hermes, gemini\n\nself-test runs fake agents in a new temporary workspace; no login or game needed.\ninject runs a configured agent and writes replies to its private Rust outbox.\nLive game capture is not connected yet. Use npm start for legacy live chat.";
+const HELP: &str = "WoW AI Reforged — Rust backend (in development)\n\nUsage:\n  wow-ai-reforged self-test\n  wow-ai-reforged setup --wow <client-directory>\n  wow-ai-reforged inject --config <file.json> --prompt <text> [--agent <id>] [--chat <id>] [--fresh-session]\n  wow-ai-reforged recover --config <file.json>\n  wow-ai-reforged --help | --version\n\nAgents: claude, codex, grok, agy, hermes, gemini\n\nself-test runs fake agents in a new temporary workspace; no login or game needed.\nsetup extracts embedded addon files and reply slots into your World of Warcraft client.\ninject runs a configured agent and writes replies to its private Rust outbox.\nLive game capture is not connected yet. Use npm start for legacy live chat.";
 
 fn main() -> ExitCode {
     match execute(env::args().skip(1).collect()) {
@@ -23,6 +23,12 @@ fn execute(args: Vec<String>) -> Result<(), String> {
         [arg] if arg == "--help" || arg == "-h" => { println!("{HELP}"); Ok(()) }
         [arg] if arg == "--version" || arg == "-V" => { println!("wow-ai-reforged {}", env!("CARGO_PKG_VERSION")); Ok(()) }
         [arg] if arg == "self-test" => self_test(),
+        [command, flag, client] if command == "setup" && flag == "--wow" => {
+            let report = wow_ai_reforged::install::install(Path::new(client)).map_err(|e| e.to_string())?;
+            println!("{}", serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?);
+            println!("Setup completed. Fully quit and relaunch WoW to discover the addon files. Live Rust capture is not connected yet.");
+            Ok(())
+        },
         [command, rest @ ..] if command == "__fixture-agent" => wow_ai_reforged::fixture::run(rest),
         [command, rest @ ..] if command == "inject" => inject(rest),
         [command, flag, config] if command == "recover" && flag == "--config" => {

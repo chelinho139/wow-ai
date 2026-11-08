@@ -3,6 +3,7 @@ pub mod agents;
 pub mod config;
 pub mod fixture;
 pub mod frame;
+pub mod install;
 pub mod ownership;
 pub mod process;
 pub mod protocol;

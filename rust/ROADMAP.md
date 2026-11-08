@@ -268,3 +268,9 @@ Rust sessions, completion-publication recovery, and a six-fake-agent `self-test`
 Integration tests cover timeouts, inherited pipes, malformed output, publication
 recovery and legacy preservation. Windows builds run `self-test` before upload.
 Authenticated agent checks, shared addon ownership, and live capture remain open.
+
+Stage 4 now has a native `setup --wow <client-directory>` command with embedded addon
+assets and slots, preserving existing runtime data and checking static assets.
+Tests verify byte-for-byte equivalence against the legacy installer in isolated trees.
+Windows builds smoke-test setup before upload. Native screen capture and live WoW validation remain open.
+

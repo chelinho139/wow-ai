@@ -32,8 +32,18 @@ The archive includes `BUILD.txt` with its source commit and CI run, `LICENSE`, a
 Get-Content .\SHA256SUMS.txt
 ```
 
-The binary does not install or modify the live addon yet. Use the source instructions
-below only if you want to run the automated tests on your own Windows machine.
+### Native addon installation
+
+The executable bundles the addon files, primer, and all 200 reply slots directly into the binary. To install them into your WoW client without Node or PowerShell scripts:
+
+```powershell
+.\wow-ai-reforged.exe setup --wow "C:\Program Files (x86)\World of Warcraft\_forever_"
+```
+
+- `--wow` must point to the game folder containing `Wow.exe` (normally `_forever_`).
+- It extracts `Interface\AddOns\WoWAI` and `WoWAI_S001` through `WoWAI_S200`.
+- It is create-only and safe to rerun: existing runtime files (`Inbox.lua`, signals) and other addons are preserved. Differing static assets cause an explicit error without touching your files.
+- Live capture is still under development; use `npm start` for legacy live game chat until capture is connected.
 
 ## Prerequisites for building from source
 
@@ -124,7 +134,7 @@ still needs testing. See `rust/bridge/README.md` in the source repository for th
 provider-specific permission behavior and Windows launcher configuration.
 
 Continue using the Node backend for live chat. Do not point an ad hoc Rust example
-at your real addon directory: shared addon ownership, native capture and setup are still pending. The roadmap's live Windows gate will cover those
+at your real addon directory: shared live bridge coordination and native capture are still pending. The roadmap's live Windows gate will cover those
 features once the runtime is ready. Files already read by WoW can remain cached;
 clearing a signal on disk cannot reset that cache.
 
