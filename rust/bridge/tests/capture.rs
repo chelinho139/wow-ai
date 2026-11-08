@@ -78,7 +78,7 @@ fn capture_events_format_correctly() {
 
 #[test]
 fn capture_session_initializes_with_defaults() {
-    let mut session = CaptureSession::new(CaptureTarget::default());
+    let session = CaptureSession::new(CaptureTarget::default());
     assert_eq!(session.target().process_name, "Wow.exe");
     assert_eq!(session.target().client_folder, Some("_forever_".into()));
     assert!(session.window().is_none());
@@ -86,6 +86,7 @@ fn capture_session_initializes_with_defaults() {
     // On macOS/Linux where WoW is not running via Win32, poll returns Waiting
     #[cfg(not(windows))]
     {
+        let mut session = session;
         let event = session.poll().unwrap();
         assert_eq!(
             event,
