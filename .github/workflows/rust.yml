@@ -23,6 +23,10 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
+      - name: Report Rust to Node parity inventory and expected failures
+        run: |
+          cargo test -p wow-ai-reforged --locked --test parity -- --nocapture
+          cargo test -p wow-ai-reforged --locked --test live_transport per_chat_folder_selection_is_known_gap -- --nocapture
       - run: cargo build --workspace --release --locked
       - run: cargo run --locked -- --help
       - run: cargo run --locked -- --version

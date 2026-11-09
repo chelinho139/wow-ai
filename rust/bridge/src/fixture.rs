@@ -37,6 +37,11 @@ pub fn run(args: &[String]) -> Result<(), String> {
         }
         return Ok(());
     }
+    if scenario == "record-cwd" {
+        let file = option("--record-path").ok_or("missing cwd record path")?;
+        let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+        std::fs::write(file, cwd.to_string_lossy().as_bytes()).map_err(|e| e.to_string())?;
+    }
     if scenario == "block-publish" || scenario == "block-error" {
         let path = option("--block-path").ok_or("missing fake blocking path")?;
         std::fs::remove_file(&path).map_err(|e| e.to_string())?;

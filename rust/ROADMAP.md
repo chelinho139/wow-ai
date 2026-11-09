@@ -207,6 +207,50 @@ existing configuration and history and passes the stage 4 transport handoff chec
 Publish the handoff and interrupted-job recovery instructions. Record release
 smoke-test evidence.
 
+### Chat reconciliation prerequisite: durable deletion before history restoration
+
+Schedule this slice alongside recovery hardening and before addon history restoration.
+This is planned work, not a claim of complete two-way synchronization.
+
+Current behavior: the addon stores pending deletions in `WoWAIDB.forget`, retries
+these pixel records on hello, and excludes those chats from restoration. Rust handles
+a forget record by removing its history, session association and retained live reply.
+However, the addon can clear a pending deletion after observing bridge presence
+without receiving an explicit deletion acknowledgement. Existing tests cover direct
+forget handling; they do not establish crash-safe end-to-end reconciliation.
+
+Required contract:
+- Preserve a pending deletion (a tombstone) until the bridge explicitly acknowledges
+  that exact operation after durable cleanup. Presence alone is not confirmation.
+  Keep older bridge compatibility capability-gated; do not advertise stronger
+  guarantees for the legacy acknowledgement path.
+- Make deletion retries idempotent across reconnects and restarts. Specify operation
+  identity, ordering and tombstone retention before implementation. A stale restore,
+  delayed request or late reply must not recreate a deleted conversation.
+- Reconcile history, session references, retained replies and any pending publication
+  or recovery records. Define behavior when deletion races an in-flight request;
+  deleting bridge references does not imply erasing an external provider's own data
+  or cancelling its process. Preserve the no-automatic-replay side-effect policy.
+- Define explicit backend-originated deletion separately from missing backend files,
+  reset, retention eviction and switching backends. Missing state must not implicitly
+  delete the addon's visible conversation. A deliberate backend deletion needs a
+  durable, acknowledged event before two-way deletion is advertised.
+- Handle the last-chat behavior explicitly: the addon currently clears and reuses
+  its ID. New messages must survive delayed deletion retries; choose an identity or
+  generation boundary so old operations cannot erase new conversation state.
+- Keep Rust and legacy private stores separate. Do not turn reconciliation into
+  automatic legacy import, cross-backend deletion or a general history merge.
+
+Gate: deterministic addon and Rust integration tests cover offline deletion followed
+by reconnect; duplicate deletion; restart before/after cleanup and acknowledgement;
+presence without acknowledgement; partial cleanup failure; stale restore and late
+reply; an in-flight request; last-chat reuse; and reset versus explicit backend
+removal. Verify no resurrection, no silent loss of new messages, and no provider
+relaunch. Add focused parity inventory entries only for implemented test seams;
+use strict expected failures only with narrow observable gap evidence. Validate
+pixel delivery and the reload recovery path once that input is available. In-game
+reconnect and deletion checks remain required before advertising the guarantee.
+
 ### 6. Expand parity, then platforms
 
 Add addon history restoration, optional legacy import as a separately scoped feature,

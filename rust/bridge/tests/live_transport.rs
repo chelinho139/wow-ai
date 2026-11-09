@@ -6,6 +6,8 @@ use std::{
     time::{Duration, Instant},
 };
 use wow_ai_reforged::{config::Config, frame::Frame, live::LiveBridge, state::State};
+#[path = "parity/mod.rs"]
+mod parity;
 static N: AtomicU64 = AtomicU64::new(0);
 struct Fixture {
     root: PathBuf,
@@ -450,4 +452,69 @@ fn chat_configuration_is_validated_published_and_resets_sessions() {
         .unwrap();
     assert!(f.inbox().contains("[resume=fake-codex-session]"));
     assert_eq!(State::load(&f.cfg.data_dir).unwrap().sessions.len(), 2);
+}
+
+#[test]
+fn per_chat_folder_selection_is_known_gap() {
+    let mut f = Fixture::new();
+    let selected = f.root.join("selected-project");
+    fs::create_dir(&selected).unwrap();
+    let selected = selected.canonicalize().unwrap();
+    let cwd_record = f.root.join("agent-cwd.txt");
+    f.cfg.agents.get_mut("codex").unwrap().launcher_args = vec![
+        "__fixture-agent".into(),
+        "codex".into(),
+        "record-cwd".into(),
+        "--record-path".into(),
+        cwd_record.to_string_lossy().into_owned(),
+    ];
+    let frame = Frame {
+        id: 7,
+        text: "addon-token\x1fchat\x1f7\x1fselected-project\x1f\x1fname\x1fhello".into(),
+    };
+    let mut bridge = LiveBridge::start(&f.cfg, None).unwrap();
+    const UNSUPPORTED: &str =
+        "Per-chat folder changes are not supported by this live preview; set project_dir in config";
+    let before = f.inbox();
+    let request = bridge.accept_frame(&frame);
+    let inbox = f.inbox();
+    let state = State::load(&f.cfg.data_dir).unwrap();
+    let result = match request {
+        Ok(()) => {
+            if inbox.contains("Fake codex reply: hello")
+                && fs::read_to_string(&cwd_record).ok().as_deref()
+                    == Some(selected.to_string_lossy().as_ref())
+                && state.sessions.get("chat").is_some_and(|session| session.project == selected)
+            {
+                parity::ContractResult::Satisfied
+            } else {
+                parity::ContractResult::UnexpectedFailure {
+                    diagnostics: format!("request succeeded without the requested folder contract: {inbox}"),
+                }
+            }
+        }
+        Err(error) if error.to_string() == UNSUPPORTED
+            && inbox != before
+            && inbox.contains(&format!("text = {},", wow_ai_reforged::protocol::lua_string(UNSUPPORTED)))
+            && inbox.contains("id = 7,")
+            && inbox.contains("chat = \"chat\",")
+            && inbox.contains("status = \"error\",")
+            && !cwd_record.exists()
+            && state.sessions.is_empty()
+            && state.history.is_empty()
+            && state.pending.is_none() =>
+        {
+            parity::ContractResult::KnownGap {
+                contract_id: "folder_selection".into(),
+                reason_code: "unsupported_folder".into(),
+                evidence: "Current request returned the exact unsupported-folder error and published its matching error reply; no provider invocation, session, history or pending reply".into(),
+            }
+        }
+        Err(error) => parity::ContractResult::UnexpectedFailure {
+            diagnostics: format!("{error}; published inbox: {inbox}"),
+        },
+    };
+    let inventory = parity::load_inventory().unwrap();
+    let expectation = parity::expectation_for(&inventory, "folder_selection").unwrap();
+    parity::assert_contract("folder_selection", &expectation, &result);
 }

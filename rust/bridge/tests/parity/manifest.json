@@ -1,0 +1,95 @@
+{
+  "cases": [
+    {
+      "id": "request_parsing",
+      "intended_behavior": "Parse pixel requests and escape Lua strings compatibly, including separators and Unicode.",
+      "node_reference": "tests/bridge_test.js",
+      "rust_probe": "protocol_compat.rs::matches_legacy_node_protocol_fixtures",
+      "status": "Active",
+      "rationale": "Covered by Rust protocol compatibility tests and Node-generated protocol fixtures."
+    },
+    {
+      "id": "slot_inbox_serialization",
+      "intended_behavior": "Serialize Inbox and slot replies with optional fields and safe Lua escaping.",
+      "node_reference": "tests/restore_test.js",
+      "rust_probe": "slots_compat.rs::matches_node_slot_schema_for_every_status_and_optional_fields",
+      "status": "Active",
+      "rationale": "Covered by Rust slot compatibility tests against preserved generated fixtures."
+    },
+    {
+      "id": "pixel_frame_encoding",
+      "intended_behavior": "Decode frames produced by the addon's real Lua pixel encoder.",
+      "node_reference": "tests/codec_test.js",
+      "rust_probe": "frame_compat.rs::real_lua_encoded_frames_survive_threshold_noise_offsets_and_row_padding",
+      "status": "Active",
+      "rationale": "Covered by Rust frame compatibility fixtures generated from the addon encoder."
+    },
+    {
+      "id": "adapter_pipeline",
+      "intended_behavior": "Run fake adapters and parse bounded stream output without live providers.",
+      "node_reference": "tests/agents_test.js",
+      "rust_probe": "pipeline.rs::every_adapter_runs_to_private_lua_and_preserves_legacy_data",
+      "status": "Active",
+      "rationale": "Covered by Rust pipeline tests using the deterministic fixture agent."
+    },
+    {
+      "id": "live_request_lifecycle",
+      "intended_behavior": "Process a live request through Rust and publish its reply while preserving restart and deduplication rules.",
+      "node_reference": "tests/addon_test.js",
+      "rust_probe": "live_transport.rs::completed_reply_recovers_after_restart_without_rerunning_the_agent",
+      "status": "Active",
+      "rationale": "Covered by live transport integration tests with a fake agent and temporary addon tree."
+    },
+    {
+      "id": "folder_selection",
+      "intended_behavior": "Honor the request's per-chat folder as the working directory for the selected agent.",
+      "node_reference": "tests/bridge_test.js",
+      "rust_probe": "live_transport.rs::per_chat_folder_selection_is_known_gap",
+      "status": "ExpectedFailure",
+      "reason_code": "unsupported_folder",
+      "rationale": "Rust live runtime currently publishes a specific unsupported-folder error; the fake agent records cwd so the probe proves no invocation and no state mutation."
+    },
+    {
+      "id": "reload_outbox",
+      "intended_behavior": "Parse SavedVariables outbox requests and deduplicate them with pixel delivery.",
+      "node_reference": "tests/bridge_test.js",
+      "status": "Planned",
+      "rationale": "No Rust SavedVariables request reader or live reload seam exists; do not create a production stub."
+    },
+    {
+      "id": "history_restore",
+      "intended_behavior": "Restore addon chat history into the interface.",
+      "node_reference": "tests/restore_test.js",
+      "status": "Planned",
+      "rationale": "Rust roadmap explicitly defers addon history restoration; pending-reply recovery is a separate contract."
+    },
+    {
+      "id": "map_commands",
+      "intended_behavior": "Apply and publish map commands returned by an agent.",
+      "node_reference": "tests/map_test.js",
+      "status": "Planned",
+      "rationale": "Slot schema and live map processing are not connected; output cannot yet distinguish feature behavior safely."
+    },
+    {
+      "id": "macro_commands",
+      "intended_behavior": "Extract and apply WoW macro commands from agent replies.",
+      "node_reference": "tests/macro_test.js",
+      "status": "Planned",
+      "rationale": "No Rust macro processing seam exists; shared Lua tests do not establish Rust runtime support."
+    },
+    {
+      "id": "summary_extraction",
+      "intended_behavior": "Extract the last TL;DR block for game chat while retaining the complete reply in the window.",
+      "node_reference": "tests/bridge_test.js",
+      "status": "Planned",
+      "rationale": "Slot serialization supports summaries but live response production has no extraction behavior to probe independently."
+    },
+    {
+      "id": "permission_grants",
+      "intended_behavior": "Honor in-game allow grants for provider tools.",
+      "node_reference": "tests/agents_test.js",
+      "status": "Planned",
+      "rationale": "Roadmap schedules permission retry as a later parity slice. Future grants must remain restrictive and adapter-validated; no bypass fallback."
+    }
+  ]
+}
