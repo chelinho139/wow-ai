@@ -54,6 +54,37 @@ To try changes in the game, run `node setup.js` (it re-copies the addon into `In
 
 When you change behaviour, add or extend a test in the matching file. Pure logic belongs in `protocol.js` where `bridge_test.js` can reach it without spawning anything.
 
+## Automated releases
+
+[semantic-release](https://semantic-release.org/) runs after the Node/Lua and Rust
+CI matrices pass on `main`. It calculates a version, updates `CHANGELOG.md` and
+the Node, Rust, addon, and lockfile versions, commits those files with `[skip ci]`,
+and creates a `vX.Y.Z` tag and GitHub Release. It does not publish to npm or crates.io.
+
+Use Conventional Commits for commits reaching `main`. With squash merges, make
+the PR title the squash commit message:
+
+- `fix: correct capture` produces a patch release.
+- `feat: add an agent` produces a minor release.
+- A `BREAKING CHANGE:` footer or `feat!:` produces a major release.
+- `docs:`, `test:`, and `chore:` alone do not produce releases.
+
+The release workflow establishes the inherited `v0.5.0` baseline at commit
+`599e38ead6c6daab970285ac04ec6e2bfc20761c` if its tag is absent, so automation
+continues from the existing release. Major changes can advance the project to
+`1.0.0` even while it is on `0.x`.
+
+Release tooling requires Node 22.14+ on the 22.x line, or Node 24.10+; release CI
+uses Node 24. Run `npm run test:release` to check version synchronization and
+commit classification locally. `npm run release -- --dry-run --no-ci` previews
+release analysis on `main` with GitHub credentials and repository access; it
+skips file preparation and publishing.
+
+The workflow uses the built-in `GITHUB_TOKEN` with `contents: write`. Repository
+rules must allow that token to push the release commit to `main`; if rules block
+bot pushes, a suitably authorized GitHub App token is needed. No credentials are
+stored in the repository. Issue and PR comments are disabled.
+
 ## Conventions
 
 - **Lua** uses tabs, `local` everything, and only APIs present in the Forever client. Check against the `forever` branch of [Gethe/wow-ui-source](https://github.com/Gethe/wow-ui-source) before using a new API.

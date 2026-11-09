@@ -1,0 +1,42 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+  rust:
+    uses: ./.github/workflows/rust.yml
+  release:
+    needs: [test, rust]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      # This fork inherited 0.5.0 without its tag. Seed the actual release commit
+      # so the first automated release continues its version history.
+      - name: Establish inherited release baseline
+        run: |
+          if ! git rev-parse --verify refs/tags/v0.5.0 >/dev/null 2>&1; then
+            git tag v0.5.0 599e38ead6c6daab970285ac04ec6e2bfc20761c
+          fi
+      - run: npm run release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

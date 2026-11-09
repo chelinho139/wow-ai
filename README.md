@@ -260,6 +260,11 @@ The keys you are most likely to touch. Every key, flag and environment variable 
 
 ## Development
 
+Releases use semantic-release on `main`, driven by Conventional Commit messages
+(`fix:`, `feat:`, and `BREAKING CHANGE:`). Versions, changelog, tags, and GitHub
+Releases are updated automatically after CI passes. See
+[automated releases](CONTRIBUTING.md#automated-releases) for the workflow and setup.
+
 ```
 npm install
 npm test          # everything except the live test; CI runs it on Windows (.github/workflows/test.yml), and it runs on Linux and macOS too
