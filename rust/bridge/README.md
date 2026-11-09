@@ -122,3 +122,10 @@ repeated frames/restarts do not rerun work. Pending results record their addon t
 private injected replies are never automatically published to a different game tree.
 Presence ticks also run while waiting for agent output. Per-chat folder overrides
 and in-game permission grants are rejected explicitly in this preview.
+
+## Fast edit loop
+
+Install the Bacon watcher once with `cargo install --locked bacon`. From the
+repository root, run `bacon` to watch the default `check` job. Use `bacon clippy`,
+`bacon test`, `bacon test-live`, `bacon fmt`, `bacon self-test`, or `bacon release`
+for the other project jobs configured in the root `bacon.toml`.

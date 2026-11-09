@@ -44,6 +44,8 @@ cargo test --workspace --locked
 cargo build --release --locked
 ```
 
+For an automatic Rust edit/check loop, install Bacon once with `cargo install --locked bacon`, then run `bacon` from the repository root. The project [bacon.toml](bacon.toml) provides `check` by default. Run `bacon clippy`, `bacon test`, `bacon test-live`, `bacon fmt`, `bacon self-test`, or `bacon release` to watch another job. Bacon reruns the selected job when Rust files change.
+
 Commit `Cargo.lock` for reproducible application builds. Build output lives in
 `target/` and is ignored. Node remains necessary for the legacy backend and its
 tests; the Rust executable itself does not require Node. External agent CLIs retain

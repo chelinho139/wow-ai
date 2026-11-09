@@ -1,0 +1,28 @@
+# Run from the repository root with `bacon`.
+default_job = "check"
+
+[jobs.check]
+command = ["cargo", "check", "--workspace", "--locked"]
+
+[jobs.clippy]
+command = ["cargo", "clippy", "--workspace", "--all-targets", "--locked", "--", "-D", "warnings"]
+
+[jobs.test]
+command = ["cargo", "test", "--workspace", "--locked"]
+need_stdout = true
+
+[jobs.test-live]
+command = ["cargo", "test", "--locked", "--test", "live_transport"]
+need_stdout = true
+
+[jobs.fmt]
+command = ["cargo", "fmt", "--all", "--", "--check"]
+need_stdout = true
+
+[jobs.self-test]
+command = ["cargo", "run", "--locked", "--", "self-test"]
+need_stdout = true
+show_command_error_code = true
+
+[jobs.release]
+command = ["cargo", "build", "--workspace", "--release", "--locked"]
