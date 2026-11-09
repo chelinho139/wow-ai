@@ -8,14 +8,15 @@ pub enum Target {
     Slot,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub enum Status {
     Working,
     Done,
     Error,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Reply {
     pub chat: String,
     pub id: u64,

@@ -769,7 +769,7 @@ test('slot-only Rust connections stay live with fresh clocks and expire after a 
   }
   vm.run('WoWAI.Send("crash while working"); FROZEN_NOW=time()');
   nextSlot(vm, '{now=FROZEN_NOW,bridgeOnline=true,replies={{chat=WoWAIDB.chats[1].id,id=WoWAIDB.chats[1].pendingId,status="working",text="working"}}}');
-  for (let i = 0; i < 5; i++) vm.run('STUB.now=STUB.now+20; STUB.Tick()');
+  for (let i = 0; i < 40; i++) vm.run('STUB.now=STUB.now+20; STUB.Tick()');
   assert.equal(vm.evaluate('WoWAI.IsConnected()'), 'false');
   assert.equal(vm.evaluate('WoWAIDB.chats[1].pendingId'), null);
 });
@@ -796,5 +796,17 @@ test('a delayed tick reads a fresh final reply before expiring the connection', 
   vm.run('STUB.now=STUB.now+100; STUB.Tick()');
   assert.equal(vm.evaluate('WoWAIDB.chats[1].pendingId'), null);
   assert.equal(vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history].text'), 'final answer');
+  assert.equal(vm.evaluate('WoWAI.IsConnected()'), 'true');
+});
+
+
+test('slot-only idle checks preserve the slot pool for a full day', () => {
+  const vm = newVM(); login(vm); connect(vm);
+  nextSlot(vm, '{now=time(),bridgeOnline=true,replies={}}');
+  vm.run('WoWAI.Connect(); STUB.now=STUB.now+6; STUB.Tick()');
+  for (let i = 0; i < 24 * 60; i++) vm.run('STUB.now=STUB.now+60; STUB.Tick()');
+  vm.run('LOADED_COUNT=0; for name in pairs(STUB.loaded) do if name:match("^WoWAI_S") then LOADED_COUNT=LOADED_COUNT+1 end end');
+  assert.ok(vm.num('LOADED_COUNT') < 150);
+  assert.equal(vm.evaluate('STUB.reloaded'), 'false');
   assert.equal(vm.evaluate('WoWAI.IsConnected()'), 'true');
 });

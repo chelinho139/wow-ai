@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use wow_ai_reforged::{
     capture::{CaptureEvent, CaptureSession, CaptureTarget, WindowInfo, decode_rgb},
     frame::Layout,
@@ -81,6 +82,7 @@ fn capture_session_initializes_with_defaults() {
     let session = CaptureSession::new(CaptureTarget::default());
     assert_eq!(session.target().process_name, "Wow.exe");
     assert_eq!(session.target().client_folder, Some("_forever_".into()));
+    assert_eq!(session.target().executable_path, None);
     assert!(session.window().is_none());
 
     // On macOS/Linux where WoW is not running via Win32, poll returns Waiting
@@ -96,6 +98,33 @@ fn capture_session_initializes_with_defaults() {
             })
         );
     }
+}
+
+#[test]
+fn default_target_uses_the_legacy_name_and_folder_heuristic() {
+    let target = CaptureTarget::default();
+    assert!(target.matches_process_path(r"C:\Games\WoW\_forever_\Wow.exe"));
+    assert!(target.matches_process_path(r"c:/games/wow/_FOREVER_/WOW.EXE"));
+    assert!(!target.matches_process_path(r"C:\Games\WoW\_retail_\Wow.exe"));
+    assert!(!target.matches_process_path(r"C:\Games\WoW\_forever_\Launcher.exe"));
+}
+
+#[test]
+fn exact_target_selects_only_the_requested_installation() {
+    let target = CaptureTarget::for_executable(PathBuf::from(r"C:\Games\Custom Client\Wow.exe"));
+    assert_eq!(target.process_name, "Wow.exe");
+    assert_eq!(target.client_folder, None);
+    assert!(target.matches_process_path(r"c:\games\custom client\WOW.EXE"));
+    assert!(target.matches_process_path(r"\\?\C:\Games\Custom Client\Wow.exe"));
+    assert!(!target.matches_process_path(r"C:\Games\Other Client\Wow.exe"));
+}
+
+#[test]
+fn exact_unc_target_accepts_the_extended_unc_form() {
+    let target =
+        CaptureTarget::for_executable(PathBuf::from(r"\\server\games\Custom Client\Wow.exe"));
+    assert!(target.matches_process_path(r"\\?\UNC\server\games\Custom Client\Wow.exe"));
+    assert!(!target.matches_process_path(r"\\other\games\Custom Client\Wow.exe"));
 }
 
 #[cfg(windows)]

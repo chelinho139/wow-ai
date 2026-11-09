@@ -5,7 +5,9 @@ The original Node backend remains the working **legacy** implementation in
 `bridge/`; the installation and usage instructions below still apply to it.
 The Rust workspace in `rust/` now supports an injected chat pipeline and a
 `self-test` command, native setup and a Windows live-capture preview.
-Live in-game validation and full feature parity are still pending.
+Initial Windows in-game chat has been tested by the user; broader live validation
+and full feature parity remain pending. See [Windows testing](rust/WINDOWS-TESTING.md)
+for source builds and addon updates.
 See [FORK.md](FORK.md) for development commands and the upstream sync workflow.
 
 ## Original wow-ai documentation

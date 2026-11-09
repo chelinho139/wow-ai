@@ -8,7 +8,7 @@ authenticated, in-game validation on Windows 11 is still required.
 
 1. Sign in to GitHub and open the
    [Rust workflow](https://github.com/leozitor/wow-ai-reforged/actions/workflows/rust.yml).
-2. Select a successful run for `feat/rust-backend` with the desired commit.
+2. Select a successful run for the desired commit (on `main` after the preview is merged).
 3. Under **Artifacts**, download `wow-ai-reforged-windows-x64` and extract the ZIP.
    Artifacts expire after 14 days; a later successful run provides a fresh build.
 4. Open a terminal in the extracted folder and run:
@@ -54,7 +54,7 @@ example client path with your own:
 git pull
 cargo build --release --locked
 .\target\release\wow-ai-reforged.exe setup --wow "C:\Games\World of Warcraft\_forever_" --update-addon
-.\target\release\wow-ai-reforged.exe run --config .\config.json
+.\target\release\wow-ai-reforged.exe run --config .\config.json --wow "C:\Games\World of Warcraft\_forever_"
 ```
 
 `--update-addon` backs up differing static addon files under
@@ -70,9 +70,10 @@ new message in the same chat; a new chat should not be necessary.
 
 Ctrl+C publishes an offline snapshot and cancels a running agent process. A forced
 kill or crash cannot publish one: connection loss is detected by heartbeat age
-instead (about 90 seconds). Rust refreshes the timestamps in reply slots every
-30 seconds while retaining unread replies, so slot-only clients can also check
-liveness without sound signals.
+instead (about 90 seconds with sound presence). Rust refreshes idle slot clocks
+every five minutes and active-request clocks every 30 seconds, retaining replies
+for the latest 16 chats. Without sound, idle checks use one slot every ten minutes
+to conserve the finite pool; connection loss can take about 12 minutes to detect.
 While idle, the Rust-aware addon checks a reply slot when a heartbeat is overdue
 (about 35 seconds after the last beat), so Ctrl+C can be detected without sending
 a message. Shutdown is not an instant notification.
@@ -124,7 +125,9 @@ an installer changes PATH).
   in this preview; configure `project_dir` and agent permissions in the config.
 - Use Ctrl+C to stop the bridge when done playing.
 
-The native capture target currently searches for `Wow.exe` under `_forever_`.
+When `--wow` or `addon_dir` selects a client, capture matches that exact `Wow.exe`
+path, including clients in custom folder names. Without a selected installation,
+it falls back to finding `Wow.exe` under `_forever_`.
 Capture tests in CI do not prove that a particular DPI/GPU/game combination works.
 Report the client build and bridge output if Connect or the first reply fails.
 

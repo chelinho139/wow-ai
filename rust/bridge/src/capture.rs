@@ -3,12 +3,15 @@
 //! On other platforms, provides mock and test capture capabilities.
 
 use crate::frame::{self, Frame, Layout, RgbImage};
-use std::{fmt, io};
+use std::{fmt, io, path::PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct CaptureTarget {
     pub process_name: String,
     pub client_folder: Option<String>,
+    /// Exact executable selected by `--wow`, when live capture must be bound to
+    /// one installation instead of the legacy name/folder heuristic.
+    pub executable_path: Option<PathBuf>,
     pub layout: Layout,
 }
 
@@ -17,9 +20,70 @@ impl Default for CaptureTarget {
         Self {
             process_name: "Wow.exe".into(),
             client_folder: Some("_forever_".into()),
+            executable_path: None,
             layout: Layout::default(),
         }
     }
+}
+
+impl CaptureTarget {
+    /// Bind capture to one already-resolved executable path. The caller should
+    /// canonicalize the path before constructing the target.
+    pub fn for_executable(executable_path: PathBuf) -> Self {
+        let process_name = executable_path
+            .to_string_lossy()
+            .rsplit(['\\', '/'])
+            .next()
+            .filter(|name| !name.is_empty())
+            .unwrap_or("Wow.exe")
+            .to_owned();
+        Self {
+            process_name,
+            client_folder: None,
+            executable_path: Some(executable_path),
+            layout: Layout::default(),
+        }
+    }
+
+    /// Match the full path reported by the operating system. Exact Windows
+    /// targets tolerate case, separator and extended-path prefix differences.
+    pub fn matches_process_path(&self, candidate: &str) -> bool {
+        if let Some(expected) = &self.executable_path {
+            return normalize_windows_path(candidate)
+                == normalize_windows_path(&expected.to_string_lossy());
+        }
+
+        let candidate = candidate.replace('/', "\\");
+        let mut components = candidate.rsplit('\\');
+        let name = components.next().unwrap_or_default();
+        let configured_has_extension = self.process_name.to_ascii_lowercase().ends_with(".exe");
+        let configured_stem =
+            configured_has_extension.then(|| &self.process_name[..self.process_name.len() - 4]);
+        let matches_name = name.eq_ignore_ascii_case(&self.process_name)
+            || configured_stem.is_some_and(|stem| name.eq_ignore_ascii_case(stem))
+            || (!configured_has_extension
+                && name.eq_ignore_ascii_case(&format!("{}.exe", self.process_name)));
+        if !matches_name {
+            return false;
+        }
+
+        self.client_folder.as_ref().is_none_or(|required| {
+            components
+                .next()
+                .is_some_and(|folder| folder.eq_ignore_ascii_case(required))
+        })
+    }
+}
+
+fn normalize_windows_path(path: &str) -> String {
+    let path = path.replace('/', "\\");
+    let path = path
+        .strip_prefix("\\\\?\\UNC\\")
+        .map(|rest| format!("\\\\{rest}"))
+        .or_else(|| path.strip_prefix("\\\\?\\").map(str::to_owned))
+        .or_else(|| path.strip_prefix("\\??\\").map(str::to_owned))
+        .unwrap_or(path);
+    path.trim_end_matches('\\').to_lowercase()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,7 +150,7 @@ pub fn decode_rgb(
 #[cfg(windows)]
 pub mod platform {
     use super::*;
-    use std::{ffi::c_void, mem, path::Path, ptr};
+    use std::{ffi::c_void, mem, ptr};
 
     // Preserve Win32 ABI names inside this binding-only module.
     #[allow(non_snake_case, clippy::upper_case_acronyms)]
@@ -233,39 +297,8 @@ pub mod platform {
                 return 1;
             }
             let full_path = String::from_utf16_lossy(&path_buf[..size as usize]);
-            let path = Path::new(&full_path);
-
-            // Check executable file name
-            let matches_name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .map(|name| {
-                    name.eq_ignore_ascii_case(&ctx.target.process_name)
-                        || (ctx.target.process_name.ends_with(".exe")
-                            && name.eq_ignore_ascii_case(
-                                &ctx.target.process_name[..ctx.target.process_name.len() - 4],
-                            ))
-                        || (!ctx.target.process_name.ends_with(".exe")
-                            && name
-                                .eq_ignore_ascii_case(&format!("{}.exe", ctx.target.process_name)))
-                })
-                .unwrap_or(false);
-
-            if !matches_name {
+            if !ctx.target.matches_process_path(&full_path) {
                 return 1;
-            }
-
-            // Check client folder (e.g. parent directory name _forever_)
-            if let Some(ref required_folder) = ctx.target.client_folder {
-                let matches_folder = path
-                    .parent()
-                    .and_then(|p| p.file_name())
-                    .and_then(|f| f.to_str())
-                    .map(|folder| folder.eq_ignore_ascii_case(required_folder))
-                    .unwrap_or(false);
-                if !matches_folder {
-                    return 1;
-                }
             }
 
             let mut title_buf = [0u16; 512];

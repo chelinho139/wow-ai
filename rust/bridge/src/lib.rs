@@ -7,6 +7,7 @@ pub mod fixture;
 pub mod frame;
 pub mod install;
 pub mod live;
+mod live_replies;
 pub mod ownership;
 pub mod process;
 pub mod protocol;

@@ -133,7 +133,10 @@ fn setup_creates_and_preserves_starter_config() {
     assert!(content.contains("Interface/AddOns"));
 
     // Modify config and rerun setup: must preserve customized config!
-    fs::write(&config_path, b"customized config content").unwrap();
+    let mut custom: serde_json::Value = serde_json::from_str(&content).unwrap();
+    custom["timeout_ms"] = serde_json::json!(12345);
+    let custom = serde_json::to_vec_pretty(&custom).unwrap();
+    fs::write(&config_path, &custom).unwrap();
     let rerun = Command::new(binary)
         .args([
             "setup",
@@ -145,10 +148,7 @@ fn setup_creates_and_preserves_starter_config() {
         .output()
         .unwrap();
     assert!(rerun.status.success());
-    assert_eq!(
-        fs::read(&config_path).unwrap(),
-        b"customized config content"
-    );
+    assert_eq!(fs::read(&config_path).unwrap(), custom);
 }
 #[test]
 fn setup_cli_rejects_missing_or_extra_arguments() {
@@ -197,4 +197,40 @@ fn explicit_update_backs_up_static_assets_and_preserves_runtime() {
     let rerun = install::update(&client.0).unwrap();
     assert_eq!(rerun.updated, 0);
     assert!(rerun.backup_dir.is_none());
+}
+
+#[test]
+fn setup_reports_configuration_failures_and_supports_addon_only_mode() {
+    let client = Client::new();
+    let binary = env!("CARGO_BIN_EXE_wow-ai-reforged");
+    let config = client.0.join("missing/config.json");
+    let setup = |path: &std::path::Path, no_config: bool| {
+        let mut command = Command::new(binary);
+        command.args([
+            "setup",
+            "--wow",
+            client.0.to_str().unwrap(),
+            "--config",
+            path.to_str().unwrap(),
+        ]);
+        if no_config {
+            command.arg("--no-config");
+        }
+        command.output().unwrap()
+    };
+    let missing = setup(&config, false);
+    assert!(!missing.status.success());
+    assert!(!config.exists());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("configuration"));
+    assert!(!String::from_utf8_lossy(&missing.stdout).contains("Setup completed."));
+    let invalid = client.0.join("invalid.json");
+    fs::write(&invalid, b"invalid config").unwrap();
+    assert!(!setup(&invalid, false).status.success());
+    assert_eq!(fs::read(&invalid).unwrap(), b"invalid config");
+    assert!(!setup(&client.0, false).status.success());
+    let addon_only = setup(&config, true);
+    assert!(addon_only.status.success());
+    let stdout = String::from_utf8_lossy(&addon_only.stdout);
+    assert!(stdout.contains("Addon-only setup completed"));
+    assert!(!stdout.contains("run --config"));
 }

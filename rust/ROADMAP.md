@@ -1,7 +1,8 @@
 # Rust backend execution roadmap
 
-Status: execution plan based on agreed product scope. Implementation has not started
-through the protocol and injected pipeline stages. Live capture remains pending. Updated 2026-11-08.
+Status: Windows live preview implemented, with initial user-reported in-game chat
+success. Full acceptance, feature parity, and performance measurement remain open.
+Updated 2026-11-08.
 
 Canonical repository roadmap: rust/ROADMAP.md. Technical proposals below remain
 subject to validation during implementation; this document is not a claim of
@@ -252,9 +253,10 @@ capture correctness. Record evidence and unresolved gaps at every stage.
 - Select and justify Rust dependencies when requirements call for them; no library
   choices or new dependencies are approved by this plan alone.
 
-These follow-ups do not require another general requirements interview before protocol
-work begins. No delivery dates or performance gains are promised. Current scaffold is
-complete. Stage 2 has an initial tested slice: pixel record/flag parsing and Lua
+No delivery dates or performance gains are promised. The implementation notes
+below are chronological milestones, not the current status of every feature.
+
+The initial scaffold was completed. Stage 2 added pixel record/flag parsing and Lua
 string escaping, basic-chat slot serialization, and per-file atomic publication.
 Node-reference fixture comparisons and Lua VM checks pass locally. Runtime ownership
 locking and the remaining stage gates are still pending. Pure RGB frame decoding
@@ -293,3 +295,10 @@ searched. Setup records discovered commands using JSON serialization, preserves
 existing config, and prints installation guidance for missing agents. The `agents`
 command provides a read-only diagnostic report; agent installation and login remain
 separate. All six adapters use the same resolver; no shell launcher is executed.
+
+Current lifecycle checks cover explicit Ctrl+C shutdown, idle detection, crash
+expiry, slot-only heartbeats, preservation of unread replies, and same-chat
+reconnection. Native Windows console events and WoW caching still require live
+validation. `setup --update-addon` backs up changed static files and preserves
+runtime/configuration data. Initial in-game Codex chat and session continuation
+were reported working by the user; this does not establish all-agent acceptance.

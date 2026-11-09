@@ -16,11 +16,13 @@ is the working legacy backend and a reference for compatibility.
 - `.github/workflows/test.yml`: existing legacy checks.
 - `.github/workflows/rust.yml`: independent Windows/Linux/macOS Rust checks.
 
-The Rust executable supports injected messages and fake-agent self-tests, but is
-not yet a live game bridge. JSON libraries compile into the binary; no separate
-Node/Python runtime is required by the backend. It uses its own versioned JSON
-configuration and state, and does not read or write legacy state or game files. Never run both backends against the same game installation at once
-once the Rust transport is implemented.
+The Rust executable supports a Windows live game bridge, native embedded addon
+setup/update, injected messages, and fake-agent self-tests. JSON libraries compile
+into the binary; no separate Node/Python runtime is required by the backend.
+Rust configuration and history are separate from legacy data. Live mode writes to
+the explicitly selected addon installation, shared with the legacy backend.
+Never run both backends against the same game installation at once.
+See [Windows testing](rust/WINDOWS-TESTING.md) for build, update, and live-test steps.
 
 ## Local development
 
@@ -44,8 +46,8 @@ cargo build --release --locked
 
 Commit `Cargo.lock` for reproducible application builds. Build output lives in
 `target/` and is ignored. Node remains necessary for the legacy backend and its
-tests; removing Node from the Rust backend's runtime requirements is a migration
-goal. External agent CLIs retain their own runtime requirements.
+tests; the Rust executable itself does not require Node. External agent CLIs retain
+their own runtime requirements.
 
 ## Receiving upstream changes
 
@@ -92,4 +94,6 @@ with fresh Rust history while preserving legacy data.
 4. Add macOS/Linux capture behind platform-specific modules.
 5. Switch the default backend only after compatibility and resource-use checks.
 
-These checkpoints describe the direction; the scaffold does not implement them.
+The Windows live preview is implemented and has initial user-reported in-game
+chat success. Full feature parity, remaining live acceptance tests, native
+macOS/Linux capture, and resource measurements remain open.

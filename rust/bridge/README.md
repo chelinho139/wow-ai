@@ -47,7 +47,7 @@ searches again after you install them. The default agent must be found to start.
 - `reforged-state.json` stores new Rust sessions and capped history (16 chats,
   40 messages/chat, 4000 UTF-8 bytes/message, with a truncation marker and a 2 MB serialized-history budget). No legacy
   history is imported. Changing provider/project or `--fresh-session` starts fresh.
-- Replies go to `data_dir/outbox`, never the installed game. A single snapshot is
+- `inject` and its `recover` path publish to `data_dir/outbox`, not the installed game. Live `run` publishes to the selected addon installation. A private snapshot is
   written to the main private Inbox and a private slot, using atomic file replacement.
 - IDs are reserved before launching; interrupted attempts are not automatically
   replayed. If completion publication fails, the saved pending reply blocks new
@@ -56,8 +56,8 @@ searches again after you install them. The default agent must be found to start.
   configured budget (1 MiB default). The configured execution timeout is followed
   by at most three one-second cleanup grace periods. Cleanup reports unsettled
   workers instead of claiming success. It uses Windows `taskkill.exe` or a Unix
-  process group. Abrupt termination of the bridge itself and already-detached
-  subprocesses still need stronger supervision before a persistent live runtime.
+  process group. Live Ctrl+C triggers cleanup and offline publication; crashes rely
+  on heartbeat expiry. Detached subprocesses require stronger supervision.
 - Native Windows argument length is checked conservatively; Agy prompts over
   24,000 bytes are rejected rather than silently truncated.
 

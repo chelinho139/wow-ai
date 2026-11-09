@@ -59,42 +59,73 @@ fn reader(
     })
 }
 
+fn wait_for_tree_killer(name: &str, killer: io::Result<Child>) -> io::Result<()> {
+    let mut killer = killer.map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!("could not start {name} for process-tree cleanup: {e}"),
+        )
+    })?;
+    let deadline = Instant::now();
+    loop {
+        match killer.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(status)) => {
+                return Err(io::Error::other(format!(
+                    "{name} failed process-tree cleanup with {status}"
+                )));
+            }
+            Ok(None) if deadline.elapsed() < Duration::from_secs(1) => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Ok(None) => {
+                let _ = killer.kill();
+                let _ = killer.try_wait();
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("{name} did not finish process-tree cleanup within one second"),
+                ));
+            }
+            Err(e) => {
+                return Err(io::Error::new(
+                    e.kind(),
+                    format!("could not read {name} process-tree cleanup status: {e}"),
+                ));
+            }
+        }
+    }
+}
+
 fn terminate(child: &mut Child) -> io::Result<()> {
     #[cfg(windows)]
-    let mut killer = {
+    let tree_cleanup = {
         use std::os::windows::process::CommandExt;
-        Command::new("taskkill.exe")
-            .args(["/PID", &child.id().to_string(), "/T", "/F"])
-            .creation_flags(0x08000000)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .ok()
+        wait_for_tree_killer(
+            "taskkill.exe",
+            Command::new("taskkill.exe")
+                .args(["/PID", &child.id().to_string(), "/T", "/F"])
+                .creation_flags(0x08000000)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn(),
+        )
     };
     #[cfg(unix)]
-    let mut killer = Command::new("/bin/kill")
-        .args(["-KILL", "--", &format!("-{}", child.id())])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok();
-    if let Some(killer) = &mut killer {
-        let deadline = Instant::now();
-        while matches!(killer.try_wait(), Ok(None)) && deadline.elapsed() < Duration::from_secs(1) {
-            thread::sleep(Duration::from_millis(10));
-        }
-        if matches!(killer.try_wait(), Ok(None)) {
-            let _ = killer.kill();
-        }
-        let _ = killer.try_wait();
-    }
+    let tree_cleanup = wait_for_tree_killer(
+        "/bin/kill",
+        Command::new("/bin/kill")
+            .args(["-KILL", "--", &format!("-{}", child.id())])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn(),
+    );
     let _ = child.kill();
     // Do not block on an unbounded OS wait during error cleanup.
     let deadline = Instant::now();
     while matches!(child.try_wait(), Ok(None)) && deadline.elapsed() < Duration::from_secs(1) {
         thread::sleep(Duration::from_millis(10));
     }
-    match child.try_wait() {
+    let direct_cleanup = match child.try_wait() {
         Ok(Some(_)) => Ok(()),
         Ok(None) => Err(io::Error::other(
             "agent process is still running after cleanup grace",
@@ -102,6 +133,16 @@ fn terminate(child: &mut Child) -> io::Result<()> {
         Err(e) => Err(io::Error::other(format!(
             "cannot confirm agent process termination: {e}"
         ))),
+    };
+    match (tree_cleanup, direct_cleanup) {
+        (Err(tree), Err(direct)) => Err(io::Error::other(format!(
+            "{direct}; process-tree cleanup is also unconfirmed: {tree}"
+        ))),
+        (Ok(()), Err(direct)) => Err(direct),
+        (Err(tree), Ok(())) => Err(io::Error::other(format!(
+            "direct agent stopped, but process-tree cleanup is unconfirmed: {tree}"
+        ))),
+        (Ok(()), Ok(())) => Ok(()),
     }
 }
 
@@ -306,5 +347,37 @@ pub fn resolve_path(base: &Path, value: &Path) -> PathBuf {
         value.into()
     } else {
         base.join(value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tree_cleanup_reports_launcher_failure() {
+        let error = wait_for_tree_killer(
+            "missing-killer",
+            Err(io::Error::new(io::ErrorKind::NotFound, "not installed")),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert!(error.to_string().contains("could not start missing-killer"));
+    }
+
+    #[test]
+    fn tree_cleanup_reports_nonzero_exit() {
+        let child = Command::new(std::env::current_exe().unwrap())
+            .arg("--definitely-not-a-test-harness-option")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+        let error = wait_for_tree_killer("fake-killer", child).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("fake-killer failed process-tree cleanup")
+        );
     }
 }

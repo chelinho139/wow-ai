@@ -69,6 +69,11 @@ pub struct BridgeOptions {
     pub wow_dir: Option<PathBuf>,
 }
 
+#[derive(Default)]
+struct Heartbeat {
+    presence: Option<Instant>,
+    slots: Option<Instant>,
+}
 pub struct LiveBridge<'a> {
     cfg: &'a Config,
     data_guard: OwnershipGuard,
@@ -76,7 +81,7 @@ pub struct LiveBridge<'a> {
     addon_dir: Option<PathBuf>,
     signals: Option<Signals>,
     handled_jobs: HashSet<(String, u64)>,
-    last_presence: Option<Instant>,
+    last_presence: Heartbeat,
 }
 impl<'a> LiveBridge<'a> {
     pub fn start(cfg: &'a Config, wow_dir: Option<&Path>) -> io::Result<Self> {
@@ -100,6 +105,7 @@ impl<'a> LiveBridge<'a> {
             cfg.addon_dir.clone()
         };
 
+        let addon_dir = addon_dir.map(fs::canonicalize).transpose()?;
         if addon_dir
             .as_ref()
             .is_some_and(|p| p.canonicalize().ok().as_deref() == Some(data_guard.data_dir()))
@@ -116,6 +122,9 @@ impl<'a> LiveBridge<'a> {
             (None, None)
         };
 
+        if crate::live_replies::interrupt_orphans(data_guard.data_dir(), addon_dir.as_deref())? {
+            publish_connection(cfg, data_guard.data_dir(), addon_dir.as_deref(), true)?;
+        }
         Ok(Self {
             cfg,
             data_guard,
@@ -123,7 +132,7 @@ impl<'a> LiveBridge<'a> {
             addon_dir,
             signals,
             handled_jobs: HashSet::new(),
-            last_presence: None,
+            last_presence: Heartbeat::default(),
         })
     }
     pub fn shutdown(&mut self) -> io::Result<()> {
@@ -184,6 +193,7 @@ impl<'a> LiveBridge<'a> {
             self.data_guard.data_dir(),
             &mut self.last_presence,
             now,
+            false,
         )
     }
     pub fn accept_frame(&mut self, frame: &crate::frame::Frame) -> io::Result<()> {
@@ -244,7 +254,15 @@ pub fn run(cfg: &Config, options: BridgeOptions) -> io::Result<()> {
     }
     println!("Press Ctrl+C to stop.\n");
 
-    let mut capture = CaptureSession::new(CaptureTarget::default());
+    let target = if let Some(addons) = &bridge.addon_dir {
+        let client = addons.parent().and_then(Path::parent).ok_or_else(|| {
+            io::Error::other("addon_dir must point to the client Interface/AddOns directory")
+        })?;
+        CaptureTarget::for_executable(client.join("Wow.exe").canonicalize()?)
+    } else {
+        CaptureTarget::default()
+    };
+    let mut capture = CaptureSession::new(target);
     let mut last_waiting_log = Instant::now() - Duration::from_secs(10);
     let mut last_warn_log = Instant::now() - Duration::from_secs(10);
 
@@ -306,7 +324,7 @@ fn execute_job(
     addon_dir: Option<&Path>,
     signals: Option<&Signals>,
     job: &Job,
-    last_presence: &mut Option<Instant>,
+    last_presence: &mut Heartbeat,
 ) -> io::Result<()> {
     let mut state = State::load(data_dir)?;
     if job.id == 0 || job.id > (1_u64 << 53) - 1 || job.session.len() > 256 || job.chat.len() > 128
@@ -323,6 +341,7 @@ fn execute_job(
 
     if job.flags.forget {
         println!("[job #{}] forget chat {}", job.id, job.chat);
+        crate::live_replies::forget(data_dir, addon_dir, &job.chat)?;
         state.sessions.remove(&job.chat);
         state.history.remove(&job.chat);
         state.save(data_dir)?;
@@ -335,7 +354,7 @@ fn execute_job(
     if job.flags.hello {
         println!("[job #{}] hello from session {}", job.id, job.session);
         publish_connection(cfg, data_dir, addon_dir, true)?;
-        *last_presence = None;
+        *last_presence = Heartbeat::default();
         heartbeat(
             signals,
             addon_dir,
@@ -343,6 +362,7 @@ fn execute_job(
             data_dir,
             last_presence,
             Instant::now(),
+            false,
         )?;
         state.save(data_dir)?;
         if let Some(sig) = signals {
@@ -405,26 +425,6 @@ fn execute_job(
             "In-game permission changes are not supported by this live preview; edit agent settings in config",
         );
     }
-    publish_reply(ReplyPublication {
-        cfg,
-        addon_dir,
-        data_dir,
-        project: &cfg.project_dir,
-        kind,
-        chat: &job.chat,
-        id: job.id,
-        status: Status::Working,
-        text: "Agent is running",
-        session: "",
-        denied: vec![],
-    })?;
-
-    if let Some(sig) = signals {
-        let _ = sig.set(SignalKind::Acknowledgement, job.id, true);
-        let _ = sig.set(SignalKind::ReplyReady, job.id, false);
-        let _ = sig.reset_activity(job.id);
-    }
-
     let session = state
         .sessions
         .get(&job.chat)
@@ -470,6 +470,26 @@ fn execute_job(
     state.handled_live.push((job.session.clone(), job.id));
     state.save(data_dir)?;
 
+    publish_reply(ReplyPublication {
+        cfg,
+        addon_dir,
+        data_dir,
+        project: &cfg.project_dir,
+        kind,
+        chat: &job.chat,
+        id: job.id,
+        status: Status::Working,
+        text: "Agent is running",
+        session: "",
+        denied: vec![],
+    })?;
+
+    if let Some(sig) = signals {
+        let _ = sig.set(SignalKind::Acknowledgement, job.id, true);
+        let _ = sig.set(SignalKind::ReplyReady, job.id, false);
+        let _ = sig.reset_activity(job.id);
+    }
+
     println!(
         "[job #{}] running {} for chat '{}'",
         job.id,
@@ -490,6 +510,7 @@ fn execute_job(
             data_dir,
             last_presence,
             Instant::now(),
+            true,
         ) {
             eprintln!("[presence] {e}");
         }
@@ -517,6 +538,7 @@ fn execute_job(
                     data_dir,
                     last_presence,
                     Instant::now(),
+                    true,
                 ) {
                     eprintln!("[presence] {e}");
                 }
@@ -613,8 +635,16 @@ fn execute_job(
             );
         }
         Err(err) => {
-            let message = format!("Error: {err}");
-            eprintln!("[job #{}] failed: {err}", job.id);
+            let mut message = format!("Error: {err}");
+            if message.len() > 16000 {
+                let mut end = 16000;
+                while !message.is_char_boundary(end) {
+                    end -= 1;
+                }
+                message.truncate(end);
+                message.push_str(" [diagnostic truncated]");
+            }
+            eprintln!("[job #{}] {message}", job.id);
             let mut failures = Vec::new();
             if let Err(e) = state
                 .record(&job.chat, "error", &message, job.id, kind.id())
@@ -650,7 +680,7 @@ fn execute_job(
                     failures.join("; ")
                 )));
             }
-            return Err(err);
+            return Err(io::Error::new(err.kind(), message));
         }
     }
 
@@ -684,17 +714,21 @@ fn publish_reply(req: ReplyPublication<'_>) -> io::Result<()> {
         cwd: req.project.to_string_lossy().into_owned(),
         agent: req.cfg.agent.id().into(),
         agents: req.cfg.agents.keys().cloned().collect(),
-        replies: vec![Reply {
-            chat: req.chat.into(),
-            id: req.id,
-            status: req.status,
-            text: req.text.into(),
-            cwd: req.project.to_string_lossy().into_owned(),
-            session: req.session.into(),
-            agent: req.kind.id().into(),
-            summary: None,
-            denied: req.denied,
-        }],
+        replies: crate::live_replies::put(
+            req.data_dir,
+            req.addon_dir,
+            Reply {
+                chat: req.chat.into(),
+                id: req.id,
+                status: req.status,
+                text: req.text.into(),
+                cwd: req.project.to_string_lossy().into_owned(),
+                session: req.session.into(),
+                agent: req.kind.id().into(),
+                summary: None,
+                denied: req.denied,
+            },
+        )?,
     };
 
     if let Some(addons) = req.addon_dir {
@@ -721,30 +755,39 @@ fn heartbeat(
     addon_dir: Option<&Path>,
     state: &mut State,
     data_dir: &Path,
-    last: &mut Option<Instant>,
+    last: &mut Heartbeat,
     now: Instant,
+    busy: bool,
 ) -> io::Result<()> {
-    if last.is_some_and(|t| now.saturating_duration_since(t) < Duration::from_secs(30)) {
-        return Ok(());
-    }
-    // Rate-limit failed publications too; a locked file must not cause a busy loop.
-    *last = Some(now);
-    if let Some(addons) = addon_dir {
-        let seconds = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(io::Error::other)?
-            .as_secs();
-        if let Some(report) = publication::refresh_lifecycle(addons, 200, seconds, true)? {
-            check_report(report)?;
+    let slot_interval = Duration::from_secs(if busy { 30 } else { 300 });
+    if last
+        .slots
+        .is_none_or(|t| now.saturating_duration_since(t) >= slot_interval)
+    {
+        // Rate-limit failures as well as successful broadcasts.
+        last.slots = Some(now);
+        if let Some(addons) = addon_dir {
+            let seconds = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(io::Error::other)?
+                .as_secs();
+            if let Some(report) = publication::refresh_lifecycle(addons, 200, seconds, true)? {
+                check_report(report)?;
+            }
         }
     }
-    if let Some(signals) = signals {
-        let (next, report) = signals.presence(state.presence_counter)?;
-        check_report(report)?;
-        state.presence_counter = next;
-        state.save(data_dir)?;
+    if last
+        .presence
+        .is_none_or(|t| now.saturating_duration_since(t) >= Duration::from_secs(30))
+    {
+        last.presence = Some(now);
+        if let Some(signals) = signals {
+            let (next, report) = signals.presence(state.presence_counter)?;
+            check_report(report)?;
+            state.presence_counter = next;
+            state.save(data_dir)?;
+        }
     }
-    *last = Some(now);
     Ok(())
 }
 fn publish_connection(
@@ -764,7 +807,7 @@ fn publish_connection(
         cwd: cfg.project_dir.to_string_lossy().into_owned(),
         agent: cfg.agent.id().into(),
         agents: cfg.agents.keys().cloned().collect(),
-        replies: vec![],
+        replies: crate::live_replies::all(data_dir, addon_dir)?,
     };
     if let Some(addons) = addon_dir {
         check_report(publication::publish(addons, 200, &snapshot)?)?;

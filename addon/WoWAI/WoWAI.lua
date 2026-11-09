@@ -520,7 +520,7 @@ function WoWAI.BridgeState()
 	end
 	local age = GetTime() - seen
 	local okFor, staleFor = 90, 300
-	if not PresenceWorks() and not run.rustPeer then
+	if not PresenceWorks() then
 		okFor, staleFor = IDLE_POLL_SECONDS + 120, IDLE_POLL_SECONDS * 2 + 120
 	end
 	if age < okFor then
@@ -840,7 +840,7 @@ local function Tick()
 	-- Rust publishes an offline snapshot on Ctrl+C. Read it once a 30-second
 	-- beat is overdue, even when sound checks work and there is no pending chat.
 	local rustIdleCheck = run.rustPeer and not run.bridgeStopped
-		and (not PresenceWorks() or (run.bridgeSeen and now - run.bridgeSeen >= 35))
+		and PresenceWorks() and (run.bridgeSeen and now - run.bridgeSeen >= 35)
 	local idleInterval = rustIdleCheck and 35 or IDLE_POLL_SECONDS
 	if (rustIdleCheck or not PresenceWorks()) and db.settings.mode == "pixel" and not AnyPending()
 		and now - (run.lastIdlePoll or -1e9) >= idleInterval then

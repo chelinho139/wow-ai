@@ -264,7 +264,7 @@ fn heartbeats_and_shutdown_preserve_an_unread_reply() {
     )
     .unwrap();
     bridge
-        .tick(Instant::now() + Duration::from_secs(31))
+        .tick(Instant::now() + Duration::from_secs(301))
         .unwrap();
     let fresh = f.inbox();
     assert!(!fresh.contains("\tnow = 1,"));
@@ -284,4 +284,111 @@ fn heartbeats_and_shutdown_preserve_an_unread_reply() {
     .unwrap();
     assert_eq!(slot.split_once("\n\treplies = {").unwrap().1, replies);
     assert!(slot.contains("bridgeOnline = false"));
+}
+
+#[test]
+fn replies_from_multiple_records_and_frames_survive_later_publications() {
+    let f = Fixture::new();
+    {
+        let mut bridge = LiveBridge::start(&f.cfg, None).unwrap();
+        let a = f.frame(2, "", "first");
+        let b = f.frame(3, "", "second");
+        // Use distinct chats as the addon permits one outstanding request per chat.
+        let text_b = b.text.replacen("chat", "other", 1);
+        bridge
+            .accept_frame(&Frame {
+                id: 3,
+                text: format!("{}\x1e{}", a.text, text_b),
+            })
+            .unwrap();
+        let inbox = f.inbox();
+        assert!(inbox.contains("Fake codex reply: first"));
+        assert!(inbox.contains("Fake codex reply: second"));
+        let c = f.frame(4, "", "third");
+        bridge
+            .accept_frame(&Frame {
+                id: 4,
+                text: c.text.replacen("chat", "third-chat", 1),
+            })
+            .unwrap();
+        assert!(f.inbox().contains("Fake codex reply: first"));
+        bridge.shutdown().unwrap();
+    }
+    let mut bridge = LiveBridge::start(&f.cfg, None).unwrap();
+    bridge.accept_frame(&f.frame(5, "h", "")).unwrap();
+    let inbox = f.inbox();
+    for text in ["first", "second", "third"] {
+        assert!(inbox.contains(&format!("Fake codex reply: {text}")));
+    }
+}
+#[test]
+fn idle_slot_clock_broadcasts_are_less_frequent_than_presence_beats() {
+    let f = Fixture::new();
+    let mut bridge = LiveBridge::start(&f.cfg, None).unwrap();
+    bridge.accept_frame(&f.frame(1, "h", "")).unwrap();
+    let inbox = f.cfg.addon_dir.as_ref().unwrap().join("WoWAI/Inbox.lua");
+    let text = f.inbox();
+    let now_line = text
+        .lines()
+        .find(|line| line.starts_with("\tnow = "))
+        .unwrap();
+    fs::write(&inbox, text.replacen(now_line, "\tnow = 1,", 1)).unwrap();
+    let now = Instant::now();
+    bridge.tick(now + Duration::from_secs(31)).unwrap();
+    assert!(f.inbox().contains("\tnow = 1,"));
+    bridge.tick(now + Duration::from_secs(301)).unwrap();
+    assert!(!f.inbox().contains("\tnow = 1,"));
+}
+
+#[test]
+fn nonzero_agent_diagnostics_are_bounded_before_broadcast() {
+    let mut f = Fixture::new();
+    f.cfg.max_output_bytes = 1_048_576;
+    f.cfg.agents.get_mut("codex").unwrap().launcher_args = vec![
+        "__fixture-agent".into(),
+        "codex".into(),
+        "large-error".into(),
+    ];
+    let mut bridge = LiveBridge::start(&f.cfg, None).unwrap();
+    assert!(bridge.accept_frame(&f.frame(7, "", "fail safely")).is_err());
+    let inbox = f.inbox();
+    assert!(inbox.contains("diagnostic truncated"));
+    assert!(inbox.len() < 20_000);
+    for n in 1..=200 {
+        assert!(
+            fs::metadata(
+                f.cfg
+                    .addon_dir
+                    .as_ref()
+                    .unwrap()
+                    .join(format!("WoWAI_S{n:03}/Inbox.lua"))
+            )
+            .unwrap()
+            .len()
+                < 20_000
+        );
+    }
+}
+
+#[test]
+fn restart_turns_orphaned_work_into_error_without_rerunning() {
+    let f = Fixture::new();
+    let frame = f.frame(3, "", "only once");
+    {
+        let mut bridge = LiveBridge::start(&f.cfg, None).unwrap();
+        bridge.accept_frame(&frame).unwrap();
+    }
+    let path = f.cfg.data_dir.join("reforged-live-replies.json");
+    let mut cache: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    cache["replies"][0]["status"] = json!("Working");
+    fs::write(path, serde_json::to_vec(&cache).unwrap()).unwrap();
+    let mut bridge = LiveBridge::start(&f.cfg, None).unwrap();
+    assert!(f.inbox().contains("status = \"error\""));
+    assert!(f.inbox().contains("will not be resent automatically"));
+    bridge.accept_frame(&frame).unwrap();
+    assert_eq!(
+        State::load(&f.cfg.data_dir).unwrap().history["chat"].len(),
+        2
+    );
+    assert!(f.inbox().contains("status = \"error\""));
 }

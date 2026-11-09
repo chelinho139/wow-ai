@@ -621,8 +621,7 @@ fn parse_grok(events: Vec<Value>) -> Result<AgentOutput, String> {
                 }
             }
             Some("tool_call_update") => {
-                let status = string(&event, "status").unwrap_or_default();
-                if ["denied", "rejected", "refused"].contains(&status)
+                if grok_refusal(&event).is_some()
                     && let Some(rule) = string(&event, "toolCallId").and_then(|id| calls.get(id))
                 {
                     out.denied.push(rule.clone());
@@ -805,6 +804,59 @@ fn event_chunk(event: &Value) -> &str {
         .and_then(|data| data.as_str().or_else(|| string(data, "text")))
         .or_else(|| string(event, "text"))
         .unwrap_or_default()
+}
+
+/// Text carried by a Grok `tool_call_update`. Grok Build nests text in
+/// `{ content: { text } }`; ACP also permits a direct `{ text }` block.
+fn grok_update_text(event: &Value) -> String {
+    event
+        .get("content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|block| {
+            string(block, "text").or_else(|| {
+                block
+                    .get("content")
+                    .and_then(|content| string(content, "text"))
+            })
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Return the refusal reason when an update represents a permission denial.
+/// Grok Build 1.0.41 reports policy refusals with status `failed`, so status
+/// alone cannot distinguish them from ordinary tool failures.
+fn grok_refusal(event: &Value) -> Option<String> {
+    let status = string(event, "status").unwrap_or_default();
+    let status_lower = status.to_ascii_lowercase();
+    let text = grok_update_text(event);
+    let text_lower = text.to_ascii_lowercase();
+
+    if ["denied", "rejected", "refused"]
+        .iter()
+        .any(|word| status_lower.contains(word))
+    {
+        let reason = text.trim();
+        return Some(if reason.is_empty() { status } else { reason }.to_owned());
+    }
+    if let Some(offset) = text_lower.find("was not executed:") {
+        return Some(text[offset + "was not executed:".len()..].trim().to_owned());
+    }
+    if ["failed", "error"].contains(&status_lower.as_str())
+        && [
+            "denied by permission",
+            "blocked this action",
+            "permission policy",
+            "permission denied",
+        ]
+        .iter()
+        .any(|phrase| text_lower.contains(phrase))
+    {
+        return Some(text.trim().to_owned());
+    }
+    None
 }
 
 fn grok_call(event: &Value) -> (String, Option<String>) {
@@ -1081,6 +1133,30 @@ mod tests {
 "#).unwrap();
         assert_eq!(grok.denied, ["Bash(git:*)"]);
         assert_eq!(grok.progress, ["$ git status"]);
+    }
+
+    #[test]
+    fn grok_distinguishes_permission_refusals_from_ordinary_tool_failures() {
+        let failed_denial = parse(AgentKind::Grok, br#"{"type":"tool_call","toolCallId":"policy","toolName":"run_terminal_command","rawInput":{"command":"cargo test"}}
+{"type":"tool_call_update","toolCallId":"policy","status":"failed","content":[{"type":"content","content":{"type":"text","text":"Tool `run_terminal_command` was not executed: Denied by permission policy: command is not allowed"}}]}
+{"type":"text","data":"done"}
+{"type":"end"}
+"#).unwrap();
+        assert_eq!(failed_denial.denied, ["Bash(cargo:*)"]);
+
+        let denied_status = parse(AgentKind::Grok, br#"{"type":"tool_call","toolCallId":"status","toolName":"web_fetch","rawInput":{"url":"https://example.com"}}
+{"type":"tool_call_update","toolCallId":"status","status":"DENIED"}
+{"type":"text","data":"done"}
+{"type":"end"}
+"#).unwrap();
+        assert_eq!(denied_status.denied, ["WebFetch"]);
+
+        let ordinary_failure = parse(AgentKind::Grok, br#"{"type":"tool_call","toolCallId":"failure","toolName":"run_terminal_command","rawInput":{"command":"false"}}
+{"type":"tool_call_update","toolCallId":"failure","status":"failed","content":[{"type":"text","text":"Command exited with status 1"}]}
+{"type":"text","data":"done"}
+{"type":"end"}
+"#).unwrap();
+        assert!(ordinary_failure.denied.is_empty());
     }
 
     #[test]

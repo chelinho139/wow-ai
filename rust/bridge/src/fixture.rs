@@ -53,6 +53,12 @@ pub fn run(args: &[String]) -> Result<(), String> {
         std::thread::sleep(std::time::Duration::from_secs(60));
         return Ok(());
     }
+    if scenario == "large-error" {
+        io::stderr()
+            .write_all("é".repeat(100_000).as_bytes())
+            .map_err(|e| e.to_string())?;
+        return Err("fake large failure".into());
+    }
     if scenario == "flood" {
         loop {
             if io::stdout().write_all(&[b'x'; 4096]).is_err() {
