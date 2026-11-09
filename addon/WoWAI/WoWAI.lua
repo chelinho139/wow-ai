@@ -468,7 +468,7 @@ end
 -- presence beats, acks, slot data (which carries the bridge's clock), replies.
 local function NotedBridge(at)
 	at = at or GetTime()
-	if not run.bridgeSeen or at > run.bridgeSeen then run.bridgeSeen = at; run.bridgeStopped = nil end
+	if not run.bridgeSeen or at > run.bridgeSeen then run.bridgeSeen = at end
 	run.pixelFailed = nil
 end
 
@@ -508,8 +508,9 @@ end
 
 -- Returns state ("ok" | "stale" | "down" | "unknown"), a color and a description.
 -- With presence beats the bridge is heard from every 30 s, so 90 s of silence is
--- suspicious. Without them the addon only hears from it every IDLE_POLL_SECONDS,
--- so the windows have to be wider or the light could never stay green between
+-- suspicious. Legacy slot-only connections are checked every IDLE_POLL_SECONDS,
+-- so their windows are wider. Rust refreshes slot clocks every 30 seconds.
+-- The longer legacy window keeps its light green between
 -- messages and every reply would be followed by a Reconnect.
 function WoWAI.BridgeState()
 	if run.bridgeStopped then return "down", 0.9, 0.25, 0.25, "Bridge: stopped or connection lost; reconnect to continue" end
@@ -519,7 +520,7 @@ function WoWAI.BridgeState()
 	end
 	local age = GetTime() - seen
 	local okFor, staleFor = 90, 300
-	if not PresenceWorks() then
+	if not PresenceWorks() and not run.rustPeer then
 		okFor, staleFor = IDLE_POLL_SECONDS + 120, IDLE_POLL_SECONDS * 2 + 120
 	end
 	if age < okFor then
@@ -783,7 +784,7 @@ local function ApplyBridgeStatus(data)
     if type(data.bridgeOnline) == "boolean" then
         run.rustPeer = true
         if not data.bridgeOnline then Disconnected("The Rust bridge stopped.")
-        else run.bridgeStopped = nil end
+        elseif type(data.now) == "number" and time() - data.now >= -5 and time() - data.now < 90 then run.bridgeStopped = nil end
     end
 end
 
@@ -809,7 +810,8 @@ local function TryLoadSlot(why)
 	run.polls = (run.polls or 0) + 1
 	ScheduleNextPoll()
 	local data = WoWAI_SlotData
-	if type(data) == "table" and data.bridgeOnline ~= false and type(data.now) == "number" then
+	if type(data) == "table" and data.bridgeOnline ~= false and type(data.now) == "number"
+		and data.now <= time() + 5 then
 		-- The bridge's clock and ours are the same machine; translate to GetTime().
 		NotedBridge(GetTime() - (time() - data.now))
 	end
@@ -905,9 +907,6 @@ local function Tick()
 		RefreshStrip()
 		WoWAI.UpdateStatus()
 	end
-	if run.rustPeer and AnyPending() and WoWAI.BridgeState() ~= "ok" then
-		Disconnected("Fresh bridge heartbeats have stopped.")
-	end
 	if not AnyPending() then return end
 	local moved = false
 	for _, c in ipairs(db.chats) do
@@ -922,6 +921,9 @@ local function Tick()
 	end
 	if run.nextPollAt and now >= run.nextPollAt then
 		TryLoadSlot("schedule")
+	end
+	if run.rustPeer and AnyPending() and WoWAI.BridgeState() ~= "ok" then
+		Disconnected("Fresh bridge heartbeats have stopped.")
 	end
 end
 

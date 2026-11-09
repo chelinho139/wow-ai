@@ -758,3 +758,43 @@ test('an idle Rust connection reads shutdown when the next heartbeat is overdue'
   assert.equal(vm.evaluate('WoWAI.BridgeState()'), 'down');
   assert.equal(vm.evaluate('WoWAI.IsConnected()'), 'false');
 });
+
+test('slot-only Rust connections stay live with fresh clocks and expire after a crash', () => {
+  const vm = newVM(); login(vm); connect(vm);
+  nextSlot(vm, '{now=time(),bridgeOnline=true,replies={}}');
+  vm.run('WoWAI.Connect(); STUB.now=STUB.now+6; STUB.Tick()');
+  for (let i = 0; i < 5; i++) {
+    vm.run('STUB.now=STUB.now+40; STUB.Tick()');
+    assert.equal(vm.evaluate('WoWAI.IsConnected()'), 'true');
+  }
+  vm.run('WoWAI.Send("crash while working"); FROZEN_NOW=time()');
+  nextSlot(vm, '{now=FROZEN_NOW,bridgeOnline=true,replies={{chat=WoWAIDB.chats[1].id,id=WoWAIDB.chats[1].pendingId,status="working",text="working"}}}');
+  for (let i = 0; i < 5; i++) vm.run('STUB.now=STUB.now+20; STUB.Tick()');
+  assert.equal(vm.evaluate('WoWAI.IsConnected()'), 'false');
+  assert.equal(vm.evaluate('WoWAIDB.chats[1].pendingId'), null);
+});
+
+test('a presence signal alone cannot reconnect an explicitly stopped Rust bridge', () => {
+  const vm = newVM();
+  vm.run('STUB.sounds["Interface\\\\AddOns\\\\WoWAI\\\\ctl\\\\valid.wav"] = true');
+  login(vm); connect(vm);
+  nextSlot(vm, '{now=time(),bridgeOnline=false,replies={}}');
+  vm.run('WoWAI.Connect(); STUB.now=STUB.now+6; STUB.Tick()');
+  vm.run('STUB.sounds["Interface\\\\AddOns\\\\WoWAI\\\\presence\\\\0001.wav"] = true; STUB.now=STUB.now+2; STUB.Tick()');
+  assert.equal(vm.evaluate('WoWAI.IsConnected()'), 'false');
+  nextSlot(vm, '{now=time(),bridgeOnline=true,replies={}}');
+  vm.run('WoWAI.Connect(); STUB.now=STUB.now+6; STUB.Tick()');
+  assert.equal(vm.evaluate('WoWAI.IsConnected()'), 'true');
+});
+
+test('a delayed tick reads a fresh final reply before expiring the connection', () => {
+  const vm = newVM(); login(vm); connect(vm);
+  nextSlot(vm, '{now=time(),bridgeOnline=true,replies={}}');
+  vm.run('WoWAI.Connect(); STUB.now=STUB.now+6; STUB.Tick(); WoWAI.Send("slow task")');
+  const id = vm.num('WoWAIDB.chats[1].pendingId');
+  nextSlot(vm, `{now=time(),bridgeOnline=true,replies={{chat=WoWAIDB.chats[1].id,id=${id},status="done",text="final answer"}}}`);
+  vm.run('STUB.now=STUB.now+100; STUB.Tick()');
+  assert.equal(vm.evaluate('WoWAIDB.chats[1].pendingId'), null);
+  assert.equal(vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history].text'), 'final answer');
+  assert.equal(vm.evaluate('WoWAI.IsConnected()'), 'true');
+});

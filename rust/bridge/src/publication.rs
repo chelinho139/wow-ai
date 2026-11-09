@@ -61,6 +61,59 @@ pub fn publish(addon_dir: &Path, slots: u16, snapshot: &Snapshot) -> io::Result<
     write_installed_files(targets)
 }
 
+/// Refresh the generated lifecycle header, retaining every reply byte. This
+/// gives slot-only clients a heartbeat without erasing an unread final reply.
+pub(crate) fn refresh_lifecycle(
+    addon_dir: &Path,
+    slots: u16,
+    now: u64,
+    online: bool,
+) -> io::Result<Option<Report>> {
+    let path = addon_dir.join("WoWAI/Inbox.lua");
+    let bytes = match crate::config::read_bounded(&path, 16 * 1024 * 1024) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let body = String::from_utf8(bytes).map_err(io::Error::other)?;
+    if !body.starts_with("-- Written by WoW AI Reforged. Do not edit by hand.\nWoWAI_Inbox = {\n")
+        || !(body.contains("\n\tbridgeOnline = true,\n")
+            || (!online && body.contains("\n\tbridgeOnline = false,\n")))
+    {
+        return Ok(None); // No current online Rust snapshot yet.
+    }
+    let (header, replies) = body
+        .split_once("\n\treplies = {")
+        .ok_or_else(|| io::Error::other("missing generated reply header"))?;
+    let mut refreshed = String::new();
+    for line in header.lines() {
+        if line.starts_with("\tnow = ") {
+            refreshed.push_str(&format!("\tnow = {now},\n"));
+        } else if line.starts_with("\tbridgeOnline = ") {
+            refreshed.push_str(&format!("\tbridgeOnline = {online},\n"));
+        } else if line.starts_with("\tts = ") {
+            refreshed.push_str(&format!(
+                "\tts = \"{}\",\n",
+                crate::runtime::utc_timestamp(now)?
+            ));
+        } else {
+            refreshed.push_str(line);
+            refreshed.push('\n');
+        }
+    }
+    refreshed.push_str("\treplies = {");
+    refreshed.push_str(replies);
+    let slot = refreshed.replacen("WoWAI_Inbox = {", "WoWAI_SlotData = {", 1);
+    let mut targets = vec![(path, refreshed.as_bytes())];
+    for n in 1..=slots {
+        targets.push((
+            addon_dir.join(format!("WoWAI_S{n:03}/Inbox.lua")),
+            slot.as_bytes(),
+        ));
+    }
+    write_installed_files(targets).map(Some)
+}
+
 pub(crate) fn write_installed_files(targets: Vec<(PathBuf, &[u8])>) -> io::Result<Report> {
     for (path, _) in &targets {
         if !fs::symlink_metadata(path)?.file_type().is_file() {

@@ -70,8 +70,9 @@ new message in the same chat; a new chat should not be necessary.
 
 Ctrl+C publishes an offline snapshot and cancels a running agent process. A forced
 kill or crash cannot publish one: connection loss is detected by heartbeat age
-instead (about 90 seconds with the sound presence channel available). Detection
-is slower without the sound channel because it relies on occasional slot reads.
+instead (about 90 seconds). Rust refreshes the timestamps in reply slots every
+30 seconds while retaining unread replies, so slot-only clients can also check
+liveness without sound signals.
 While idle, the Rust-aware addon checks a reply slot when a heartbeat is overdue
 (about 35 seconds after the last beat), so Ctrl+C can be detected without sending
 a message. Shutdown is not an instant notification.

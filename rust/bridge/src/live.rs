@@ -127,6 +127,22 @@ impl<'a> LiveBridge<'a> {
         })
     }
     pub fn shutdown(&mut self) -> io::Result<()> {
+        let target = self
+            .addon_dir
+            .clone()
+            .unwrap_or_else(|| self.data_guard.data_dir().join("outbox"));
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(io::Error::other)?
+            .as_secs();
+        if let Some(report) = publication::refresh_lifecycle(
+            &target,
+            if self.addon_dir.is_some() { 200 } else { 1 },
+            now,
+            false,
+        )? {
+            return check_report(report);
+        }
         publish_connection(
             self.cfg,
             self.data_guard.data_dir(),
@@ -163,6 +179,7 @@ impl<'a> LiveBridge<'a> {
         }
         heartbeat(
             self.signals.as_ref(),
+            self.addon_dir.as_deref(),
             &mut state,
             self.data_guard.data_dir(),
             &mut self.last_presence,
@@ -319,7 +336,14 @@ fn execute_job(
         println!("[job #{}] hello from session {}", job.id, job.session);
         publish_connection(cfg, data_dir, addon_dir, true)?;
         *last_presence = None;
-        heartbeat(signals, &mut state, data_dir, last_presence, Instant::now())?;
+        heartbeat(
+            signals,
+            addon_dir,
+            &mut state,
+            data_dir,
+            last_presence,
+            Instant::now(),
+        )?;
         state.save(data_dir)?;
         if let Some(sig) = signals {
             check_report(sig.set(SignalKind::Acknowledgement, job.id, true)?)?;
@@ -457,6 +481,18 @@ fn execute_job(
         if let Some(bytes) = &invocation.prompt_file {
             publication::atomic_write(&prompt_file, bytes)?;
         }
+        // Publish the initial heartbeat before spawning the agent. Later beats
+        // are driven by the wait callback, at the normal 30-second interval.
+        if let Err(e) = heartbeat(
+            signals,
+            addon_dir,
+            &mut state,
+            data_dir,
+            last_presence,
+            Instant::now(),
+        ) {
+            eprintln!("[presence] {e}");
+        }
         let output = process::run_with_tick(
             process::Request {
                 program: &invocation.program,
@@ -474,9 +510,14 @@ fn execute_job(
                         "bridge is stopping",
                     ));
                 }
-                if let Err(e) =
-                    heartbeat(signals, &mut state, data_dir, last_presence, Instant::now())
-                {
+                if let Err(e) = heartbeat(
+                    signals,
+                    addon_dir,
+                    &mut state,
+                    data_dir,
+                    last_presence,
+                    Instant::now(),
+                ) {
                     eprintln!("[presence] {e}");
                 }
                 Ok(())
@@ -677,6 +718,7 @@ fn check_report(report: publication::Report) -> io::Result<()> {
 }
 fn heartbeat(
     signals: Option<&Signals>,
+    addon_dir: Option<&Path>,
     state: &mut State,
     data_dir: &Path,
     last: &mut Option<Instant>,
@@ -685,7 +727,17 @@ fn heartbeat(
     if last.is_some_and(|t| now.saturating_duration_since(t) < Duration::from_secs(30)) {
         return Ok(());
     }
+    // Rate-limit failed publications too; a locked file must not cause a busy loop.
     *last = Some(now);
+    if let Some(addons) = addon_dir {
+        let seconds = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(io::Error::other)?
+            .as_secs();
+        if let Some(report) = publication::refresh_lifecycle(addons, 200, seconds, true)? {
+            check_report(report)?;
+        }
+    }
     if let Some(signals) = signals {
         let (next, report) = signals.presence(state.presence_counter)?;
         check_report(report)?;

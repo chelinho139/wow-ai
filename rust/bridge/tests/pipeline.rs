@@ -350,3 +350,44 @@ fn process_ticks_continue_while_an_agent_is_running() {
     assert!(result.is_err());
     assert!(ticks > 0);
 }
+
+#[test]
+fn shutdown_callback_interrupts_a_running_agent_without_waiting_for_timeout() {
+    use std::{
+        ffi::OsString,
+        io,
+        time::{Duration, Instant},
+    };
+    let w = Workspace::new();
+    let args: Vec<OsString> = ["__fixture-agent", "codex", "hang"]
+        .into_iter()
+        .map(Into::into)
+        .collect();
+    let start = Instant::now();
+    let mut ticks = 0;
+    let error = wow_ai_reforged::process::run_with_tick(
+        wow_ai_reforged::process::Request {
+            program: Path::new(BINARY),
+            args: &args,
+            cwd: &w.0,
+            input: None,
+            env: &[],
+            timeout: Duration::from_secs(60),
+            max_output: 1024,
+        },
+        || {
+            ticks += 1;
+            if ticks >= 3 {
+                Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "bridge is stopping",
+                ))
+            } else {
+                Ok(())
+            }
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+    assert!(start.elapsed() < Duration::from_secs(10));
+}

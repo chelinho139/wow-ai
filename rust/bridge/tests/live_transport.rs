@@ -242,3 +242,46 @@ fn shutdown_publishes_offline_to_every_slot_and_hello_reconnects() {
     bridge.accept_frame(&f.frame(2, "h", "")).unwrap();
     assert!(f.inbox().contains("bridgeOnline = true"));
 }
+
+#[test]
+fn heartbeats_and_shutdown_preserve_an_unread_reply() {
+    let f = Fixture::new();
+    let mut bridge = LiveBridge::start(&f.cfg, None).unwrap();
+    bridge
+        .accept_frame(&f.frame(3, "agent=codex", "unread answer"))
+        .unwrap();
+    let original = f.inbox();
+    assert!(original.contains("status = \"done\""));
+    let replies = original.split_once("\n\treplies = {").unwrap().1.to_owned();
+    let now_line = original
+        .lines()
+        .find(|line| line.starts_with("\tnow = "))
+        .unwrap();
+    let stale = original.replacen(now_line, "\tnow = 1,", 1);
+    fs::write(
+        f.cfg.addon_dir.as_ref().unwrap().join("WoWAI/Inbox.lua"),
+        stale,
+    )
+    .unwrap();
+    bridge
+        .tick(Instant::now() + Duration::from_secs(31))
+        .unwrap();
+    let fresh = f.inbox();
+    assert!(!fresh.contains("\tnow = 1,"));
+    assert_eq!(fresh.split_once("\n\treplies = {").unwrap().1, replies);
+    bridge.shutdown().unwrap();
+    bridge.shutdown().unwrap(); // Repeated shutdown must also retain the reply.
+    let offline = f.inbox();
+    assert!(offline.contains("bridgeOnline = false"));
+    assert_eq!(offline.split_once("\n\treplies = {").unwrap().1, replies);
+    let slot = fs::read_to_string(
+        f.cfg
+            .addon_dir
+            .as_ref()
+            .unwrap()
+            .join("WoWAI_S200/Inbox.lua"),
+    )
+    .unwrap();
+    assert_eq!(slot.split_once("\n\treplies = {").unwrap().1, replies);
+    assert!(slot.contains("bridgeOnline = false"));
+}
