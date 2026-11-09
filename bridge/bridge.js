@@ -427,6 +427,19 @@ function primer(kind = 'dev') {
   }
 }
 
+// Per-character memory (memoryDir): one notes file per character, in every run's
+// system prompt, that the agent keeps current. A new chat starts from it instead
+// of resuming a long session. Relative to the default folder; "" turns it off.
+const MEMORY_DIR = cfg.memoryDir === '' ? '' : path.resolve(DEFAULT_CWD, cfg.memoryDir || 'memories');
+function characterMemory(ctx) {
+  const key = MEMORY_DIR && P.characterKey(ctx);
+  if (!key) return null;
+  const file = path.join(MEMORY_DIR, key + '.md');
+  let text = '';
+  try { fs.mkdirSync(MEMORY_DIR, { recursive: true }); text = fs.readFileSync(file, 'utf8').slice(0, 8000); } catch {}
+  return { file, text };
+}
+
 // "Always allow" from the game only sticks if someone at the bridge console says
 // so: the run itself gets the rules one-shot either way. Default is no.
 let askingAlways = false;
@@ -580,8 +593,9 @@ function runJob(job) {
   const resume = state.sessions[skey] || state.sessions[key];
 
   const ctx = gameContext();
-  const system = P.systemPrompt(ctx, primer(P.primerKind(job.text)));
-  const systemShort = P.systemPrompt(ctx, '');
+  const memory = characterMemory(ctx);
+  const system = P.systemPrompt(ctx, primer(P.primerKind(job.text)), memory);
+  const systemShort = P.systemPrompt(ctx, '', memory);
   const promptFile = path.join(TMP_DIR, `prompt-${job.id}-${Date.now().toString(36)}.txt`);
   const input = agent.input({ prompt: job.text, system, systemShort, resume, cfg: runCfg });
   if (input.promptFile !== undefined) {

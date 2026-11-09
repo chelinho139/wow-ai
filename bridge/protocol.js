@@ -218,7 +218,16 @@ const MACRO_HINT = [
   'The addon shows the player a button that creates the macro (or updates one with the same name) and puts it on their cursor. Explain outside the block what it does. Avoid /run and /script unless asked; the player is warned about them.',
 ];
 
-function systemPrompt(ctx, primer) {
+// The character the game context names ("Character: Name on Realm, ..."), as a
+// file-safe "Name-Realm" for its memory file; "" when the context names none.
+function characterKey(ctx) {
+  const m = /^Character:\s*([^,(\n]+?)(?:\s+on\s+([^,(\n]+?))?\s*(?:[,(]|$)/m.exec(String(ctx || ''));
+  if (!m || m[1] === 'nil') return '';
+  return (m[1] + (m[2] ? '-' + m[2] : '')).replace(/[^\p{L}\p{N}-]+/gu, '_');
+}
+
+// memory: { file, text } for the character the context names, or null.
+function systemPrompt(ctx, primer, memory) {
   const lines = [...REPLY_FORMAT];
   const text = String(ctx || '').trim();
   if (text) {
@@ -231,6 +240,13 @@ function systemPrompt(ctx, primer) {
       ...MAP_HINT,
       '',
       ...MACRO_HINT);
+  }
+  if (text && memory) {
+    lines.push('',
+      `Memory for this character, kept in ${memory.file}:`,
+      String(memory.text || '').trim() || '(empty so far)',
+      '',
+      'This is how a new chat carries on from earlier ones without their full history. When you learn something about this character worth keeping (goals, plans, decisions, preferences, progress, what worked), update that file with your edit tools, creating it if needed. Keep it short bullets under 80 lines: rewrite or drop stale entries instead of adding more, and never store secrets.');
   }
   const ref = text ? String(primer || '').trim() : '';
   if (ref) {
@@ -570,7 +586,7 @@ module.exports = {
   fromHex, pad3, slotNumber, chatKey, sessKey,
   alreadyHandled, markHandled, pruneStale, MONTH_MS,
   resolveCwd, sameFolder, baseName,
-  parseFlags, jobsFromStrip, parseOutbox, systemPrompt, splitSummary, primerKind,
+  parseFlags, jobsFromStrip, parseOutbox, systemPrompt, splitSummary, primerKind, characterKey,
   ruleFor, describeToolUse,
   luaStr, luaTable, SILENT_WAV,
   MAP_LIMITS, validateMapCommand, newMap, applyMapCommands, extractMapBlocks, parseMapFile, luaMap,

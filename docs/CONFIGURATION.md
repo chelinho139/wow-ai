@@ -40,6 +40,7 @@ A `config.json` from before agents existed kept Claude's settings at the top lev
 |---|---|---|
 | `gameContext` | `true` | Put the character/zone context the addon sends into the agent's system prompt. `false` ignores it, for a bridge only ever used on unrelated projects. The addon has its own switch, `/wow-ai context off`, which also clears what the bridge holds. |
 | `primerFile` | `"docs/WOW-ADDON-PRIMER.md"` | A markdown file appended to the system prompt together with the game context when the message is about code (it mentions addon, Lua, macro, frame, API...): how to write addons and macros for this client. Relative to the wow-ai folder, or absolute. Re-read on every run, so edits count at once. `""` sends none. Off whenever the context is off. |
+| `memoryDir` | `"memories"` | Folder (relative to the default folder) for one memory file per character, `<Name>-<Realm>.md`. It goes into every run's system prompt and the agent keeps it current, so a new chat knows the character without resuming a long session. `""` turns it off. |
 | `gameplayPrimerFile` | `"docs/FOREVER-PRIMER.md"` | The primer for every other game message (quests, gear, talents, PvP): what differs in WoW: Forever from Classic, and the character's leveling notes. Same rules as `primerFile`. Edit it for your own class. |
 | `maxParallel` | `3` | How many chats may run an agent at the same time. Further messages queue per chat. |
 | `timeoutMs` | `1800000` (30 min) | A run longer than this is killed (with its children) and reported as an error in game. |

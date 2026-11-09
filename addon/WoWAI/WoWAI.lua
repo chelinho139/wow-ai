@@ -194,6 +194,30 @@ local function AnyPending()
 	return false
 end
 
+-- Each character keeps its own chats, and so its own agent sessions (the bridge
+-- keys sessions by chat id). db.chats is always the logged-in character's list;
+-- the others wait in db.byChar. Chats from before this go to the first character
+-- that logs in.
+local function SwapCharacterChats()
+	local name, realm = UnitName("player"), GetRealmName()
+	if name and name ~= "" and name ~= UNKNOWNOBJECT and realm then
+		local me = name .. "-" .. realm
+		db.byChar = db.byChar or {}
+		if not db.chatsOwner then
+			db.chatsOwner = me
+		elseif db.chatsOwner ~= me then
+			db.byChar[db.chatsOwner] = { chats = db.chats, activeChat = db.activeChat }
+			local mine = db.byChar[me]
+			db.byChar[me] = nil
+			db.chats = mine and mine.chats or {}
+			db.activeChat = mine and mine.activeChat
+			db.chatsOwner = me
+		end
+	end
+	if #db.chats == 0 then AddChat() end
+	if not FindChat(db.activeChat) then db.activeChat = db.chats[1].id end
+end
+
 local function InitDB()
 	WoWAIDB = WoWAIDB or {}
 	db = WoWAIDB
@@ -240,8 +264,7 @@ local function InitDB()
 		db.activeChat = c.id
 		db.history, db.pendingId, db.unread, db.draft = nil, nil, nil, nil
 	end
-	if #db.chats == 0 then AddChat() end
-	if not FindChat(db.activeChat) then db.activeChat = db.chats[1].id end
+	SwapCharacterChats()
 	-- Chats from before agents had names: replies were stored with role "claude".
 	for _, c in ipairs(db.chats) do
 		c.agent = c.agent or ""
@@ -3371,7 +3394,7 @@ ev:SetScript("OnEvent", function(self, event, arg1)
 		-- A real person whispered: /r belongs to them again.
 		run.lastMessenger = "player"
 	elseif event == "PLAYER_LOGIN" then
-		if not db then InitDB() end
+		if not db then InitDB() else SwapCharacterChats() end -- the name can be missing at ADDON_LOADED
 		BuildUI()
 		run = { outbound = {} }
 		SelfTestSignals()

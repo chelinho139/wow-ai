@@ -113,6 +113,26 @@ test('addon loads, builds its UI and creates a first chat', () => {
   assert.equal(vm.evaluate('SlashCmdList.WOWAIASK'), null, '/ai is an alias of the one command, not a handler of its own');
 });
 
+test('each character keeps its own chats; older chats go to the first character to log in', () => {
+  const vm = newVM();
+  vm.run('WoWAIDB = { chats = { { id = "old1", name = "Old chat", history = {} } }, activeChat = "old1" }');
+  login(vm);
+  assert.equal(vm.evaluate('WoWAIDB.chats[1].id'), 'old1', 'pre-existing chat stays with the first character');
+  assert.equal(vm.evaluate('WoWAIDB.chatsOwner'), 'Testchar-Test Realm');
+  vm.run('UnitName = function(u) if u == "player" then return "Alt" end end');
+  login(vm);
+  assert.equal(vm.num('#WoWAIDB.chats'), 1);
+  assert.notEqual(vm.evaluate('WoWAIDB.chats[1].id'), 'old1', 'the alt starts with a fresh chat');
+  assert.equal(vm.evaluate('WoWAIDB.byChar["Testchar-Test Realm"].chats[1].id'), 'old1');
+  const altChat = vm.evaluate('WoWAIDB.chats[1].id');
+  vm.run('UnitName = function(u) if u == "player" then return "Testchar" end end');
+  login(vm);
+  assert.equal(vm.evaluate('WoWAIDB.chats[1].id'), 'old1', 'back on the first character, its chat is back');
+  assert.equal(vm.evaluate('WoWAIDB.activeChat'), 'old1');
+  assert.equal(vm.evaluate('WoWAIDB.byChar["Alt-Test Realm"].chats[1].id'), altChat);
+  assert.equal(vm.evaluate('WoWAIDB.byChar["Testchar-Test Realm"]'), null, 'the logged-in character is never stored twice');
+});
+
 test('hello goes out on the strip after login', () => {
   const vm = newVM();
   login(vm);

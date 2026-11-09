@@ -9,6 +9,8 @@ All notable changes to this project are recorded here. The format follows [Keep 
 - Quest reward advisor: `/wow-ai rewards on` asks the agent at every turn-in that offers a choice (each option's tooltip plus what is equipped in its slot) and shows the answer beside the quest window with the suggested option in green. The player still clicks the reward. With the bridge down or the chat busy, a local rule picks the usable option with the most Stamina + Intellect + Spirit (vendor value as tiebreak).
 - The game context also carries the talents taken (name and rank), the PvP flag, rested XP, the pet, the current target, equipped gear (slot, item id, name) and the known spell ids; its cap goes from 900 to 2400 bytes.
 - A gameplay primer, [docs/FOREVER-PRIMER.md](docs/FOREVER-PRIMER.md) (`gameplayPrimerFile`), goes to the agent for game messages; the addon/macro primer only when the message mentions addon or Lua code.
+- Chats are per character: each character on the account has its own chat tabs, and so its own agent sessions. Chats from before go to the first character that logs in.
+- Per-character memory (`memoryDir`, default `memories` in the default folder): one `<Name>-<Realm>.md` per character goes into every run's system prompt and the agent keeps it up to date, so a new chat starts from it instead of resuming a long, token-heavy session.
 - `bridge/install-startup.ps1` registers a Task Scheduler job that starts the bridge minimized at logon.
 
 ### Changed

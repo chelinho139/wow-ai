@@ -212,3 +212,14 @@ test('slotNumber wraps and SILENT_WAV is a valid RIFF header', () => {
   assert.equal(P.sessKey({ session: 's', chat: 'c' }), 'chat:c');
   assert.equal(P.sessKey({ session: 's', chat: '' }), 's:default');
 });
+
+test('characterKey names the memory file from the context; systemPrompt carries that memory', () => {
+  assert.equal(P.characterKey('Game: x\nCharacter: Ryuk Kira on Old Blanchy, level 23 Undead Warlock (Horde)'), 'Ryuk_Kira-Old_Blanchy');
+  assert.equal(P.characterKey('Character: Testchar, level 5'), 'Testchar');
+  assert.equal(P.characterKey('Character: ../../evil on x/y'), '_evil-x_y', 'no path characters survive');
+  assert.equal(P.characterKey('Location: Durotar'), '');
+  const s = P.systemPrompt('Character: Testchar', '', { file: 'C:\m\Testchar.md', text: '- wants Felhunter\n' });
+  assert.ok(s.includes('C:\m\Testchar.md') && s.includes('- wants Felhunter'));
+  assert.ok(P.systemPrompt('Character: Testchar', '', { file: 'f', text: '' }).includes('(empty so far)'));
+  assert.ok(!P.systemPrompt('', '', { file: 'f', text: 'x' }).includes('Memory for this character'), 'no memory without context');
+});
