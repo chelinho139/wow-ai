@@ -1,0 +1,80 @@
+name: rust
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable Rust
+        run: rustup update stable --no-self-update
+      - name: Select stable Rust
+        run: rustup default stable
+      - name: Install check tools
+        run: rustup component add rustfmt clippy
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+      - run: cargo build --workspace --release --locked
+      - run: cargo run --locked -- --help
+      - run: cargo run --locked -- --version
+      - uses: actions/setup-node@v4
+        if: runner.os == 'Linux'
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install Lua test tooling
+        if: runner.os == 'Linux'
+        run: npm ci
+      - name: Check legacy fixtures and load Rust slots in Lua
+        if: runner.os == 'Linux'
+        run: |
+          node rust/bridge/tests/generate-fixtures.cjs
+          node rust/bridge/tests/generate-frame-fixtures.cjs
+          git diff --exit-code -- rust/bridge/tests/fixtures
+          node rust/bridge/tests/validate-slot.cjs
+          node rust/bridge/tests/validate-pipeline.cjs
+          node rust/bridge/tests/validate-install.cjs
+      - name: Smoke-test Windows release executable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & .\target\release\wow-ai-reforged.exe --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\target\release\wow-ai-reforged.exe --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\target\release\wow-ai-reforged.exe self-test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\target\release\wow-ai-reforged.exe agents
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Path "$env:TEMP\fake-wow" | Out-Null
+          New-Item -ItemType File -Path "$env:TEMP\fake-wow\Wow.exe" | Out-Null
+          & .\target\release\wow-ai-reforged.exe setup --wow "$env:TEMP\fake-wow"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Remove-Item -Recurse -Force "$env:TEMP\fake-wow"
+      - name: Package Windows preview
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path windows-preview | Out-Null
+          Copy-Item target/release/wow-ai-reforged.exe windows-preview/
+          Copy-Item LICENSE windows-preview/
+          Copy-Item rust/WINDOWS-TESTING.md windows-preview/README.md
+          Copy-Item rust/config.example.json windows-preview/config.example.json
+          @("Commit: $env:GITHUB_SHA", "Run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID", "Target: Windows x64", "Status: standalone preview with native addon setup and live screen capture loop") | Set-Content windows-preview/BUILD.txt
+          $binaryHash = Get-FileHash windows-preview/wow-ai-reforged.exe -Algorithm SHA256
+          "$($binaryHash.Hash.ToLowerInvariant())  wow-ai-reforged.exe" | Set-Content -Encoding ascii windows-preview/SHA256SUMS.txt
+      - name: Upload Windows preview
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-ai-reforged-windows-x64
+          path: windows-preview/
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "project_dir": "C:/Projects/YOUR_PROJECT",
+  "data_dir": "./reforged-data",
+  "agent": "codex",
+  "timeout_ms": 1800000,
+  "max_output_bytes": 1048576,
+  "agents": {
+    "codex": {
+      "permission_mode": "default"
+    }
+  }
+}
