@@ -1,5 +1,5 @@
 //! Basic-chat slot schema. Maps, macros and history restoration are deferred.
-use crate::protocol::lua_string;
+use crate::{agents::AgentCapability, protocol::lua_string};
 use std::fmt::Write;
 
 #[derive(Debug, Clone, Copy)]
@@ -25,6 +25,10 @@ pub struct Reply {
     pub cwd: String,
     pub session: String,
     pub agent: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub effort: String,
     pub summary: Option<String>,
     pub denied: Vec<String>,
 }
@@ -39,6 +43,9 @@ pub struct Snapshot {
     pub cwd: String,
     pub agent: String,
     pub agents: Vec<String>,
+    /// Versioned configuration choices advertised to capable addon clients.
+    /// `None` preserves the legacy slot schema for compatibility snapshots.
+    pub capabilities: Option<Vec<AgentCapability>>,
     pub replies: Vec<Reply>,
 }
 
@@ -71,6 +78,33 @@ pub fn serialize(target: Target, snapshot: &Snapshot) -> Result<String, &'static
     if let Some(online) = snapshot.online {
         writeln!(out, "\tbridgeOnline = {online},").unwrap();
     }
+    if let Some(capabilities) = &snapshot.capabilities {
+        out.push_str("\tcapabilities = {\n\t\tversion = 1,\n\t\tagents = {\n");
+        for capability in capabilities {
+            writeln!(
+                out,
+                "\t\t\t{{ id = {}, name = {}, available = {}, reason = {}, defaultModel = {}, defaultEffort = {}, models = {{",
+                lua_string(&capability.id),
+                lua_string(&capability.name),
+                capability.available,
+                lua_string(&capability.reason),
+                lua_string(&capability.default_model),
+                lua_string(&capability.default_effort),
+            )
+            .unwrap();
+            for model in &capability.models {
+                writeln!(
+                    out,
+                    "\t\t\t\t{{ id = {}, efforts = {{ {} }} }},",
+                    lua_string(&model.id),
+                    strings(&model.efforts),
+                )
+                .unwrap();
+            }
+            out.push_str("\t\t\t}, },\n");
+        }
+        out.push_str("\t\t},\n\t},\n");
+    }
     out.push_str("\treplies = {\n");
     for r in &snapshot.replies {
         let status = match r.status {
@@ -79,6 +113,12 @@ pub fn serialize(target: Target, snapshot: &Snapshot) -> Result<String, &'static
             Status::Error => "error",
         };
         writeln!(out, "\t\t{{\n\t\t\tchat = {},\n\t\t\tid = {},\n\t\t\tstatus = {},\n\t\t\ttext = {},\n\t\t\tcwd = {},\n\t\t\tsession = {},\n\t\t\tagent = {},", lua_string(&r.chat), r.id, lua_string(status), lua_string(&r.text), lua_string(&r.cwd), lua_string(&r.session), lua_string(&r.agent)).unwrap();
+        if !r.model.is_empty() {
+            writeln!(out, "\t\t\tmodel = {},", lua_string(&r.model)).unwrap();
+        }
+        if !r.effort.is_empty() {
+            writeln!(out, "\t\t\teffort = {},", lua_string(&r.effort)).unwrap();
+        }
         if let Some(summary) = &r.summary
             && !summary.is_empty()
         {

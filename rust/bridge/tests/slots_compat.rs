@@ -1,4 +1,5 @@
 mod support;
+use wow_ai_reforged::agents::{AgentCapability, ModelCapability};
 use wow_ai_reforged::slots::{Target, serialize};
 #[test]
 fn matches_node_slot_schema_for_every_status_and_optional_fields() {
@@ -28,4 +29,30 @@ fn empty_snapshot_and_unsafe_numbers() {
     let mut s = support::snapshot();
     s.replies[0].id = 1_u64 << 53;
     assert!(serialize(Target::Slot, &s).is_err());
+}
+
+#[test]
+fn serializes_versioned_capabilities_and_effective_reply_configuration() {
+    let mut snapshot = support::snapshot();
+    snapshot.capabilities = Some(vec![AgentCapability {
+        id: "codex".into(),
+        name: "Codex".into(),
+        available: true,
+        reason: String::new(),
+        default_model: "terra".into(),
+        default_effort: "low".into(),
+        models: vec![ModelCapability {
+            id: "terra".into(),
+            efforts: vec!["low".into(), "high".into()],
+        }],
+    }]);
+    snapshot.replies[0].model = "terra".into();
+    snapshot.replies[0].effort = "low".into();
+
+    let output = serialize(Target::Slot, &snapshot).unwrap();
+    assert!(output.contains("capabilities = {\n\t\tversion = 1,"));
+    assert!(output.contains("defaultModel = \"terra\""));
+    assert!(output.contains("efforts = { \"low\", \"high\" }"));
+    assert!(output.contains("model = \"terra\""));
+    assert!(output.contains("effort = \"low\""));
 }

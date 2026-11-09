@@ -244,13 +244,13 @@ test('deleting a chat tells the bridge to forget it, and a restore never brings 
   assert.ok(!stripRecords(vm).find(r => r.flags === 'd'), 'forget record left the strip');
 });
 
-test('until the bridge answers, Connect replaces Send and a message stays in the box', () => {
+test('until the bridge answers, recovery accompanies Send and a message stays in the box', () => {
   const vm = newVM();
   login(vm);
   vm.run('WoWAI.Toggle(true)');
   assert.equal(vm.evaluate('WoWAI.IsConnected()'), 'false');
   const texts = () => vm.evaluate('table.concat(STUB.texts, "|")');
-  assert.ok(texts().includes('Not connected - start the bridge, then click Connect'));
+  assert.ok(texts().includes('Bridge offline. Start it, then reconnect. Drafts stay here.'));
   // Sending while disconnected puts the text back in the box and starts a connect attempt.
   vm.run('WoWAIInput:SetText("fix the bug"); WoWAI.SendFromInput()');
   assert.equal(vm.evaluate('WoWAIDB.chats[1].pendingId'), null, 'nothing sent');
@@ -263,7 +263,7 @@ test('until the bridge answers, Connect replaces Send and a message stays in the
   // No answer within CONNECT_WAIT: the attempt is reported as failed, Connect is back.
   vm.run('STUB.now = STUB.now + 20; STUB.Tick()');
   assert.equal(vm.evaluate('WoWAI.IsConnected()'), 'false');
-  assert.ok(texts().includes('No answer from the bridge'));
+  assert.ok(texts().includes('Bridge did not answer'));
   assert.equal(vm.evaluate('WoWAIInput:GetText()'), 'fix the bug', 'message still in the box after a failed attempt');
   // Click Connect again; this time the bridge answers the hello poll. Nothing was
   // queued by that click, so the message waits for the user.
@@ -403,7 +403,8 @@ test('a chat can pick its agent: the strip says so, replies are labelled by thei
   vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
   assert.equal(vm.evaluate('WoWAI.IsConnected()'), 'true');
   const texts = () => vm.evaluate('table.concat(STUB.texts, "|")');
-  assert.ok(texts().includes('agent: Claude (bridge default)'), 'the cwd line names the bridge default');
+  vm.run('WoWAI.Toggle(true)');
+  assert.ok(texts().includes('Claude ▾'), 'header names the bridge agent');
   // Without an agent of its own the chat sends no agent flag, and the reply is labelled Claude.
   vm.run('WoWAI.Send("hello")');
   const chatId = vm.evaluate('WoWAIDB.chats[1].id');
@@ -424,7 +425,7 @@ test('a chat can pick its agent: the strip says so, replies are labelled by thei
   rec = stripRecords(vm).find(r => r.text === 'now with codex');
   assert.equal(rec.flags, 'agent=codex');
   assert.equal(vm.evaluate('WoWAIDB.outbox.agent'), 'codex');
-  assert.ok(texts().includes('agent: Codex   mode: pixel'));
+  assert.ok(texts().includes('Codex ▾'));
   const id2 = vm.num('WoWAIDB.chats[1].pendingId');
   nextSlot(vm, slot(`{ chat = "${chatId}", id = ${id2}, status = "done", text = "codex here", agent = "codex" }`));
   vm.run('STUB.now = STUB.now + 6; STUB.Tick()');
@@ -809,4 +810,39 @@ test('slot-only idle checks preserve the slot pool for a full day', () => {
   assert.ok(vm.num('LOADED_COUNT') < 150);
   assert.equal(vm.evaluate('STUB.reloaded'), 'false');
   assert.equal(vm.evaluate('WoWAI.IsConnected()'), 'true');
+});
+
+test('reading history survives reply redraws and new chat follows the bottom', () => {
+  const vm = newVM(); login(vm); vm.run('WoWAI.Toggle(true); STUB.RunTimers()');
+  vm.run('WoWAIScroll.scrollRange = 500; WoWAIScroll:SetVerticalScroll(100); WoWAI.Render(); STUB.now=STUB.now+1; STUB.RunTimers()');
+  assert.equal(vm.num('WoWAIScroll:GetVerticalScroll()'), 100);
+  vm.run('WoWAIScroll:SetVerticalScroll(490); WoWAI.Render(); STUB.now=STUB.now+1; STUB.RunTimers()');
+  assert.equal(vm.num('WoWAIScroll:GetVerticalScroll()'), 500);
+});
+
+test('per-chat model and effort travel on pixel and reload paths; resend retains its snapshot', () => {
+  const vm = newVM(); login(vm); connect(vm);
+  nextSlot(vm, `{ now=time(), agent="codex", agents={"codex"}, capabilities={version=1, agents={{id="codex",name="Codex",available=true,defaultModel="terra",models={{id="terra",efforts={"low"}}}}}}, replies={} }`);
+  vm.run('WoWAI.Connect(); STUB.now=STUB.now+6; STUB.Tick(); WoWAIDB.chats[1].model="terra"; WoWAIDB.chats[1].effort="low"; WoWAI.Send("configured request")');
+  let rec = stripRecords(vm).find(r => r.text === 'configured request');
+  assert.match(rec.flags, /model=terra;effort=low/);
+  assert.equal(vm.evaluate('WoWAIDB.outbox.model'), 'terra');
+  assert.equal(vm.evaluate('WoWAIDB.outbox.effort'), 'low');
+  vm.run('WoWAIDB.chats[1].model="changed"; WoWAI.Resend()');
+  rec = stripRecords(vm).find(r => r.text === 'configured request');
+  assert.match(rec.flags, /model=terra;effort=low/);
+  vm.run('WoWAI.NewChat("quest"); WoWAI.ShowAgentSelector()');
+  assert.equal(vm.evaluate('WoWAIDB.chats[2].model'), null);
+  vm.run('WoWAI.SwitchChat(WoWAIDB.chats[1].id)');
+  assert.equal(vm.evaluate('WoWAIDB.chats[1].model'), 'changed');
+  assert.equal(vm.evaluate('WoWAIDB.chats[1].effort'), 'low');
+  vm.run(`WoWAI.ShowAgentSelector()
+    local function click(frame)
+      if frame.shown == false then return false end
+      if frame.text == 'Reset to bridge defaults' and frame.scripts.OnClick then frame.scripts.OnClick(frame); return true end
+      for _, child in ipairs(frame.children or {}) do if click(child) then return true end end
+    end
+    assert(click(WoWAIFrame))`);
+  assert.equal(vm.evaluate('WoWAIDB.chats[1].model'), null);
+  assert.equal(vm.evaluate('WoWAIDB.chats[1].effort'), null);
 });

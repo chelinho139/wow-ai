@@ -14,6 +14,7 @@ pub fn snapshot() -> Snapshot {
             "hermes".into(),
             "gemini".into(),
         ],
+        capabilities: None,
         replies: [Status::Working, Status::Done, Status::Error]
             .into_iter()
             .enumerate()
@@ -25,6 +26,8 @@ pub fn snapshot() -> Snapshot {
                 cwd: String::new(),
                 session: "session".into(),
                 agent: "codex".into(),
+                model: String::new(),
+                effort: String::new(),
                 summary: (i == 1).then(|| "short reply".into()),
                 denied: if i == 2 {
                     vec!["WebSearch".into(), "Bash(git:*)".into()]

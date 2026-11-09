@@ -61,7 +61,9 @@ function Methods.SetPoint(self, point, rel, relPoint, x, y)
 	if type(rel) == "number" then x, y = rel, relPoint end
 	self.x, self.y = x or 0, y or 0
 end
-function Methods.GetVerticalScrollRange(self) return 0 end
+function Methods.GetVerticalScrollRange(self) return self.scrollRange or 0 end
+function Methods.GetVerticalScroll(self) return self.scrollValue or 0 end
+function Methods.SetVerticalScroll(self, value) self.scrollValue = value end
 function Methods.CreateTexture(self, name, layer)
 	local t = NewObject("Texture", name, self)
 	table.insert(self.textures, t)

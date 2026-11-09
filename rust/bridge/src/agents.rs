@@ -65,12 +65,276 @@ pub struct AgentSettings {
     pub launcher_args: Vec<String>,
     #[serde(default)]
     pub model: Option<String>,
+    #[serde(default, alias = "extraArgs")]
+    pub extra_args: Vec<String>,
+    #[serde(default)]
+    pub models: Vec<ModelConfig>,
+    #[serde(default, alias = "reasoningEffort")]
+    pub reasoning_effort: Option<String>,
+    #[serde(default, alias = "reasoningEfforts")]
+    pub reasoning_efforts: Vec<String>,
     #[serde(default)]
     pub permission_mode: PermissionMode,
     #[serde(default)]
     pub allowed_tools: Vec<String>,
     #[serde(default)]
     pub denied_tools: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ModelConfig {
+    Id(String),
+    Detailed {
+        id: String,
+        #[serde(default, alias = "reasoningEfforts")]
+        reasoning_efforts: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelCapability {
+    pub id: String,
+    pub efforts: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentCapability {
+    pub id: String,
+    pub name: String,
+    pub available: bool,
+    pub reason: String,
+    pub default_model: String,
+    pub default_effort: String,
+    pub models: Vec<ModelCapability>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EffectiveSettings {
+    pub settings: AgentSettings,
+    pub model: String,
+    pub effort: String,
+    pub fingerprint: String,
+}
+
+fn display_name(kind: AgentKind) -> &'static str {
+    match kind {
+        AgentKind::Claude => "Claude Code",
+        AgentKind::Codex => "Codex",
+        AgentKind::Grok => "Grok Build",
+        AgentKind::Agy => "Antigravity",
+        AgentKind::Hermes => "Hermes",
+        AgentKind::Gemini => "Gemini",
+    }
+}
+
+fn valid_model(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'/' | b':' | b'-'))
+}
+
+fn valid_effort(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 32
+        && bytes[0].is_ascii_lowercase()
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-'))
+}
+
+fn configured_effort(kind: AgentKind, settings: &AgentSettings) -> String {
+    if kind != AgentKind::Codex {
+        return String::new();
+    }
+    if let Some(value) = settings.reasoning_effort.as_deref() {
+        return value.trim().to_ascii_lowercase();
+    }
+    settings
+        .extra_args
+        .iter()
+        .enumerate()
+        .find_map(|(index, value)| {
+            let candidate = if value == "-c" {
+                settings.extra_args.get(index + 1)?.as_str()
+            } else {
+                value.strip_prefix("-c=").unwrap_or(value)
+            };
+            candidate
+                .strip_prefix("model_reasoning_effort=")
+                .map(|effort| effort.trim_matches(['\"', '\'']).to_ascii_lowercase())
+        })
+        .unwrap_or_default()
+}
+
+fn without_codex_effort_args(values: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut index = 0;
+    while index < values.len() {
+        let value = &values[index];
+        if value == "-c"
+            && values
+                .get(index + 1)
+                .is_some_and(|next| next.starts_with("model_reasoning_effort="))
+        {
+            index += 2;
+            continue;
+        }
+        let candidate = value.strip_prefix("-c=").unwrap_or(value);
+        if candidate.starts_with("model_reasoning_effort=") {
+            index += 1;
+            continue;
+        }
+        out.push(value.clone());
+        index += 1;
+    }
+    out
+}
+
+pub fn capability(kind: AgentKind, settings: &AgentSettings) -> AgentCapability {
+    let shared_efforts: Vec<String> = if kind == AgentKind::Codex {
+        settings
+            .reasoning_efforts
+            .iter()
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| valid_effort(value))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let mut models = Vec::<ModelCapability>::new();
+    for configured in &settings.models {
+        let (id, configured_efforts) = match configured {
+            ModelConfig::Id(id) => (id, None),
+            ModelConfig::Detailed {
+                id,
+                reasoning_efforts,
+            } => (id, Some(reasoning_efforts)),
+        };
+        if !valid_model(id) {
+            continue;
+        }
+        let efforts = configured_efforts
+            .filter(|_| kind == AgentKind::Codex)
+            .map(|values| {
+                values
+                    .iter()
+                    .map(|value| value.trim().to_ascii_lowercase())
+                    .filter(|value| valid_effort(value))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_else(|| shared_efforts.clone());
+        if let Some(existing) = models.iter_mut().find(|model| model.id == *id) {
+            existing.efforts = dedup(efforts);
+        } else {
+            models.push(ModelCapability {
+                id: id.clone(),
+                efforts: dedup(efforts),
+            });
+        }
+    }
+    let default_model = settings.model.clone().unwrap_or_default();
+    let default_effort = configured_effort(kind, settings);
+    if valid_model(&default_model) {
+        if let Some(model) = models.iter_mut().find(|model| model.id == default_model) {
+            if valid_effort(&default_effort) && !model.efforts.contains(&default_effort) {
+                model.efforts.push(default_effort.clone());
+            }
+        } else {
+            let mut efforts = shared_efforts;
+            if valid_effort(&default_effort) && !efforts.contains(&default_effort) {
+                efforts.push(default_effort.clone());
+            }
+            models.push(ModelCapability {
+                id: default_model.clone(),
+                efforts,
+            });
+        }
+    }
+    AgentCapability {
+        id: kind.id().into(),
+        name: display_name(kind).into(),
+        available: true,
+        reason: String::new(),
+        default_model,
+        default_effort,
+        models,
+    }
+}
+
+pub fn effective_settings(
+    kind: AgentKind,
+    settings: &AgentSettings,
+    model: &str,
+    effort: &str,
+) -> Result<EffectiveSettings, String> {
+    let cap = capability(kind, settings);
+    let selected_model = model.trim();
+    let selected_effort = effort.trim().to_ascii_lowercase();
+    let effective_model = if selected_model.is_empty() {
+        cap.default_model.clone()
+    } else {
+        selected_model.to_owned()
+    };
+    if !selected_model.is_empty() && !cap.models.iter().any(|entry| entry.id == selected_model) {
+        let choices = cap
+            .models
+            .iter()
+            .map(|entry| entry.id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!(
+            "Model \"{selected_model}\" is not available for {}. Choose Bridge default{}.",
+            cap.name,
+            if choices.is_empty() {
+                String::new()
+            } else {
+                format!(" or one of: {choices}")
+            }
+        ));
+    }
+    let effective_effort = if selected_effort.is_empty() {
+        cap.default_effort.clone()
+    } else {
+        selected_effort.clone()
+    };
+    let model_cap = cap.models.iter().find(|entry| entry.id == effective_model);
+    if (!selected_model.is_empty() || !selected_effort.is_empty())
+        && !effective_effort.is_empty()
+        && !model_cap.is_some_and(|entry| entry.efforts.contains(&effective_effort))
+    {
+        let allowed = model_cap
+            .filter(|entry| !entry.efforts.is_empty())
+            .map(|entry| entry.efforts.join(", "))
+            .unwrap_or_else(|| "none".into());
+        return Err(format!(
+            "Reasoning effort \"{effective_effort}\" is not supported by {}{}; supported efforts: {allowed}.",
+            cap.name,
+            if effective_model.is_empty() {
+                String::new()
+            } else {
+                format!(" model {effective_model}")
+            }
+        ));
+    }
+    let mut effective = settings.clone();
+    if !selected_model.is_empty() {
+        effective.model = Some(selected_model.into());
+    }
+    if !selected_effort.is_empty() {
+        effective.reasoning_effort = Some(selected_effort.clone());
+        if kind == AgentKind::Codex {
+            effective.extra_args = without_codex_effort_args(&effective.extra_args);
+        }
+    }
+    Ok(EffectiveSettings {
+        settings: effective,
+        fingerprint: format!("{}\x1f{effective_model}\x1f{effective_effort}", kind.id()),
+        model: effective_model,
+        effort: effective_effort,
+    })
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -236,6 +500,19 @@ fn build_codex(
         ],
     );
     model(invocation, settings, "-m");
+    invocation
+        .args
+        .extend(settings.extra_args.iter().map(Into::into));
+    if let Some(effort) = settings
+        .reasoning_effort
+        .as_deref()
+        .filter(|effort| !effort.is_empty())
+    {
+        args(
+            invocation,
+            ["-c", &format!("model_reasoning_effort=\"{effort}\"")],
+        );
+    }
     if let Some(session) = resume {
         args(invocation, ["resume", session]);
     }
@@ -904,6 +1181,7 @@ mod tests {
             permission_mode: PermissionMode::AcceptEdits,
             allowed_tools: Vec::new(),
             denied_tools: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -934,7 +1212,7 @@ mod tests {
             .is_err()
         );
         assert!(
-            serde_json::from_str::<AgentSettings>(r#"{"executable":"agent","extra_args":[]}"#)
+            serde_json::from_str::<AgentSettings>(r#"{"executable":"agent","unknown":[]}"#)
                 .is_err()
         );
         for (name, expected) in [
@@ -949,6 +1227,61 @@ mod tests {
             assert_eq!(expected.id(), name.to_ascii_lowercase());
         }
         assert!(AgentKind::parse_name("unknown").is_err());
+    }
+
+    #[test]
+    fn capabilities_validate_model_and_effort_as_a_pair() {
+        let settings: AgentSettings = serde_json::from_str(
+            r#"{
+                "executable":"codex",
+                "model":"terra",
+                "reasoningEffort":"low",
+                "models":[
+                    {"id":"terra","reasoningEfforts":["low"]},
+                    {"id":"sol","reasoningEfforts":["high"]}
+                ]
+            }"#,
+        )
+        .unwrap();
+        let cap = capability(AgentKind::Codex, &settings);
+        assert_eq!(cap.default_model, "terra");
+        assert_eq!(cap.default_effort, "low");
+        assert_eq!(cap.models[1].efforts, ["high"]);
+        assert!(effective_settings(AgentKind::Codex, &settings, "sol", "").is_err());
+        let effective = effective_settings(AgentKind::Codex, &settings, "sol", "high").unwrap();
+        assert_eq!(effective.model, "sol");
+        assert_eq!(effective.effort, "high");
+        assert_eq!(effective.settings.model.as_deref(), Some("sol"));
+    }
+
+    #[test]
+    fn codex_effort_override_replaces_configured_argument() {
+        let mut settings = settings();
+        settings.extra_args = vec![
+            "--profile".into(),
+            "fast".into(),
+            "-c".into(),
+            "model_reasoning_effort=\"low\"".into(),
+        ];
+        settings.reasoning_efforts = vec!["low".into(), "high".into()];
+        let effective = effective_settings(AgentKind::Codex, &settings, "", "high").unwrap();
+        let invocation = build(
+            AgentKind::Codex,
+            &effective.settings,
+            Path::new("C:/project"),
+            "hello",
+            None,
+            Path::new("unused"),
+        )
+        .unwrap();
+        let args = strings(&invocation);
+        assert!(args.windows(2).any(|pair| pair == ["--profile", "fast"]));
+        assert_eq!(
+            args.iter()
+                .filter(|value| value.starts_with("model_reasoning_effort="))
+                .collect::<Vec<_>>(),
+            [&"model_reasoning_effort=\"high\""]
+        );
     }
 
     #[test]

@@ -144,6 +144,8 @@ struct Publisher<'a> {
     kind: AgentKind,
     chat: &'a str,
     id: u64,
+    model: &'a str,
+    effort: &'a str,
 }
 impl Publisher<'_> {
     fn publish(
@@ -159,6 +161,8 @@ impl Publisher<'_> {
             kind,
             chat,
             id,
+            model,
+            effort,
         } = *self;
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -171,6 +175,7 @@ impl Publisher<'_> {
             cwd: project.to_string_lossy().into_owned(),
             agent: kind.id().into(),
             agents: vec![kind.id().into()],
+            capabilities: None,
             replies: vec![Reply {
                 chat: chat.into(),
                 id,
@@ -179,6 +184,8 @@ impl Publisher<'_> {
                 cwd: project.to_string_lossy().into_owned(),
                 session: session.into(),
                 agent: kind.id().into(),
+                model: model.into(),
+                effort: effort.into(),
                 summary: None,
                 denied,
             }],
@@ -226,10 +233,18 @@ pub fn inject(
             "a completed reply is awaiting publication; run recover --config <file> before injecting another prompt",
         ));
     }
+    let effective = agents::effective_settings(kind, settings, "", "").map_err(io::Error::other)?;
+    let settings = &effective.settings;
     let session = state
         .sessions
         .get(chat)
-        .filter(|s| !fresh_session && s.agent == kind.id() && s.project == cfg.project_dir)
+        .filter(|s| {
+            !fresh_session
+                && s.agent == kind.id()
+                && s.project == cfg.project_dir
+                && (s.config_fingerprint.is_empty()
+                    || s.config_fingerprint == effective.fingerprint)
+        })
         .map(|s| s.id.clone());
     if session.is_none() {
         state.sessions.remove(chat);
@@ -257,6 +272,8 @@ pub fn inject(
         kind,
         chat,
         id,
+        model: &effective.model,
+        effort: &effective.effort,
     };
     publisher.publish(
         Status::Working,
@@ -312,6 +329,7 @@ pub fn inject(
                 state.sessions.insert(
                     chat.into(),
                     Session {
+                        config_fingerprint: effective.fingerprint.clone(),
                         agent: kind.id().into(),
                         project: cfg.project_dir.clone(),
                         id: session.clone(),
@@ -322,6 +340,8 @@ pub fn inject(
             }
             state.record(chat, "assistant", &output.text, id, kind.id())?;
             state.pending = Some(PendingReply {
+                model: effective.model.clone(),
+                effort: effective.effort.clone(),
                 addon_dir: None,
                 chat: chat.into(),
                 id,
@@ -402,6 +422,8 @@ pub fn recover(cfg: &Config) -> io::Result<Injection> {
         kind: pending.agent,
         chat: &pending.chat,
         id: pending.id,
+        model: &pending.model,
+        effort: &pending.effort,
     }
     .publish(
         Status::Done,

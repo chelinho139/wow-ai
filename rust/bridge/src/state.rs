@@ -28,6 +28,10 @@ pub struct State {
 #[serde(deny_unknown_fields)]
 pub struct PendingReply {
     #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub effort: String,
+    #[serde(default)]
     pub addon_dir: Option<PathBuf>,
     pub chat: String,
     pub id: u64,
@@ -40,6 +44,8 @@ pub struct PendingReply {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Session {
+    #[serde(default)]
+    pub config_fingerprint: String,
     pub agent: String,
     pub project: PathBuf,
     pub id: String,

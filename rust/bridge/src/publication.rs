@@ -161,6 +161,7 @@ mod tests {
             cwd: String::new(),
             agent: "codex".into(),
             agents: vec!["codex".into()],
+            capabilities: None,
             replies: vec![],
         }
     }

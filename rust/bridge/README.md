@@ -129,3 +129,42 @@ Install the Bacon watcher once with `cargo install --locked bacon`. From the
 repository root, run `bacon` to watch the default `check` job. Use `bacon clippy`,
 `bacon test`, `bacon test-live`, `bacon fmt`, `bacon self-test`, or `bacon release`
 for the other project jobs configured in the root `bacon.toml`.
+
+## Per-chat header configuration
+
+Reforged bridge development targets this Rust implementation. The JavaScript
+`bridge/` directory is retained for upstream fork synchronization.
+
+The addon header reads versioned capabilities from Rust snapshots. Each agent
+advertises its configured default, allowed model alternatives, and installation
+availability. These lists are configured locally; they do not query provider
+accounts. Configure them in the JSON file passed to `--config`, for example:
+
+```json
+{
+  "model": "gpt-6.1-terra",
+  "models": [
+    { "id": "gpt-6.1-terra", "reasoningEfforts": ["low", "high"] }
+  ],
+  "reasoningEffort": "low"
+}
+```
+
+Place this block under `agents.codex` alongside existing executable and permission
+settings. `reasoningEfforts` on the agent supplies a shared list; a model's own
+list takes precedence. Reasoning overrides are supported by the Codex adapter.
+Other adapters advertise model choices only. The configured model is included as
+a choice automatically. Codex defaults in `extraArgs` using
+`model_reasoning_effort` are recognized and replaced when an effort is selected.
+
+The addon sends `model=` and `effort=` flags per request. Rust validates the
+selected model and effective effort together before invoking a backend, and
+returns the effective model/effort with replies. Unsupported combinations return
+an actionable error. No UI-supplied value is interpreted as a command line.
+Changes start a fresh backend session on the next request and retain the visible
+transcript. Existing requests and saved completed replies keep their settings.
+Reset removes chat overrides and inherits Rust configuration defaults.
+
+The existing Rust live transport receives pixel records and publishes replies to
+slots and Inbox.lua. This feature does not add a SavedVariables reload-outbox
+reader. Older bridges without capabilities expose agent selection only.

@@ -8,6 +8,8 @@ pub struct Flags {
     pub context: bool,
     pub allow: Vec<String>,
     pub agent: String,
+    pub model: String,
+    pub effort: String,
 }
 
 pub fn parse_flags(input: &str) -> Flags {
@@ -29,6 +31,10 @@ pub fn parse_flags(input: &str) -> Flags {
                     );
                 } else if let Some(agent) = token.strip_prefix("agent=") {
                     flags.agent = agent.trim().to_lowercase();
+                } else if let Some(model) = token.strip_prefix("model=") {
+                    flags.model = model.trim().to_owned();
+                } else if let Some(effort) = token.strip_prefix("effort=") {
+                    flags.effort = effort.trim().to_lowercase();
                 }
             }
         }
@@ -161,5 +167,13 @@ mod tests {
         );
         assert_eq!(jobs[0].context.as_deref(), Some(""));
         assert_eq!(jobs[1].context, None);
+    }
+
+    #[test]
+    fn parses_per_chat_model_and_effort_flags() {
+        let flags = parse_flags("agent=CODEX;model=gpt-6.1-terra;effort=LOW");
+        assert_eq!(flags.agent, "codex");
+        assert_eq!(flags.model, "gpt-6.1-terra");
+        assert_eq!(flags.effort, "low");
     }
 }

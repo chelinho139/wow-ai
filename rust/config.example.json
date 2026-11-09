@@ -7,7 +7,9 @@
   "max_output_bytes": 1048576,
   "agents": {
     "codex": {
-      "permission_mode": "default"
+      "permission_mode": "default",
+      "models": [],
+      "reasoningEfforts": []
     }
   }
 }

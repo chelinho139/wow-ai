@@ -178,6 +178,8 @@ impl<'a> LiveBridge<'a> {
                 status: Status::Done,
                 text: &pending.text,
                 session: pending.session.as_deref().unwrap_or(""),
+                model: &pending.model,
+                effort: &pending.effort,
                 denied: pending.denied,
             })?;
             if let Some(sig) = &self.signals {
@@ -425,10 +427,26 @@ fn execute_job(
             "In-game permission changes are not supported by this live preview; edit agent settings in config",
         );
     }
+    let effective =
+        match agents::effective_settings(kind, settings, &job.flags.model, &job.flags.effort) {
+            Ok(value) => value,
+            Err(error) => {
+                return publish_request_error(cfg, data_dir, addon_dir, signals, job, &error);
+            }
+        };
+    let settings = &effective.settings;
     let session = state
         .sessions
         .get(&job.chat)
-        .filter(|s| !job.flags.new_session && s.agent == kind.id() && s.project == cfg.project_dir)
+        .filter(|s| {
+            !job.flags.new_session
+                && s.agent == kind.id()
+                && s.project == cfg.project_dir
+                && (s.config_fingerprint == effective.fingerprint
+                    || (s.config_fingerprint.is_empty()
+                        && job.flags.model.is_empty()
+                        && job.flags.effort.is_empty()))
+        })
         .map(|s| s.id.clone());
 
     if session.is_none() {
@@ -478,6 +496,8 @@ fn execute_job(
         kind,
         chat: &job.chat,
         id: job.id,
+        model: &effective.model,
+        effort: &effective.effort,
         status: Status::Working,
         text: "Agent is running",
         session: "",
@@ -584,6 +604,7 @@ fn execute_job(
                 state.sessions.insert(
                     job.chat.clone(),
                     Session {
+                        config_fingerprint: effective.fingerprint.clone(),
                         agent: kind.id().into(),
                         project: cfg.project_dir.clone(),
                         id: new_session.clone(),
@@ -594,6 +615,8 @@ fn execute_job(
             }
             state.record(&job.chat, "assistant", &output.text, job.id, kind.id())?;
             state.pending = Some(PendingReply {
+                model: effective.model.clone(),
+                effort: effective.effort.clone(),
                 addon_dir: addon_dir.map(Path::to_path_buf),
                 chat: job.chat.clone(),
                 id: job.id,
@@ -616,6 +639,8 @@ fn execute_job(
                 status: Status::Done,
                 text: &output.text,
                 session: output.session.as_deref().unwrap_or(""),
+                model: &effective.model,
+                effort: &effective.effort,
                 denied: output.denied,
             })?;
 
@@ -663,6 +688,8 @@ fn execute_job(
                 status: Status::Error,
                 text: &message,
                 session: session.as_deref().unwrap_or(""),
+                model: &effective.model,
+                effort: &effective.effort,
                 denied: vec![],
             }) {
                 failures.push(format!("could not publish error: {e}"));
@@ -699,6 +726,8 @@ struct ReplyPublication<'a> {
     text: &'a str,
     session: &'a str,
     denied: Vec<String>,
+    model: &'a str,
+    effort: &'a str,
 }
 
 fn publish_reply(req: ReplyPublication<'_>) -> io::Result<()> {
@@ -714,6 +743,7 @@ fn publish_reply(req: ReplyPublication<'_>) -> io::Result<()> {
         cwd: req.project.to_string_lossy().into_owned(),
         agent: req.cfg.agent.id().into(),
         agents: req.cfg.agents.keys().cloned().collect(),
+        capabilities: Some(req.cfg.capabilities()),
         replies: crate::live_replies::put(
             req.data_dir,
             req.addon_dir,
@@ -725,6 +755,8 @@ fn publish_reply(req: ReplyPublication<'_>) -> io::Result<()> {
                 cwd: req.project.to_string_lossy().into_owned(),
                 session: req.session.into(),
                 agent: req.kind.id().into(),
+                model: req.model.into(),
+                effort: req.effort.into(),
                 summary: None,
                 denied: req.denied,
             },
@@ -807,6 +839,7 @@ fn publish_connection(
         cwd: cfg.project_dir.to_string_lossy().into_owned(),
         agent: cfg.agent.id().into(),
         agents: cfg.agents.keys().cloned().collect(),
+        capabilities: Some(cfg.capabilities()),
         replies: crate::live_replies::all(data_dir, addon_dir)?,
     };
     if let Some(addons) = addon_dir {
@@ -837,6 +870,8 @@ fn publish_request_error(
         kind: cfg.agent,
         chat: &job.chat,
         id: job.id,
+        model: "",
+        effort: "",
         status: Status::Error,
         text: message,
         session: "",

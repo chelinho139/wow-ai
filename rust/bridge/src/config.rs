@@ -48,6 +48,25 @@ pub fn read_bounded(path: &Path, limit: usize) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 impl Config {
+    pub fn capabilities(&self) -> Vec<crate::agents::AgentCapability> {
+        self.agents
+            .iter()
+            .filter_map(|(id, settings)| {
+                let kind = AgentKind::parse_name(id).ok()?;
+                let mut cap = crate::agents::capability(kind, settings);
+                match crate::process::validate_program(&settings.executable) {
+                    Ok(()) => cap.available = true,
+                    Err(error) => {
+                        cap.available = false;
+                        cap.reason = format!(
+                            "{error}; configure agents.{id}.executable or install the backend"
+                        );
+                    }
+                }
+                Some(cap)
+            })
+            .collect()
+    }
     pub fn load(path: &Path) -> io::Result<Self> {
         let path = path.canonicalize()?;
         let mut cfg: Self =

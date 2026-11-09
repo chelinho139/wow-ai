@@ -392,3 +392,62 @@ fn restart_turns_orphaned_work_into_error_without_rerunning() {
     );
     assert!(f.inbox().contains("status = \"error\""));
 }
+
+#[test]
+fn chat_configuration_is_validated_published_and_resets_sessions() {
+    let mut f = Fixture::new();
+    let mut settings = serde_json::to_value(f.cfg.agents.get("codex").unwrap()).unwrap();
+    settings["model"] = json!("terra");
+    settings["models"] = json!([
+        {"id":"terra","reasoningEfforts":["low","high"]},
+        {"id":"sol","reasoningEfforts":["high"]}
+    ]);
+    settings["reasoning_effort"] = json!("low");
+    f.cfg
+        .agents
+        .insert("codex".into(), serde_json::from_value(settings).unwrap());
+    let mut bridge = LiveBridge::start(&f.cfg, None).unwrap();
+    bridge.accept_frame(&f.frame(1, "h", "")).unwrap();
+    let hello = f.inbox();
+    assert!(hello.contains("capabilities ="));
+    assert!(hello.contains("defaultModel = \"terra\""));
+    bridge
+        .accept_frame(&f.frame(2, "model=terra;effort=low", "first"))
+        .unwrap();
+    assert!(f.inbox().contains("model = \"terra\""));
+    assert!(f.inbox().contains("effort = \"low\""));
+    bridge
+        .accept_frame(&f.frame(3, "model=terra;effort=low", "same"))
+        .unwrap();
+    assert!(f.inbox().contains("[resume=fake-codex-session]"));
+    bridge
+        .accept_frame(&f.frame(4, "model=sol;effort=high", "changed"))
+        .unwrap();
+    assert!(!f.inbox().contains("[resume="));
+    assert!(f.inbox().contains("model = \"sol\""));
+    assert!(
+        bridge
+            .accept_frame(&f.frame(5, "model=sol", "invalid inherited effort"))
+            .is_err()
+    );
+    assert!(f.inbox().contains("status = \"error\""));
+    assert!(
+        bridge
+            .accept_frame(&f.frame(6, "model=unknown", "invalid model"))
+            .is_err()
+    );
+    bridge.accept_frame(&f.frame(7, "", "reset")).unwrap();
+    assert!(f.inbox().contains("model = \"terra\""));
+    assert!(!f.inbox().contains("[resume="));
+    // Different chats retain independent backend sessions and settings.
+    let other = Frame {
+        id: 8,
+        text: "addon-token\x1fother\x1f8\x1f\x1fmodel=sol;effort=high\x1fname\x1fother chat".into(),
+    };
+    bridge.accept_frame(&other).unwrap();
+    bridge
+        .accept_frame(&f.frame(9, "", "back to first"))
+        .unwrap();
+    assert!(f.inbox().contains("[resume=fake-codex-session]"));
+    assert_eq!(State::load(&f.cfg.data_dir).unwrap().sessions.len(), 2);
+}
