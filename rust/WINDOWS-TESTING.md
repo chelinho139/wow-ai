@@ -72,7 +72,9 @@ Ctrl+C publishes an offline snapshot and cancels a running agent process. A forc
 kill or crash cannot publish one: connection loss is detected by heartbeat age
 instead (about 90 seconds with the sound presence channel available). Detection
 is slower without the sound channel because it relies on occasional slot reads.
-Idle addons also use heartbeat expiry; shutdown is not an instant notification.
+While idle, the Rust-aware addon checks a reply slot when a heartbeat is overdue
+(about 35 seconds after the last beat), so Ctrl+C can be detected without sending
+a message. Shutdown is not an instant notification.
 
 ### Agent discovery
 

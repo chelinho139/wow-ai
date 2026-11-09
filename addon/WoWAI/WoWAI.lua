@@ -835,8 +835,13 @@ local function Tick()
 	-- Without presence beats, the only evidence is a slot read; spend one every
 	-- IDLE_POLL_SECONDS while idle so the light still reflects reality (and stays
 	-- green while the bridge is up: BridgeState allows for this interval).
-	if not PresenceWorks() and db.settings.mode == "pixel" and not AnyPending()
-		and now - (run.lastIdlePoll or -1e9) >= IDLE_POLL_SECONDS then
+	-- Rust publishes an offline snapshot on Ctrl+C. Read it once a 30-second
+	-- beat is overdue, even when sound checks work and there is no pending chat.
+	local rustIdleCheck = run.rustPeer and not run.bridgeStopped
+		and (not PresenceWorks() or (run.bridgeSeen and now - run.bridgeSeen >= 35))
+	local idleInterval = rustIdleCheck and 35 or IDLE_POLL_SECONDS
+	if (rustIdleCheck or not PresenceWorks()) and db.settings.mode == "pixel" and not AnyPending()
+		and now - (run.lastIdlePoll or -1e9) >= idleInterval then
 		run.lastIdlePoll = now
 		TryLoadSlot("idle")
 	end
