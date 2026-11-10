@@ -368,7 +368,15 @@ def grab(w):
     img = X.XGetImage(dpy, root, x0, y0, gw, gh, ALL_PLANES, ZPIXMAP)
     X.XSync(dpy, 0)
     if not img or x_errors[0] != before:
-        return None
+        # Rootless XWayland (Wayland sessions) refuses reads from the root
+        # window; the game window's own contents are still readable.
+        if img:
+            ctypes.CFUNCTYPE(ctypes.c_int, ctypes.POINTER(XImage))(img.contents.destroy_image)(img)
+        before = x_errors[0]
+        img = X.XGetImage(dpy, w, 0, 0, min(W + SLACK, a.width), min(H + SLACK, a.height), ALL_PLANES, ZPIXMAP)
+        X.XSync(dpy, 0)
+        if not img or x_errors[0] != before:
+            return None
     im = img.contents
     try:
         if im.bits_per_pixel not in (24, 32):
