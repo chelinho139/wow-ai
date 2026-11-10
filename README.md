@@ -10,6 +10,13 @@ and full feature parity remain pending. See [Windows testing](rust/WINDOWS-TESTI
 for source builds and addon updates.
 See [FORK.md](FORK.md) for development commands and the upstream sync workflow.
 
+## Rust configuration
+
+For every supported `config.json` option, defaults, examples and provider-specific
+settings, see the **[Rust configuration reference](rust/CONFIGURATION.md)**.
+Start with [rust/config.example.json](rust/config.example.json) and select your
+file with `wow-ai-reforged run --config config.json`.
+
 ## Original wow-ai documentation
 
 <p align="center">

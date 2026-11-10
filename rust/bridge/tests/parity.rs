@@ -7,21 +7,21 @@ use parity::{ContractExpectation, ContractResult, Verdict, classify, load_invent
 fn classifier_enforces_the_strict_expected_failure_truth_table() {
     let active = ContractExpectation::Active;
     let expected = ContractExpectation::ExpectedFailure {
-        reason_code: "unsupported_folder".into(),
+        reason_code: "documented_gap".into(),
     };
     let satisfied = ContractResult::Satisfied;
     let gap = ContractResult::KnownGap {
-        contract_id: "folder_selection".into(),
-        reason_code: "unsupported_folder".into(),
+        contract_id: "synthetic_contract".into(),
+        reason_code: "documented_gap".into(),
         evidence: "exact error".into(),
     };
     let wrong_id = ContractResult::KnownGap {
         contract_id: "other".into(),
-        reason_code: "unsupported_folder".into(),
+        reason_code: "documented_gap".into(),
         evidence: "exact error".into(),
     };
     let wrong_reason = ContractResult::KnownGap {
-        contract_id: "folder_selection".into(),
+        contract_id: "synthetic_contract".into(),
         reason_code: "provider_error".into(),
         evidence: "some error".into(),
     };
@@ -30,25 +30,25 @@ fn classifier_enforces_the_strict_expected_failure_truth_table() {
     };
     let missing = ContractResult::MissingResult;
     let empty_evidence = ContractResult::KnownGap {
-        contract_id: "folder_selection".into(),
-        reason_code: "unsupported_folder".into(),
+        contract_id: "synthetic_contract".into(),
+        reason_code: "documented_gap".into(),
         evidence: " ".into(),
     };
 
     assert_eq!(
-        classify("folder_selection", &active, &satisfied),
+        classify("synthetic_contract", &active, &satisfied),
         Verdict::Pass
     );
     assert!(matches!(
-        classify("folder_selection", &active, &gap),
+        classify("synthetic_contract", &active, &gap),
         Verdict::Fail(_)
     ));
     assert_eq!(
-        classify("folder_selection", &expected, &gap),
+        classify("synthetic_contract", &expected, &gap),
         Verdict::Xfail
     );
     assert!(matches!(
-        classify("folder_selection", &expected, &satisfied),
+        classify("synthetic_contract", &expected, &satisfied),
         Verdict::Xpass(_)
     ));
     for result in [
@@ -59,11 +59,11 @@ fn classifier_enforces_the_strict_expected_failure_truth_table() {
         &empty_evidence,
     ] {
         assert!(matches!(
-            classify("folder_selection", &expected, result),
+            classify("synthetic_contract", &expected, result),
             Verdict::Fail(_)
         ));
         assert!(matches!(
-            classify("folder_selection", &active, result),
+            classify("synthetic_contract", &active, result),
             Verdict::Fail(_)
         ));
     }
@@ -103,42 +103,26 @@ fn inventory_rejects_invalid_and_orphaned_contracts() {
         i.cases.remove(0);
     });
     invalid(|i| {
-        let case = i
-            .cases
-            .iter_mut()
-            .find(|c| c.id == "folder_selection")
-            .unwrap();
-        case.reason_code = None;
-    });
-    invalid(|i| {
         i.cases[0].status = "ExpectedFailure".into();
         i.cases[0].reason_code = Some("unhandled_expectation".into());
     });
 }
 
 #[test]
-fn manifest_controls_the_pending_to_active_transition() {
-    let mut inventory = load_inventory().unwrap();
-    let expected = parity::expectation_for(&inventory, "folder_selection").unwrap();
-    assert!(matches!(
-        classify("folder_selection", &expected, &ContractResult::Satisfied),
-        Verdict::Xpass(_)
-    ));
-    let case = inventory
-        .cases
-        .iter_mut()
-        .find(|c| c.id == "folder_selection")
-        .unwrap();
-    case.status = "Active".into();
-    case.reason_code = None;
-    parity::validate_inventory(&inventory).unwrap();
+fn active_manifest_entries_select_pass_expectations() {
+    let inventory = load_inventory().unwrap();
     let active = parity::expectation_for(&inventory, "folder_selection").unwrap();
     assert_eq!(
         classify("folder_selection", &active, &ContractResult::Satisfied),
         Verdict::Pass
     );
+    let reload = parity::expectation_for(&inventory, "reload_outbox").unwrap();
+    assert_eq!(
+        classify("reload_outbox", &reload, &ContractResult::Satisfied),
+        Verdict::Pass
+    );
     assert!(parity::expectation_for(&inventory, "missing").is_err());
-    assert!(parity::expectation_for(&inventory, "reload_outbox").is_err());
+    assert!(parity::expectation_for(&inventory, "history_restore").is_err());
 }
 
 #[test]
@@ -146,16 +130,16 @@ fn assertion_boundary_does_not_swallow_failures() {
     const CHILD: &str = "WOW_PARITY_NEGATIVE_CASE";
     if let Ok(mode) = std::env::var(CHILD) {
         let expectation = ContractExpectation::ExpectedFailure {
-            reason_code: "unsupported_folder".into(),
+            reason_code: "documented_gap".into(),
         };
         match mode.as_str() {
             "xpass" => parity::assert_contract(
-                "folder_selection",
+                "synthetic_contract",
                 &expectation,
                 &ContractResult::Satisfied,
             ),
             "unexpected" => parity::assert_contract(
-                "folder_selection",
+                "synthetic_contract",
                 &expectation,
                 &ContractResult::UnexpectedFailure {
                     diagnostics: "publication failed".into(),
@@ -193,6 +177,6 @@ fn assertion_boundary_does_not_swallow_failures() {
 
 #[test]
 fn probe_links_require_real_unignored_test_declarations() {
-    let source = "// fn bogus() {}\n/* #[test]\nfn comment() {}\n*/\n#[test]\n#[ignore]\nfn ignored() {}\nfn ordinary() {}\n#[test]\nfn actual() {}\n";
-    assert_eq!(parity::test_names(source), vec!["actual"]);
+    let source = "// fn bogus() {}\n/* #[test]\nfn comment() {}\n*/\n#[test]\n#[ignore]\nfn ignored() {}\nfn ordinary() {}\n#[test]\nfn actual() {}\n#[test]\n#[cfg(debug_assertions)]\nfn configured() {}\n";
+    assert_eq!(parity::test_names(source), vec!["actual", "configured"]);
 }

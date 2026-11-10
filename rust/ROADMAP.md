@@ -1,8 +1,26 @@
 # Rust backend execution roadmap
 
-Status: Windows live preview implemented, with initial user-reported in-game chat
-success. Full acceptance, feature parity, and performance measurement remain open.
-Updated 2026-11-08.
+Status: the Rust bridge preview implements native setup/capture, the live adapter
+pipeline, durable pixel/SavedVariables reload admission and crash-safe acknowledged
+chat deletion and validated per-chat project-folder selection.
+Initial in-game chat was user-reported, and Windows CI runtime evidence is recorded
+below; full Windows in-game fallback/reconnect acceptance, broad feature parity and
+performance measurement remain open. Updated 2026-11-10.
+
+Current verified summary:
+- Working folders resolve from the configured project or home directory, are
+  canonicalized before launch, and participate in per-chat session identity. Fake
+  provider tests cover all six adapters, restart, invalid paths, default reset,
+  and original-folder recovery through pixel/reload retries.
+- Reload and pixel delivery share exact durable admission after recent-ID pruning;
+  crash-boundary recovery republishes terminal state without rerunning providers.
+- Deletion survives every tested cross-file transaction crash boundary without
+  resurrection, preserves unrelated chats and uses explicit operation receipts.
+- PR #6 merged as `d7385a8`. Its Windows job passed the Job Object owner/descendant
+  runtime test (`abrupt_bridge_death_terminates_agent_and_descendant`):
+  <https://github.com/leozitor/wow-ai-reforged/actions/runs/42815209010/job/129826435044>.
+- That CI evidence proves Windows process containment, not live WoW capture,
+  fallback, handoff or reconnect behavior; those remain manual acceptance work.
 
 Canonical repository roadmap: rust/ROADMAP.md. Technical proposals below remain
 subject to validation during implementation; this document is not a claim of
@@ -22,8 +40,10 @@ Confirmed by the user:
   history, and sessions; no legacy data import is included in the first release.
 - Aim for lower resource use; no measured baseline or numerical target exists yet.
 
-Already scaffolded, not a working bridge: root Cargo.toml, rust/bridge/src/main.rs,
-separate Rust CI, upstream remote configuration, and FORK.md sync guidance.
+Historical starting point: the initial scaffold contained root Cargo.toml,
+rust/bridge/src/main.rs, separate Rust CI, upstream remote configuration, and
+FORK.md sync guidance. The implementation milestones later in this document
+supersede that scaffold-only state.
 
 First-release contract and technical approach:
 - Keep the shared Lua addon and current pixel-out / slot-file-in transport, including
@@ -209,17 +229,19 @@ smoke-test evidence.
 
 ### Chat reconciliation prerequisite: durable deletion before history restoration
 
-Schedule this slice alongside recovery hardening and before addon history restoration.
-This is planned work, not a claim of complete two-way synchronization.
+The Rust/addon deletion slice is implemented and covered by automated crash recovery
+tests. It remains a prerequisite rather than a claim of complete two-way history
+synchronization; backend-originated deletion and live in-game reconnect acceptance
+are still outside the completed contract.
 
 Current behavior: the addon stores pending deletions in `WoWAIDB.forget`, retries
-these pixel records on hello, and excludes those chats from restoration. Rust handles
-a forget record by removing its history, session association and retained live reply.
-However, the addon can clear a pending deletion after observing bridge presence
-without receiving an explicit deletion acknowledgement. Existing tests cover direct
-forget handling; they do not establish crash-safe end-to-end reconciliation.
+them until it receives the exact durable Rust receipt, clears deleted outgoing work
+and rotates the cleared last chat's identity. Rust persists deletion intent, removes
+private history/session/pending state, clears retained replies, republishes all slots,
+persists completion and then acknowledges the stable addon operation ID. Startup and
+ticks resume interrupted deletion work before accepting conflicting traffic.
 
-Required contract:
+Implemented contract and retained boundaries:
 - Preserve a pending deletion (a tombstone) until the bridge explicitly acknowledges
   that exact operation after durable cleanup. Presence alone is not confirmation.
   Keep older bridge compatibility capability-gated; do not advertise stronger
@@ -236,20 +258,21 @@ Required contract:
   delete the addon's visible conversation. A deliberate backend deletion needs a
   durable, acknowledged event before two-way deletion is advertised.
 - Handle the last-chat behavior explicitly: the addon currently clears and reuses
-  its ID. New messages must survive delayed deletion retries; choose an identity or
-  generation boundary so old operations cannot erase new conversation state.
+  its ID. New messages survive delayed deletion retries because the addon rotates
+  the cleared chat to a fresh collision-free identity.
 - Keep Rust and legacy private stores separate. Do not turn reconciliation into
   automatic legacy import, cross-backend deletion or a general history merge.
 
-Gate: deterministic addon and Rust integration tests cover offline deletion followed
+Automated gate: deterministic addon and Rust integration tests cover offline deletion followed
 by reconnect; duplicate deletion; restart before/after cleanup and acknowledgement;
 presence without acknowledgement; partial cleanup failure; stale restore and late
 reply; an in-flight request; last-chat reuse; and reset versus explicit backend
 removal. Verify no resurrection, no silent loss of new messages, and no provider
 relaunch. Add focused parity inventory entries only for implemented test seams;
 use strict expected failures only with narrow observable gap evidence. Validate
-pixel delivery and the reload recovery path once that input is available. In-game
-reconnect and deletion checks remain required before advertising the guarantee.
+pixel delivery and the reload recovery path with deterministic integration tests.
+In-game reconnect and deletion checks remain required before advertising the
+in-game guarantee.
 
 ### 6. Expand parity, then platforms
 
@@ -330,8 +353,10 @@ Live-loop hardening adds tested hello snapshots, complete configured-agent lists
 periodic idle/busy presence with persisted counters, recent message deduplication
 across restart, and target-bound pending-reply recovery. Unknown/uninstalled agents
 produce explicit errors. Publication reports are checked before completion is
-cleared. SavedVariables polling is not connected to the live loop yet. Windows FFI lint and
-GDI bitmap synchronization issues from the initial capture commit are corrected.
+cleared. At that milestone SavedVariables polling was not yet connected to the live
+loop; the reload recovery milestones below supersede that limitation. Windows FFI
+lint and GDI bitmap synchronization issues from the initial capture commit are
+corrected.
 
 Agent discovery now mirrors the legacy backend: configured paths take precedence,
 then environment overrides, known install locations and PATH/npm launchers are
@@ -348,7 +373,8 @@ runtime/configuration data. Initial in-game Codex chat and session continuation
 were reported working by the user; this does not establish all-agent acceptance.
 
 
-Reload recovery implementation is proceeding in reviewable slices:
+Historical reload recovery sequence (now implemented through live polling and
+crash-boundary coverage) proceeded in these reviewable slices:
 - Safe SavedVariables outbox parsing is the first slice, with Node-reference golden
   cases and malformed-input tests. Parsing never executes the saved Lua file.
 - Before enabling live polling, add durable admission/launch-intent records and a
@@ -359,8 +385,9 @@ Reload recovery implementation is proceeding in reviewable slices:
   model/effort snapshots; reject unsupported overrides rather than dropping them.
 - Exercise cross-transport retries and crash points before claiming reload recovery.
 
-The parser alone does not enable reload fallback. Chat reconciliation remains a
-separate prerequisite for history restoration, as described above.
+At that milestone the parser alone did not enable reload fallback. The later live
+polling and durable admission milestones below supersede that historical limitation.
+Chat reconciliation remains a separate prerequisite for history restoration.
 
 
 Reload recovery preview now has opt-in `saved_variables` polling in the existing
@@ -372,10 +399,10 @@ are durable before publication. This deliberately treats even a pre-launch crash
 after admission as uncertain rather than automatically retrying it.
 
 Focused tests cover cross-transport duplicates, restart and old-cache eviction,
-interruption error republication, freshness and session gating. Remaining stage
-gates include complete crash-point injection, Windows in-game fallback/handoff,
-orphan process cleanup and account discovery. The configured preview is not a
-claim that the full recovery or playable acceptance gate has passed.
+interruption error republication, freshness and session gating. At that preview
+milestone, complete crash-point injection, Windows in-game fallback/handoff, orphan
+process cleanup and account discovery remained open. Later milestones below close
+the crash-point and Windows Job Object test seams, but not full in-game acceptance.
 
 Subprocess crash coverage now exits without unwinding at eleven live-request
 boundaries: before/after admission save, Working publication, acknowledgement,
@@ -384,19 +411,25 @@ and error save/publication. Restart assertions verify exact durable admission,
 correct Error/Done republication, and no repeated fake-agent invocation through
 pixel or reload retries. Before-admission interruption remains retryable.
 
-These checks do not cover an agent still running at bridge death, power-loss
-filesystem durability, or every partial multi-file publication failure. Orphan
-process cleanup and Windows in-game fallback/handoff remain open. The manual
-acceptance recipe is in rust/WINDOWS-TESTING.md.
+These checks alone did not cover an agent still running at bridge death, power-loss
+filesystem durability, or every partial multi-file publication failure. The next
+milestone adds Windows Job Object containment; Unix orphan containment, power-loss
+durability and Windows in-game fallback/handoff remain open. The manual acceptance
+recipe is in rust/WINDOWS-TESTING.md.
 
-Windows provider lifetime containment now assigns the bridge to a private
+Windows provider lifetime containment assigns the bridge to a private
 kill-on-close Job Object before provider creation. Assignment failure blocks
 launch. A Windows-only integration test kills a running owner and waits on native
 handles for its fake provider and descendant, avoiding PID reuse as test evidence.
-This test requires Windows execution; cross-compilation alone is not runtime
-acceptance. Unix abrupt-death containment, earlier surviving providers from old
-bridge versions, host job restrictions, and authenticated provider compatibility
-remain open. Never kill an arbitrary saved PID to compensate for old versions.
+PR #6 (`d7385a8`) ran this test on Windows CI successfully; the passing job includes
+`windows_job_owner_child` and
+`abrupt_bridge_death_terminates_agent_and_descendant`:
+<https://github.com/leozitor/wow-ai-reforged/actions/runs/42815209010/job/129826435044>.
+This is Windows runtime evidence rather than cross-compilation, but it is not full
+in-game acceptance. Unix abrupt-death containment, earlier surviving providers from
+old bridge versions, host job restrictions, authenticated provider compatibility and
+Windows in-game fallback/handoff remain open. Never kill an arbitrary saved PID to
+compensate for old versions.
 
 
 Recovery review hardening: successful forget handling now clears that chat's
@@ -408,10 +441,11 @@ Working replies that have a matching durable recovery snapshot instead of briefl
 publishing an incorrect generic interruption error. Reload polling caches only
 successfully processed file versions; failed reads/parses/dispatch remain retryable.
 
-The forget fix does not make deletion a cross-file transaction. A crash between
-reply-cache cleanup and Rust state cleanup still requires the separately planned
-tombstone/reconciliation work. Windows Job Object runtime acceptance also remains
-pending despite successful cross-compilation.
+Historical limitation: the initial forget fix did not make deletion a cross-file
+transaction, so a crash between reply-cache and Rust-state cleanup still required
+the tombstone/reconciliation work described next. That limitation is superseded by
+the crash-safe deletion transaction below. Windows Job Object runtime acceptance is
+now established by the PR #6 CI evidence above; live in-game acceptance remains open.
 
 Crash-safe backend deletion now uses permanent, bounded tombstones. Intent and
 private history/session/pending cleanup are one atomic state write; retained reply

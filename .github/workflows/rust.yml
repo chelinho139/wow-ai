@@ -23,10 +23,13 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
-      - name: Report Rust to Node parity inventory and expected failures
+      - name: Report Rust to Node parity inventory
         run: |
           cargo test -p wow-ai-reforged --locked --test parity -- --nocapture
-          cargo test -p wow-ai-reforged --locked --test live_transport per_chat_folder_selection_is_known_gap -- --nocapture
+          cargo test -p wow-ai-reforged --locked --test live_transport per_chat_folder_selection_uses_requested_directory -- --nocapture
+      - name: Prove Windows provider-tree containment
+        if: runner.os == 'Windows'
+        run: cargo test -p wow-ai-reforged --locked --test process_lifetime abrupt_bridge_death_terminates_agent_and_descendant -- --nocapture
       - run: cargo build --workspace --release --locked
       - run: cargo run --locked -- --help
       - run: cargo run --locked -- --version
@@ -73,6 +76,7 @@ jobs:
           Copy-Item target/release/wow-ai-reforged.exe windows-preview/
           Copy-Item LICENSE windows-preview/
           Copy-Item rust/WINDOWS-TESTING.md windows-preview/README.md
+          Copy-Item rust/CONFIGURATION.md windows-preview/CONFIGURATION.md
           Copy-Item rust/config.example.json windows-preview/config.example.json
           @("Commit: $env:GITHUB_SHA", "Run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID", "Target: Windows x64", "Status: standalone preview with native addon setup and live screen capture loop") | Set-Content windows-preview/BUILD.txt
           $binaryHash = Get-FileHash windows-preview/wow-ai-reforged.exe -Algorithm SHA256

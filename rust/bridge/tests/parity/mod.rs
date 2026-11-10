@@ -94,6 +94,9 @@ pub fn load_inventory() -> Result<Inventory, String> {
 
 pub fn validate_inventory(inventory: &Inventory) -> Result<(), String> {
     let mut ids = HashSet::new();
+    // Expected failures are fail-closed: a probe must explicitly consume and report
+    // the strict KnownGap contract before its manifest status can be accepted.
+    let expected_failure_probes = HashSet::<&str>::new();
     let probes: HashSet<&str> = [
         "protocol_compat.rs::matches_legacy_node_protocol_fixtures",
         "reload_compat.rs::saved_variables_match_legacy_outbox_contract",
@@ -101,7 +104,9 @@ pub fn validate_inventory(inventory: &Inventory) -> Result<(), String> {
         "frame_compat.rs::real_lua_encoded_frames_survive_threshold_noise_offsets_and_row_padding",
         "pipeline.rs::every_adapter_runs_to_private_lua_and_preserves_legacy_data",
         "live_transport.rs::completed_reply_recovers_after_restart_without_rerunning_the_agent",
-        "live_transport.rs::per_chat_folder_selection_is_known_gap",
+        "live_transport.rs::per_chat_folder_selection_uses_requested_directory",
+        "live_transport.rs::reload_and_pixels_share_admission_even_after_recent_ids_are_pruned",
+        "live_transport.rs::deletion_recovers_every_cross_file_crash_boundary_without_resurrection",
     ]
     .into_iter()
     .collect();
@@ -132,8 +137,10 @@ pub fn validate_inventory(inventory: &Inventory) -> Result<(), String> {
             other => return Err(format!("{} has unknown status {other}", case.id)),
         }
         if case.status == "ExpectedFailure"
-            && case.rust_probe.as_deref()
-                != Some("live_transport.rs::per_chat_folder_selection_is_known_gap")
+            && !case
+                .rust_probe
+                .as_deref()
+                .is_some_and(|probe| expected_failure_probes.contains(probe))
         {
             return Err(format!(
                 "{} cannot mark a probe without expectation handling as ExpectedFailure",
@@ -239,6 +246,12 @@ pub fn test_names(source: &str) -> Vec<String> {
         }
         if line == "#[test]" {
             armed = true;
+            continue;
+        }
+        if armed && line.starts_with("#[") {
+            if line.starts_with("#[ignore") {
+                armed = false;
+            }
             continue;
         }
         if armed

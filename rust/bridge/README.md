@@ -18,6 +18,8 @@ no accounts, Node, Python or running game. It deliberately leaves its workspace 
 inspection. `inject` uses the configured real executable and its existing login;
 it may consume provider credits and use tools according to that agent's settings.
 
+See the **[complete Rust configuration reference](../CONFIGURATION.md)** for every
+JSON option, defaults, model/effort choices, permissions and examples.
 Copy `rust/config.example.json` and set your project path. Run
 `wow-ai-reforged agents` to list detected agents, or
 `wow-ai-reforged agents --config config.json` to include configured overrides.
@@ -76,8 +78,9 @@ that every installed CLI version has passed authenticated live tests.
 | Gemini | stream-json | init session_id | default / auto_edit |
 
 Permission modes are provider-specific; `default` is not a universal filesystem
-sandbox. Unverified allow/deny mappings are rejected. No bypass/yolo mode or
-arbitrary agent extra arguments are exposed. Trusted `launcher_args` exist only to
+sandbox. Unverified allow/deny mappings are rejected. No bypass/yolo permission mode is
+exposed. Codex `extra_args` are trusted local CLI arguments; other adapters do not
+consume that field. Trusted `launcher_args` exist only to
 select an underlying executable/script; review your config as executable authority.
 
 The Node adapter behavior remains the reference in `bridge/agents.js`. Additional
@@ -120,8 +123,8 @@ presence counters, strict routing, failed publication, restart recovery and cont
 The live loop reserves message identities before provider invocation so recent
 repeated frames/restarts do not rerun work. Pending results record their addon target;
 private injected replies are never automatically published to a different game tree.
-Presence ticks also run while waiting for agent output. Per-chat folder overrides
-and in-game permission grants are rejected explicitly in this preview.
+Presence ticks also run while waiting for agent output. Per-chat working folders
+are supported; in-game permission grants remain explicitly rejected.
 
 ## Fast edit loop
 
@@ -248,3 +251,32 @@ reply; an unacknowledged operation is not complete. It does not erase an externa
 provider's own history, cancel a provider already running, import/delete legacy
 Node state, or interpret missing backend files as a user deletion. Windows/WoW
 sound and slot caching still need in-game acceptance.
+
+
+### Per-chat working folders
+
+Use the conversation menu's Working folder action or `/wow-ai cd <directory>`.
+An empty folder inherits `project_dir` from the Rust config. Absolute paths select
+that directory; relative paths resolve against `project_dir`, including `..`.
+`~`, `~/...` and `~\...` expand from HOME (Unix) or USERPROFILE (Windows);
+missing/nonabsolute home settings produce an actionable error. Folder paths are
+not restricted to the configured default directory. Existing configured provider
+permissions still apply; selecting a folder does not grant extra permissions.
+
+Rust canonicalizes the path and requires an existing directory before launching
+anything. Missing paths, files, NUL bytes, oversized input and ambiguous Windows
+`C:relative` paths return an actionable error. Spaces and Unicode are supported;
+paths are passed as process arguments and cwd, without shell interpolation.
+
+The canonical folder belongs to the chat's provider session. The same folder or
+an equivalent alias can resume it, including after restart; a different folder
+starts a fresh session while preserving the visible transcript. Resetting to the
+bridge default is also a folder change when it resolves differently. A chat keeps
+only its current backend session, so switching back to an earlier folder starts
+fresh rather than restoring an older folder's session.
+
+Admitted requests and saved replies retain their original folder through retries
+and publication recovery. A folder change applies to the next new request ID;
+retrying a rejected ID does not reconsider it. Pixel and reload delivery use the
+same validation and dispatch path. Fake-agent tests cover all six adapters;
+authenticated providers and the in-game folder menu still need client acceptance.

@@ -4,6 +4,9 @@ The Windows preview includes embedded setup, native screen capture, and a live
 bridge command. Automated checks exercise synthetic addon messages and fake agents;
 authenticated, in-game validation on Windows 11 is still required.
 
+For every `config.json` option, see the **[Rust configuration reference](CONFIGURATION.md)**.
+It is also included as `CONFIGURATION.md` in the Windows preview ZIP.
+
 ## Download a Windows build (no Rust or Node installation needed)
 
 1. Sign in to GitHub and open the

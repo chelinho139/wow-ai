@@ -455,7 +455,7 @@ fn chat_configuration_is_validated_published_and_resets_sessions() {
 }
 
 #[test]
-fn per_chat_folder_selection_is_known_gap() {
+fn per_chat_folder_selection_uses_requested_directory() {
     let mut f = Fixture::new();
     let selected = f.root.join("selected-project");
     fs::create_dir(&selected).unwrap();
@@ -473,50 +473,22 @@ fn per_chat_folder_selection_is_known_gap() {
         text: "addon-token\x1fchat\x1f7\x1fselected-project\x1f\x1fname\x1fhello".into(),
     };
     let mut bridge = LiveBridge::start(&f.cfg, None).unwrap();
-    const UNSUPPORTED: &str =
-        "Per-chat folder changes are not supported by this live preview; set project_dir in config";
-    let before = f.inbox();
-    let request = bridge.accept_frame(&frame);
-    let inbox = f.inbox();
+    bridge.accept_frame(&frame).unwrap();
+    assert!(f.inbox().contains("Fake codex reply: hello"));
+    assert!(
+        f.inbox().contains(&format!(
+            "\n\tcwd = {},",
+            wow_ai_reforged::protocol::lua_string(&f.cfg.project_dir.to_string_lossy())
+        )),
+        "per-chat selection must not replace the advertised bridge default"
+    );
+    assert_eq!(recorded_cwd(&cwd_record), selected);
     let state = State::load(&f.cfg.data_dir).unwrap();
-    let result = match request {
-        Ok(()) => {
-            if inbox.contains("Fake codex reply: hello")
-                && fs::read_to_string(&cwd_record).ok().as_deref()
-                    == Some(selected.to_string_lossy().as_ref())
-                && state.sessions.get("chat").is_some_and(|session| session.project == selected)
-            {
-                parity::ContractResult::Satisfied
-            } else {
-                parity::ContractResult::UnexpectedFailure {
-                    diagnostics: format!("request succeeded without the requested folder contract: {inbox}"),
-                }
-            }
-        }
-        Err(error) if error.to_string() == UNSUPPORTED
-            && inbox != before
-            && inbox.contains(&format!("text = {},", wow_ai_reforged::protocol::lua_string(UNSUPPORTED)))
-            && inbox.contains("id = 7,")
-            && inbox.contains("chat = \"chat\",")
-            && inbox.contains("status = \"error\",")
-            && !cwd_record.exists()
-            && state.sessions.is_empty()
-            && state.history.is_empty()
-            && state.pending.is_none() =>
-        {
-            parity::ContractResult::KnownGap {
-                contract_id: "folder_selection".into(),
-                reason_code: "unsupported_folder".into(),
-                evidence: "Current request returned the exact unsupported-folder error and published its matching error reply; no provider invocation, session, history or pending reply".into(),
-            }
-        }
-        Err(error) => parity::ContractResult::UnexpectedFailure {
-            diagnostics: format!("{error}; published inbox: {inbox}"),
-        },
-    };
-    let inventory = parity::load_inventory().unwrap();
-    let expectation = parity::expectation_for(&inventory, "folder_selection").unwrap();
-    parity::assert_contract("folder_selection", &expectation, &result);
+    assert_eq!(state.sessions["chat"].project, selected);
+    assert!(f.inbox().contains(&format!(
+        "cwd = {},",
+        wow_ai_reforged::protocol::lua_string(&selected.to_string_lossy())
+    )));
 }
 
 fn saved_request(id: u16, text: &str) -> String {
@@ -1054,5 +1026,292 @@ fn deletion_capacity_failure_preserves_data_and_does_not_acknowledge() {
         fs::read(f.cfg.addon_dir.as_ref().unwrap().join("WoWAI/ack/008.wav"))
             .unwrap()
             .is_empty()
+    );
+}
+
+// Compare directory identity rather than platform-specific cwd spelling.
+fn recorded_cwd(path: &std::path::Path) -> PathBuf {
+    PathBuf::from(fs::read_to_string(path).unwrap())
+        .canonicalize()
+        .unwrap()
+}
+
+fn folder_frame(id: u16, chat: &str, folder: &str) -> Frame {
+    Frame {
+        id,
+        text: format!("addon-token\x1f{chat}\x1f{id}\x1f{folder}\x1f\x1fname\x1ffolder request"),
+    }
+}
+
+#[test]
+fn chat_folders_control_resume_across_aliases_chats_restart_and_default_reset() {
+    let mut f = Fixture::new();
+    let a = f.root.join("folder A 世界");
+    let b = f.root.join("folder B");
+    fs::create_dir(&a).unwrap();
+    fs::create_dir(&b).unwrap();
+    let a = a.canonicalize().unwrap();
+    let b = b.canonicalize().unwrap();
+    let marker = f.root.join("cwd.txt");
+    f.cfg.agents.get_mut("codex").unwrap().launcher_args = vec![
+        "__fixture-agent".into(),
+        "codex".into(),
+        "record-cwd".into(),
+        "--record-path".into(),
+        marker.to_string_lossy().into_owned(),
+    ];
+    let resumed = |chat: &str| {
+        let cache: serde_json::Value = serde_json::from_slice(
+            &fs::read(f.cfg.data_dir.join("reforged-live-replies.json")).unwrap(),
+        )
+        .unwrap();
+        cache["replies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["chat"] == chat)
+            .unwrap()["text"]
+            .as_str()
+            .unwrap()
+            .contains("[resume=fake-codex-session]")
+    };
+    {
+        let mut bridge = LiveBridge::start(&f.cfg, None).unwrap();
+        bridge
+            .accept_frame(&folder_frame(7, "chat", "folder A 世界"))
+            .unwrap();
+        assert!(!resumed("chat"));
+        bridge
+            .accept_frame(&folder_frame(8, "chat", &a.join(".").to_string_lossy()))
+            .unwrap();
+        assert!(resumed("chat"));
+        bridge
+            .accept_frame(&folder_frame(9, "other", &b.to_string_lossy()))
+            .unwrap();
+        assert!(!resumed("other"));
+    }
+    let mut bridge = LiveBridge::start(&f.cfg, None).unwrap();
+    bridge
+        .accept_frame(&folder_frame(10, "chat", "folder A 世界"))
+        .unwrap();
+    assert!(resumed("chat"));
+    assert_eq!(recorded_cwd(&marker), a);
+    bridge
+        .accept_frame(&folder_frame(4, "chat", &b.to_string_lossy()))
+        .unwrap();
+    let state = State::load(&f.cfg.data_dir).unwrap();
+    assert_eq!(state.sessions["chat"].project, b);
+    // Latest reply per chat is retained: inspect this chat, not the other reply.
+    assert!(!resumed("chat"));
+    bridge.accept_frame(&folder_frame(5, "chat", "")).unwrap();
+    assert_eq!(recorded_cwd(&marker), f.cfg.project_dir);
+    assert_eq!(
+        State::load(&f.cfg.data_dir).unwrap().sessions["chat"].project,
+        f.cfg.project_dir
+    );
+    assert!(!resumed("chat"));
+    bridge
+        .accept_frame(&folder_frame(6, "other", &b.to_string_lossy()))
+        .unwrap();
+    assert!(resumed("other"));
+    assert_eq!(
+        State::load(&f.cfg.data_dir).unwrap().history["chat"].len(),
+        10
+    );
+}
+
+#[test]
+fn invalid_chat_folders_are_errors_without_launch_or_session_loss() {
+    let mut f = Fixture::new();
+    let marker = f.root.join("cwd.txt");
+    f.cfg.agents.get_mut("codex").unwrap().launcher_args = vec![
+        "__fixture-agent".into(),
+        "codex".into(),
+        "record-cwd".into(),
+        "--record-path".into(),
+        marker.to_string_lossy().into_owned(),
+    ];
+    fs::write(f.root.join("a-file"), b"not a directory").unwrap();
+    let mut bridge = LiveBridge::start(&f.cfg, None).unwrap();
+    bridge.accept_frame(&folder_frame(7, "chat", "")).unwrap();
+    fs::remove_file(&marker).unwrap();
+    for (id, folder, expected) in [
+        (8, "missing-folder", "existing directory"),
+        (9, "a-file", "not a directory"),
+        (10, "bad\0path", "NUL"),
+    ] {
+        assert!(
+            bridge
+                .accept_frame(&folder_frame(id, "chat", folder))
+                .is_err()
+        );
+        assert!(f.inbox().contains(expected));
+        assert!(!marker.exists());
+        let state = State::load(&f.cfg.data_dir).unwrap();
+        assert_eq!(state.history["chat"].len(), 2);
+        assert_eq!(state.sessions["chat"].project, f.cfg.project_dir);
+        assert!(state.pending.is_none());
+        assert!(state.live_admissions.contains("addon-token", u64::from(id)));
+    }
+}
+
+#[test]
+fn every_adapter_runs_in_the_selected_chat_folder() {
+    let mut f = Fixture::new();
+    let selected = f.root.join("agent folder 世界");
+    fs::create_dir(&selected).unwrap();
+    let selected = selected.canonicalize().unwrap();
+    let marker = f.root.join("cwd.txt");
+    let template = f.cfg.agents["codex"].clone();
+    let kinds = ["claude", "codex", "grok", "agy", "hermes", "gemini"];
+    for kind in kinds {
+        let mut settings = template.clone();
+        settings.launcher_args = vec![
+            "__fixture-agent".into(),
+            kind.into(),
+            "record-cwd".into(),
+            "--record-path".into(),
+            marker.to_string_lossy().into_owned(),
+        ];
+        f.cfg.agents.insert(kind.into(), settings);
+    }
+    let mut bridge = LiveBridge::start(&f.cfg, None).unwrap();
+    for (index, kind) in kinds.into_iter().enumerate() {
+        let mut frame = folder_frame(index as u16 + 1, kind, &selected.to_string_lossy());
+        frame.text = frame
+            .text
+            .replace("\x1f\x1fname", &format!("\x1fagent={kind}\x1fname"));
+        bridge.accept_frame(&frame).unwrap();
+        assert_eq!(recorded_cwd(&marker), selected, "{kind}");
+        assert_eq!(
+            State::load(&f.cfg.data_dir).unwrap().sessions[kind].project,
+            selected,
+            "{kind}"
+        );
+    }
+}
+
+#[test]
+fn pending_reply_and_retries_keep_the_original_chat_folder() {
+    let mut f = Fixture::new();
+    let selected = f.root.join("original folder");
+    let new_default = f.root.join("new default");
+    fs::create_dir(&selected).unwrap();
+    fs::create_dir(&new_default).unwrap();
+    let selected = selected.canonicalize().unwrap();
+    let inbox_path = f.cfg.addon_dir.as_ref().unwrap().join("WoWAI/Inbox.lua");
+    f.cfg.agents.get_mut("codex").unwrap().launcher_args = vec![
+        "__fixture-agent".into(),
+        "codex".into(),
+        "block-publish".into(),
+        "--block-path".into(),
+        inbox_path.to_string_lossy().into_owned(),
+    ];
+    {
+        let mut bridge = LiveBridge::start(&f.cfg, None).unwrap();
+        assert!(
+            bridge
+                .accept_frame(&folder_frame(7, "chat", "original folder"))
+                .is_err()
+        );
+        assert_eq!(
+            State::load(&f.cfg.data_dir)
+                .unwrap()
+                .pending
+                .unwrap()
+                .project,
+            selected
+        );
+    }
+    fs::remove_dir(&inbox_path).unwrap();
+    fs::write(&inbox_path, "old").unwrap();
+    f.cfg.project_dir = new_default.canonicalize().unwrap();
+    let mut bridge = LiveBridge::start(&f.cfg, None).unwrap();
+    bridge.tick(Instant::now()).unwrap();
+    // A changed retry cannot change the already admitted request's folder.
+    bridge.accept_frame(&folder_frame(7, "chat", "")).unwrap();
+    let state = State::load(&f.cfg.data_dir).unwrap();
+    assert!(state.pending.is_none());
+    assert_eq!(state.history["chat"].len(), 2);
+    assert_eq!(state.sessions["chat"].project, selected);
+    assert!(f.inbox().contains(&format!(
+        "cwd = {},",
+        wow_ai_reforged::protocol::lua_string(&selected.to_string_lossy())
+    )));
+}
+
+#[test]
+fn reload_requests_use_the_selected_chat_folder() {
+    let mut f = Fixture::new();
+    let selected = f.root.join("reload folder");
+    fs::create_dir(&selected).unwrap();
+    let marker = f.root.join("cwd.txt");
+    f.cfg.agents.get_mut("codex").unwrap().launcher_args = vec![
+        "__fixture-agent".into(),
+        "codex".into(),
+        "record-cwd".into(),
+        "--record-path".into(),
+        marker.to_string_lossy().into_owned(),
+    ];
+    let hex: String = "reload folder"
+        .bytes()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let source = saved_request(7, "reload selected folder")
+        .replace(r#"["cwd"] = """#, &format!(r#"["cwd"] = "{hex}""#));
+    let mut bridge = LiveBridge::start(&f.cfg, None).unwrap();
+    bridge.accept_saved_variables(&source).unwrap();
+    assert_eq!(recorded_cwd(&marker), selected.canonicalize().unwrap());
+    assert_eq!(
+        State::load(&f.cfg.data_dir).unwrap().sessions["chat"].project,
+        selected.canonicalize().unwrap()
+    );
+}
+
+#[test]
+fn validation_error_recovery_preserves_selected_folder_and_agent() {
+    let f = Fixture::new();
+    let selected = f.root.join("rejected request folder");
+    fs::create_dir(&selected).unwrap();
+    let selected = selected.canonicalize().unwrap();
+    let broken = f
+        .cfg
+        .addon_dir
+        .as_ref()
+        .unwrap()
+        .join("WoWAI_S200/Inbox.lua");
+    {
+        let mut bridge = LiveBridge::start(&f.cfg, None).unwrap();
+        fs::remove_file(&broken).unwrap();
+        fs::create_dir(&broken).unwrap();
+        let mut frame = folder_frame(7, "chat", "rejected request folder");
+        frame.text = frame
+            .text
+            .replace("\x1f\x1fname", "\x1fagent=gemini;allow=WebSearch\x1fname");
+        assert!(bridge.accept_frame(&frame).is_err());
+        let state = State::load(&f.cfg.data_dir).unwrap();
+        let pending = state.pending.unwrap();
+        assert_eq!(pending.project, selected);
+        assert_eq!(pending.agent.id(), "gemini");
+        assert!(state.history.is_empty());
+        assert!(state.sessions.is_empty());
+    }
+    fs::remove_dir(&broken).unwrap();
+    fs::write(&broken, b"old").unwrap();
+    let mut bridge = LiveBridge::start(&f.cfg, None).unwrap();
+    bridge.tick(Instant::now()).unwrap();
+    assert!(State::load(&f.cfg.data_dir).unwrap().pending.is_none());
+    let cache: serde_json::Value = serde_json::from_slice(
+        &fs::read(f.cfg.data_dir.join("reforged-live-replies.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        cache["replies"][0]["cwd"],
+        selected.to_string_lossy().as_ref()
+    );
+    assert_eq!(cache["replies"][0]["agent"], "gemini");
+    assert!(
+        f.inbox()
+            .contains("In-game permission changes are not supported")
     );
 }

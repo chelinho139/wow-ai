@@ -44,17 +44,25 @@
       "id": "folder_selection",
       "intended_behavior": "Honor the request's per-chat folder as the working directory for the selected agent.",
       "node_reference": "tests/bridge_test.js",
-      "rust_probe": "live_transport.rs::per_chat_folder_selection_is_known_gap",
-      "status": "ExpectedFailure",
-      "reason_code": "unsupported_folder",
-      "rationale": "Rust live runtime currently publishes a specific unsupported-folder error; the fake agent records cwd so the probe proves no invocation and no state mutation."
+      "rust_probe": "live_transport.rs::per_chat_folder_selection_uses_requested_directory",
+      "status": "Active",
+      "rationale": "Covered by a live transport integration test that records the fake agent's working directory and verifies the requested per-chat folder is used."
     },
     {
       "id": "reload_outbox",
       "intended_behavior": "Parse SavedVariables outbox requests and deduplicate them with pixel delivery.",
       "node_reference": "tests/bridge_test.js",
-      "status": "Planned",
-      "rationale": "Opt-in polling, exact durable deduplication and recovery snapshots are implemented and tested; full crash-point and Windows fallback acceptance remain pending."
+      "rust_probe": "live_transport.rs::reload_and_pixels_share_admission_even_after_recent_ids_are_pruned",
+      "status": "Active",
+      "rationale": "Live SavedVariables and pixel delivery share durable admission even after the bounded recent-ID cache is pruned. Full Windows in-game fallback acceptance remains separate."
+    },
+    {
+      "id": "durable_deletion",
+      "intended_behavior": "Complete acknowledged chat deletion across restart and every cross-file crash boundary without resurrecting deleted state.",
+      "node_reference": "tests/addon_test.js",
+      "rust_probe": "live_transport.rs::deletion_recovers_every_cross_file_crash_boundary_without_resurrection",
+      "status": "Active",
+      "rationale": "A process-crash integration test covers all six deletion transaction boundaries, idempotent restart completion, unrelated-chat preservation and stale transport suppression."
     },
     {
       "id": "history_restore",
@@ -97,7 +105,7 @@
       "node_reference": "tests/bridge_test.js",
       "rust_probe": "reload_compat.rs::saved_variables_match_legacy_outbox_contract",
       "status": "Active",
-      "rationale": "Bounded Rust parser matches valid Node outbox examples; malformed-input unit tests enforce strict rejection. Live polling and recovery remain separate planned work."
+      "rationale": "Bounded Rust parser matches valid Node outbox examples; malformed-input unit tests enforce strict rejection. Live polling and durable admission are tracked by the separate active reload_outbox contract."
     }
   ]
 }

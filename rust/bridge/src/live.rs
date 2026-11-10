@@ -476,6 +476,54 @@ fn recover_deletions(
     Ok(())
 }
 
+/// Relative chat folders are rooted at the configured project, never the
+/// bridge process cwd. Canonical identities also normalize symlink aliases.
+fn requested_project(default: &Path, requested: &str) -> io::Result<PathBuf> {
+    let environment = crate::discovery::Environment::current();
+    resolve_chat_project(default, requested, environment.home.as_deref())
+}
+
+fn resolve_chat_project(
+    default: &Path,
+    requested: &str,
+    home: Option<&Path>,
+) -> io::Result<PathBuf> {
+    if requested.len() > 32768 || requested.contains('\0') {
+        return Err(io::Error::other(
+            "Invalid working folder: path is too long or contains a NUL byte",
+        ));
+    }
+    let requested_path = Path::new(requested);
+    if matches!(
+        requested_path.components().next(),
+        Some(std::path::Component::Prefix(_))
+    ) && !requested_path.is_absolute()
+    {
+        return Err(io::Error::other(
+            "Ambiguous drive-relative working folder. Use an absolute path or a relative path without a drive prefix.",
+        ));
+    }
+    let path = if requested == "~" || requested.starts_with("~/") || requested.starts_with("~\\") {
+        let home = home.filter(|p| p.is_absolute()).ok_or_else(|| io::Error::other("Cannot expand ~: configure an absolute HOME or USERPROFILE, or choose an absolute working folder."))?;
+        // Both separators are advertised by the shared addon/upstream contract.
+        let tail = requested[1..].trim_start_matches(['/', '\\']);
+        home.join(tail)
+    } else if requested.is_empty() {
+        default.to_path_buf()
+    } else {
+        crate::process::resolve_path(default, requested_path)
+    };
+    let project = path.canonicalize().map_err(|error| io::Error::new(error.kind(),
+        format!("Cannot use working folder {}: {error}. Choose an existing directory or reset to the bridge default.", path.display())))?;
+    if !project.is_dir() {
+        return Err(io::Error::other(format!(
+            "Working folder {} is not a directory. Choose a directory or reset to the bridge default.",
+            project.display()
+        )));
+    }
+    Ok(project)
+}
+
 fn execute_job(
     cfg: &Config,
     data_dir: &Path,
@@ -569,13 +617,18 @@ fn execute_job(
         ));
     }
 
+    let mut rejection = ErrorContext {
+        cfg,
+        project: &cfg.project_dir,
+        kind: cfg.agent,
+    };
     // Determine target agent
     let kind = if !job.flags.agent.is_empty() {
         match AgentKind::parse_name(&job.flags.agent) {
             Ok(k) => k,
             Err(_) => {
                 return publish_request_error(
-                    cfg,
+                    rejection,
                     data_dir,
                     addon_dir,
                     signals,
@@ -589,9 +642,25 @@ fn execute_job(
         cfg.agent
     };
 
+    rejection.kind = kind;
+    let project = match requested_project(&cfg.project_dir, &job.cwd) {
+        Ok(project) => project,
+        Err(error) => {
+            return publish_request_error(
+                rejection,
+                data_dir,
+                addon_dir,
+                signals,
+                &mut state,
+                job,
+                &error.to_string(),
+            );
+        }
+    };
+    rejection.project = &project;
     let Some(settings) = cfg.agents.get(kind.id()) else {
         return publish_request_error(
-            cfg,
+            rejection,
             data_dir,
             addon_dir,
             signals,
@@ -600,20 +669,9 @@ fn execute_job(
             &format!("Agent '{}' is not configured", kind.id()),
         );
     };
-    if !job.cwd.is_empty() {
-        return publish_request_error(
-            cfg,
-            data_dir,
-            addon_dir,
-            signals,
-            &mut state,
-            job,
-            "Per-chat folder changes are not supported by this live preview; set project_dir in config",
-        );
-    }
     if !job.flags.allow.is_empty() {
         return publish_request_error(
-            cfg,
+            rejection,
             data_dir,
             addon_dir,
             signals,
@@ -627,7 +685,7 @@ fn execute_job(
             Ok(value) => value,
             Err(error) => {
                 return publish_request_error(
-                    cfg, data_dir, addon_dir, signals, &mut state, job, &error,
+                    rejection, data_dir, addon_dir, signals, &mut state, job, &error,
                 );
             }
         };
@@ -638,7 +696,7 @@ fn execute_job(
         .filter(|s| {
             !job.flags.new_session
                 && s.agent == kind.id()
-                && s.project == cfg.project_dir
+                && s.project == project
                 && (s.config_fingerprint == effective.fingerprint
                     || (s.config_fingerprint.is_empty()
                         && job.flags.model.is_empty()
@@ -665,7 +723,7 @@ fn execute_job(
     let invocation = agents::build(
         kind,
         settings,
-        &cfg.project_dir,
+        &project,
         &full_prompt,
         session.as_deref(),
         &prompt_file,
@@ -673,12 +731,14 @@ fn execute_job(
     let invocation = match invocation {
         Ok(invocation) => invocation,
         Err(e) => {
-            return publish_request_error(cfg, data_dir, addon_dir, signals, &mut state, job, &e);
+            return publish_request_error(
+                rejection, data_dir, addon_dir, signals, &mut state, job, &e,
+            );
         }
     };
     if let Err(e) = process::validate_program(&invocation.program) {
         return publish_request_error(
-            cfg,
+            rejection,
             data_dir,
             addon_dir,
             signals,
@@ -693,7 +753,7 @@ fn execute_job(
         status: Status::Error,
         model: effective.model.clone(), effort: effective.effort.clone(),
         addon_dir: addon_dir.map(Path::to_path_buf), chat: job.chat.clone(),
-        id: job.id, agent: kind, project: cfg.project_dir.clone(),
+        id: job.id, agent: kind, project: project.clone(),
         text: "The bridge stopped after accepting this request. Its outcome is unknown; it will not be resent automatically. Send a new request to retry.".into(),
         session: None, denied: vec![],
     });
@@ -710,7 +770,7 @@ fn execute_job(
         cfg,
         addon_dir,
         data_dir,
-        project: &cfg.project_dir,
+        project: &project,
         kind,
         chat: &job.chat,
         id: job.id,
@@ -758,7 +818,7 @@ fn execute_job(
             process::Request {
                 program: &invocation.program,
                 args: &invocation.args,
-                cwd: &cfg.project_dir,
+                cwd: &project,
                 input: invocation.stdin.as_deref(),
                 env: &invocation.env,
                 timeout: Duration::from_millis(cfg.timeout_ms),
@@ -827,7 +887,7 @@ fn execute_job(
                     Session {
                         config_fingerprint: effective.fingerprint.clone(),
                         agent: kind.id().into(),
-                        project: cfg.project_dir.clone(),
+                        project: project.clone(),
                         id: new_session.clone(),
                     },
                 );
@@ -843,7 +903,7 @@ fn execute_job(
                 chat: job.chat.clone(),
                 id: job.id,
                 agent: kind,
-                project: cfg.project_dir.clone(),
+                project: project.clone(),
                 text: output.text.clone(),
                 session: output.session.clone(),
                 denied: output.denied.clone(),
@@ -855,7 +915,7 @@ fn execute_job(
                 cfg,
                 addon_dir,
                 data_dir,
-                project: &cfg.project_dir,
+                project: &project,
                 kind,
                 chat: &job.chat,
                 id: job.id,
@@ -911,7 +971,7 @@ fn execute_job(
                 cfg,
                 addon_dir,
                 data_dir,
-                project: &cfg.project_dir,
+                project: &project,
                 kind,
                 chat: &job.chat,
                 id: job.id,
@@ -974,7 +1034,7 @@ fn publish_reply(req: ReplyPublication<'_>) -> io::Result<()> {
         online: Some(true),
         timestamp: utc_timestamp(now)?,
         now_seconds: now,
-        cwd: req.project.to_string_lossy().into_owned(),
+        cwd: req.cfg.project_dir.to_string_lossy().into_owned(),
         agent: req.cfg.agent.id().into(),
         agents: req.cfg.agents.keys().cloned().collect(),
         capabilities: Some(req.cfg.capabilities()),
@@ -1102,8 +1162,15 @@ fn publish_connection(
     }
     Ok(())
 }
+#[derive(Clone, Copy)]
+struct ErrorContext<'a> {
+    cfg: &'a Config,
+    project: &'a Path,
+    kind: AgentKind,
+}
+
 fn publish_request_error(
-    cfg: &Config,
+    context: ErrorContext<'_>,
     data_dir: &Path,
     addon_dir: Option<&Path>,
     signals: Option<&Signals>,
@@ -1111,6 +1178,7 @@ fn publish_request_error(
     job: &Job,
     message: &str,
 ) -> io::Result<()> {
+    let ErrorContext { cfg, project, kind } = context;
     if state.pending.is_some() {
         return Err(io::Error::other(
             "recover pending reply before rejecting another request",
@@ -1124,8 +1192,8 @@ fn publish_request_error(
         addon_dir: addon_dir.map(Path::to_path_buf),
         chat: job.chat.clone(),
         id: job.id,
-        agent: cfg.agent,
-        project: cfg.project_dir.clone(),
+        agent: kind,
+        project: project.to_path_buf(),
         text: message.to_owned(),
         session: None,
         denied: vec![],
@@ -1135,8 +1203,8 @@ fn publish_request_error(
         cfg,
         addon_dir,
         data_dir,
-        project: &cfg.project_dir,
-        kind: cfg.agent,
+        project,
+        kind,
         chat: &job.chat,
         id: job.id,
         model: "",
@@ -1153,4 +1221,43 @@ fn publish_request_error(
     state.pending = None;
     state.save(data_dir)?;
     Err(io::Error::other(message.to_owned()))
+}
+
+#[cfg(all(test, windows))]
+mod folder_tests {
+    #[test]
+    fn rejects_drive_relative_paths_before_using_process_drive_state() {
+        for path in ["C:relative", "D:"] {
+            assert!(
+                super::requested_project(std::path::Path::new("."), path)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("drive-relative")
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod project_resolution_tests {
+    #[test]
+    fn advertised_home_forms_expand_without_using_the_default_project() {
+        let home = std::env::current_dir().unwrap().canonicalize().unwrap();
+        for input in ["~", "~/", "~/.", "~\\", "~\\."] {
+            assert_eq!(
+                super::resolve_chat_project(&std::env::temp_dir(), input, Some(&home)).unwrap(),
+                home
+            );
+        }
+        assert!(
+            super::resolve_chat_project(&home, "~", None)
+                .unwrap_err()
+                .to_string()
+                .contains("Cannot expand ~")
+        );
+        assert!(
+            super::resolve_chat_project(&home, "~", Some(std::path::Path::new("relative-home")))
+                .is_err()
+        );
+    }
 }
