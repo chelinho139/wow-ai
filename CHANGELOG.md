@@ -4,6 +4,10 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+### Fixed
+
+- The 900-byte cap on the game context cut at a byte, so it could halve the last quest id or a multibyte character (an accented guild or zone name) and send invalid UTF-8. The context is now kept line by line in its existing order: the first line that cannot fit, and every line after it, is dropped, except that the quest log and professions are cut after their last complete entry instead. The format of the context is unchanged.
+
 ## [0.5.0] - 2026-11-04
 
 ### Added
