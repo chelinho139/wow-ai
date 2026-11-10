@@ -68,8 +68,10 @@ restart WoW to load the updated addon.
 Connect and send a message. Stop the bridge with **Ctrl+C**, then send another
 message in that same chat. On its next reply-slot poll the addon should show the
 bridge as stopped, clear the working spinner, and explain that the request will
-not be resent automatically. Restart the bridge, click **Reconnect**, and send a
-new message in the same chat; a new chat should not be necessary.
+not be resent automatically. Restart the bridge and wait for the addon to detect
+the resumed heartbeat and reconnect automatically, then send a new message in the
+same chat; a new chat should not be necessary. The **Reconnect** button remains
+available for manual recovery.
 
 Ctrl+C publishes an offline snapshot and cancels a running agent process. A forced
 kill or crash cannot publish one: connection loss is detected by heartbeat age

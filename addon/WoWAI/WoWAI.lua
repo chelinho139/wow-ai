@@ -518,9 +518,18 @@ local function PollPresence()
 	for _ = 1, 3 do
 		local k = (p.last % PRESENCE_MAX) + 1
 		if not SoundValid(PresencePath(k)) then break end
+		local wasDisconnected = run.bridgeStopped or WoWAI.BridgeState() == "down"
 		p.last = k
 		p.beats = (p.beats or 0) + 1
 		NotedBridge()
+		-- A new heartbeat means a previously unavailable Rust bridge is back.
+		-- Say hello once to refresh the addon session and reply slots; this does
+		-- not resend any interrupted agent request.
+		if wasDisconnected and db.settings.mode == "pixel"
+			and (not run.autoHelloAt or GetTime() - run.autoHelloAt >= 60) then
+			run.autoHelloAt = GetTime()
+			WoWAI.SayHello(true)
+		end
 	end
 end
 
@@ -929,7 +938,7 @@ local function Tick()
 		-- A hello only needs the bridge to have been seen; it never escalates.
 		-- A deletion is durable backend state, so presence alone is not proof that
 		-- cleanup finished. Keep it until its exact acknowledgement signal arrives.
-		if rec.hello and not rec.acked and run.bridgeSeen and run.bridgeSeen >= rec.sentAt then
+		if rec.hello and not rec.acked and run.bridgeSeen and run.bridgeSeen > rec.sentAt then
 			NoteAcked(rec)
 			changed = true
 		end
@@ -1426,10 +1435,10 @@ end
 -- so the status light and any lost chats come back before the first message.
 -- The game context always rides on it (empty when turned off), so the bridge's
 -- copy is brought in line at every login and Connect.
-function WoWAI.SayHello()
+function WoWAI.SayHello(force)
 	if db.settings.mode ~= "pixel" then return end
 	local now = GetTime()
-	if run.lastHelloAt and now - run.lastHelloAt < 60 then return end
+	if not force and run.lastHelloAt and now - run.lastHelloAt < 60 then return end
 	run.lastHelloAt = now
 	db.lastSeq = db.lastSeq + 1
 	local c = ActiveChat()

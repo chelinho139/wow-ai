@@ -775,7 +775,7 @@ test('slot-only Rust connections stay live with fresh clocks and expire after a 
   assert.equal(vm.evaluate('WoWAIDB.chats[1].pendingId'), null);
 });
 
-test('a presence signal alone cannot reconnect an explicitly stopped Rust bridge', () => {
+test('a fresh presence signal automatically sends hello after an explicit Rust shutdown', () => {
   const vm = newVM();
   vm.run('STUB.sounds["Interface\\\\AddOns\\\\WoWAI\\\\ctl\\\\valid.wav"] = true');
   login(vm); connect(vm);
@@ -783,9 +783,12 @@ test('a presence signal alone cannot reconnect an explicitly stopped Rust bridge
   vm.run('WoWAI.Connect(); STUB.now=STUB.now+6; STUB.Tick()');
   vm.run('STUB.sounds["Interface\\\\AddOns\\\\WoWAI\\\\presence\\\\0001.wav"] = true; STUB.now=STUB.now+2; STUB.Tick()');
   assert.equal(vm.evaluate('WoWAI.IsConnected()'), 'false');
+  assert.ok(stripRecords(vm).some(r => r.flags.includes('h')), 'a new heartbeat triggers a reconnect hello');
   nextSlot(vm, '{now=time(),bridgeOnline=true,replies={}}');
-  vm.run('WoWAI.Connect(); STUB.now=STUB.now+6; STUB.Tick()');
+  vm.run('STUB.now=STUB.now+6; STUB.Tick()');
   assert.equal(vm.evaluate('WoWAI.IsConnected()'), 'true');
+  vm.run('STUB.sounds["Interface\\\\AddOns\\\\WoWAI\\\\presence\\\\0002.wav"] = true; STUB.now=STUB.now+2; STUB.Tick()');
+  assert.equal(stripRecords(vm).filter(r => r.flags.includes('h')).length, 0, 'normal heartbeats while connected do not send another hello');
 });
 
 test('a delayed tick reads a fresh final reply before expiring the connection', () => {
