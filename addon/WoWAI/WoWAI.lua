@@ -955,6 +955,52 @@ local function Money(copper)
 	return c .. "c"
 end
 
+-- The first max bytes of s, backing off so a multibyte UTF-8 character is never split.
+function WoWAI.CutUtf8(s, max)
+	if #s <= max then return s end
+	local cut = max
+	while cut > 0 do
+		local b = s:byte(cut + 1)
+		if b < 0x80 or b >= 0xC0 then break end -- the next byte starts a character
+		cut = cut - 1
+	end
+	return s:sub(1, cut)
+end
+
+-- Join the context lines (most important first) into at most CONTEXT_MAX bytes.
+-- Whole lines are kept while they fit. The first one that doesn't is dropped, or
+-- for a list (lists[i]: entries separated by commas after "label: ") cut after
+-- its last complete entry, never mid quest id. Every line after it is dropped
+-- too, even a short one that would fit: a lower-priority line must never be sent
+-- in place of a higher-priority one, and what is kept is the same every time.
+-- Only when nothing precedes it (the very first line alone is over the cap) is
+-- that line cut by bytes, on a character boundary, so the context is never empty.
+local function FitContext(lines, lists)
+	local out, used = {}, 0
+	for i, line in ipairs(lines) do
+		local room = CONTEXT_MAX - used - (#out > 0 and 1 or 0)
+		if #line <= room then
+			table.insert(out, line)
+			used = used + #line + (#out > 1 and 1 or 0)
+		else
+			local cut
+			local from = line:find(": ", 1, true)
+			if lists[i] and from then
+				for p in line:sub(1, room + 1):gmatch("(),") do
+					if p > from + 2 then cut = p - 1 end
+				end
+			end
+			if cut then
+				table.insert(out, line:sub(1, cut))
+			elseif #out == 0 then
+				table.insert(out, WoWAI.CutUtf8(line, room))
+			end
+			break
+		end
+	end
+	return table.concat(out, "\n")
+end
+
 -- A few lines about the game and the character, as the bridge will show them to the agent.
 -- Profession and secondary skill lines by skill id (vanilla ids).
 local PROFESSION_SKILL_IDS = {
@@ -995,7 +1041,7 @@ function WoWAI.SkillLines()
 end
 
 function WoWAI.GameContext()
-	local lines = {}
+	local lines, lists = {}, {}
 	local version, build, _, toc = Try(GetBuildInfo)
 	toc = tonumber(toc)
 	local game = "World of Warcraft"
@@ -1082,7 +1128,10 @@ function WoWAI.GameContext()
 			table.insert(parts, sk.name .. (sk.rank and (" " .. tostring(sk.rank) .. (sk.maxRank and ("/" .. tostring(sk.maxRank)) or "")) or ""))
 		end
 	end
-	if #parts > 0 then table.insert(lines, "Professions: " .. table.concat(parts, ", ")) end
+	if #parts > 0 then
+		table.insert(lines, "Professions: " .. table.concat(parts, ", "))
+		lists[#lines] = true
+	end
 
 	-- Quest log ids (what is accepted, and which are done), so route planning can
 	-- skip pickups and turn-ins that no longer apply.
@@ -1104,11 +1153,13 @@ function WoWAI.GameContext()
 			end
 		end
 	end
-	if #quests > 0 then table.insert(lines, "Quest log (id, * = ready to turn in): " .. table.concat(quests, ",")) end
+	if #quests > 0 then
+		table.insert(lines, "Quest log (id, * = ready to turn in): " .. table.concat(quests, ","))
+		lists[#lines] = true
+	end
 
-	local s = table.concat(lines, "\n"):gsub("[\30\31]", " ")
-	if #s > CONTEXT_MAX then s = s:sub(1, CONTEXT_MAX) end
-	return s
+	for i, line in ipairs(lines) do lines[i] = line:gsub("[\30\31]", " ") end
+	return FitContext(lines, lists)
 end
 
 -- The context to put on the next record, or nil when the bridge already has

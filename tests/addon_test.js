@@ -178,6 +178,132 @@ test('the game context describes the character and rides on the hello, then only
   assert.ok(vm.evaluate('WoWAIDB.chats[2].history[#WoWAIDB.chats[2].history].text').includes('Game context is ON'));
 });
 
+// A character whose context overflows: `guildBytes` of 2-byte characters in the
+// guild name and a quest log of `quests` entries (every third one ready to turn in).
+// Returns the context as the exact bytes Lua produced, and as text.
+function crowdedContext(guildBytes, quests = 40, lua = '') {
+  const vm = newVM();
+  login(vm);
+  vm.run(`
+    function GetGuildInfo() return string.rep("\\195\\169", ${Math.floor(guildBytes / 2)}) .. "${guildBytes % 2 ? 'x' : ''}", "Member", 1 end
+    C_QuestLog = {
+      GetNumQuestLogEntries = function() return ${quests} end,
+      GetInfo = function(i) return { questID = 10000 + i * 111, isHeader = false } end,
+      IsComplete = function(id) return (id - 10000) / 111 % 3 == 0 end,
+    }
+    ${lua}`);
+  const hex = () => vm.evaluate('(WoWAI.GameContext():gsub(".", function(c) return string.format("%02x", c:byte()) end))');
+  const bytes = Buffer.from(hex(), 'hex');
+  assert.equal(hex(), bytes.toString('hex'), 'the same character gives the same text, so it is not resent');
+  const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); // throws on a split character
+  const ids = Array.from({ length: quests }, (_, k) => 10000 + (k + 1) * 111 + ((k + 1) % 3 === 0 ? '*' : ''));
+  return { bytes: bytes.length, text, ids };
+}
+
+// The guild size that makes the context without a quest log `size` bytes long.
+const guildFor = (size) => size - crowdedContext(2, 0).bytes + 2;
+
+function questIds(text) {
+  const line = text.split('\n').find(l => l.startsWith('Quest log'));
+  return line ? line.slice(line.indexOf(': ') + 2).split(',') : [];
+}
+
+test('the game context stays within 900 bytes and the quest log is cut after a whole quest id', () => {
+  const { bytes, text, ids } = crowdedContext(guildFor(800));
+  assert.ok(bytes <= 900 && bytes > 800, `${bytes} bytes: within the cap, using the room it has`);
+  const kept = questIds(text);
+  assert.ok(kept.length > 0 && kept.length < ids.length, `${kept.length} of ${ids.length} quests kept`);
+  assert.deepEqual(kept, ids.slice(0, kept.length), 'a prefix of the log: every id complete, none halved, ready marks intact');
+  assert.ok(!text.endsWith(','), 'no dangling separator');
+});
+
+test('the game context keeps its higher-priority lines intact when the quest log has to give way', () => {
+  const { text } = crowdedContext(guildFor(800));
+  assert.deepEqual(text.split('\n').slice(0, 7), [
+    'Game: World of Warcraft: Forever (client 1.60.1.69913, interface 16001)',
+    `Character: Testchar on Test Realm, level 23 Night Elf Hunter (Alliance), guild <${'é'.repeat(guildFor(800) / 2)}>`,
+    'Location: Duskwood - Darkshire',
+    'Position: 45.2, 67.8 (map 1431)',
+    'Money: 1g 23s 45c; XP: 1234/5000',
+    'Talents: Beast Mastery 10 / Marksmanship 5 / Survival 0',
+    'Professions: Skinning 75/75, First Aid 40/75',
+  ]);
+  // With a short guild the same lines come first and more of the quest log fits.
+  const small = crowdedContext(10).text;
+  assert.deepEqual(small.split('\n').slice(2, 7), text.split('\n').slice(2, 7));
+  assert.ok(questIds(small).length > questIds(text).length);
+});
+
+test('multibyte names are never split by the byte cap', () => {
+  // A guild longer than the whole cap takes its character line with it: lines are
+  // kept whole or not at all, so no name is left half written.
+  const huge = crowdedContext(1000);
+  assert.ok(huge.bytes <= 900);
+  assert.deepEqual(huge.text.split('\n').map(l => l.split(':')[0]), ['Game']);
+  // Even the first line, with nothing before it, is cut on a character boundary.
+  for (const build of ['\\195\\169', '\\226\\130\\172', '\\240\\159\\144\\137']) {
+    const one = crowdedContext(2, 0, `function GetBuildInfo() return "1.0" .. string.rep("${build}", 500), "1", "", 16001 end`);
+    assert.ok(one.bytes <= 900 && one.bytes > 890, `${one.bytes} bytes`);
+  }
+  // The cut helper itself, at every offset inside 2-, 3- and 4-byte characters.
+  const vm = newVM();
+  for (const [esc, width] of [['\\195\\169', 2], ['\\226\\130\\172', 3], ['\\240\\159\\144\\137', 4]]) {
+    for (let max = 1; max <= width * 3; max++) {
+      const kept = vm.num(`#WoWAI.CutUtf8("a" .. string.rep("${esc}", 3), ${max})`);
+      assert.equal(kept, 1 + Math.floor((max - 1) / width) * width, `${width}-byte character, max ${max}`);
+    }
+  }
+});
+
+test('a context of 899 and 900 bytes is sent whole, and at 901 only the last list gives way', () => {
+  for (const size of [899, 900]) {
+    const c = crowdedContext(guildFor(size), 0);
+    assert.equal(c.bytes, size);
+    assert.ok(c.text.endsWith('Professions: Skinning 75/75, First Aid 40/75'), `${size}: nothing was cut`);
+  }
+  const over = crowdedContext(guildFor(901), 0);
+  assert.ok(over.bytes <= 900);
+  assert.ok(over.text.endsWith('Professions: Skinning 75/75'), 'cut after a whole entry, not inside "First Aid"');
+});
+
+test('the quest log keeps the most complete entries that fit, and disappears when not even one does', () => {
+  const header = 'Quest log (id, * = ready to turn in): '.length;
+  // size: the context without a quest log; room is what is left after the joining newline.
+  const fit = (ids, room) => {
+    let n = 0;
+    while (n < ids.length && header + ids.slice(0, n + 1).join(',').length <= room) n++;
+    return n;
+  };
+  for (const size of [700, 800, 856, 857, 858, 863, 864, 890]) {
+    const { bytes, text, ids } = crowdedContext(guildFor(size));
+    const room = 900 - size - 1;
+    const kept = questIds(text);
+    assert.ok(bytes <= 900, `${size}: ${bytes} bytes`);
+    assert.equal(kept.length, fit(ids, room), `${size}: as many whole entries as fit in ${room} bytes`);
+    assert.deepEqual(kept, ids.slice(0, kept.length));
+  }
+  const exactlyOne = crowdedContext(guildFor(856));
+  assert.equal(questIds(exactlyOne.text).length, 1, 'room for the label and one id');
+  const none = crowdedContext(guildFor(857));
+  assert.ok(!none.text.includes('Quest log'), 'the label alone is not kept');
+  assert.ok(none.text.endsWith('Professions: Skinning 75/75, First Aid 40/75'));
+  assert.ok(!none.text.endsWith('\n') && none.bytes <= 900);
+});
+
+test('profession names with multibyte characters are cut only after a whole entry', () => {
+  const lua = `function WoWAI.SkillLines() return {
+    { name = "Professions", isHeader = true },
+    { name = "Schm\\195\\164hen", isHeader = false, rank = 75, maxRank = 75 },
+    { name = "\\226\\130\\172\\226\\130\\172\\226\\130\\172", isHeader = false, rank = 1, maxRank = 2 },
+  } end`;
+  const base = crowdedContext(2, 0, lua);
+  assert.ok(base.text.endsWith('Professions: Schmähen 75/75, €€€ 1/2'));
+  // Grow the guild (2 bytes in `base`) until the context is one byte over the cap.
+  const over = crowdedContext(2 + (901 - base.bytes), 0, lua);
+  assert.ok(over.bytes <= 900);
+  assert.ok(over.text.endsWith('Professions: Schmähen 75/75'), 'the second profession is dropped whole');
+});
+
 test('a shift-clicked link lands in the focused input and is sent as its name plus tooltip', () => {
   const vm = newVM();
   login(vm);
