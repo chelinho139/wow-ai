@@ -33,11 +33,19 @@ pub struct Reply {
     pub denied: Vec<String>,
 }
 
+#[derive(Clone)]
+pub struct DeletionAck {
+    pub chat: String,
+    pub session: String,
+    pub id: u64,
+}
+
 /// Clock values are supplied by the runtime so publication is deterministic.
 /// `timestamp` is the UTC ISO-8601 representation of `now_seconds`.
 pub struct Snapshot {
     /// Omitted for legacy-compatible private snapshots; live Rust publishes lifecycle.
     pub online: Option<bool>,
+    pub deletions: Option<Vec<DeletionAck>>,
     pub timestamp: String,
     pub now_seconds: u64,
     pub cwd: String,
@@ -75,6 +83,23 @@ pub fn serialize(target: Target, snapshot: &Snapshot) -> Result<String, &'static
         lua_string(&snapshot.agent),
         strings(&snapshot.agents)
     );
+    if let Some(deletions) = &snapshot.deletions {
+        if deletions.len() > 4096 || deletions.iter().any(|d| d.id == 0 || d.id >= (1_u64 << 53)) {
+            return Err("invalid deletion acknowledgments");
+        }
+        out.push_str("\tdeletionAcks = {\n");
+        for d in deletions {
+            writeln!(
+                out,
+                "\t\t{{ chat = {}, session = {}, id = {} }},",
+                lua_string(&d.chat),
+                lua_string(&d.session),
+                d.id
+            )
+            .unwrap();
+        }
+        out.push_str("\t},\n");
+    }
     if let Some(online) = snapshot.online {
         writeln!(out, "\tbridgeOnline = {online},").unwrap();
     }

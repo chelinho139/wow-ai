@@ -169,6 +169,7 @@ impl Publisher<'_> {
             .map_err(io::Error::other)?
             .as_secs();
         let snapshot = Snapshot {
+            deletions: None,
             online: None,
             timestamp: utc_timestamp(now)?,
             now_seconds: now,
@@ -340,6 +341,7 @@ pub fn inject(
             }
             state.record(chat, "assistant", &output.text, id, kind.id())?;
             state.pending = Some(PendingReply {
+                status: Status::Done,
                 model: effective.model.clone(),
                 effort: effective.effort.clone(),
                 addon_dir: None,
@@ -426,7 +428,7 @@ pub fn recover(cfg: &Config) -> io::Result<Injection> {
         effort: &pending.effort,
     }
     .publish(
-        Status::Done,
+        pending.status,
         &pending.text,
         pending.session.as_deref().unwrap_or(""),
         pending.denied,

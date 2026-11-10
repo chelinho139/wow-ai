@@ -43,6 +43,7 @@ jobs:
         run: |
           node rust/bridge/tests/generate-fixtures.cjs
           node rust/bridge/tests/generate-frame-fixtures.cjs
+          node rust/bridge/tests/generate-reload-fixtures.cjs
           git diff --exit-code -- rust/bridge/tests/fixtures
           node rust/bridge/tests/validate-slot.cjs
           node rust/bridge/tests/validate-pipeline.cjs

@@ -54,7 +54,7 @@
       "intended_behavior": "Parse SavedVariables outbox requests and deduplicate them with pixel delivery.",
       "node_reference": "tests/bridge_test.js",
       "status": "Planned",
-      "rationale": "No Rust SavedVariables request reader or live reload seam exists; do not create a production stub."
+      "rationale": "Opt-in polling, exact durable deduplication and recovery snapshots are implemented and tested; full crash-point and Windows fallback acceptance remain pending."
     },
     {
       "id": "history_restore",
@@ -90,6 +90,14 @@
       "node_reference": "tests/agents_test.js",
       "status": "Planned",
       "rationale": "Roadmap schedules permission retry as a later parity slice. Future grants must remain restrictive and adapter-validated; no bypass fallback."
+    },
+    {
+      "id": "reload_outbox_parsing",
+      "intended_behavior": "Safely parse SavedVariables outbox fields without executing Lua.",
+      "node_reference": "tests/bridge_test.js",
+      "rust_probe": "reload_compat.rs::saved_variables_match_legacy_outbox_contract",
+      "status": "Active",
+      "rationale": "Bounded Rust parser matches valid Node outbox examples; malformed-input unit tests enforce strict rejection. Live polling and recovery remain separate planned work."
     }
   ]
 }

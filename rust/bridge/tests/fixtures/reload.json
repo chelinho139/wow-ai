@@ -1,0 +1,32 @@
+[
+  {
+    "source": "WoWAIDB = {\n[\"outbox\"] = {\n[\"id\"] = 7,\n[\"session\"] = \"abc123\",\n[\"chat\"] = \"c1\",\n[\"text\"] = \"68c3a96c6c6f20e4b896e7958c\",\n[\"cwd\"] = \"433a5c4d792050726f6a656374\",\n[\"newSession\"] = true,\n},\n[\"settings\"] = {},\n}\n",
+    "expected": {
+      "id": 7,
+      "session": "abc123",
+      "chat": "c1",
+      "text": "héllo 世界",
+      "cwd": "C:\\My Project",
+      "newSession": true,
+      "via": "reload"
+    }
+  },
+  {
+    "source": "WoWAIDB = {\n[\"outbox\"] = {\n[\"id\"] = 8,\n[\"session\"] = \"abc123\",\n[\"chat\"] = \"c2\",\n[\"text\"] = \"7175657374696f6e\",\n[\"cwd\"] = \"\",\n[\"ctx\"] = \"\",\n[\"agent\"] = \"Codex\",\n[\"allow\"] = \"5765625365617263681f42617368286769743a2a29\",\n},\n[\"settings\"] = {},\n}\n",
+    "expected": {
+      "id": 8,
+      "session": "abc123",
+      "chat": "c2",
+      "text": "question",
+      "cwd": "",
+      "newSession": false,
+      "via": "reload",
+      "ctx": "",
+      "agent": "codex",
+      "allow": [
+        "WebSearch",
+        "Bash(git:*)"
+      ]
+    }
+  }
+]

@@ -26,6 +26,13 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 ])
                 .spawn()
                 .map_err(|e| e.to_string())?;
+        if let Some(path) = option("--pid-file") {
+            crate::publication::atomic_write(
+                std::path::Path::new(&path),
+                format!("{} {}", std::process::id(), child.id()).as_bytes(),
+            )
+            .map_err(|e| e.to_string())?;
+        }
         let _ = child.wait();
         return Ok(());
     }
@@ -37,10 +44,13 @@ pub fn run(args: &[String]) -> Result<(), String> {
         }
         return Ok(());
     }
-    if scenario == "record-cwd" {
+    if scenario == "record-cwd" || scenario == "record-cwd-error" {
         let file = option("--record-path").ok_or("missing cwd record path")?;
         let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
         std::fs::write(file, cwd.to_string_lossy().as_bytes()).map_err(|e| e.to_string())?;
+    }
+    if scenario == "record-cwd-error" {
+        return Err("fake recorded failure".into());
     }
     if scenario == "block-publish" || scenario == "block-error" {
         let path = option("--block-path").ok_or("missing fake blocking path")?;

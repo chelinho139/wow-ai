@@ -346,3 +346,92 @@ reconnection. Native Windows console events and WoW caching still require live
 validation. `setup --update-addon` backs up changed static files and preserves
 runtime/configuration data. Initial in-game Codex chat and session continuation
 were reported working by the user; this does not establish all-agent acceptance.
+
+
+Reload recovery implementation is proceeding in reviewable slices:
+- Safe SavedVariables outbox parsing is the first slice, with Node-reference golden
+  cases and malformed-input tests. Parsing never executes the saved Lua file.
+- Before enabling live polling, add durable admission/launch-intent records and a
+  persisted stale-outbox policy. The current 1,000-entry `handled_live` retention
+  must not allow an old saved request to become runnable again after eviction.
+- Wire file selection and bounded reads into the existing live loop, using the same
+  request identity and dispatch path for pixels and reload input. Preserve request
+  model/effort snapshots; reject unsupported overrides rather than dropping them.
+- Exercise cross-transport retries and crash points before claiming reload recovery.
+
+The parser alone does not enable reload fallback. Chat reconciliation remains a
+separate prerequisite for history restoration, as described above.
+
+
+Reload recovery preview now has opt-in `saved_variables` polling in the existing
+live loop. It requires a fresh save and current pixel hello, and shares dispatch
+with pixels. Durable exact admission intervals survive recent-cache eviction;
+retained old IDs are migrated, but previously evicted IDs cannot be reconstructed.
+An interruption snapshot is persisted before launch, and completion/error snapshots
+are durable before publication. This deliberately treats even a pre-launch crash
+after admission as uncertain rather than automatically retrying it.
+
+Focused tests cover cross-transport duplicates, restart and old-cache eviction,
+interruption error republication, freshness and session gating. Remaining stage
+gates include complete crash-point injection, Windows in-game fallback/handoff,
+orphan process cleanup and account discovery. The configured preview is not a
+claim that the full recovery or playable acceptance gate has passed.
+
+Subprocess crash coverage now exits without unwinding at eleven live-request
+boundaries: before/after admission save, Working publication, acknowledgement,
+agent exit, completion save, reply publication, completion signal, pending clear,
+and error save/publication. Restart assertions verify exact durable admission,
+correct Error/Done republication, and no repeated fake-agent invocation through
+pixel or reload retries. Before-admission interruption remains retryable.
+
+These checks do not cover an agent still running at bridge death, power-loss
+filesystem durability, or every partial multi-file publication failure. Orphan
+process cleanup and Windows in-game fallback/handoff remain open. The manual
+acceptance recipe is in rust/WINDOWS-TESTING.md.
+
+Windows provider lifetime containment now assigns the bridge to a private
+kill-on-close Job Object before provider creation. Assignment failure blocks
+launch. A Windows-only integration test kills a running owner and waits on native
+handles for its fake provider and descendant, avoiding PID reuse as test evidence.
+This test requires Windows execution; cross-compilation alone is not runtime
+acceptance. Unix abrupt-death containment, earlier surviving providers from old
+bridge versions, host job restrictions, and authenticated provider compatibility
+remain open. Never kill an arbitrary saved PID to compensate for old versions.
+
+
+Recovery review hardening: successful forget handling now clears that chat's
+pending publication snapshot without removing its durable admission IDs. Terminal
+validation errors are admitted and saved before publication, so restart or a
+transport retry cannot reconsider the same rejected ID. Their transaction retains
+acknowledged game context for the next valid request. Startup preserves cached
+Working replies that have a matching durable recovery snapshot instead of briefly
+publishing an incorrect generic interruption error. Reload polling caches only
+successfully processed file versions; failed reads/parses/dispatch remain retryable.
+
+The forget fix does not make deletion a cross-file transaction. A crash between
+reply-cache cleanup and Rust state cleanup still requires the separately planned
+tombstone/reconciliation work. Windows Job Object runtime acceptance also remains
+pending despite successful cross-compilation.
+
+Crash-safe backend deletion now uses permanent, bounded tombstones. Intent and
+private history/session/pending cleanup are one atomic state write; retained reply
+cleanup and all-slot publication retry before completion is persisted and the
+exact acknowledgment is sent. Startup and ticks finish interrupted work first.
+Unseen requests for a deleted chat are consumed without recreating it, and repeated
+forget records acknowledge completed cleanup idempotently. A six-boundary process
+crash test covers before/after intent, cache cleanup, publication, completion and
+acknowledgment, with unrelated chat preservation and stale transport checks.
+
+The addon clears deleted outgoing work, rotates the cleared last chat's identity
+without collisions, and waits for an explicit acknowledgment rather than presence.
+Capacity and publication failures are tested as unacknowledged, retryable outcomes.
+This supersedes the earlier cross-file cleanup limitation for accepted Rust
+operations. Backend-originated deletion events, retention policy/management UI,
+provider-side history deletion, and native in-game caching acceptance remain open.
+
+Completed deletions also have structured Inbox/slot receipts keyed by chat, session
+and a stable persisted addon operation ID. This closes the sound-disabled
+acknowledgment path and prevents a stale reused WAV slot from confirming a modern
+Rust deletion. Receipt support is detected from the snapshot field; older bridge
+sound acknowledgments remain compatible. Tests cover mismatched session/ID,
+reconnect identity, disabled sound, and stale WAV rejection.

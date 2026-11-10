@@ -164,6 +164,20 @@ local function FindChat(id)
 	end
 end
 
+local freshIdSeq = 0
+local function FreshChatId(excluded)
+	local candidate = NewId()
+	if candidate ~= excluded and not FindChat(candidate) and not db.forget[candidate] and not db.retiredChats[candidate] then return candidate end
+	-- A deterministic suffix guarantees progress even when math.random is stubbed
+	-- or repeats. Chat IDs stay alphanumeric for both transport parsers.
+	local prefix = string.format("%x", time() % 0xFFFFFF)
+	repeat
+		freshIdSeq = freshIdSeq + 1
+		candidate = prefix .. "r" .. string.format("%x", freshIdSeq)
+	until candidate ~= excluded and not FindChat(candidate) and not db.forget[candidate] and not db.retiredChats[candidate]
+	return candidate
+end
+
 local function ActiveChat()
 	return FindChat(db.activeChat)
 end
@@ -172,7 +186,7 @@ local function AddChat(name, cwd)
 	if #db.chats >= MAX_CHATS then return nil end
 	local current = ActiveChat()
 	local c = {
-		id = NewId(),
+		id = FreshChatId(nil),
 		name = name or ("Chat " .. (#db.chats + 1)),
 		cwd = cwd or (current and current.cwd) or DEFAULT_CWD,
 		agent = (current and current.agent) or "",
@@ -215,6 +229,7 @@ local function InitDB()
 	db.lastSeq = db.lastSeq or 0
 	-- Chats deleted in game that the bridge hasn't confirmed forgetting yet.
 	db.forget = db.forget or {}
+	db.retiredChats = db.retiredChats or {}
 	-- Identifies this counter's lifetime. If the saved data is ever reset, a new
 	-- session lets the bridge tell "message #1 again" from "message #1, already done".
 	if not db.session then
@@ -224,7 +239,7 @@ local function InitDB()
 		-- Migrate the single-chat layout into the first chat.
 		db.chats = {}
 		local c = {
-			id = NewId(),
+			id = FreshChatId(nil),
 			name = "Chat 1",
 			cwd = s.cwd,
 			history = db.history or {},
@@ -372,7 +387,7 @@ end
 -- bridge can tell it from a separator inside the text.
 local function RecordFor(id, rec)
 	local flags = Wire(rec.flags)
-	local fields = { Wire(db.session), Wire(rec.chat), tostring(id), Wire(rec.cwd), flags, Wire(rec.name) }
+	local fields = { Wire(rec.session or db.session), Wire(rec.chat), tostring(id), Wire(rec.cwd), flags, Wire(rec.name) }
 	if rec.ctx ~= nil then
 		fields[5] = flags == "" and "c" or (flags .. ";c")
 		table.insert(fields, Wire(rec.ctx))
@@ -430,8 +445,18 @@ local function SoundValid(path)
 end
 
 local function CheckSignal(kind, id)
-	if run.signalUnreliable then return false end
-	return SoundValid(string.format("Interface\\AddOns\\WoWAI\\%s\\%03d.wav", kind, SlotNumber(id)))
+	if not db.settings.signal or run.signalUnreliable then return false end
+	local path = string.format("Interface\\AddOns\\WoWAI\\%s\\%03d.wav", kind, SlotNumber(id))
+	if signalAvailable then return SoundValid(path) end
+	-- The client can index newly written WAV files after login even when the
+	-- bundled valid control file was unavailable during startup. A later explicit
+	-- ack is safe to re-probe in that one case. Never bypass the empty-file check.
+	if kind == "ack" and signalStats.selftest == "a valid file reports as unplayable (files not indexed? restart WoW)" then
+		local ok, willPlay, handle = pcall(PlaySoundFile, path, "Master")
+		if ok and willPlay and handle then pcall(StopSound, handle) end
+		return ok and willPlay and true or false
+	end
+	return false
 end
 
 -- Heartbeat: the bridge flips act/NNN/kk.wav for the k-th action of message NNN.
@@ -727,6 +752,25 @@ end
 
 -- The bridge keeps every chat's transcript. After the client wipes our saved data,
 -- it sends them back once, addressed to our new session token.
+-- A versioned slot/Inbox receipt proves durable cleanup even without sound.
+local function ApplyDeletionAcks(receipts)
+	if type(receipts) ~= "table" then return end
+	local changed = false
+	for _, receipt in ipairs(receipts) do
+		if type(receipt) == "table" and type(receipt.chat) == "string" then
+			local info = db.forget[receipt.chat]
+			if info and info.id and receipt.id == info.id and receipt.session == info.session then
+				db.forget[receipt.chat] = nil
+				for id, rec in pairs(run.outbound) do
+					if rec.forget == receipt.chat then run.outbound[id] = nil end
+				end
+				changed = true
+			end
+		end
+	end
+	if changed then RefreshStrip() end
+end
+
 local function ImportRestore(r)
 	if type(r) ~= "table" or r.token ~= db.session or db.restored then return end
 	db.restored = true
@@ -734,7 +778,7 @@ local function ImportRestore(r)
 	local current = ActiveChat()
 	for _, rc in ipairs(r.chats or {}) do
 		-- Skip chats deleted here that the bridge hasn't been told about yet.
-		if type(rc) == "table" and rc.id and not FindChat(rc.id) and not db.forget[rc.id] and #db.chats < MAX_CHATS then
+		if type(rc) == "table" and rc.id and not FindChat(rc.id) and not db.forget[rc.id] and not db.retiredChats[rc.id] and #db.chats < MAX_CHATS then
 			local chat = {
 				id = rc.id,
 				name = (rc.name and rc.name ~= "") and rc.name or ("Chat " .. (#db.chats + 1)),
@@ -769,6 +813,7 @@ end
 
 -- A timed-out request may have reached the agent. Never automatically replay it.
 local function Disconnected(reason)
+    run.deletionReceipts = nil
     for _, c in ipairs(db.chats) do
         if c.pendingId then
             local id = c.pendingId
@@ -784,6 +829,12 @@ end
 
 local function ApplyBridgeStatus(data)
     if type(data) ~= "table" then return end
+    if type(data.deletionAcks) == "table" then
+        run.deletionReceipts = true
+    elseif data.bridgeOnline ~= false and type(data.now) == "number"
+        and data.now <= time() + 5 and time() - data.now < 90 then
+        run.deletionReceipts = false
+    end
     if type(data.capabilities) == "table" and data.capabilities.version == 1 then run.capabilities = data.capabilities else run.capabilities = nil end
     if type(data.bridgeOnline) == "boolean" then
         run.rustPeer = true
@@ -826,6 +877,7 @@ local function TryLoadSlot(why)
 	end
 	local matched = ApplyReplies(type(data) == "table" and data.replies or nil)
 	ApplyBridgeStatus(data)
+	if type(data) == "table" then ApplyDeletionAcks(data.deletionAcks) end
 	if type(data) == "table" and data.restore then ImportRestore(data.restore) end
 	if type(data) == "table" and data.map and WoWAIMap then WoWAIMap.Sync(data.map) end
 	if why == "signal" and not matched then
@@ -869,15 +921,15 @@ local function Tick()
 		WoWAI.Render()
 	end
 	for id, rec in pairs(run.outbound) do
-		if not rec.acked and CheckSignal("ack", id) then
+		if not rec.acked and (not rec.forget or run.deletionReceipts == false) and CheckSignal("ack", id) then
 			NoteAcked(rec)
 			changed = true
 			NotedBridge()
 		end
 		-- A hello only needs the bridge to have been seen; it never escalates.
-		-- A forget is the same, but the bridge must have been seen a moment after
-		-- the record went up, so it had a chance to read it.
-		if (rec.hello or rec.forget) and not rec.acked and run.bridgeSeen and run.bridgeSeen >= rec.sentAt + (rec.forget and 2 or 0) then
+		-- A deletion is durable backend state, so presence alone is not proof that
+		-- cleanup finished. Keep it until its exact acknowledgement signal arrives.
+		if rec.hello and not rec.acked and run.bridgeSeen and run.bridgeSeen >= rec.sentAt then
 			NoteAcked(rec)
 			changed = true
 		end
@@ -940,6 +992,7 @@ local function ProcessInbox()
 	if type(inbox.agents) == "table" and #inbox.agents > 0 then run.bridgeAgents = inbox.agents end
 	ApplyReplies(inbox.replies)
 	ApplyBridgeStatus(inbox)
+	ApplyDeletionAcks(inbox.deletionAcks)
 	if inbox.restore then ImportRestore(inbox.restore) end
 	if inbox.map and WoWAIMap then WoWAIMap.Sync(inbox.map) end
 end
@@ -1341,15 +1394,31 @@ local function SendForget(chatId)
 		if rec.forget == chatId and not rec.acked then return end
 	end
 	local info = db.forget[chatId] or {}
-	db.lastSeq = db.lastSeq + 1
-	run.outbound[db.lastSeq] = { chat = chatId, cwd = info.cwd or "", flags = "d", name = info.name or "", text = "", sentAt = GetTime(), forget = chatId }
+	if not info.id then
+		db.lastSeq = db.lastSeq + 1
+		info.id, info.session = db.lastSeq, db.session
+		db.forget[chatId] = info
+	end
+	run.outbound[info.id] = { session = info.session, chat = chatId, cwd = info.cwd or "", flags = "d", name = info.name or "", text = "", sentAt = GetTime(), forget = chatId }
 	RefreshStrip()
 end
 
 local function ForgetOnBridge(c)
 	if not c or not c.id then return end
+	db.retiredChats[c.id] = true
 	db.forget[c.id] = { name = c.name, cwd = c.cwd }
 	SendForget(c.id)
+end
+
+-- Stop requests belonging to a deleted chat from surviving in the reload outbox
+-- or being shown on the pixel strip. The forget record itself remains until the
+-- bridge explicitly acknowledges durable cleanup.
+local function ClearDeletedChatTransport(chatId)
+	if db.outbox and db.outbox.chat == chatId then db.outbox = nil end
+	if run.sendOnConnect and run.sendOnConnect.chat == chatId then run.sendOnConnect = nil end
+	for id, rec in pairs(run.outbound) do
+		if rec.chat == chatId and not rec.forget then run.outbound[id] = nil end
+	end
 end
 
 -- Hello: a record with no text that just announces our session token. The bridge
@@ -1728,11 +1797,18 @@ function WoWAI.DeleteChat(id)
 	if id then c, idx = FindChat(id) end
 	if not c then c, idx = ActiveChat() end
 	if not c then return end
+	local deletedId = c.id
 	ForgetOnBridge(c)
+	ClearDeletedChatTransport(deletedId)
 	if #db.chats == 1 then
 		wipe(c.history)
 		c.pendingId, c.progress, c.unread, c.draft = nil, nil, 0, nil
+		-- The last row remains usable, but it is a new conversation. Reusing the
+		-- deleted ID would let a delayed forget erase its new backend state.
+		c.id = FreshChatId(deletedId)
+		db.activeChat = c.id
 		c.name = "Chat 1"
+		RefreshStrip()
 		WoWAI.Render()
 		WoWAI.RenderChatList()
 		return

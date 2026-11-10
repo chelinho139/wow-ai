@@ -166,5 +166,85 @@ transcript. Existing requests and saved completed replies keep their settings.
 Reset removes chat overrides and inherits Rust configuration defaults.
 
 The existing Rust live transport receives pixel records and publishes replies to
-slots and Inbox.lua. This feature does not add a SavedVariables reload-outbox
-reader. Older bridges without capabilities expose agent selection only.
+slots and Inbox.lua, with optional SavedVariables reload input described below.
+Older bridges without capabilities expose agent selection only.
+
+
+### Opt-in reload recovery preview
+
+Set `saved_variables` in the Rust JSON config to the explicit account file, for
+example `C:/Games/WoW/WTF/Account/MYACCOUNT/SavedVariables/WoWAI.lua`. Relative paths
+resolve against the config directory. It is optional; account discovery is not
+implemented. This is Rust configuration, not legacy `bridge/config.json`.
+
+The existing live loop checks that file every 750 ms using bounded data-only
+parsing. A save must be newer than bridge startup and match a session seen in a
+pixel hello during this run. After restarting the bridge, reconnect in the addon
+and `/reload` again if recovery is needed; an old disk snapshot is not dispatched
+at startup. Pixel and reload requests share durable admission by addon token and
+message ID, preserving model/effort and normal adapter validation.
+
+New admissions are retained as exact compressed ID intervals, including holes for
+out-of-order requests. They are never pruned; limits of 256 sessions and 8,192
+intervals fail closed. Do not delete Rust state to resolve a capacity error without
+considering replay risk. Upgrade imports retained legacy dedup IDs, but cannot
+reconstruct IDs already evicted by older versions. Guarantees apply to retained
+and newly admitted requests, not unknown historical requests.
+
+Before acknowledgement or launch, admission and an interruption reply are saved
+together. A crash at that point conservatively reports an uncertain outcome and
+requires a new request; it never automatically relaunches that ID. Completed and
+error replies are saved before publication and can be republished after restart.
+This does not promise exactly-once provider side effects. Windows process lifetime
+containment is described below; cleanup of pre-existing or Unix orphans remains open.
+Windows in-game fallback, caching and process cleanup still require validation.
+
+### Windows provider lifetime
+
+Before launching any provider, the Windows bridge joins a private, unnamed native
+Job Object with kill-on-close enabled and breakaway disabled. Future providers
+and descendants inherit membership when they are created. The sole job handle
+is non-inheritable and stays open for the bridge process lifetime; Windows closes
+it on abrupt bridge death and terminates remaining members. Failure to establish
+containment returns an error before provider launch. No persisted PID is used to
+kill a process after restart, avoiding PID-reuse hazards.
+
+This covers descendants launched after containment, including nested jobs where
+Windows permits the hierarchy. It can affect provider tools that expect background
+processes to outlive the bridge. Host job restrictions can prevent assignment; the
+bridge fails closed instead of silently running without containment. Tests on
+Windows observe native handles for a running fake provider and its child while
+forcibly terminating their bridge owner.
+
+macOS/Linux retain existing timeout/shutdown cleanup while the bridge is alive;
+abrupt bridge death containment is not implemented there. Compile checks from
+macOS do not establish Windows runtime correctness or in-game behavior.
+
+### Durable chat deletion
+
+Deleting an addon chat now persists a tombstone and removes its private history,
+session reference and pending reply in one atomic state update. Only then does
+Rust remove the retained reply and republish the Inbox and every reply slot. The
+tombstone is marked complete before the exact deletion acknowledgment is raised.
+Startup and ticks resume incomplete cleanup before accepting work. Unavailable
+files leave cleanup retryable and unacknowledged; startup cleanup stays offline
+until the bridge finishes validation.
+
+Tombstones are retained permanently (maximum 4,096 chat IDs; overflow fails closed)
+so old pixel requests and freshly saved stale outboxes are consumed without
+recreating deleted chats. They retain operation identity and publication target,
+not message contents. Do not discard Rust state to bypass capacity or replay
+protection. Private `inject` calls also cannot record messages for a deleted ID.
+The addon retains retired identities, rejects stale restore entries for them,
+and gives new/cleared chats collision-safe identities. It clears old outgoing
+requests, and keeps the deletion queued until an explicit acknowledgment. Rust publishes completed deletion receipts
+in Inbox and slot snapshots, keyed by chat, session and stable operation ID; they
+work with sound disabled. Receipt-capable peers ignore old WAV signals for deletion.
+Older peers retain their sound acknowledgment path; presence never proves cleanup. Older addons that reuse a deleted chat ID must create a new chat.
+
+This is a recoverable deletion journal, not simultaneous replacement of every
+file. Until recovery completes, existing cached files can still contain an old
+reply; an unacknowledged operation is not complete. It does not erase an external
+provider's own history, cancel a provider already running, import/delete legacy
+Node state, or interpret missing backend files as a user deletion. Windows/WoW
+sound and slot caching still need in-game acceptance.

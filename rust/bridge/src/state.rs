@@ -18,6 +18,10 @@ pub struct State {
     #[serde(default)]
     pub handled_live: Vec<(String, u64)>,
     #[serde(default)]
+    pub live_admissions: crate::admission::AdmissionLedger,
+    #[serde(default)]
+    pub deleted_chats: BTreeMap<String, Deletion>,
+    #[serde(default)]
     pub game_context: Option<String>,
     pub sessions: BTreeMap<String, Session>,
     pub history: BTreeMap<String, Vec<Message>>,
@@ -26,7 +30,22 @@ pub struct State {
 }
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct Deletion {
+    pub session: String,
+    pub id: u64,
+    pub addon_dir: Option<PathBuf>,
+    pub complete: bool,
+}
+
+fn completed_status() -> crate::slots::Status {
+    crate::slots::Status::Done
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct PendingReply {
+    #[serde(default = "completed_status")]
+    pub status: crate::slots::Status,
     #[serde(default)]
     pub model: String,
     #[serde(default)]
@@ -86,15 +105,38 @@ impl State {
         {
             return Err(io::Error::other("invalid Rust state schema or bounds"));
         }
+        state.validate_deletions()?;
+        state.live_admissions.validate()?;
         Ok(state)
     }
     pub fn save(&self, dir: &Path) -> io::Result<()> {
+        self.validate_deletions()?;
+        self.live_admissions.validate()?;
         let bytes = serde_json::to_vec_pretty(self).map_err(io::Error::other)?;
         if bytes.len() > 4_194_304 {
             return Err(io::Error::other("Rust history exceeds storage budget"));
         }
         atomic_write(&dir.join("reforged-state.json"), &bytes)
     }
+    fn validate_deletions(&self) -> io::Result<()> {
+        if self.deleted_chats.len() > 4096 {
+            return Err(io::Error::other(
+                "deletion tombstone capacity reached; do not discard state to bypass replay protection",
+            ));
+        }
+        for (chat, deletion) in &self.deleted_chats {
+            if chat.is_empty()
+                || chat.len() > 128
+                || deletion.session.len() > 256
+                || deletion.id == 0
+                || deletion.id >= (1_u64 << 53)
+            {
+                return Err(io::Error::other("invalid deletion tombstone"));
+            }
+        }
+        Ok(())
+    }
+
     pub fn record(
         &mut self,
         chat: &str,
@@ -103,6 +145,9 @@ impl State {
         id: u64,
         agent: &str,
     ) -> io::Result<()> {
+        if self.deleted_chats.contains_key(chat) {
+            return Err(io::Error::other("chat was deleted; create a new chat"));
+        }
         if !self.history.contains_key(chat) && self.history.len() >= 16 {
             return Err(io::Error::other("maximum 16 stored chats reached"));
         }

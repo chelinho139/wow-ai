@@ -19,6 +19,8 @@ pub struct Config {
     pub data_dir: PathBuf,
     #[serde(default)]
     pub addon_dir: Option<PathBuf>,
+    #[serde(default)]
+    pub saved_variables: Option<PathBuf>,
     pub agent: AgentKind,
     #[serde(default = "timeout")]
     pub timeout_ms: u64,
@@ -94,6 +96,9 @@ impl Config {
                 return Err(io::Error::other("addon_dir is not a directory"));
             }
             cfg.addon_dir = Some(resolved);
+        }
+        if let Some(path) = &cfg.saved_variables {
+            cfg.saved_variables = Some(resolve_path(base, path));
         }
         let context = Environment::current();
         for kind in discovery::AGENTS {

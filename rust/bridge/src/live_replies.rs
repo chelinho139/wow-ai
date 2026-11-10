@@ -66,11 +66,17 @@ pub(crate) fn forget(data: &Path, target: Option<&Path>, chat: &str) -> io::Resu
 }
 
 /// A new bridge cannot own an agent from its predecessor. Never replay it.
-pub(crate) fn interrupt_orphans(data: &Path, target: Option<&Path>) -> io::Result<bool> {
+pub(crate) fn interrupt_orphans(
+    data: &Path,
+    target: Option<&Path>,
+    recovering: Option<(&str, u64)>,
+) -> io::Result<bool> {
     let mut cache = load(data, target)?;
     let mut changed = false;
     for reply in &mut cache.replies {
-        if matches!(reply.status, crate::slots::Status::Working) {
+        if matches!(reply.status, crate::slots::Status::Working)
+            && recovering != Some((reply.chat.as_str(), reply.id))
+        {
             reply.status = crate::slots::Status::Error;
             reply.text = "The bridge stopped during this request. Its outcome is unknown; it will not be resent automatically.".into();
             changed = true;

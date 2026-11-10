@@ -96,6 +96,7 @@ pub fn validate_inventory(inventory: &Inventory) -> Result<(), String> {
     let mut ids = HashSet::new();
     let probes: HashSet<&str> = [
         "protocol_compat.rs::matches_legacy_node_protocol_fixtures",
+        "reload_compat.rs::saved_variables_match_legacy_outbox_contract",
         "slots_compat.rs::matches_node_slot_schema_for_every_status_and_optional_fields",
         "frame_compat.rs::real_lua_encoded_frames_survive_threshold_noise_offsets_and_row_padding",
         "pipeline.rs::every_adapter_runs_to_private_lua_and_preserves_legacy_data",

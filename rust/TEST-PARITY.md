@@ -9,7 +9,7 @@ the inventory does not duplicate their assertions.
 
 | Status | Count | Meaning |
 | --- | ---: | --- |
-| Active | 5 | Existing Rust contract tests run in normal Cargo test suites. |
+| Active | 6 | Existing Rust contract tests run in normal Cargo test suites. |
 | ExpectedFailure | 1 | The real live request probe reports only a narrow, documented Rust gap. |
 | Planned | 6 | Reference behavior is tracked, but there is no safe Rust seam yet. |
 | IntentionalDifference | 0 | Rust deliberately preserves a stricter permission policy. |
@@ -26,8 +26,10 @@ requested directory in the marker. The expectation is read from the manifest, so
 test. The classifier is pure and rejects XPASS, wrong IDs/reasons, unexpected
 failures, and missing results.
 
-Reload outbox parsing, addon history restore, map commands, macros, live summary
-extraction and permission retry are Planned. This does not imply every area lacks
+Full live reload recovery acceptance, addon history restore, map commands, macros,
+live summary extraction and permission retry are Planned. Reload polling and durable
+admission now have focused integration coverage, while full crash-point and Windows
+acceptance remain open. This does not imply every area lacks
 an observable pipeline seam: pending probes should be added where an approved
 contract and narrow gap evidence are available. Permission retry is scheduled by
 the roadmap; future grants must remain restrictive and adapter-validated.

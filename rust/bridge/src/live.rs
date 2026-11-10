@@ -22,6 +22,18 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+// Fault injection is absent from release builds. Tests run each crash in its own
+// process, so locks and stack cleanup cannot hide restart behavior.
+#[inline]
+fn crash_point(point: &str) {
+    #[cfg(debug_assertions)]
+    if std::env::var("WOW_AI_TEST_CRASH_POINT").as_deref() == Ok(point) {
+        std::process::exit(86);
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = point;
+}
+
 const MARKER: &str = ".wow-ai-reforged-data";
 
 fn ensure_private_data(dir: &Path) -> io::Result<()> {
@@ -74,6 +86,14 @@ struct Heartbeat {
     presence: Option<Instant>,
     slots: Option<Instant>,
 }
+#[derive(PartialEq, Eq)]
+struct ReloadVersion {
+    path: PathBuf,
+    modified: SystemTime,
+    length: u64,
+    session: String,
+}
+
 pub struct LiveBridge<'a> {
     cfg: &'a Config,
     data_guard: OwnershipGuard,
@@ -82,6 +102,8 @@ pub struct LiveBridge<'a> {
     signals: Option<Signals>,
     handled_jobs: HashSet<(String, u64)>,
     last_presence: Heartbeat,
+    active_addon_session: Option<String>,
+    reload_version: Option<ReloadVersion>,
 }
 impl<'a> LiveBridge<'a> {
     pub fn start(cfg: &'a Config, wow_dir: Option<&Path>) -> io::Result<Self> {
@@ -122,7 +144,19 @@ impl<'a> LiveBridge<'a> {
             (None, None)
         };
 
-        if crate::live_replies::interrupt_orphans(data_guard.data_dir(), addon_dir.as_deref())? {
+        let pending = State::load(data_guard.data_dir())?.pending;
+        if pending.as_ref().is_some_and(|p| p.addon_dir != addon_dir) {
+            return Err(io::Error::other(
+                "pending reply belongs to a different publication target; recover it using its original config",
+            ));
+        }
+        recover_deletions(cfg, data_guard.data_dir(), addon_dir.as_deref(), false)?;
+        let recovering = pending.as_ref().map(|p| (p.chat.as_str(), p.id));
+        if crate::live_replies::interrupt_orphans(
+            data_guard.data_dir(),
+            addon_dir.as_deref(),
+            recovering,
+        )? {
             publish_connection(cfg, data_guard.data_dir(), addon_dir.as_deref(), true)?;
         }
         Ok(Self {
@@ -133,6 +167,8 @@ impl<'a> LiveBridge<'a> {
             signals,
             handled_jobs: HashSet::new(),
             last_presence: Heartbeat::default(),
+            active_addon_session: None,
+            reload_version: None,
         })
     }
     pub fn shutdown(&mut self) -> io::Result<()> {
@@ -160,6 +196,12 @@ impl<'a> LiveBridge<'a> {
         )
     }
     pub fn tick(&mut self, now: Instant) -> io::Result<()> {
+        recover_deletions(
+            self.cfg,
+            self.data_guard.data_dir(),
+            self.addon_dir.as_deref(),
+            true,
+        )?;
         let mut state = State::load(self.data_guard.data_dir())?;
         if let Some(pending) = state.pending.clone() {
             if pending.addon_dir != self.addon_dir {
@@ -175,7 +217,7 @@ impl<'a> LiveBridge<'a> {
                 kind: pending.agent,
                 chat: &pending.chat,
                 id: pending.id,
-                status: Status::Done,
+                status: pending.status,
                 text: &pending.text,
                 session: pending.session.as_deref().unwrap_or(""),
                 model: &pending.model,
@@ -198,39 +240,110 @@ impl<'a> LiveBridge<'a> {
             false,
         )
     }
+    fn accept_job(&mut self, job: &Job) -> io::Result<()> {
+        recover_deletions(
+            self.cfg,
+            self.data_guard.data_dir(),
+            self.addon_dir.as_deref(),
+            true,
+        )?;
+        let key = (job.session.clone(), job.id);
+        let mut state = State::load(self.data_guard.data_dir())?;
+        // Upgrade retained legacy IDs before accepting new work. Never prune the ledger.
+        let mut migrated = false;
+        for (session, id) in &state.handled_live {
+            if !state.live_admissions.contains(session, *id) {
+                state.live_admissions.insert(session, *id)?;
+                migrated = true;
+            }
+        }
+        if migrated {
+            state.save(self.data_guard.data_dir())?;
+        }
+        if !job.flags.hello && !job.flags.forget && state.deleted_chats.contains_key(&job.chat) {
+            // The durable tombstone consumes stale input without republishing it.
+            return Ok(());
+        }
+        if !job.flags.forget
+            && (self.handled_jobs.contains(&key)
+                || state.handled_live.contains(&key)
+                || state.live_admissions.contains(&job.session, job.id))
+        {
+            return Ok(());
+        }
+        if job.flags.hello {
+            self.active_addon_session = Some(job.session.clone());
+        }
+        execute_job(
+            self.cfg,
+            self.data_guard.data_dir(),
+            self.addon_dir.as_deref(),
+            self.signals.as_ref(),
+            job,
+            &mut self.last_presence,
+        )?;
+        if self.handled_jobs.len() >= 1000 {
+            self.handled_jobs.clear();
+        }
+        self.handled_jobs.insert(key);
+        Ok(())
+    }
+
+    /// Poll only fresh saves belonging to a session observed through pixel hello.
+    pub fn poll_saved_variables(&mut self, path: &Path, started_at: SystemTime) -> io::Result<()> {
+        let Some(session) = self.active_addon_session.clone() else {
+            return Ok(());
+        };
+        let meta = match fs::symlink_metadata(path) {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        if !meta.file_type().is_file() {
+            return Err(io::Error::other("SavedVariables must be a regular file"));
+        }
+        let modified = meta.modified()?;
+        if modified < started_at {
+            return Ok(());
+        }
+        let version = ReloadVersion {
+            path: path.to_path_buf(),
+            modified,
+            length: meta.len(),
+            session,
+        };
+        if self.reload_version.as_ref() == Some(&version) {
+            return Ok(());
+        }
+        let bytes = crate::config::read_bounded(path, 16 * 1024 * 1024)?;
+        let source = std::str::from_utf8(&bytes).map_err(io::Error::other)?;
+        if let Some(job) = crate::reload::parse_outbox(source)?
+            && self.active_addon_session.as_deref() == Some(job.session.as_str())
+        {
+            self.accept_job(&job)?;
+        }
+        self.reload_version = Some(version);
+        Ok(())
+    }
+
+    /// Reload and pixel records share the same durable admission path.
+    pub fn accept_saved_variables(&mut self, source: &str) -> io::Result<()> {
+        if let Some(job) = crate::reload::parse_outbox(source)? {
+            self.accept_job(&job)?;
+        }
+        Ok(())
+    }
+
     pub fn accept_frame(&mut self, frame: &crate::frame::Frame) -> io::Result<()> {
         let mut failure = None;
         for job in protocol::jobs_from_strip(u64::from(frame.id), &frame.text) {
             if crate::shutdown::requested() {
                 break;
             }
-            let key = (job.session.clone(), job.id);
-            if self.handled_jobs.contains(&key)
-                || State::load(self.data_guard.data_dir())?
-                    .handled_live
-                    .contains(&key)
+            if let Err(error) = self.accept_job(&job)
+                && failure.is_none()
             {
-                continue;
-            }
-            match execute_job(
-                self.cfg,
-                self.data_guard.data_dir(),
-                self.addon_dir.as_deref(),
-                self.signals.as_ref(),
-                &job,
-                &mut self.last_presence,
-            ) {
-                Ok(()) => {
-                    if self.handled_jobs.len() >= 1000 {
-                        self.handled_jobs.clear();
-                    }
-                    self.handled_jobs.insert(key);
-                }
-                Err(e) => {
-                    if failure.is_none() {
-                        failure = Some(e);
-                    }
-                }
+                failure = Some(error);
             }
         }
         failure.map_or(Ok(()), Err)
@@ -265,6 +378,8 @@ pub fn run(cfg: &Config, options: BridgeOptions) -> io::Result<()> {
         CaptureTarget::default()
     };
     let mut capture = CaptureSession::new(target);
+    let started_at = SystemTime::now();
+    let mut last_reload_poll = Instant::now();
     let mut last_waiting_log = Instant::now() - Duration::from_secs(10);
     let mut last_warn_log = Instant::now() - Duration::from_secs(10);
 
@@ -274,6 +389,15 @@ pub fn run(cfg: &Config, options: BridgeOptions) -> io::Result<()> {
         }
         if let Err(e) = bridge.tick(Instant::now()) {
             eprintln!("[presence] {e}");
+        }
+        if last_reload_poll.elapsed() >= Duration::from_millis(750) {
+            last_reload_poll = Instant::now();
+            if let Some(path) = &cfg.saved_variables {
+                let result = bridge.poll_saved_variables(path, started_at);
+                if let Err(error) = result {
+                    eprintln!("[reload] {error}");
+                }
+            }
         }
         match capture.poll() {
             Ok(Some(CaptureEvent::Attached(info))) => {
@@ -320,6 +444,38 @@ pub fn run(cfg: &Config, options: BridgeOptions) -> io::Result<()> {
     Ok(())
 }
 
+/// Resume every unfinished deletion before publishing or accepting new work.
+fn recover_deletions(
+    cfg: &Config,
+    data: &Path,
+    target: Option<&Path>,
+    online: bool,
+) -> io::Result<()> {
+    let mut state = State::load(data)?;
+    let pending: Vec<_> = state
+        .deleted_chats
+        .iter()
+        .filter(|(_, d)| !d.complete)
+        .map(|(chat, d)| (chat.clone(), d.clone()))
+        .collect();
+    for (chat, deletion) in pending {
+        if deletion.addon_dir.as_deref() != target {
+            return Err(io::Error::other(
+                "unfinished deletion belongs to another addon target; recover using its original config",
+            ));
+        }
+        crate::live_replies::forget(data, target, &chat)?;
+        crash_point("after_delete_cache");
+        publish_connection(cfg, data, target, online)?;
+        crash_point("after_delete_publication");
+        state.deleted_chats.get_mut(&chat).unwrap().complete = true;
+        state.save(data)?;
+        crash_point("after_delete_complete");
+        publish_connection(cfg, data, target, online)?;
+    }
+    Ok(())
+}
+
 fn execute_job(
     cfg: &Config,
     data_dir: &Path,
@@ -343,13 +499,47 @@ fn execute_job(
 
     if job.flags.forget {
         println!("[job #{}] forget chat {}", job.id, job.chat);
-        crate::live_replies::forget(data_dir, addon_dir, &job.chat)?;
-        state.sessions.remove(&job.chat);
-        state.history.remove(&job.chat);
-        state.save(data_dir)?;
-        if let Some(sig) = signals {
-            let _ = sig.set(SignalKind::Acknowledgement, job.id, true);
+        if !state.deleted_chats.contains_key(&job.chat) {
+            if job.chat.is_empty() {
+                return Err(io::Error::other("cannot delete an unnamed chat"));
+            }
+            state.deleted_chats.insert(
+                job.chat.clone(),
+                crate::state::Deletion {
+                    session: job.session.clone(),
+                    id: job.id,
+                    addon_dir: addon_dir.map(Path::to_path_buf),
+                    complete: false,
+                },
+            );
+            state.sessions.remove(&job.chat);
+            state.history.remove(&job.chat);
+            if state
+                .pending
+                .as_ref()
+                .is_some_and(|pending| pending.chat == job.chat)
+            {
+                state.pending = None;
+            }
+            state.live_admissions.insert(&job.session, job.id)?;
+            // Intent and private cleanup are one atomic state update. No ack yet.
+            crash_point("before_delete_intent");
+            state.save(data_dir)?;
+            crash_point("after_delete_intent");
         }
+        recover_deletions(cfg, data_dir, addon_dir, true)?;
+        let mut completed = State::load(data_dir)?;
+        let receipt = completed.deleted_chats.get_mut(&job.chat).unwrap();
+        if receipt.session != job.session || receipt.id != job.id {
+            receipt.session = job.session.clone();
+            receipt.id = job.id;
+            completed.save(data_dir)?;
+        }
+        publish_connection(cfg, data_dir, addon_dir, true)?;
+        if let Some(sig) = signals {
+            check_report(sig.set(SignalKind::Acknowledgement, job.id, true)?)?;
+        }
+        crash_point("after_delete_ack");
         return Ok(());
     }
 
@@ -373,6 +563,12 @@ fn execute_job(
         return Ok(());
     }
 
+    if state.pending.is_some() {
+        return Err(io::Error::other(
+            "a reply is awaiting publication; recover it before accepting another request",
+        ));
+    }
+
     // Determine target agent
     let kind = if !job.flags.agent.is_empty() {
         match AgentKind::parse_name(&job.flags.agent) {
@@ -383,6 +579,7 @@ fn execute_job(
                     data_dir,
                     addon_dir,
                     signals,
+                    &mut state,
                     job,
                     &format!("Unknown requested agent: {}", job.flags.agent),
                 );
@@ -398,21 +595,18 @@ fn execute_job(
             data_dir,
             addon_dir,
             signals,
+            &mut state,
             job,
             &format!("Agent '{}' is not configured", kind.id()),
         );
     };
-    if state.pending.is_some() {
-        return Err(io::Error::other(
-            "a completed reply is awaiting publication; recover it before accepting another request",
-        ));
-    }
     if !job.cwd.is_empty() {
         return publish_request_error(
             cfg,
             data_dir,
             addon_dir,
             signals,
+            &mut state,
             job,
             "Per-chat folder changes are not supported by this live preview; set project_dir in config",
         );
@@ -423,6 +617,7 @@ fn execute_job(
             data_dir,
             addon_dir,
             signals,
+            &mut state,
             job,
             "In-game permission changes are not supported by this live preview; edit agent settings in config",
         );
@@ -431,7 +626,9 @@ fn execute_job(
         match agents::effective_settings(kind, settings, &job.flags.model, &job.flags.effort) {
             Ok(value) => value,
             Err(error) => {
-                return publish_request_error(cfg, data_dir, addon_dir, signals, job, &error);
+                return publish_request_error(
+                    cfg, data_dir, addon_dir, signals, &mut state, job, &error,
+                );
             }
         };
     let settings = &effective.settings;
@@ -475,18 +672,39 @@ fn execute_job(
     );
     let invocation = match invocation {
         Ok(invocation) => invocation,
-        Err(e) => return publish_request_error(cfg, data_dir, addon_dir, signals, job, &e),
+        Err(e) => {
+            return publish_request_error(cfg, data_dir, addon_dir, signals, &mut state, job, &e);
+        }
     };
     if let Err(e) = process::validate_program(&invocation.program) {
-        return publish_request_error(cfg, data_dir, addon_dir, signals, job, &e.to_string());
+        return publish_request_error(
+            cfg,
+            data_dir,
+            addon_dir,
+            signals,
+            &mut state,
+            job,
+            &e.to_string(),
+        );
     }
 
+    state.live_admissions.insert(&job.session, job.id)?;
+    state.pending = Some(PendingReply {
+        status: Status::Error,
+        model: effective.model.clone(), effort: effective.effort.clone(),
+        addon_dir: addon_dir.map(Path::to_path_buf), chat: job.chat.clone(),
+        id: job.id, agent: kind, project: cfg.project_dir.clone(),
+        text: "The bridge stopped after accepting this request. Its outcome is unknown; it will not be resent automatically. Send a new request to retry.".into(),
+        session: None, denied: vec![],
+    });
     state.record(&job.chat, "user", &job.text, job.id, kind.id())?;
     if state.handled_live.len() >= 1000 {
         state.handled_live.remove(0);
     }
     state.handled_live.push((job.session.clone(), job.id));
+    crash_point("before_admission_save");
     state.save(data_dir)?;
+    crash_point("after_admission_save");
 
     publish_reply(ReplyPublication {
         cfg,
@@ -504,12 +722,14 @@ fn execute_job(
         denied: vec![],
     })?;
 
+    crash_point("after_working_publication");
     if let Some(sig) = signals {
         let _ = sig.set(SignalKind::Acknowledgement, job.id, true);
         let _ = sig.set(SignalKind::ReplyReady, job.id, false);
         let _ = sig.reset_activity(job.id);
     }
 
+    crash_point("after_acknowledgement");
     println!(
         "[job #{}] running {} for chat '{}'",
         job.id,
@@ -566,6 +786,7 @@ fn execute_job(
             },
         )?;
 
+        crash_point("after_agent_exit");
         if !output.status.success() {
             return Err(io::Error::other(format!(
                 "{} exited with {}: {}",
@@ -615,6 +836,7 @@ fn execute_job(
             }
             state.record(&job.chat, "assistant", &output.text, job.id, kind.id())?;
             state.pending = Some(PendingReply {
+                status: Status::Done,
                 model: effective.model.clone(),
                 effort: effective.effort.clone(),
                 addon_dir: addon_dir.map(Path::to_path_buf),
@@ -627,6 +849,7 @@ fn execute_job(
                 denied: output.denied.clone(),
             });
             state.save(data_dir)?;
+            crash_point("after_completion_save");
 
             publish_reply(ReplyPublication {
                 cfg,
@@ -644,14 +867,17 @@ fn execute_job(
                 denied: output.denied,
             })?;
 
+            crash_point("after_reply_publication");
             if let Some(sig) = signals {
                 check_report(sig.set(SignalKind::ReplyReady, job.id, true)?)?;
                 if let Err(e) = sig.activity(job.id, 1).and_then(check_report) {
                     eprintln!("[activity] {e}");
                 }
             }
+            crash_point("after_completion_signal");
             state.pending = None;
             state.save(data_dir)?;
+            crash_point("after_pending_clear");
 
             println!(
                 "[job #{}] reply published ({} bytes)",
@@ -671,12 +897,16 @@ fn execute_job(
             }
             eprintln!("[job #{}] {message}", job.id);
             let mut failures = Vec::new();
+            if let Some(pending) = &mut state.pending {
+                pending.text = message.clone();
+            }
             if let Err(e) = state
                 .record(&job.chat, "error", &message, job.id, kind.id())
                 .and_then(|()| state.save(data_dir))
             {
                 failures.push(format!("could not save error: {e}"));
             }
+            crash_point("after_error_save");
             if let Err(e) = publish_reply(ReplyPublication {
                 cfg,
                 addon_dir,
@@ -694,6 +924,7 @@ fn execute_job(
             }) {
                 failures.push(format!("could not publish error: {e}"));
             }
+            crash_point("after_error_publication");
             if let Some(sig) = signals
                 && let Err(e) = sig
                     .set(SignalKind::ReplyReady, job.id, true)
@@ -707,6 +938,8 @@ fn execute_job(
                     failures.join("; ")
                 )));
             }
+            state.pending = None;
+            state.save(data_dir)?;
             return Err(io::Error::new(err.kind(), message));
         }
     }
@@ -737,6 +970,7 @@ fn publish_reply(req: ReplyPublication<'_>) -> io::Result<()> {
         .as_secs();
 
     let snapshot = Snapshot {
+        deletions: Some(deletion_acks(req.data_dir)?),
         online: Some(true),
         timestamp: utc_timestamp(now)?,
         now_seconds: now,
@@ -822,6 +1056,19 @@ fn heartbeat(
     }
     Ok(())
 }
+fn deletion_acks(data: &Path) -> io::Result<Vec<crate::slots::DeletionAck>> {
+    Ok(State::load(data)?
+        .deleted_chats
+        .into_iter()
+        .filter(|(_, d)| d.complete)
+        .map(|(chat, d)| crate::slots::DeletionAck {
+            chat,
+            session: d.session,
+            id: d.id,
+        })
+        .collect())
+}
+
 fn publish_connection(
     cfg: &Config,
     data_dir: &Path,
@@ -833,6 +1080,7 @@ fn publish_connection(
         .map_err(io::Error::other)?
         .as_secs();
     let snapshot = Snapshot {
+        deletions: Some(deletion_acks(data_dir)?),
         online: Some(online),
         timestamp: utc_timestamp(now)?,
         now_seconds: now,
@@ -859,9 +1107,30 @@ fn publish_request_error(
     data_dir: &Path,
     addon_dir: Option<&Path>,
     signals: Option<&Signals>,
+    state: &mut State,
     job: &Job,
     message: &str,
 ) -> io::Result<()> {
+    if state.pending.is_some() {
+        return Err(io::Error::other(
+            "recover pending reply before rejecting another request",
+        ));
+    }
+    state.live_admissions.insert(&job.session, job.id)?;
+    state.pending = Some(PendingReply {
+        status: Status::Error,
+        model: String::new(),
+        effort: String::new(),
+        addon_dir: addon_dir.map(Path::to_path_buf),
+        chat: job.chat.clone(),
+        id: job.id,
+        agent: cfg.agent,
+        project: cfg.project_dir.clone(),
+        text: message.to_owned(),
+        session: None,
+        denied: vec![],
+    });
+    state.save(data_dir)?;
     publish_reply(ReplyPublication {
         cfg,
         addon_dir,
@@ -881,5 +1150,7 @@ fn publish_request_error(
         check_report(sig.set(SignalKind::Acknowledgement, job.id, true)?)?;
         check_report(sig.set(SignalKind::ReplyReady, job.id, true)?)?;
     }
+    state.pending = None;
+    state.save(data_dir)?;
     Err(io::Error::other(message.to_owned()))
 }

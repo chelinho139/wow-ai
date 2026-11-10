@@ -27,4 +27,4 @@ Implemented in native addon frames, without new dependencies or polling:
 
 ## Limits
 
-Model/effort alternatives are configured capabilities, not live provider account discovery. Adapters besides Codex currently expose model choices only. No real provider call or live WoW visual test was performed. Rust reload-outbox input is not implemented; use its existing pixel live transport. A new addon used with an old bridge cannot apply saved model/effort overrides until reset or a bridge upgrade.
+Model/effort alternatives are configured capabilities, not live provider account discovery. Adapters besides Codex currently expose model choices only. No real provider call or live WoW visual test was performed. Rust reload-outbox input is an opt-in preview configured with `saved_variables`; see `rust/bridge/README.md` for handshake and freshness requirements. A new addon used with an old bridge cannot apply saved model/effort overrides until reset or a bridge upgrade.

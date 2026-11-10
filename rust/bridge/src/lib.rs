@@ -1,4 +1,5 @@
 //! Shared protocol logic; no game access, process launches, or legacy state reads.
+pub mod admission;
 pub mod agents;
 pub mod capture;
 pub mod config;
@@ -10,8 +11,10 @@ pub mod live;
 mod live_replies;
 pub mod ownership;
 pub mod process;
+pub mod process_lifetime;
 pub mod protocol;
 pub mod publication;
+pub mod reload;
 pub mod runtime;
 pub mod shutdown;
 pub mod signals;

@@ -228,3 +228,62 @@ clearing a signal on disk cannot reset that cache.
 If a check fails, retain the failing command and its full output along with
 `rustc --version` and `cargo --version`. A passing local macOS/Linux run does not
 establish that Windows-specific tests have passed.
+
+## Reload recovery preview acceptance
+
+These checks require the actual Windows client. Automated subprocess crash tests
+establish local persistence behavior; they do not establish game cache behavior.
+Use a temporary Rust data directory and the fake agent before testing a real
+provider. Keep the legacy bridge stopped while Rust owns the addon installation.
+
+1. Set `saved_variables` in the Rust config to this account's
+   `WTF/Account/<account>/SavedVariables/WoWAI.lua`. Start Rust and reconnect in the
+   addon so the bridge observes a pixel hello. Confirm a normal pixel round trip.
+2. Force pixel retries for a new request to expire using a reproducible capture
+   interruption in the client test environment, while keeping Rust running. Let
+   the addon take its existing reload path. Record the request token/ID, bridge
+   log and final reply; verify one provider invocation across both transports.
+3. Restart Rust with a pre-existing outbox file and verify it does not run that
+   snapshot. Reconnect and `/reload` again to produce a fresh file. An admitted
+   request must not rerun; a new request must still complete.
+4. Stop Rust after accepting a request and restart. Verify an uncertain request
+   becomes an error requiring an explicit new request; a durably completed reply
+   is republished as done. Confirm no second provider invocation for its old ID.
+5. Change the active addon session (using isolated saved data), then restore a
+   saved file from the old session. Verify the old request is ignored. Restore
+   the original test data before continuing.
+6. Record exact WoW build, Windows version, config, request identities, logs and
+   observed invocation counts. Repeat with normal window movement/minimization.
+
+Do not mark orphan-process cleanup complete using these checks. Automated crash
+injection currently stops before agent launch or after agent exit; killing the
+bridge while its provider process is still alive is a separate acceptance case.
+The conservative admission policy prevents relaunch of that request but does not
+prove that the old provider process has stopped.
+
+### Provider process death containment
+
+On Windows, `cargo test --locked --test process_lifetime` runs a contained fake
+provider and descendant, forcibly kills their bridge owner, and verifies both
+process handles become signaled. Run this under the same host (terminal/service)
+used for the bridge, since host Job Object restrictions may prevent nesting.
+The bridge must refuse provider launch when containment cannot be established.
+Then repeat abrupt bridge termination with each authenticated adapter, confirming
+background tools stop and reconnect reports an uncertain outcome without rerunning
+the old request. This closes Windows provider-death acceptance only when runtime
+evidence is recorded; macOS/Linux need their own lifetime mechanism.
+
+### Durable deletion acceptance
+
+Run `cargo test --locked --test live_transport deletion_` for six subprocess crash
+boundaries plus failed slot publication and tombstone-capacity checks. Run the
+normal repository tests for sound-disabled receipts, stale WAV rejection, stable
+operation identity, last-chat collisions and stale restore protection.
+
+In the client, stop the bridge, delete a chat, then reconnect. Confirm the deletion
+queue survives until an exact receipt arrives, the old transcript/session does not
+return, and the newly cleared last chat sends with a different ID. Repeat with
+sound signals disabled. Inspect the Rust state tombstone, reply cache and freshly
+loaded reply slots; all must agree after acknowledgment. Terminate/restart during
+cleanup and verify the unfinished operation resumes. This tests client caching;
+local filesystem crash tests alone do not establish it.

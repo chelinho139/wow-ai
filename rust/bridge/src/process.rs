@@ -157,6 +157,7 @@ pub fn run_with_tick(
     if request.timeout.is_zero() || request.max_output == 0 {
         return Err(io::Error::other("invalid process limits"));
     }
+    crate::process_lifetime::ensure_contained()?;
     let mut command = Command::new(request.program);
     command
         .args(request.args)
