@@ -349,25 +349,9 @@ def mask_shift(mask):
     return s, (mask >> s) if mask else 1
 
 
-def grab(w):
-    """Capture the strip region of window w from the root window (what is on screen)."""
-    a = attrs(w)
-    if not a or a.map_state != IS_VIEWABLE:
-        return None
-    rx, ry, child = ctypes.c_int(), ctypes.c_int(), Window()
-    before = x_errors[0]
-    X.XTranslateCoordinates(dpy, w, root, 0, 0, ctypes.byref(rx), ctypes.byref(ry), ctypes.byref(child))
-    ra = attrs(root)
-    if x_errors[0] != before or not ra:
-        return None
-    x0, y0 = max(0, rx.value), max(0, ry.value)
-    gw = min(W + SLACK, a.width, ra.width - x0)
-    gh = min(H + SLACK, a.height, ra.height - y0)
-    if gw <= 0 or gh <= 0:
-        return None
-    img = X.XGetImage(dpy, root, x0, y0, gw, gh, ALL_PLANES, ZPIXMAP)
-    X.XSync(dpy, 0)
-    if not img or x_errors[0] != before:
+def _image_pixels(img):
+    """Turn an XImage into (px, width, height), or an error dict / None."""
+    if not img:
         return None
     im = img.contents
     try:
@@ -389,6 +373,47 @@ def grab(w):
         v = int.from_bytes(buf[o:o + bpp], order)
         return tuple(((v >> s) & m) * 255 // m for s, m in chans)
     return px, width, height
+
+
+def grab(w):
+    """Capture the strip region of window w.
+
+    Prefer an XGetImage of the window itself. Falling back to the root window
+    fails on many NVIDIA + Wayland/XWayland setups (BadMatch), while the
+    game window's own buffer is still readable.
+    """
+    a = attrs(w)
+    if not a or a.map_state != IS_VIEWABLE:
+        return None
+    gw = min(W + SLACK, a.width)
+    gh = min(H + SLACK, a.height)
+    if gw <= 0 or gh <= 0:
+        return None
+
+    before = x_errors[0]
+    img = X.XGetImage(dpy, w, 0, 0, gw, gh, ALL_PLANES, ZPIXMAP)
+    X.XSync(dpy, 0)
+    if img and x_errors[0] == before:
+        return _image_pixels(img)
+
+    # Fallback: root at the window's screen origin (original path).
+    x_errors[0] = before
+    rx, ry, child = ctypes.c_int(), ctypes.c_int(), Window()
+    X.XTranslateCoordinates(dpy, w, root, 0, 0, ctypes.byref(rx), ctypes.byref(ry), ctypes.byref(child))
+    ra = attrs(root)
+    if x_errors[0] != before or not ra:
+        return None
+    x0, y0 = max(0, rx.value), max(0, ry.value)
+    gw = min(W + SLACK, a.width, ra.width - x0)
+    gh = min(H + SLACK, a.height, ra.height - y0)
+    if gw <= 0 or gh <= 0:
+        return None
+    before = x_errors[0]
+    img = X.XGetImage(dpy, root, x0, y0, gw, gh, ALL_PLANES, ZPIXMAP)
+    X.XSync(dpy, 0)
+    if not img or x_errors[0] != before:
+        return None
+    return _image_pixels(img)
 
 
 def run():
