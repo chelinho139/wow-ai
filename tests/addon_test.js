@@ -146,6 +146,9 @@ test('the game context describes the character and rides on the hello, then only
     'Money: 1g 23s 45c; XP: 1234/5000',
     'Talents: Beast Mastery 10 / Marksmanship 5 / Survival 0',
     'Professions: Skinning 75/75, First Aid 40/75',
+    'Quests (* = ready to turn in):',
+    '- 382 The Red Messenger (q5): Scarlet Crusade Documents: 0/1',
+    '- 5651* In Favor of Darkness (q5): ready to turn in',
   ]);
   // The bridge answers the hello: the context is now known to be on its side.
   nextSlot(vm, '{ now = time(), cwd = "", replies = {} }');

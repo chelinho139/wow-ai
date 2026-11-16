@@ -14,11 +14,13 @@ const A = require('../bridge/agents');
 const SYS = 'The user is talking to you from inside World of Warcraft';
 
 test('agent ids, display names and the legacy Claude config keys', () => {
-  assert.deepEqual(A.agentIds(), ['claude', 'codex', 'grok', 'agy', 'hermes']);
+  assert.deepEqual(A.agentIds(), ['claude', 'codex', 'grok', 'agy', 'hermes', 'cursor']);
   assert.equal(A.normalizeAgent(' Codex '), 'codex');
+  assert.equal(A.normalizeAgent('cursor'), 'cursor');
   assert.equal(A.normalizeAgent('gemini'), null);
   assert.equal(A.normalizeAgent(''), null);
   assert.equal(A.displayName('grok'), 'Grok');
+  assert.equal(A.displayName('cursor'), 'Cursor');
   assert.equal(A.displayName(''), 'AI');
   // Claude's settings from before "agents" existed still count, under anything in agents.claude.
   const legacy = { claudePath: 'C:\\c.exe', model: 'opus', permissionMode: 'default', allowedTools: ['WebSearch'] };
@@ -94,6 +96,26 @@ test('Antigravity arguments and captured stream parser', () => {
   const results = resumed.map(ev => rp.feed(ev));
   assert.equal(results[0].session, '6d560884-a06c-4b29-a675-4d3201dea093');
   assert.equal(results[results.length - 1].done.text.trim(), 'HELLO');
+});
+
+test('Cursor Agent: headless stream-json, trust/workspace, force vs ask mode, prompt on stdin with context', () => {
+  const args = A.AGENTS.cursor.args({ cfg: { permissionMode: 'acceptEdits', model: 'composer-2' }, resume: 'chat-1', cwd: '/work' });
+  assert.deepEqual(args, ['-p', '--output-format', 'stream-json', '--trust', '--workspace', '/work', '--force', '--model', 'composer-2', '--resume', 'chat-1']);
+  assert.ok(A.AGENTS.cursor.args({ cfg: { permissionMode: 'default' }, resume: '', cwd: '/w' }).includes('ask'));
+  assert.ok(A.AGENTS.cursor.args({ cfg: { permissionMode: 'bypassPermissions' }, resume: '', cwd: '/w' }).includes('--force'));
+  const fresh = A.AGENTS.cursor.input({ prompt: 'hi', system: SYS, systemShort: 'SHORT', resume: '' });
+  assert.equal(fresh.stdin, A.contextBlock(SYS) + 'hi');
+  assert.equal(A.AGENTS.cursor.input({ prompt: 'hi', system: SYS, systemShort: 'SHORT', resume: 'c' }).stdin, A.contextBlock('SHORT') + 'hi');
+  const p = A.cursorParser();
+  const init = p.feed({ type: 'system', subtype: 'init', session_id: 'sess-9' });
+  assert.equal(init.session, 'sess-9');
+  p.feed({ type: 'thinking', subtype: 'delta', text: 'hmm ', session_id: 'sess-9' });
+  const thought = p.feed({ type: 'thinking', subtype: 'completed', session_id: 'sess-9' });
+  assert.ok(thought.progress[0].startsWith('~ '));
+  const asst = p.feed({ type: 'assistant', session_id: 'sess-9', message: { role: 'assistant', content: [{ type: 'text', text: 'pong' }] } });
+  assert.equal(asst.progress[0], 'pong');
+  const done = p.feed({ type: 'result', subtype: 'success', is_error: false, result: 'pong', session_id: 'sess-9' });
+  assert.deepEqual(done.done, { text: 'pong', error: false });
 });
 
 test('Hermes command modes, image forwarding and plain text completion', () => {

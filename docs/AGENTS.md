@@ -1,6 +1,6 @@
 # Agents
 
-The bridge can drive three coding agents: Claude Code, OpenAI Codex and xAI's Grok Build. This page is the reference for each: what to install, how the bridge starts it, what its permission settings mean, and what it cannot do. The code is `bridge/agents.js`, one entry per agent; `bridge.js` only knows the interface (build the arguments, hand over the prompt, read the stream).
+The bridge can drive Claude Code, OpenAI Codex, xAI's Grok Build, Antigravity, Hermes and Cursor Agent. This page is the reference for each: what to install, how the bridge starts it, what its permission settings mean, and what it cannot do. The code is `bridge/agents.js`, one entry per agent; `bridge.js` only knows the interface (build the arguments, hand over the prompt, read the stream).
 
 ## Choosing one
 
@@ -70,6 +70,15 @@ Codex also checks `CODEX_BIN` before searching `PATH`, so a newer launcher can o
 - **Permissions:** `acceptEdits` is the default. `bypassPermissions` falls back to default; the bridge never passes `--yolo` and appends a note to the reply.
 - **Images and context:** the first image is passed with `--image`; additional paths are included in the prompt. The context block goes at the top of the prompt.
 
+## Cursor Agent
+
+- **Install:** [Cursor Agent CLI](https://cursor.com/docs/cli/overview) (`curl https://cursor.com/install -fsS | bash` puts `agent` on `PATH`), then `agent login`. `agent status` must show you logged in.
+- **Command line:** `agent -p --output-format stream-json --trust --workspace <folder> (--force | --mode ask) [-m <model>] [--resume <session>]`, prompt on stdin. The stream is NDJSON close to Claude Code's (`assistant` / `result`, plus `thinking` deltas); `session_id` is on every event.
+- **Permissions:** `acceptEdits` and `bypassPermissions` → `--force` (headless; no approval prompts). `default` → `--mode ask` (read-only). Cursor has no Claude-style allowlist; `allowedTools` / `deniedTools` are ignored. `--trust` is always set so a fresh workspace does not hang waiting for a trust prompt.
+- **Session:** the `session_id` from the stream; later runs pass `--resume <id>`.
+- **Progress:** thinking completion as `~ …`, assistant text snippets, and tool calls when present. The reply is the `result` event's `result` string.
+- **Context:** Cursor has no system-prompt flag, so the game context and primer ride at the top of the prompt in a context block (full on a new session, short on resume), same as Codex.
+
 ## Known limits
 
 - One agent CLI can only be as headless as it is. If an agent hangs waiting for something interactive (a first-run login, an update prompt), the run ends when `timeoutMs` (30 minutes) expires; run the CLI by hand once on the bridge PC to get past it.
@@ -77,11 +86,12 @@ Codex also checks `CODEX_BIN` before searching `PATH`, so a newer launcher can o
 - The bridge's own transcript (`bridge/transcripts.json`) and the addon's history record which agent wrote each reply, so a restored chat keeps its labels. Chats saved before agents existed show their replies as Claude's.
 - Codex and Grok were tested live against codex 0.156.1 and Grok Build 1.0.41 (the inject test, plus captured streams in `tests/agents_test.js`). Unknown event types are ignored; a stream that ends without a result is reported as an error with the exit code and the tail of stderr.
 - Antigravity and Hermes were contributed with captured streams in the tests and a live check by their author on Windows; the maintainer has not run them. Hermes gives no live progress (its reply is read when the process ends) and its permission mode is always the default: the bridge never passes it `--yolo`.
+- Cursor Agent was live-tested with `npm run test:live -- --agent cursor` (CLI 2026.11.13). It has no Allow & retry path: refused tools are not surfaced as Claude-style denials. `--force` is required for any non-ask headless run.
 
 ## Trying one without the game
 
 ```powershell
-npm run test:live -- --agent codex     # or claude, grok
+npm run test:live -- --agent codex     # or claude, grok, cursor
 ```
 
 builds a sandbox with a 5-slot pool and runs the bridge with `--inject`, which pretends the strip said "Reply with exactly the word PONG"; the reply must land in every slot and `Inbox.lua`. `node bridge/bridge.js --inject "hello" --agent grok` does the same against your real config.

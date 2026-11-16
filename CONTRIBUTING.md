@@ -13,7 +13,7 @@ addon/WoWAI/     the in-game addon (Lua 5.1, WoW API)
 bridge/               the companion process (Node.js, no runtime dependencies)
   bridge.js             I/O, processes, publishing
   protocol.js           pure functions: strip records, slot files, folders, dedup
-  agents.js             one entry per agent (Claude, Codex, Grok, Antigravity, Hermes): command line, prompt delivery, stream parser
+  agents.js             one entry per agent (Claude, Codex, Grok, Antigravity, Hermes, Cursor): command line, prompt delivery, stream parser
   capture.ps1           screen capture and strip decoder (PowerShell)
   install-slots.js      creates the slot addons and signal files
   supervisor.js         restarts bridge.js on crash; the `wow-ai` command

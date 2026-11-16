@@ -22,6 +22,12 @@
   },
   "agent": "claude",
   "agents": {
+    "cursor": {
+      "path": "",
+      "model": "",
+      "permissionMode": "acceptEdits",
+      "extraArgs": []
+    },
     "claude": {
       "path": "",
       "model": "",
