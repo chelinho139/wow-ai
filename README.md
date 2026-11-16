@@ -8,7 +8,7 @@ Chat with your local coding agents from inside **World of Warcraft: Forever**: [
 
 - Multiple chats, each its own persistent agent session (like separate terminals), running in parallel. Each chat picks its agent and its folder
 - Live progress while the agent works: action count, elapsed time, the files it's editing and commands it's running
-- Replies echoed into the game chat; `/r` replies to the agent when it was the last to message you
+- Replies echoed into the game chat; reply with `/ai <text>` or the `[reply]` link (`/r` is left to the game so Blizzard slash commands like `/target` stay untainted)
 - The agent knows your character, level, zone, talents, professions and quest log (optional), and you can shift-click items, spells and quests into a message
 - The agent can draw on your world map: numbered routes, quest stops and marks, with a navigator arrow that walks you from stop to stop
 - Herb and ore spawns on the world map, filtered by your gathering skill (`/wow-ai map ore`, `/wow-ai map herb`)
@@ -138,7 +138,7 @@ Right-clicking a chat in the left panel opens a small menu with **Rename...**, *
 |---|---|
 | `/wow-ai` | toggle the window (`/ai`, `/wowai` and the old `/wow-claude` are the same command); the minimize button (top right) or Esc collapses it to a small bar, click the bar to expand |
 | `/ai <text>` | send from the normal chat box (`/wow-ai <text>` is the same). `/ai` is a full alias, so `/ai agent grok` or `/ai cd realms` work too; a message that merely starts with a command word, like `/ai help me with this macro` or `/ai delete the unused imports`, is still sent as a message because the rest of the line doesn't fit that command |
-| `/r <text>` | replies to the agent when it was the last to message you; otherwise the normal whisper reply |
+| `/ai <text>` / `[reply]` | reply to the agent from game chat (do not use `/r` for this — wrapping it tainted `/target` and other Blizzard commands) |
 | `/wow-ai new [name]` | new chat = new agent session. Unnamed chats take their title from your first message |
 | `/wow-ai chat <n\|name>` | switch chats (or click the left panel; right-click a row for Rename, Folder and Agent, its trash can deletes it) |
 | `/wow-ai agent [claude\|codex\|grok\|agy\|hermes\|cursor]` | which agent this chat talks to; no name shows the current one and the bridge's default, `default` goes back to the bridge's. A chat that changes agent starts a fresh session with it |
