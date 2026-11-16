@@ -6,6 +6,7 @@
 //   claude  Claude Code   `claude -p --output-format stream-json`, prompt on stdin
 //   codex   OpenAI Codex  `codex exec --json`, prompt on stdin
 //   grok    xAI Grok      `grok --prompt-file … --output-format streaming-json`
+//   cursor  Cursor Agent  `agent -p --output-format stream-json`, prompt on stdin
 //
 // Everything is pure (no I/O) except resolveCommand, which looks for the
 // executable on disk. Adding an agent: an entry in AGENTS (args, input, parser,
@@ -326,6 +327,44 @@ function hermesParser() {
   };
 }
 
+// Cursor Agent (`agent -p --output-format stream-json`). Same NDJSON shape as
+// Claude Code for assistant/result; also emits thinking deltas and puts
+// session_id on every event.
+function cursorParser() {
+  let thought = '';
+  return {
+    feed(ev) {
+      const out = empty();
+      if (ev.session_id) out.session = ev.session_id;
+      if (ev.type === 'thinking') {
+        if (ev.subtype === 'delta' && ev.text) thought += ev.text;
+        else if (ev.subtype === 'completed' && thought.trim()) {
+          out.progress.push('~ ' + snippet(thought));
+          thought = '';
+        }
+      } else if (ev.type === 'assistant' && ev.message && Array.isArray(ev.message.content)) {
+        for (const block of ev.message.content) {
+          if (block.type === 'tool_use') out.progress.push(describeToolUse(block));
+          else if (block.type === 'tool_call') out.progress.push(describeToolUse({
+            name: block.name || block.toolName || 'tool',
+            input: block.input || block.arguments || {},
+          }));
+          else if (block.type === 'text' && block.text && block.text.trim()) out.progress.push(snippet(block.text));
+        }
+      } else if (ev.type === 'tool_call' || ev.type === 'tool_use') {
+        out.progress.push(describeToolUse({
+          name: ev.name || ev.toolName || (ev.tool_call && ev.tool_call.name) || 'tool',
+          input: ev.input || ev.arguments || {},
+        }));
+      } else if (ev.type === 'result') {
+        const text = typeof ev.result === 'string' ? ev.result : JSON.stringify(ev.result ?? '', null, 2);
+        out.done = { text, error: !!ev.is_error || ev.subtype === 'error' };
+      }
+      return out;
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // The table
 // ---------------------------------------------------------------------------
@@ -476,6 +515,35 @@ const AGENTS = {
     },
     env: env => env, parser: hermesParser,
   },
+  cursor: {
+    name: 'Cursor',
+    command: 'agent',
+    install: 'Install Cursor Agent CLI (`curl https://cursor.com/install -fsS | bash`), then run `agent login`',
+    windowsPaths: () => [
+      path.join(os.homedir(), '.local', 'bin', 'agent.exe'),
+      path.join(os.homedir(), 'AppData', 'Local', 'cursor-agent', 'agent.exe'),
+    ],
+    posixPaths: () => [
+      path.join(os.homedir(), '.local', 'bin', 'agent'),
+      path.join(os.homedir(), '.local', 'bin', 'cursor-agent'),
+    ],
+    args({ cfg, resume, cwd }) {
+      const a = ['-p', '--output-format', 'stream-json', '--trust', '--workspace', cwd];
+      const mode = cfg.permissionMode || 'acceptEdits';
+      if (mode === 'default') a.push('--mode', 'ask');
+      else a.push('--force'); // acceptEdits / bypassPermissions: headless, no approval prompts
+      if (cfg.model) a.push('--model', cfg.model);
+      if (resume) a.push('--resume', resume);
+      return a.concat(Array.isArray(cfg.extraArgs) ? cfg.extraArgs : []);
+    },
+    input: ({ prompt, system, systemShort, resume, images }) => {
+      const ctx = resume ? systemShort : system;
+      const attached = images && images.length ? `\n\nAttached screenshots: ${images.join(', ')} — read them with your Read tool.` : '';
+      return { stdin: (ctx ? contextBlock(ctx) : '') + prompt + attached };
+    },
+    env: (env) => env,
+    parser: cursorParser,
+  },
 };
 
 const DEFAULT_AGENT = 'claude';
@@ -600,6 +668,6 @@ function resolveCommand(id, cfg = {}) {
 module.exports = {
   AGENTS, DEFAULT_AGENT, agentIds, normalizeAgent, displayName, agentConfig,
   grokRules, snippet, contextBlock,
-  claudeParser, codexParser, grokParser, agyParser, hermesParser, codexItemLine, grokCall, grokRefusal, shellInner,
+  claudeParser, codexParser, grokParser, agyParser, hermesParser, cursorParser, codexItemLine, grokCall, grokRefusal, shellInner,
   resolveCommand, unwrapShim, nativeNextTo,
 };

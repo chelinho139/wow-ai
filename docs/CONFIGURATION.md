@@ -17,10 +17,10 @@ The bridge reads `config.json` once at start. Restart it after editing, except f
 
 | Key | Default | Meaning |
 |---|---|---|
-| `agent` | `"claude"` | The agent for chats that have not picked one with `/wow-ai agent`. One of `claude`, `codex`, `grok`, `agy`, `hermes`; the bridge refuses to start on anything else. |
+| `agent` | `"claude"` | The agent for chats that have not picked one with `/wow-ai agent`. One of `claude`, `codex`, `grok`, `agy`, `hermes`, `cursor`; the bridge refuses to start on anything else. |
 | `agents.<id>` | one block per agent | That agent's settings, below. A missing block means the defaults. |
 
-Keys under `agents.claude`, `agents.codex`, `agents.grok`, `agents.agy` and `agents.hermes` (what each one means per agent is spelled out in [AGENTS.md](AGENTS.md)):
+Keys under `agents.claude`, `agents.codex`, `agents.grok`, `agents.agy`, `agents.hermes` and `agents.cursor` (what each one means per agent is spelled out in [AGENTS.md](AGENTS.md)):
 
 | Key | Default | Meaning |
 |---|---|---|

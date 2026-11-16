@@ -4,6 +4,10 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+### Added
+
+- **Cursor Agent** (`cursor`, the `agent` CLI) next to Claude Code, Codex, Grok, Antigravity and Hermes. Runs `agent -p --output-format stream-json --trust --workspace <folder>` with the prompt on stdin (game context in a leading block, like Codex). `acceptEdits` / `bypassPermissions` map to `--force`; `default` to `--mode ask`. Sessions resume with `--resume`. Live-tested with `npm run test:live -- --agent cursor`.
+
 ## [0.5.0] - 2026-11-04
 
 ### Added

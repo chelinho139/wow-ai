@@ -2,7 +2,7 @@
 // `node bridge.js --inject "..."` runs a real headless agent and must publish the
 // reply into every slot, Inbox.lua, and flip the signal / heartbeat files.
 // Needs that agent's CLI installed and logged in. Claude by default:
-//   node tests/inject_test.js [--agent claude|codex|grok]
+//   node tests/inject_test.js [--agent claude|codex|grok|cursor]
 'use strict';
 const fs = require('fs'), path = require('path');
 const { execFileSync, spawnSync } = require('child_process');
