@@ -936,9 +936,10 @@ end
 -- are meaningless markup to the agent; their tooltips are what the player sees).
 -- Every game API here is optional: whatever the client lacks is left out.
 
-local CONTEXT_MAX = 900 -- bytes of context per record; the strip has ~3.2 KB for everything
+local CONTEXT_MAX = 1600 -- bytes of context per record; the strip has ~3.2 KB for everything
 local LINK_LINES_MAX = 30 -- tooltip lines kept per link
 local LINK_BYTES_MAX = 900 -- bytes kept per link
+local CONTEXT_QUEST_MAX = 8 -- quests spelled out with titles/objectives
 
 -- Call a game API that may not exist or may throw, and get its returns or nothing.
 local function Try(fn, ...)
@@ -992,6 +993,44 @@ function WoWAI.SkillLines()
 		end
 	end
 	return out
+end
+
+-- Compact objective text for one quest id (modern API, then classic leaderboards).
+local function QuestObjectivesText(questID, logIndex)
+	local objs = Try(C_QuestLog and C_QuestLog.GetQuestObjectives, questID)
+	if type(objs) == "table" and #objs > 0 then
+		local parts = {}
+		for _, o in ipairs(objs) do
+			if type(o) == "table" and type(o.text) == "string" and o.text ~= "" then
+				local t = o.text:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""):gsub("%s+", " ")
+				if o.finished then t = t .. " [done]" end
+				table.insert(parts, t)
+			end
+		end
+		if #parts > 0 then return table.concat(parts, "; ") end
+	end
+	local n = Try(GetNumQuestLeaderBoards, logIndex)
+	if type(n) == "number" and n > 0 then
+		local parts = {}
+		for i = 1, n do
+			local text, _, finished = Try(GetQuestLogLeaderBoard, i, logIndex)
+			if type(text) == "string" and text ~= "" then
+				table.insert(parts, text .. (finished and " [done]" or ""))
+			end
+		end
+		if #parts > 0 then return table.concat(parts, "; ") end
+	end
+	return nil
+end
+
+local function FreeBagSlots()
+	local free = 0
+	for bag = 0, 4 do
+		local n = Try(C_Container and C_Container.GetContainerNumFreeSlots, bag)
+		if type(n) ~= "number" then n = Try(GetContainerNumFreeSlots, bag) end
+		if type(n) == "number" then free = free + n end
+	end
+	return free
 end
 
 function WoWAI.GameContext()
@@ -1057,7 +1096,30 @@ function WoWAI.GameContext()
 	if type(xp) == "number" and type(xpMax) == "number" and xpMax > 0 then
 		table.insert(progress, "XP: " .. xp .. "/" .. xpMax)
 	end
+	local bags = FreeBagSlots()
+	if bags > 0 then table.insert(progress, "Bag free: " .. bags) end
+	if Try(IsResting) then table.insert(progress, "Resting") end
 	if #progress > 0 then table.insert(lines, table.concat(progress, "; ")) end
+
+	-- Current target, when there is one (name/level/reaction only — no combat botting).
+	if Try(UnitExists, "target") then
+		local tname = Try(UnitName, "target")
+		if tname then
+			local tlevel = Try(UnitLevel, "target")
+			local tclass = Try(UnitClassification, "target")
+			local bits = { tostring(tname) }
+			if type(tlevel) == "number" then table.insert(bits, "lvl " .. (tlevel > 0 and tlevel or "?")) end
+			if type(tclass) == "string" and tclass ~= "" and tclass ~= "normal" then table.insert(bits, tclass) end
+			if Try(UnitIsDead, "target") then table.insert(bits, "dead") end
+			local reaction = Try(UnitReaction, "player", "target")
+			if type(reaction) == "number" then
+				if reaction <= 3 then table.insert(bits, "hostile")
+				elseif reaction >= 5 then table.insert(bits, "friendly")
+				else table.insert(bits, "neutral") end
+			end
+			table.insert(lines, "Target: " .. table.concat(bits, ", "))
+		end
+	end
 
 	-- Classic-style talent tabs: name, icon, points spent.
 	local tabs = Try(GetNumTalentTabs)
@@ -1084,27 +1146,49 @@ function WoWAI.GameContext()
 	end
 	if #parts > 0 then table.insert(lines, "Professions: " .. table.concat(parts, ", ")) end
 
-	-- Quest log ids (what is accepted, and which are done), so route planning can
-	-- skip pickups and turn-ins that no longer apply.
-	local quests = {}
+	-- Quest log with titles and objectives (ids alone are hard for the agent to use).
+	local questLines, idOnly = {}, {}
 	local qn = Try(C_QuestLog and C_QuestLog.GetNumQuestLogEntries) or Try(GetNumQuestLogEntries)
 	if type(qn) == "number" then
 		for i = 1, math.min(qn, 40) do
-			local id, header, complete
+			local id, isHeader, complete, title, qlevel
 			local info = Try(C_QuestLog and C_QuestLog.GetInfo, i)
 			if type(info) == "table" then
-				id, header = info.questID, info.isHeader
+				id, isHeader, title, qlevel = info.questID, info.isHeader, info.title, info.level
 				complete = Try(C_QuestLog.IsComplete, id)
 			else
-				local _, _, _, isHeader, _, isComplete, _, qid = Try(GetQuestLogTitle, i)
-				id, header, complete = qid, isHeader, isComplete == 1 or isComplete == true
+				local t, level, _, header, _, isComplete, _, qid = Try(GetQuestLogTitle, i)
+				id, isHeader, complete, title, qlevel = qid, header, isComplete == 1 or isComplete == true, t, level
 			end
-			if not header and type(id) == "number" and id > 0 then
-				table.insert(quests, tostring(id) .. (complete and "*" or ""))
+			if not isHeader and type(id) == "number" and id > 0 then
+				table.insert(idOnly, tostring(id) .. (complete and "*" or ""))
+				if #questLines < CONTEXT_QUEST_MAX then
+					if type(title) ~= "string" or title == "" then
+						title = Try(C_QuestLog and C_QuestLog.GetTitleForQuestID, id) or ("quest " .. id)
+					end
+					title = tostring(title):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+					local line = string.format("- %d%s %s", id, complete and "*" or "", title)
+					if type(qlevel) == "number" and qlevel > 0 then line = line .. " (q" .. qlevel .. ")" end
+					if complete then
+						line = line .. ": ready to turn in"
+					else
+						local objs = QuestObjectivesText(id, i)
+						if objs then line = line .. ": " .. objs end
+					end
+					table.insert(questLines, line)
+				end
 			end
 		end
 	end
-	if #quests > 0 then table.insert(lines, "Quest log (id, * = ready to turn in): " .. table.concat(quests, ",")) end
+	if #questLines > 0 then
+		table.insert(lines, "Quests (* = ready to turn in):")
+		for _, q in ipairs(questLines) do table.insert(lines, q) end
+		if #idOnly > #questLines then
+			table.insert(lines, "Also: " .. table.concat(idOnly, ","))
+		end
+	elseif #idOnly > 0 then
+		table.insert(lines, "Quest log (id, * = ready to turn in): " .. table.concat(idOnly, ","))
+	end
 
 	local s = table.concat(lines, "\n"):gsub("[\30\31]", " ")
 	if #s > CONTEXT_MAX then s = s:sub(1, CONTEXT_MAX) end
@@ -1985,7 +2069,7 @@ function WoWAI.Render()
 			elseif not WoWAI.IsConnected() then
 				Place("system", "Not connected to the bridge. Start it (npm start in the wow-ai folder, or wow-ai in your project), then click Connect below.", "", true)
 			else
-				Place("system", "Click the box below and type to start. Shift-click an item, spell or quest to link it into your message. /wow-ai help lists the commands; /ai <text> and /r work from the game chat too.", "", true)
+				Place("system", "Click the box below and type to start. Shift-click an item, spell or quest to link it into your message. /wow-ai help lists the commands; /ai <text> works from the game chat too (use /ai or [reply], not /r, for the agent).", "", true)
 			end
 		end
 		for i = n + 1, #ui.bubbles do
@@ -2178,95 +2262,14 @@ function WoWAI.Notify(chat, text, agent, summary)
 	end
 end
 
--- /r goes to the agent when it was the last one to message you, exactly like
--- whisper reply, and the box shows a "To Codex [chat]:" header while you type.
---
--- The chat type underneath is left alone (a custom type would leak into chat
--- settings); instead the box remembers an agent target, the header is repainted
--- over the game's own, and the send entry points are intercepted. Any other chat
--- type, Tab, Esc or a cleared box drops the target again.
-local AGENT_R, AGENT_G, AGENT_B = 0.49, 0.78, 1.0
-
-local function PaintAgentHeader(eb, chat)
-	local header = _G[eb:GetName() .. "Header"]
-	local suffix = _G[eb:GetName() .. "HeaderSuffix"]
-	if not header then return end
-	eb.agentPainting = true
-	eb:UpdateHeader() -- lay out normally first, then repaint
-	eb.agentPainting = nil
-	header:SetWidth(0)
-	header:SetText("To " .. ChatAgentName(chat) .. " [" .. Display(chat.name) .. "]: ")
-	header:SetTextColor(AGENT_R, AGENT_G, AGENT_B)
-	if suffix then suffix:Hide() end
-	eb:SetTextInsets(15 + header:GetWidth(), 13, 0, 0)
-	eb:SetTextColor(AGENT_R, AGENT_G, AGENT_B)
-end
-
-local function SendBoxToAgent(eb)
-	local chat = FindChat(eb.agentTarget)
-	local text = Trim(eb:GetText() or "")
-	eb.agentTarget = nil
-	eb:ClearChat()
-	if chat and db.activeChat ~= chat.id then WoWAI.SwitchChat(chat.id) end
-	if text ~= "" then
-		WoWAI.Send(text)
-	else
-		WoWAI.Toggle(true)
-		if ui.input then ui.input:SetFocus() end
-	end
-end
-
+-- Agent replies used to intercept the chat edit box's ProcessChatType /
+-- SendMessage / SendText so /r would go to the agent. Replacing those methods
+-- taints every Enter on the box — including Blizzard slash commands like
+-- /target — and the client then blocks them ("only available to the Blizzard UI").
+-- Reply with /ai <text>, /ask <text>, or the [reply] link instead; leave /r to
+-- the game (last whisper).
 local function HookReplyCommand()
-	for i = 1, (NUM_CHAT_WINDOWS or 10) do
-		local eb = _G["ChatFrame" .. i .. "EditBox"]
-		if eb and eb.ProcessChatType and not eb.agentReplyHooked then
-			eb.agentReplyHooked = true
-
-			local origProcess = eb.ProcessChatType
-			eb.ProcessChatType = function(self, msg, index, send, ...)
-				if index ~= "REPLY" then
-					self.agentTarget = nil
-					return origProcess(self, msg, index, send, ...)
-				end
-				if not (db and run.lastMessenger == "agent") then
-					return origProcess(self, msg, index, send, ...)
-				end
-				local chat = FindChat(run.lastReplyChat) or ActiveChat()
-				if send == 1 then
-					self:SetText(msg or "")
-					self.agentTarget = chat and chat.id
-					SendBoxToAgent(self)
-					return true
-				end
-				self.agentTarget = chat and chat.id
-				self:SetText(msg or "")
-				if chat then PaintAgentHeader(self, chat) end
-				return true
-			end
-
-			-- Enter arrives here; nothing below us ever sees an agent-targeted box.
-			for _, name in ipairs({ "SendMessage", "SendText" }) do
-				local orig = eb[name]
-				if orig then
-					eb[name] = function(self, ...)
-						if self.agentTarget then
-							SendBoxToAgent(self)
-							return
-						end
-						return orig(self, ...)
-					end
-				end
-			end
-
-			-- Anything that repaints the header normally (Tab, /s, sticky reset) ends agent mode.
-			hooksecurefunc(eb, "UpdateHeader", function(self)
-				if not self.agentPainting then self.agentTarget = nil end
-			end)
-			hooksecurefunc(eb, "ClearChat", function(self)
-				self.agentTarget = nil
-			end)
-		end
-	end
+	-- Intentionally empty: do not wrap chat edit box send paths.
 end
 
 -- Clicks on our [reply] / [open] links in the chat frame.
@@ -2810,8 +2813,8 @@ local HELP = table.concat({
 	"/wow-ai                        toggle the window (/ai, /wowai and the old /wow-claude are the same command)",
 	"/wow-ai mini                   collapse to the small bar (click the bar to expand)",
 	"/wow-ai hide                   hide the window completely",
-	"/ai <text>                         send <text> to the current chat straight from the game chat box (/wow-ai <text> too). A message that starts with a command word is still sent when the rest of the line doesn't fit that command",
-	"/r <text>                          replies to the agent when it was the last to message you (else normal whisper reply)",
+	"/ai <text>                         send <text> to the current chat straight from the game chat box (/wow-ai <text>, /ask <text> too). A message that starts with a command word is still sent when the rest of the line doesn't fit that command",
+	"/r                                 left to the game (last whisper). To reply to the agent use /ai <text> or click [reply] — wrapping /r tainted /target and other Blizzard slash commands",
 	"/wow-ai echo summary|full|short|off|<chars>   how much of each reply to print in the game chat (summary = the agent's closing TL;DR lines)",
 	"/wow-ai longchat on|off        let the game chat box take 4000 characters (for long /ai messages)",
 	"/wow-ai new [name]             start a new chat (its own agent session, like a new terminal)",

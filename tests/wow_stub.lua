@@ -217,6 +217,20 @@ function GetSkillLineInfo(i)
 	return s[1], s[2] or nil, false, s[3], 0, 0, s[4]
 end
 ITEM_QUALITY2_DESC = "Uncommon"
+-- A tiny quest log so GameContext can show titles/objectives in tests.
+C_QuestLog = {
+	GetNumQuestLogEntries = function() return 2 end,
+	GetInfo = function(i)
+		if i == 1 then return { title = "The Red Messenger", questID = 382, level = 5, isHeader = false } end
+		if i == 2 then return { title = "In Favor of Darkness", questID = 5651, level = 5, isHeader = false } end
+	end,
+	IsComplete = function(id) return id == 5651 end,
+	GetTitleForQuestID = function(id) if id == 382 then return "The Red Messenger" end if id == 5651 then return "In Favor of Darkness" end end,
+	GetQuestObjectives = function(id)
+		if id == 382 then return { { text = "Scarlet Crusade Documents: 0/1", finished = false, numFulfilled = 0, numRequired = 1 } } end
+		return {}
+	end,
+}
 C_Item = {
 	GetItemInfo = function(link)
 		if tostring(link):find("^item:2140") then return "Fine Longsword", link, 2, 19, 14, "Weapon", "One-Handed Swords" end
