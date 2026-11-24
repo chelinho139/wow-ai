@@ -4,6 +4,13 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-24
+
+### Fixed
+
+- Talents in the game context on the Forever client: its talents are a trait tree (`C_Traits`), so the context now lists each tree with its points and the talents bought in it, top of the tree first (for example `Fire 29 (Accelerant 5/5, Ignite 5/5, ...) / Frost 2 (Precision 2/3)`). Ranks the game grants for free are not counted as points. Clients without trait talents still get the classic talent tabs.
+- The character line no longer reads `Name on , level 40` when the client reports an empty realm name, as Forever does.
+
 ## [0.5.0] - 2026-11-04
 
 ### Added
@@ -83,7 +90,8 @@ First public release.
 - `setup.js` installer: finds the client, copies the addon, writes `config.json`, builds the slot pool.
 - Test suite: addon in a Lua VM with a stub client, protocol unit tests, slot-file round trip, codec-to-decoder round trip, and a live inject test.
 
-[Unreleased]: https://github.com/chelinho139/wow-ai/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/chelinho139/wow-ai/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/chelinho139/wow-ai/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/chelinho139/wow-ai/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/chelinho139/wow-ai/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/chelinho139/wow-ai/releases/tag/v0.3.0
