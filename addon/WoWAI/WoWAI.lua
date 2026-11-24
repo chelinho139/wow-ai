@@ -955,6 +955,64 @@ local function Money(copper)
 	return c .. "c"
 end
 
+-- The active talent config as one line: each tree (trait group) with its points
+-- and the talents bought in it, e.g. "Frost 21 (Ice Shards 5/5, Shatter 2/5) / Fire 0".
+-- Nil when the client has no trait talents or nothing can be read.
+function WoWAI.TraitTalents()
+	if not (C_ClassTalents and C_Traits) then return nil end
+	local configID = Try(C_ClassTalents.GetActiveConfigID)
+	local config = type(configID) == "number" and Try(C_Traits.GetConfigInfo, configID)
+	if type(config) ~= "table" or type(config.treeIDs) ~= "table" then return nil end
+	local function SpellName(id)
+		local name = C_Spell and Try(C_Spell.GetSpellName, id)
+		if type(name) ~= "string" then
+			local info = C_Spell and Try(C_Spell.GetSpellInfo, id)
+			name = type(info) == "table" and info.name or nil
+		end
+		return name
+	end
+	local groups, byID, other = {}, {}, nil
+	for _, treeID in ipairs(config.treeIDs) do
+		for _, g in ipairs(Try(C_Traits.GetGroupDisplayInfoByTreeID, treeID) or {}) do
+			if type(g) == "table" and g.groupID and not byID[g.groupID] then
+				local group = { name = g.displayName or "?", order = g.orderIndex or #groups, points = 0, taken = {} }
+				byID[g.groupID] = group
+				table.insert(groups, group)
+			end
+		end
+		for _, nodeID in ipairs(Try(C_Traits.GetTreeNodes, treeID) or {}) do
+			local node = Try(C_Traits.GetNodeInfo, configID, nodeID)
+			local spent = type(node) == "table" and node.ranksPurchased or 0
+			if spent > 0 and node.activeEntry then
+				local entry = Try(C_Traits.GetEntryInfo, configID, node.activeEntry.entryID)
+				local def = type(entry) == "table" and entry.definitionID and Try(C_Traits.GetDefinitionInfo, entry.definitionID)
+				local name = type(def) == "table" and (def.overrideName or (def.spellID and SpellName(def.spellID))) or ("node " .. nodeID)
+				local group
+				for _, gid in ipairs(node.groupIDs or {}) do group = group or byID[gid] end
+				if not group then
+					other = other or { name = "Other", order = math.huge, points = 0, taken = {} }
+					group = other
+				end
+				group.points = group.points + spent
+				table.insert(group.taken, { y = node.posY or 0, x = node.posX or 0,
+					text = name .. " " .. (node.activeRank or spent) .. "/" .. (node.maxRanks or "?") })
+			end
+		end
+	end
+	if other then table.insert(groups, other) end
+	if #groups == 0 then return nil end
+	table.sort(groups, function(a, b) return a.order < b.order end)
+	local parts = {}
+	for _, group in ipairs(groups) do
+		-- Top of the tree first, as the talent frame shows it.
+		table.sort(group.taken, function(a, b) if a.y ~= b.y then return a.y < b.y end return a.x < b.x end)
+		local names = {}
+		for _, t in ipairs(group.taken) do table.insert(names, t.text) end
+		table.insert(parts, group.name .. " " .. group.points .. (#names > 0 and (" (" .. table.concat(names, ", ") .. ")") or ""))
+	end
+	return table.concat(parts, " / ")
+end
+
 -- A few lines about the game and the character, as the bridge will show them to the agent.
 -- Profession and secondary skill lines by skill id (vanilla ids).
 local PROFESSION_SKILL_IDS = {
@@ -1014,7 +1072,7 @@ function WoWAI.GameContext()
 		local class = Try(UnitClass, "player")
 		local faction = Try(UnitFactionGroup, "player")
 		local guild = Try(GetGuildInfo, "player")
-		local who = "Character: " .. tostring(name) .. (realm and (" on " .. tostring(realm)) or "")
+		local who = "Character: " .. tostring(name) .. ((realm and realm ~= "") and (" on " .. tostring(realm)) or "")
 		local desc = {}
 		if level then table.insert(desc, "level " .. tostring(level)) end
 		if race then table.insert(desc, tostring(race)) end
@@ -1059,9 +1117,12 @@ function WoWAI.GameContext()
 	end
 	if #progress > 0 then table.insert(lines, table.concat(progress, "; ")) end
 
-	-- Classic-style talent tabs: name, icon, points spent.
-	local tabs = Try(GetNumTalentTabs)
-	if type(tabs) == "number" and tabs > 0 then
+	-- Forever's talents are a trait tree (C_Traits); the classic talent tabs are the fallback.
+	local traits = WoWAI.TraitTalents()
+	local tabs = not traits and Try(GetNumTalentTabs)
+	if traits then
+		table.insert(lines, "Talents: " .. traits)
+	elseif type(tabs) == "number" and tabs > 0 then
 		local parts = {}
 		for i = 1, tabs do
 			local tname, _, points = Try(GetTalentTabInfo, i)

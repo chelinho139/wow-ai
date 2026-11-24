@@ -124,6 +124,48 @@ test('hello goes out on the strip after login', () => {
   assert.equal(recs[0].session, vm.evaluate('WoWAIDB.session'));
 });
 
+test('trait talents (the Forever talent tree) replace the classic talent tabs in the context', () => {
+  const vm = newVM();
+  login(vm);
+  vm.run(`
+    local nodes = {
+      [11] = { ranksPurchased = 3, activeRank = 3, maxRanks = 5, posX = 2, posY = 1, groupIDs = { 2 }, activeEntry = { entryID = 111 } },
+      [10] = { ranksPurchased = 5, activeRank = 5, maxRanks = 5, posX = 1, posY = 1, groupIDs = { 2 }, activeEntry = { entryID = 110 } },
+      [12] = { ranksPurchased = 1, activeRank = 1, maxRanks = 1, posX = 1, posY = 0, groupIDs = { 1 }, activeEntry = { entryID = 112 } },
+      [13] = { ranksPurchased = 0, activeRank = 0, maxRanks = 3, posX = 1, posY = 2, groupIDs = { 2 } },
+      [14] = { ranksPurchased = 0, activeRank = 1, maxRanks = 1, posX = 0, posY = 0, groupIDs = { 1 }, activeEntry = { entryID = 114 } },
+    }
+    local spells = { [110] = "Improved Frostbolt", [112] = "Arcane Subtlety", [114] = "Granted" }
+    C_ClassTalents = { GetActiveConfigID = function() return 7 end }
+    C_Traits = {
+      GetConfigInfo = function(id) return { ID = id, treeIDs = { 50 } } end,
+      GetGroupDisplayInfoByTreeID = function() return {
+        { groupID = 2, displayName = "Frost", orderIndex = 2 },
+        { groupID = 1, displayName = "Arcane", orderIndex = 0 },
+        { groupID = 3, displayName = "Fire", orderIndex = 1 },
+      } end,
+      GetTreeNodes = function() return { 10, 11, 12, 13, 14 } end,
+      GetNodeInfo = function(configID, nodeID) return nodes[nodeID] end,
+      GetEntryInfo = function(configID, entryID) return { definitionID = entryID + 1000 } end,
+      GetDefinitionInfo = function(defID) if defID == 1111 then return { overrideName = "Ice Shards" } end return { spellID = defID - 1000 } end,
+    }
+    C_Spell = { GetSpellName = function(id) return spells[id] end }`);
+  assert.equal(vm.evaluate('WoWAI.TraitTalents()'),
+    'Arcane 1 (Arcane Subtlety 1/1) / Fire 0 / Frost 8 (Improved Frostbolt 5/5, Ice Shards 3/5)',
+    'trees in their order, points bought (granted ranks are not points), talents top to bottom');
+  assert.ok(vm.evaluate('WoWAI.GameContext()').includes('\nTalents: Arcane 1 (Arcane Subtlety 1/1) / Fire 0 / Frost 8 '));
+  vm.run('C_Traits.GetConfigInfo = function() end');
+  assert.equal(vm.evaluate('WoWAI.TraitTalents()'), null, 'no config: the classic tabs are used');
+  assert.ok(vm.evaluate('WoWAI.GameContext()').includes('\nTalents: Beast Mastery 10 / Marksmanship 5 / Survival 0\n'));
+});
+
+test('an empty realm name (the Forever client) leaves "on <realm>" out of the character line', () => {
+  const vm = newVM();
+  login(vm);
+  vm.run('GetRealmName = function() return "" end');
+  assert.ok(vm.evaluate('WoWAI.GameContext()').includes('\nCharacter: Testchar, level 23 '));
+});
+
 test('outbound records replace field separators inside user text', () => {
   const vm = newVM();
   login(vm);
