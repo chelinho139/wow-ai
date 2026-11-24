@@ -2185,6 +2185,12 @@ end
 -- settings); instead the box remembers an agent target, the header is repainted
 -- over the game's own, and the send entry points are intercepted. Any other chat
 -- type, Tab, Esc or a cleared box drops the target again.
+--
+-- Opt-in (/wow-ai reply on): replacing the box's methods taints every line sent
+-- from it. Out in the world that goes unnoticed, but protected slash commands
+-- (/tar, /focus, /cast) are then forbidden, and inside battlegrounds the client
+-- blocks SendChatMessage itself, so /s, /i and /raid all fail. Taint can't be
+-- undone by putting the originals back, so turning it off takes a /reload.
 local AGENT_R, AGENT_G, AGENT_B = 0.49, 0.78, 1.0
 
 local function PaintAgentHeader(eb, chat)
@@ -2217,6 +2223,7 @@ local function SendBoxToAgent(eb)
 end
 
 local function HookReplyCommand()
+	if not db.settings.replyHook then return end
 	for i = 1, (NUM_CHAT_WINDOWS or 10) do
 		local eb = _G["ChatFrame" .. i .. "EditBox"]
 		if eb and eb.ProcessChatType and not eb.agentReplyHooked then
@@ -2811,7 +2818,7 @@ local HELP = table.concat({
 	"/wow-ai mini                   collapse to the small bar (click the bar to expand)",
 	"/wow-ai hide                   hide the window completely",
 	"/ai <text>                         send <text> to the current chat straight from the game chat box (/wow-ai <text> too). A message that starts with a command word is still sent when the rest of the line doesn't fit that command",
-	"/r <text>                          replies to the agent when it was the last to message you (else normal whisper reply)",
+	"/wow-ai reply on|off           /r replies to the agent when it was the last to message you (off by default: it breaks /tar and battleground chat; off needs a /reload)",
 	"/wow-ai echo summary|full|short|off|<chars>   how much of each reply to print in the game chat (summary = the agent's closing TL;DR lines)",
 	"/wow-ai longchat on|off        let the game chat box take 4000 characters (for long /ai messages)",
 	"/wow-ai new [name]             start a new chat (its own agent session, like a new terminal)",
@@ -2860,6 +2867,7 @@ local COMMAND_ARGS = {
 	context = { [""] = true, on = true, off = true }, ctx = { [""] = true, on = true, off = true },
 	mode = { [""] = true, pixel = true, reload = true },
 	signal = { [""] = true, on = true, off = true }, longchat = { [""] = true, on = true, off = true },
+	reply = { [""] = true, on = true, off = true },
 	auto = OnOffOrNumber,
 	echo = function(rest) return rest == "" or rest == "summary" or rest == "full" or rest == "short" or rest == "off" or tonumber(rest) ~= nil end,
 	bind = 1, agent = 1,
@@ -3014,6 +3022,22 @@ SlashCmdList["WOWAI"] = function(msg)
 		if rest == "on" then s.longchat = true elseif rest == "off" then s.longchat = false end
 		ApplyLongChat()
 		AddHistory(c, "system", "game chat box limit: " .. (s.longchat and "4000 characters (fine for /ai; real chat over 255 may be rejected by the server)" or "255 (default)"))
+		WoWAI.Render()
+	elseif cmd == "reply" then
+		if rest == "on" then
+			s.replyHook = true
+			HookReplyCommand()
+		elseif rest == "off" then
+			s.replyHook = false
+		end
+		local hooked = ChatFrame1EditBox and ChatFrame1EditBox.agentReplyHooked
+		local msg = "/r to the agent is " .. (s.replyHook and "on" or "off")
+		if s.replyHook then
+			msg = msg .. " (protected commands like /tar and all chat inside battlegrounds are blocked while it is on)"
+		elseif hooked then
+			msg = msg .. " after the next /reload (until then the chat box stays hooked)"
+		end
+		AddHistory(c, "system", msg)
 		WoWAI.Render()
 	elseif cmd == "signal" then
 		if rest == "on" then s.signal = true elseif rest == "off" then s.signal = false end

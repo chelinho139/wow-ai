@@ -4,6 +4,10 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+### Changed
+
+- `/r` to the agent is now opt-in: `/wow-ai reply on` (off needs a `/reload`). The hook replaced the chat edit boxes' `ProcessChatType`, `SendMessage` and `SendText`, which tainted every line sent from the chat box: protected slash commands (`/tar`) were forbidden ([#29](https://github.com/chelinho139/wow-ai/issues/29)), and inside battlegrounds Forever blocked `SendChatMessage` itself, so `/s`, `/i` and `/raid` all failed with "Interface action failed because of an AddOn". An install that used `/r` this way turns it back on with the command; `/ai <text>` and the `[reply]` link need no hook.
+
 ## [0.5.0] - 2026-11-04
 
 ### Added
