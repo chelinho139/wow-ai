@@ -715,3 +715,33 @@ test('reload mode writes the outbox for the bridge instead of drawing the strip'
   assert.equal(Buffer.from(vm.evaluate('WoWAIDB.outbox.allow'), 'hex').toString('utf8'), 'WebSearch\x1fBash(git:*)');
   assert.equal(decodeStrip(vm), null);
 });
+
+test('/r to the agent is opt-in: the chat box is left alone until "reply on"', () => {
+  const vm = newVM();
+  // A chat edit box with the methods the hook replaces; remember the originals.
+  vm.run(`
+    ChatFrame1EditBox = CreateFrame("EditBox", "ChatFrame1EditBox")
+    for _, m in ipairs({ "ProcessChatType", "SendMessage", "SendText", "UpdateHeader", "ClearChat" }) do
+      ChatFrame1EditBox[m] = function() end
+    end
+    ORIG = {}
+    for _, m in ipairs({ "ProcessChatType", "SendMessage", "SendText" }) do ORIG[m] = ChatFrame1EditBox[m] end`);
+  const untouched = () => vm.evaluate('ORIG.ProcessChatType == ChatFrame1EditBox.ProcessChatType and ORIG.SendMessage == ChatFrame1EditBox.SendMessage and ORIG.SendText == ChatFrame1EditBox.SendText');
+  login(vm);
+  // Replacing these methods taints everything sent from the box (#29), so by default they stay the game's.
+  assert.equal(untouched(), 'true', 'no hook by default');
+  assert.equal(vm.evaluate('ChatFrame1EditBox.agentReplyHooked'), null);
+  vm.run('SlashCmdList.WOWAI("reply on")');
+  assert.equal(vm.evaluate('WoWAIDB.settings.replyHook'), 'true');
+  assert.equal(untouched(), 'false', 'hooked right away');
+  assert.equal(vm.evaluate('ChatFrame1EditBox.agentReplyHooked'), 'true');
+  // Off is saved, but the methods can't be handed back untainted: it takes a reload.
+  vm.run('SlashCmdList.WOWAI("reply off")');
+  assert.equal(vm.evaluate('WoWAIDB.settings.replyHook'), 'false');
+  assert.ok(vm.evaluate('WoWAIDB.chats[1].history[#WoWAIDB.chats[1].history].text').includes('/reload'), 'says a reload is needed');
+  // "/ai reply to her nicely" is a message, not the command.
+  connect(vm);
+  vm.run('SlashCmdList.WOWAI("reply to her nicely")');
+  assert.equal(vm.evaluate('WoWAIDB.settings.replyHook'), 'false');
+  assert.ok(stripRecords(vm).find(r => r.text === 'reply to her nicely'), 'sent to the agent');
+});
